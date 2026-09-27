@@ -380,11 +380,15 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     reader, self_filter = _build_reader(cfg)
     reader.trace_path = run.rows_log
     llm = make_llm(cfg.llm)
-    store = notes = None
-    if cfg.reply.memory_dir and not cfg.reply.dry_run:  # dry-run 的回复没真的发出去，不记
-        from .chat.memory import MemoryStore, NotesKeeper
+    from .chat.memory import MemoryStore
 
-        store = MemoryStore(cfg.reply.memory_dir)
+    # #friend/#remember 是主人自己的本地操作，不算"团子回复了什么"：不受 dry_run 影响，配了就写
+    command_store = MemoryStore(cfg.reply.memory_dir) if cfg.reply.memory_dir else None
+    store = notes = None
+    if cfg.reply.memory_dir and not cfg.reply.dry_run:  # dry-run 的聊天回复没真的发出去，不记
+        from .chat.memory import NotesKeeper
+
+        store = command_store
         if not store.profile():
             log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
         notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
@@ -408,7 +412,9 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         available_emotes=emotes.available if emotes else None,
     )
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
-    agent = Agent(cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes)
+    agent = Agent(
+        cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store
+    )
     try:
         agent.run(duration)
     except KeyboardInterrupt:

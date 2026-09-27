@@ -7,6 +7,8 @@ import time
 from collections import deque
 from collections.abc import Callable
 
+from .chat.commands import CommandRouter, is_command
+from .chat.memory import MemoryStore
 from .chat.panel import PanelKeeper
 from .chat.reader import ChatReader, Message
 from .chat.responder import Responder
@@ -36,6 +38,12 @@ class RateLimiter:
     def record(self, now: float) -> None:
         self._sent.append(now)
 
+    def remaining(self, now: float) -> int:
+        """这一分钟还能发几条（`#status` 用；只读，不改变限速状态）。"""
+        while self._sent and now - self._sent[0] > 60:
+            self._sent.popleft()
+        return max(0, self.max_per_minute - len(self._sent))
+
 
 class Agent:
     def __init__(
@@ -52,6 +60,7 @@ class Agent:
         env=None,  # EnvWatcher：识别身边有谁、在哪（vision/env.py）
         social=None,  # SocialHandler：接受好友的牵手 / 拥抱 / 击掌（game/social.py），请求由 env 发现
         emotes: EmotePlayer | None = None,
+        store: MemoryStore | None = None,  # 主人命令（#friend/#remember）用；跟 dry_run 无关，配了就写
     ) -> None:
         self.cfg = cfg
         self.env = env
@@ -70,6 +79,8 @@ class Agent:
         self.run_dir = run
         self.emotes = emotes
         self.emoted: list[str] = []  # 做过（含 dry-run）的动作，方便测试和日志
+        self.paused = False  # #pause/#resume 切换：暂停时忽略别人的消息，不进 pending
+        self.commands = CommandRouter(store, on_pause=self._set_paused, status=self._status_line)
         # sleep 包一层：测试会在构造之后替换 agent.sleep
         self.panel = PanelKeeper(cfg.vision, device, reader, lambda s: self.sleep(s))
 
@@ -93,14 +104,29 @@ class Agent:
                     self.social.handle(self.env.requests, now)
                 except Exception:
                     log.exception("处理互动请求出错")
+        commands: list[Message] = []
+        owner = self.cfg.reply.owner_name
+        if fresh and owner:
+            commands = [m for m in fresh if m.speaker == owner and is_command(m.text)]
+            if commands:
+                skip = {id(m) for m in commands}
+                fresh = [m for m in fresh if id(m) not in skip]
+
         if fresh:
             for m in fresh:
                 log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             if self.run_dir:
                 self.run_dir.save_frame(frame, [m.box for m in fresh])
-            self.pending.extend(fresh)
-            self.pending = self.pending[-self.cfg.chat.max_pending :]
-            self.last_new_at = now
+            if self.paused:
+                for m in fresh:
+                    log.info("已暂停，忽略: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
+            else:
+                self.pending.extend(fresh)
+                self.pending = self.pending[-self.cfg.chat.max_pending :]
+                self.last_new_at = now
+
+        for m in commands:
+            self._handle_command(m)
 
         if not self.pending or now - self.last_new_at < self.cfg.chat.debounce:
             return None
@@ -157,6 +183,29 @@ class Agent:
             self.emotes.perform(name)
         except Exception:  # 换轮盘没找到图标、adb 出错……动作做不成，话照样说
             log.exception("做动作「%s」失败，跳过", name)
+
+    def _handle_command(self, m: Message) -> None:
+        """主人的 # 命令：独立处理，不占用 pending / RateLimiter，永远回一句固定确认语。"""
+        confirm = self.commands.handle(m.text)
+        text = self.cfg.reply.disclosure_prefix + confirm
+        dry = self.cfg.reply.dry_run
+        self.sent.append(text)
+        if dry:
+            log.info("[dry-run] 命令确认: %s", text)
+        else:
+            self.sender.send(text)
+            self.self_filter.remember(text, self.clock())
+        if self.run_dir:
+            self.run_dir.record_reply([m], text, sent=not dry)
+
+    def _set_paused(self, paused: bool) -> None:
+        self.paused = paused
+
+    def _status_line(self) -> str:
+        mode = "dry-run" if self.cfg.reply.dry_run else "live"
+        state = "已暂停" if self.paused else "运行中"
+        remaining = self.limiter.remaining(self.clock())
+        return f"{mode}｜{state}｜待处理{len(self.pending)}｜限速{remaining}/{self.limiter.max_per_minute}"
 
     def ensure_log_open(self) -> bool:
         """log 模式：看不到聊天记录面板、也没在打字时，按一下打开面板的键（默认 C）。返回面板现在开没开。"""

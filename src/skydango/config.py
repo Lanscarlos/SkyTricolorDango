@@ -111,6 +111,9 @@ class ReplyConfig:
     # 为空不启用；dry-run 时不读也不写（dry-run 的回复没真的发出去）
     memory_dir: str = "memory"
     notes_every: int = 15  # 每攒够这么多轮，把聊天记录和随手记整理进长期记忆；0 表示不整理（随手记照常）
+    # 主人（比如卡洛）在游戏里的昵称，和聊天记录面板解析出的 speaker 精确匹配；留空 = 主人命令模式关闭。
+    # 只有 vision.mode = "log" 时 speaker 才有值，其他模式下这个功能自动失效。见 chat/commands.py
+    owner_name: str = ""
 
 
 @dataclass
