@@ -7,6 +7,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 
+from .chat.panel import PanelKeeper
 from .chat.reader import ChatReader, Message
 from .chat.responder import Responder
 from .chat.sender import ChatSender
@@ -66,10 +67,11 @@ class Agent:
         self.pending: list[Message] = []
         self.last_new_at = 0.0
         self.sent: list[str] = []  # 记录（含 dry-run），方便测试和日志
-        self._last_reopen = float("-inf")
         self.run_dir = run
         self.emotes = emotes
         self.emoted: list[str] = []  # 做过（含 dry-run）的动作，方便测试和日志
+        # sleep 包一层：测试会在构造之后替换 agent.sleep
+        self.panel = PanelKeeper(cfg.vision, device, reader, lambda s: self.sleep(s))
 
     def step(self) -> str | None:
         """跑一轮；如果这一轮发出（或 dry-run 模拟发出）了回复，返回那句话。"""
@@ -83,7 +85,7 @@ class Agent:
         if frame is not None:
             fresh = self.reader.read(frame, now)
             if self.cfg.vision.mode == "log":
-                self._maybe_reopen_log(now)
+                self.panel.maybe_reopen(now)
             if self.env is not None:  # 到了间隔会在后台线程里扫一次画面
                 self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
             if self.social is not None and self.env is not None and self.env.requests:
@@ -158,31 +160,7 @@ class Agent:
 
     def ensure_log_open(self) -> bool:
         """log 模式：看不到聊天记录面板、也没在打字时，按一下打开面板的键（默认 C）。返回面板现在开没开。"""
-        key = self.cfg.vision.log_open_key
-        if self.cfg.vision.mode != "log" or not key:
-            return True
-        if self.reader.panel_visible(self.device.screenshot()):
-            return True
-        if self.device.ime_shown():
-            log.warning("输入框开着，没法用按键打开聊天记录面板；请手动打开（光遇里按 C）")
-            return False
-        log.info("聊天记录面板没打开，按键 %d 打开", key)
-        self.device.hw_key(key)
-        self.sleep(1.0)
-        if self.reader.panel_visible(self.device.screenshot()):
-            return True
-        log.warning("按了键聊天记录面板还是没出现，可能被别的界面挡住了，请看一下游戏画面")
-        return False
-
-    def _maybe_reopen_log(self, now: float) -> None:
-        since = self.reader.panel_closed_since
-        vision = self.cfg.vision
-        if since is None or not vision.log_reopen_after or now - since < vision.log_reopen_after:
-            return
-        if now - self._last_reopen < vision.log_reopen_cooldown:
-            return
-        self._last_reopen = now
-        self.ensure_log_open()
+        return self.panel.ensure_open()
 
     def run(self, duration: float = 0.0) -> None:
         """一直跑；duration > 0 时跑这么多秒后自己退出（别在外面套 timeout：Windows 上停掉外层后 Python 会变成孤儿进程）。"""
