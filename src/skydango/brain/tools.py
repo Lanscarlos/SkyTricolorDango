@@ -152,6 +152,3 @@ class ToolBox:
         if name == "camera_reset":
             return b.camera_reset
         raise ToolError(f"没有这个工具：{name}")
-
-
-TOOLS = [{"name": n, "description": d, "input_schema": {"type": "object", "properties": {}}} for n, d in DESCRIPTIONS.items()]  # Task 7 删

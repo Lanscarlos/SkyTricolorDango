@@ -41,5 +41,6 @@ def test_brain_section(tmp_path):
     p.write_text("[brain]\nenabled = true\nheartbeat = [30, 60]\n", encoding="utf-8")
     cfg = load_config(p)
     assert cfg.brain.enabled is True and cfg.brain.heartbeat == [30, 60]
-    assert cfg.brain.model == "claude-sonnet-5" and cfg.brain.effort == "low"
-    assert cfg.brain.image_size == [1280, 720] and cfg.brain.max_steps == 6
+    assert cfg.brain.model == "sonnet" and cfg.brain.eyes_model == "haiku" and cfg.brain.effort == "low"
+    assert cfg.brain.token_env == "SKYDANGO_CLAUDE_TOKEN" and cfg.brain.config_dir == ".brain-claude"
+    assert cfg.brain.turn_timeout == 120 and cfg.brain.limit_retry == 600

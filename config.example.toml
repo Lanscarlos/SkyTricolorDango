@@ -71,14 +71,13 @@ min_interval = 20.0           # 两次动作至少隔几秒
 swap_min_interval = 120.0     # 两次换轮盘至少隔几秒（换一次要关聊天面板 5~10 秒）
 
 [brain]
-# 统管大脑：常驻的 Claude 看画面、决定说什么做什么。`run --brain` 打开（这里写 enabled = true 就默认打开）
+# 统管大脑：常驻的 Claude Code（订阅）看眼睛写的场景描述、调身体的工具。`run --brain` 打开
+# 先运行一次 claude setup-token，把生成的令牌放进用户环境变量：setx SKYDANGO_CLAUDE_TOKEN "<令牌>"
 enabled = false
-model = "claude-sonnet-5"
-api_key_env = "ANTHROPIC_API_KEY"
-effort = "low"                 # 要快；运行中途不改（改了缓存失效）
+model = "sonnet"
+effort = "low"
+eyes_model = "haiku"           # 眼睛：把截图写成文字
 heartbeat = [45, 90, 180]      # 没事件时多久醒一次（身边有好友从第一档起），闲着就退到下一档
-max_usd_per_hour = 3.0         # 最近一小时估算花费超过：只为聊天醒
-pause_usd_per_hour = 5.0       # 超过：暂停大脑，聊天交给 [llm] 的备用回复
 
 [sender]
 # 打开聊天输入框：光遇（MuMu「PC端操作方案」）里按实体键盘 Enter 就会打开。
