@@ -106,9 +106,24 @@ class Agent:
             self.self_filter.remember(text, self.clock())
         return text
 
+    def ensure_log_open(self) -> None:
+        """log 模式：面板里一行都读不到、也没在打字时，按一下打开面板的键（默认 C）。"""
+        key = self.cfg.vision.log_open_key
+        if self.cfg.vision.mode != "log" or not key:
+            return
+        if self.reader.log_rows(self.device.screenshot()):
+            return
+        if self.device.ime_shown():
+            log.warning("输入框开着，没法用按键打开聊天记录面板；请手动打开（光遇里按 C）")
+            return
+        log.info("聊天记录面板没打开，按键 %d 打开", key)
+        self.device.hw_key(key)
+        self.sleep(1.0)
+
     def run(self) -> None:
         mode = "dry-run（只打印不发送）" if self.cfg.reply.dry_run else "LIVE（会真的发送）"
         log.info("Agent 启动，模式: %s；Ctrl+C 退出", mode)
+        self.ensure_log_open()
         while True:
             started = self.clock()
             try:

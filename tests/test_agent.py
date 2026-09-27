@@ -105,3 +105,18 @@ def test_send_by_tap_requires_button():
     cfg.sender.send_button = [0.9, 0.9]
     ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None).send("hi")
     assert device.calls[-1] == ("tap", 1152, 648)
+
+
+def test_open_chat_with_hardware_key_only_when_closed():
+    cfg = Config()
+    cfg.sender.open_chat_key = 28
+    device = FakeDevice([scene()])
+    sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
+    sender.send("hi")
+    assert device.calls[:2] == [("hw_key", 28), ("text", "hi")]
+
+    device.calls.clear()
+    device.shown = True  # 输入框已经开着（光遇发送后不会自动关闭）
+    sender.send("again")
+    assert ("hw_key", 28) not in device.calls
+    assert device.calls[0] == ("text", "again")

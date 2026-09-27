@@ -10,8 +10,9 @@ import numpy as np
 
 from ..config import ChatConfig, OcrConfig, VisionConfig
 from ..vision.bubbles import Rect, find_bubbles, roi_rect
+from ..vision.chatlog import LogRow, new_rows, parse_rows
 from ..vision.ocr import OcrEngine, OcrLine, join_lines
-from .tracker import SeenTracker, SelfFilter
+from .tracker import SeenTracker, SelfFilter, similar
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class Message:
     text: str
     box: Rect
     seen_at: float
+    speaker: str = ""  # 只有聊天记录面板能读到说话人
 
 
 @dataclass(frozen=True)
@@ -44,17 +46,32 @@ class ChatReader:
         self.vision = vision
         self.ocr_cfg = ocr_cfg
         self.tracker = SeenTracker(chat.dedupe_ttl, chat.similarity)
+        self.similarity = chat.similarity
+        self._prev_keys: list[str] = []  # log 模式：上一帧面板里的行
         self.self_filter = self_filter
         self.ignore = [re.compile(p) for p in chat.ignore_patterns]
 
     def _good(self, lines: list[OcrLine]) -> list[OcrLine]:
         return [l for l in lines if l.score >= self.ocr_cfg.min_score and l.text.strip()]
 
+    def log_rows(self, frame: np.ndarray) -> list[LogRow]:
+        """log 模式：读出聊天记录面板里的所有行（坐标换算回整张图）。"""
+        height, width = frame.shape[:2]
+        area = roi_rect(self.vision.log_roi, width, height)
+        crop = area.crop(frame)
+        rows = parse_rows(crop, self._good(self.ocr.recognize(crop)), self.vision.log_self_min_value)
+        return [
+            LogRow(r.speaker, r.text, r.is_self, Rect(r.box.x + area.x, r.box.y + area.y, r.box.w, r.box.h))
+            for r in rows
+        ]
+
     def detect(self, frame: np.ndarray) -> list[Detection]:
         """识别画面里所有文本块（不做新旧判断）。"""
         height, width = frame.shape[:2]
         detections: list[Detection] = []
-        if self.vision.mode == "bubble":
+        if self.vision.mode == "log":
+            detections = [Detection(r.display(), r.box) for r in self.log_rows(frame)]
+        elif self.vision.mode == "bubble":
             for rect in find_bubbles(frame, self.vision.bubble, self.vision.roi):
                 crop_rect = rect.pad(self.vision.bubble.padding, width, height)
                 text = join_lines(self._good(self.ocr.recognize(crop_rect.crop(frame))))
@@ -69,8 +86,30 @@ class ChatReader:
             raise ValueError(f"未知的 vision.mode: {self.vision.mode}")
         return detections
 
+    def _read_log(self, frame: np.ndarray, now: float) -> list[Message]:
+        rows = self.log_rows(frame)
+        if not rows:  # 面板被挡住 / 关掉了：保留上一帧的状态
+            return []
+        keys = [r.key() for r in rows]
+        added = new_rows(self._prev_keys, keys, lambda a, b: similar(a, b, self.similarity))
+        self._prev_keys = keys
+        fresh: list[Message] = []
+        for row in (rows[i] for i in added):
+            if row.is_self or row.masked:
+                continue
+            if len(row.text.replace(" ", "")) < self.ocr_cfg.min_chars:
+                continue
+            if any(p.search(row.text) for p in self.ignore):
+                continue
+            if self.self_filter.is_self(row.text, now):
+                continue
+            fresh.append(Message(row.text, row.box, now, row.speaker))
+        return fresh
+
     def read(self, frame: np.ndarray, now: float) -> list[Message]:
         """返回这一帧里新出现的、不是自己说的消息。"""
+        if self.vision.mode == "log":
+            return self._read_log(frame, now)
         fresh: list[Message] = []
         for det in self.detect(frame):
             text = det.text

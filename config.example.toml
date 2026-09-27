@@ -9,7 +9,7 @@ serial = "127.0.0.1:16384"
 
 [vision]
 poll_interval = 1.0
-mode = "bubble"               # 找不到气泡时可以先用 "roi" 直接 OCR 整块区域
+mode = "log"                  # 读聊天记录面板（光遇按 C 打开）；"bubble" 找头顶气泡；"roi" 整块 OCR
 roi = [0.0, 0.0, 1.0, 0.85]   # 只在这块区域里找气泡，排除底部操作栏
 debug_dir = ""                # 例如 "debug"：读到新消息时保存标注截图
 
@@ -49,7 +49,10 @@ api_key_env = "DEEPSEEK_API_KEY"   # 从这个环境变量读 Key，不要把 Ke
 # api_key_env = "ANTHROPIC_API_KEY"
 
 [sender]
-# 打开聊天输入框要点的位置，需要自己标定；留空表示发送前输入框已经是打开的
+# 打开聊天输入框：光遇（MuMu「PC端操作方案」）里按实体键盘 Enter 就会打开。
+# 28 是 Linux 的 KEY_ENTER，通过 sendevent 模拟实体键盘；adb 的 input keyevent 游戏不认
+open_chat_key = 28
+# 也可以改成点击按钮：open_chat_key = 0，open_chat = [x, y]
 open_chat = []
 open_delay = 0.8
 # 提交方式："editor_action"（输入法的发送动作）/ "enter"（回车键）/ "tap"（点 send_button）

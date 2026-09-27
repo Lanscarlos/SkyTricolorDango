@@ -16,7 +16,8 @@ SKIP_TOKEN = "<skip>"
 RULES = """
 ## 场景
 你在手游《光遇》里，和身边的玩家用游戏内聊天交流。你看到的“聊天气泡”是截图 OCR 识别出来的：
-可能有错别字、缺字；同一批里可能是不同玩家说的；你不知道是谁说的。
+可能有错别字、缺字；同一批里可能是不同玩家说的。带名字的消息是“名字：内容”（好友显示昵称，陌生人显示“陌生人”），
+没带名字的就不知道是谁说的。
 
 ## 回复要求
 - 只输出一句要发出去的话：口语化中文，不超过 {max_chars} 个字，不换行，不用 markdown，不用表情符号（游戏里可能显示不了）。
@@ -36,8 +37,8 @@ def build_system_prompt(cfg: ReplyConfig) -> str:
 
 
 def format_incoming(messages: list[Message]) -> str:
-    lines = [f"「{m.text}」" for m in messages]
-    return "新的聊天气泡：\n" + "\n".join(lines)
+    lines = [f"{m.speaker}：「{m.text}」" if m.speaker else f"「{m.text}」" for m in messages]
+    return "新的聊天消息：\n" + "\n".join(lines)
 
 
 _QUOTES = "\"'“”‘’「」『』"

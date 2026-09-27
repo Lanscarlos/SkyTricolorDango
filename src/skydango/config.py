@@ -21,6 +21,8 @@ class DeviceConfig:
     adb_timeout: float = 10.0
     # ADBKeyboard 输入法，用来输入中文（adb shell input text 不支持中文）
     ime_id: str = "com.android.adbkeyboard/.AdbIME"
+    # 模拟实体键盘用的输入设备，例如 "/dev/input/event4"；为空自动找带 KEY_ENTER 的设备
+    key_device: str = ""
 
 
 @dataclass
@@ -43,10 +45,17 @@ class BubbleConfig:
 @dataclass
 class VisionConfig:
     poll_interval: float = 1.0  # 截屏间隔（秒）
-    mode: str = "bubble"  # "bubble"：先找气泡再 OCR；"roi"：直接对整块区域 OCR
+    # "log"：读聊天记录面板（光遇按 C 打开，推荐）；"bubble"：找头顶气泡再 OCR；"roi"：直接对整块区域 OCR
+    mode: str = "bubble"
     # 搜索区域 [x1, y1, x2, y2]（归一化），默认排除底部操作栏
     roi: list[float] = field(default_factory=lambda: [0.0, 0.0, 1.0, 0.85])
     bubble: BubbleConfig = field(default_factory=BubbleConfig)
+    # 聊天记录面板所在区域 [x1, y1, x2, y2]（归一化），底部要避开面板下面的输入框
+    log_roi: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.335, 0.855])
+    # 打开面板的按键（Linux 键码，46 = C）；启动时面板没开会自动按一下，0 表示不自动打开
+    log_open_key: int = 46
+    # 文字框背景亮度中位数 ≥ 这个值算“自己的消息”（浅色气泡），别人的消息是深色底
+    log_self_min_value: int = 150
     # 非空时，每次读到新消息就把标注后的截图存到这里，方便调参
     debug_dir: str = ""
 
@@ -100,6 +109,8 @@ class LlmConfig:
 class SenderConfig:
     # 打开聊天输入框要点的位置（归一化）；为空表示输入框已经打开 / 由别的方式打开
     open_chat: list[float] = field(default_factory=list)
+    # 用实体键盘按键打开聊天框（Linux 键码，28 = Enter），优先于 open_chat；0 表示不用
+    open_chat_key: int = 0
     open_delay: float = 0.8
     # 提交方式："editor_action"（输入法回车动作）/ "enter"（回车键）/ "tap"（点发送按钮）
     submit: str = "editor_action"

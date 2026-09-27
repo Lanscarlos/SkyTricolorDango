@@ -61,6 +61,7 @@ class FakeDevice:
     def __init__(self, frames: list[np.ndarray]) -> None:
         self.frames = list(frames)
         self.calls: list[tuple] = []
+        self.shown = False  # 输入框（软键盘）是否已经打开
 
     def screenshot(self):
         frame = self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
@@ -80,6 +81,12 @@ class FakeDevice:
 
     def editor_action(self, code):
         self.calls.append(("editor", code))
+
+    def hw_key(self, code):
+        self.calls.append(("hw_key", code))
+
+    def ime_shown(self):
+        return self.shown
 
 
 class Clock:

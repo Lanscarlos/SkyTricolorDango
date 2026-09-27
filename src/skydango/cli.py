@@ -16,7 +16,9 @@ log = logging.getLogger("skydango")
 def _device(cfg: Config):
     from .device.adb import AdbDevice
 
-    dev = AdbDevice(cfg.device.serial, cfg.device.adb_path, cfg.device.adb_timeout, cfg.device.ime_id)
+    dev = AdbDevice(
+        cfg.device.serial, cfg.device.adb_path, cfg.device.adb_timeout, cfg.device.ime_id, cfg.device.key_device
+    )
     if cfg.device.auto_connect:
         log.debug(dev.connect())
     return dev

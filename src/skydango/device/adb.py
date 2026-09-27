@@ -45,12 +45,14 @@ class AdbDevice:
         adb_path: str = "adb",
         timeout: float = 10.0,
         ime_id: str = "com.android.adbkeyboard/.AdbIME",
+        key_device: str = "",
         runner: Runner = subprocess.run,
     ) -> None:
         self.serial = serial
         self.adb_path = adb_path
         self.timeout = timeout
         self.ime_id = ime_id
+        self.key_device = key_device  # 为空时自动探测
         self._run = runner
 
     # ---- 基础 ----
@@ -119,6 +121,33 @@ class AdbDevice:
 
     def editor_action(self, code: int) -> None:
         self.shell("am", "broadcast", "-a", "ADB_EDITOR_CODE", "--ei", "code", str(int(code)))
+
+    def _find_key_device(self) -> str:
+        """找一个带 KEY_ENTER 的输入设备（MuMu 里是 "Xiaomi Input"，键盘透传走的就是它）。"""
+        out = self.shell("getevent", "-pl")
+        current = ""
+        for line in out.splitlines():
+            if line.startswith("add device"):
+                current = line.split(":", 1)[1].strip()
+            elif current and "KEY_ENTER" in line:
+                return current
+        raise AdbError("没找到带 KEY_ENTER 的输入设备，可以在 device.key_device 里手动指定（adb shell getevent -pl 查看）")
+
+    def hw_key(self, code: int) -> None:
+        # adb shell 属于 input 组，可以直接写 /dev/input/eventX，游戏会当成实体键盘。
+        # 先补一个抬起：之前的按键如果漏了抬起事件，按下会被当成重复而没反应。
+        if not self.key_device:
+            self.key_device = self._find_key_device()
+        dev, code = self.key_device, int(code)
+        self.shell(
+            f"sendevent {dev} 1 {code} 0; sendevent {dev} 0 0 0; "
+            f"sendevent {dev} 1 {code} 1; sendevent {dev} 0 0 0; sleep 0.05; "
+            f"sendevent {dev} 1 {code} 0; sendevent {dev} 0 0 0"
+        )
+
+    def ime_shown(self) -> bool:
+        out = self.shell("dumpsys", "input_method")
+        return "mInputShown=true" in out
 
     # ---- 输入法 ----
     def current_ime(self) -> str:

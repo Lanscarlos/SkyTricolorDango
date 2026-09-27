@@ -37,8 +37,11 @@ class ChatSender:
     def send(self, text: str) -> None:
         width, height = self.screen_size()
         cfg = self.cfg
-        if cfg.open_chat:
-            self.device.tap(*to_pixels(cfg.open_chat, width, height))
+        if (cfg.open_chat_key or cfg.open_chat) and not self.device.ime_shown():
+            if cfg.open_chat_key:
+                self.device.hw_key(cfg.open_chat_key)
+            else:
+                self.device.tap(*to_pixels(cfg.open_chat, width, height))
             self.sleep(cfg.open_delay)
         self.device.input_text(text)
         self.sleep(cfg.type_delay)

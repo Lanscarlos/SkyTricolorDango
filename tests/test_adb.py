@@ -74,3 +74,67 @@ def test_enable_keyboard_requires_install():
     rec = Recorder(stdout=b"com.other/.Ime\n")
     with pytest.raises(AdbError, match="ADBKeyboard"):
         AdbDevice("x:1", runner=rec).enable_adb_keyboard()
+
+
+GETEVENT = b"""add device 1: /dev/input/event5
+  name:     "Xiaomi Joystick"
+  events:
+    KEY (0001): BTN_A                 BTN_B
+add device 2: /dev/input/event4
+  name:     "Xiaomi Input"
+  events:
+    KEY (0001): KEY_ESC               KEY_1                 KEY_ENTER*
+    ABS (0003): ABS_MT_POSITION_X     : value 0, min 0, max 1080
+add device 3: /dev/input/event0
+  name:     "Power Button"
+  events:
+    KEY (0001): KEY_POWER
+"""
+
+
+class ShellRunner(Recorder):
+    """getevent 返回设备列表，dumpsys 返回输入法状态，其它命令返回空。"""
+
+    def __init__(self, ime_shown=False):
+        super().__init__()
+        self.ime_shown = ime_shown
+
+    def __call__(self, cmd, capture_output, timeout):
+        self.cmds.append(cmd)
+        out = b""
+        if "getevent" in cmd:
+            out = GETEVENT
+        elif "dumpsys" in cmd:
+            out = f"  mShowRequested=true mInputShown={str(self.ime_shown).lower()}\n".encode()
+        return subprocess.CompletedProcess(cmd, 0, out, b"")
+
+
+def test_hw_key_finds_keyboard_device_and_sends_events():
+    rec = ShellRunner()
+    dev = AdbDevice("emulator-5554", runner=rec)
+    dev.hw_key(28)
+    dev.hw_key(28)
+    getevents = [c for c in rec.cmds if "getevent" in c]
+    assert len(getevents) == 1  # 设备只探测一次
+    script = rec.cmds[-1][-1]
+    assert "sendevent /dev/input/event4 1 28 1" in script
+    assert "sendevent /dev/input/event4 1 28 0" in script
+    assert script.index("1 28 1") < script.rindex("1 28 0")
+
+
+def test_hw_key_uses_configured_device():
+    rec = ShellRunner()
+    AdbDevice("x:1", key_device="/dev/input/event9", runner=rec).hw_key(28)
+    assert not any("getevent" in c for c in rec.cmds)
+    assert "sendevent /dev/input/event9 1 28 1" in rec.cmds[-1][-1]
+
+
+def test_hw_key_without_keyboard_device():
+    rec = Recorder(stdout=b'add device 1: /dev/input/event0\n  name: "Power Button"\n')
+    with pytest.raises(AdbError, match="KEY_ENTER"):
+        AdbDevice("x:1", runner=rec).hw_key(28)
+
+
+@pytest.mark.parametrize("shown", [True, False])
+def test_ime_shown(shown):
+    assert AdbDevice("x:1", runner=ShellRunner(ime_shown=shown)).ime_shown() is shown

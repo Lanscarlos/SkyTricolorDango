@@ -11,17 +11,17 @@
 ## 工作原理
 
 ```
-MuMu 画面 ──adb screencap──▶ 气泡检测（颜色阈值 + 形状）──▶ OCR（RapidOCR）
+MuMu 画面 ──adb screencap──▶ 聊天记录面板（按 C 打开）──▶ OCR（RapidOCR）
                                                               │
-                                                    去重 / 过滤自己的话
+                                        按行对齐找新消息 / 拆出说话人 / 跳过自己和被屏蔽的
                                                               │
-MuMu 输入框 ◀──ADBKeyboard 中文输入 + 发送── 限速 ◀── 大模型生成回复
+MuMu 输入框 ◀──模拟实体键盘 Enter 打开 + ADBKeyboard 中文输入 + 发送── 限速 ◀── 大模型生成回复
 ```
 
 | 模块 | 位置 | 说明 |
 |---|---|---|
-| 设备层 | `src/skydango/device/` | adb 截屏（raw 格式，比 PNG 快）、点击、ADBKeyboard 中文输入 |
-| 视觉 | `src/skydango/vision/` | 找浅色圆角气泡 → 裁剪 → OCR，不需要训练模型 |
+| 设备层 | `src/skydango/device/` | adb 截屏（raw 格式，比 PNG 快）、点击、`sendevent` 模拟实体键盘、ADBKeyboard 中文输入 |
+| 视觉 | `src/skydango/vision/` | 解析聊天记录面板（`chatlog.py`）；备选：找头顶气泡（`bubbles.py`）。不需要训练模型 |
 | 聊天 | `src/skydango/chat/` | 模糊去重、忽略自己的气泡、人设与安全规则、发送流程 |
 | 主循环 | `src/skydango/agent.py` | 攒几秒合并连发消息，限速后回复；默认 dry-run |
 
@@ -31,7 +31,10 @@ MuMu 输入框 ◀──ADBKeyboard 中文输入 + 发送── 限速 ◀──
 
 1. MuMu 12 默认开启 adb，第一个实例地址是 `127.0.0.1:16384`（多开第 N 个是 `16384 + 32*N`，多开器里能看到）。
 2. 下载 [ADBKeyboard](https://github.com/senzhk/ADBKeyBoard/releases)（`keyboardservice-debug.apk`），拖进 MuMu 安装。它用来输入中文，`adb shell input text` 不支持中文。
-3. 建议把模拟器分辨率固定下来（比如 1920×1080 横屏），按钮位置和气泡参数都依赖分辨率。
+3. 建议把模拟器分辨率固定下来（比如 1920×1080 横屏），面板区域等参数都依赖分辨率。
+4. 键位方案用「PC端操作方案」：它把键盘原样透传给游戏，游戏里 Enter 打开聊天框、C 打开聊天记录。
+   注意 `adb shell input keyevent` 发出的虚拟按键游戏不认，所以代码用 `sendevent` 直接写 MuMu 的键盘设备（`/dev/input/event*`）。
+5. MuMu 的 adb 设备名可能是 `emulator-5554` 而不是 `127.0.0.1:16384`，以 `adb devices` 为准。
 
 ### 2. 安装
 
@@ -54,11 +57,11 @@ set DEEPSEEK_API_KEY=sk-...           # PowerShell: $env:DEEPSEEK_API_KEY="sk-..
 skydango devices                  # 能连上、能截图、看当前输入法
 skydango ime on                   # 切到 ADBKeyboard（ime off 恢复默认输入法）
 
-skydango shot --grid              # 截一张带 0~1 坐标网格的图 → 在 config 里填 sender.open_chat 等坐标
-skydango detect                   # 对当前画面跑一次气泡检测 + OCR，输出标注图 detect.png
+skydango shot --grid              # 截一张带 0~1 坐标网格的图，用来量 vision.log_roi 等区域
+skydango detect                   # 对当前画面读一次聊天记录面板（先在游戏里按 C），输出标注图 detect.png
 skydango detect 某张截图.png       # 也可以对存下来的截图调参
 
-skydango say "测试一下"            # 只测发送流程：点开聊天框 → 输入 → 提交
+skydango say "测试一下"            # 只测发送流程：（输入框没开时）按 Enter → 输入 → 提交
 skydango chat                     # 不开游戏，在终端里和人设对话，调提示词（--echo 不调模型）
 
 skydango run                      # 启动 Agent，dry-run：只打印“将会发送”
@@ -67,12 +70,15 @@ skydango run --live               # 真的发送
 
 ## 需要你用真实截图调的地方
 
-这些参数是按“浅色气泡 + 深色文字”的一般假设写的，还没有用光遇的真实画面校准过：
+默认值是在 1920×1080 的 MuMu 上用真实画面标定的，换分辨率或界面有变化时再调：
 
-- `vision.bubble.*`：气泡颜色阈值、尺寸、填充率。用 `skydango detect` 看标注图，红框框住气泡、没框住云和雪地就对了。
-- `vision.roi`：只在这块区域里找气泡，排除底部操作栏和顶部 UI。
-- `sender.*`：打开聊天框的按钮位置、提交方式（输入法发送动作 / 回车 / 点发送按钮）。
-- 气泡检测效果不好时，可以先把 `vision.mode` 改成 `"roi"`，直接对整块区域做 OCR。
+- `vision.log_roi`：聊天记录面板的区域，底部要避开面板下面的输入框。`skydango detect` 的输出里每行应该是“说话人：内容”“[我] ……”或“陌生人：（被屏蔽）”。
+- `vision.log_self_min_value`：文字框背景亮度高于它算自己发的（浅色气泡），别人的消息是深色底。
+- `sender.*`：打开聊天框的按键（`open_chat_key`，28 = Enter）、提交方式（输入法发送动作 / 回车 / 点发送按钮）。
+
+光遇不会显示没解锁聊天的陌生人说的话（面板和头顶气泡里都只有省略号），所以 Agent 只能和解锁了聊天的好友、或坐在长椅上的人对话。
+
+`vision.mode = "bubble"` 是在 3D 画面里找头顶气泡的旧方案：气泡半透明，容易和白色角色、光效粘在一起，只作为备选。
 
 ## 开发
 
@@ -81,13 +87,13 @@ pip install -e ".[ocr,dev]"
 pytest
 ```
 
-测试用合成画面覆盖了气泡检测、去重、限速、发送流程；装了 OCR 时还会跑一次真实 RapidOCR 的端到端识别。
+测试用合成画面覆盖了聊天记录解析、前后帧对齐、气泡检测、去重、限速、发送流程；装了 OCR 时还会跑一次真实 RapidOCR 的端到端识别。
 
 ## 路线图
 
 - [x] v0.1 聊天闭环：截屏 → 气泡 → OCR → 大模型 → 发送
-- [ ] 用真实截图校准气泡参数，补充光遇界面样本
-- [ ] 区分说话人（气泡位置 ↔ 角色位置）、识别自己的气泡
+- [x] 读聊天记录面板：区分说话人、识别自己的消息和被屏蔽的消息
+- [ ] 滚动聊天记录面板，启动时读取更早的上下文
 - [ ] MuMu 原生截图接口（比 adb 更快）
 - [ ] 自动弹琴、固定 UI 操作（点蜡烛、收发爱心）
 - [ ] 跑图：场景识别定位 + 路线回放
