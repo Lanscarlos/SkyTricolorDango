@@ -158,11 +158,13 @@ class Agent:
         self._last_reopen = now
         self.ensure_log_open()
 
-    def run(self) -> None:
+    def run(self, duration: float = 0.0) -> None:
+        """一直跑；duration > 0 时跑这么多秒后自己退出（别在外面套 timeout：Windows 上停掉外层后 Python 会变成孤儿进程）。"""
         mode = "dry-run（只打印不发送）" if self.cfg.reply.dry_run else "LIVE（会真的发送）"
-        log.info("Agent 启动，模式: %s；Ctrl+C 退出", mode)
+        log.info("Agent 启动，模式: %s；Ctrl+C 退出%s", mode, f"；{duration:.0f} 秒后自动结束" if duration > 0 else "")
         self.ensure_log_open()
-        while True:
+        deadline = self.clock() + duration if duration > 0 else float("inf")
+        while self.clock() < deadline:
             started = self.clock()
             try:
                 self.step()
@@ -170,3 +172,4 @@ class Agent:
                 log.exception("本轮出错，继续")
             elapsed = self.clock() - started
             self.sleep(max(0.0, self.cfg.vision.poll_interval - elapsed))
+        log.info("到时间了，Agent 结束")

@@ -373,7 +373,7 @@ def _run_agent(cfg: Config, run: RunDir) -> None:
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
     agent = Agent(cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social)
     try:
-        agent.run()
+        agent.run(args.duration)
     except KeyboardInterrupt:
         print("\n已停止")
 
@@ -443,6 +443,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("run", help="启动 Agent（默认 dry-run）")
     p.add_argument("--live", action="store_true", help="真的发送消息")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显（联调用）")
+    p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动结束（默认一直跑）")
     p.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)

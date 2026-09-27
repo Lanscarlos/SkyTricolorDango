@@ -85,7 +85,7 @@ python -m skydango devices                # 连接 / 截图尺寸 / 当前输入
 python -m skydango shot [--grid]          # 截图到 tmp/shot.png
 python -m skydango detect                 # 读一次聊天记录面板（先在游戏里按 C），标注图 tmp/detect.png
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
-python -m skydango run [--echo] [--live]  # Agent；默认 dry-run，--echo 不调模型
+python -m skydango run [--echo] [--live] [--duration 秒]  # Agent；默认 dry-run，--echo 不调模型，--duration 到点自己退出
 python -m skydango memory init|show|update # 记忆：生成人设 / 好友文件、查看、立刻整理
 python -m skydango env                    # 对当前画面识别一次环境（身边有谁、在哪）
 python -m skydango emotes scan            # 截下动作列表所有图标 → emotes/scan/，总览图 _sheet.png
@@ -103,6 +103,9 @@ python -m pytest -q                       # 单元测试（合成画面 + 假设
 - 改了游戏里的东西（尤其是轮盘）要能还原：改之前先截图 / 读出原状态，测完恢复并核对。
 - 往游戏里发输入前先确认状态：输入框开没开（`ime_shown()`）、聊天记录面板开没开、编辑界面有没有残留。
   每一步操作后截图看一眼，再决定下一步。
+- **别用 `timeout` 包 `run`**：Git Bash 的 `timeout.exe` 在 Windows 上会派生子进程，停掉外层后 Python 变成孤儿继续跑
+  （实测两个 Agent 同时在线，重复回复、CPU 被占满）。要限时用 `run --duration`；提前停就按进程树结束 python
+  （`taskkill /F /T /PID <pid>`），停完用 `Get-CimInstance Win32_Process` 确认没有残留的 python / timeout。
 - 默认 dry-run。`reply.disclosure_prefix` 默认是 `【AI】`；用户本机 `config.toml` 里去掉了（角色"三彩团子"扮演陪玩）。
 - 身份底线：人设可以不主动提自己是 AI，但**不能声称自己是真人**，有人认真问时要承认。
   由 `responder.RULES` 的"身份"一节 + `clean_reply` 里的 `_CLAIMS_HUMAN` 硬过滤共同保证（实测只靠提示词，DeepSeek 三次里有两次会说"我是真人"）。

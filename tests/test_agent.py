@@ -222,3 +222,11 @@ def test_no_type_ahead_in_dry_run(clock):
     clock.advance(2)
     agent.step()
     assert device.calls == []
+
+
+def test_run_stops_after_duration(clock):
+    cfg = Config()
+    agent, _ = build(cfg, [scene()], [""], clock)
+    agent.sleep = lambda s: clock.advance(max(s, 0.1))
+    agent.run(duration=5.0)  # 不传 duration 会一直跑；传了就自己退出，不用在外面套 timeout
+    assert clock() >= 5.0
