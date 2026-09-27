@@ -25,7 +25,8 @@ RULES = """
 - 一次只发一句，口语，不超过 {max_chars} 个字；大多数时候 5~15 个字就够了，“哈哈哈”“好耶”“嗯嗯”“真的假的”这种也行。
 - 像手机上随手打的：不用书面语，不用“呢”“哦”“~”堆砌，少用感叹号，不要每句都反问，不要客服腔、不要讲道理。
 - 接对方的话往下聊，别每轮都提议去哪跑图、干什么；对方没问就别主动找话题硬聊。
-- 你看不到游戏画面，不知道自己在哪张图、在干什么，所以不要编（比如“刚在云野转了一圈”）。被问在干嘛就含糊点：“瞎逛”“发呆”“在陪你聊天啊”。
+- 你对游戏画面的了解只有上面“现在的环境”里写的（身边能看到谁、刚才出现过的地名），写了的可以自然地用上
+  （“你不就在我旁边嘛”“这不是云野嘛”）；没写的就不知道，别编（比如“刚在云野转了一圈”）。被问在干嘛就含糊点：“瞎逛”“发呆”“在陪你聊天啊”。
 - 你现在只能打字聊天，动不了：不能走、飞、跑图、跟着别人、做动作、弹琴、送东西。别答应这些（不说“我跟着你”“我飞给你看”“走呗”），
   被叫去就自然地推掉，比如“我先挂会儿”“今天懒得动，你们去吧”“我在这儿等你们”。
 - 记住聊过的内容和对方的名字，别前后矛盾。先看清每句话是谁说的、在对谁说，别把 A 说的事安到 B 头上。
@@ -48,7 +49,9 @@ RULES = """
 """.strip()
 
 
-def build_system_prompt(cfg: ReplyConfig, profile: str = "", friends: str = "", notes: str = "") -> str:
+def build_system_prompt(
+    cfg: ReplyConfig, profile: str = "", friends: str = "", notes: str = "", env: str = ""
+) -> str:
     """profile / friends / notes 来自记忆目录里的文件（见 chat/memory.py）；人设文件优先于配置里的 persona。"""
     parts = [(profile or cfg.persona).strip()]
     people = "\n".join(f"- {name}：{note}" for name, note in cfg.friends.items())
@@ -60,6 +63,8 @@ def build_system_prompt(cfg: ReplyConfig, profile: str = "", friends: str = "", 
         )
     if notes.strip():
         parts.append("## 长期记忆（之前聊天里记下的，可能不全；和上面冲突时以上面为准）\n" + notes.strip())
+    if env.strip():
+        parts.append("## 现在的环境（从游戏画面里认出来的，可能不全）\n" + env.strip())
     parts.append(RULES.format(max_chars=cfg.max_chars, skip=SKIP_TOKEN))
     return "\n\n".join(parts)
 
@@ -101,8 +106,10 @@ class Responder:
         store: MemoryStore | None = None,
         notes: NotesKeeper | None = None,
         clock: Callable[[], float] = time.time,
+        env: Callable[[], str] | None = None,  # 现在的环境（身边有谁、在哪），每次回复前现取
     ) -> None:
         self.llm = llm
+        self.env = env
         self.cfg = cfg
         self.store = store
         self.notes = notes
@@ -122,13 +129,14 @@ class Responder:
     @property
     def system(self) -> str:
         # 每次都重新读记忆文件：用户改了人设 / 好友，或者笔记刚在后台更新过，不用重启就生效
+        env = self.env() if self.env else ""
         if self.store is None:
-            return build_system_prompt(self.cfg)
+            return build_system_prompt(self.cfg, env=env)
         notes = self.store.notes()
         inbox = self.store.inbox()
         if inbox:
             notes = (notes + "\n\n" if notes else "") + "刚记下的：\n" + inbox
-        return build_system_prompt(self.cfg, self.store.profile(), self.store.friends(), notes)
+        return build_system_prompt(self.cfg, self.store.profile(), self.store.friends(), notes, env)
 
     def _messages(self, user_content: str) -> list[ChatMessage]:
         msgs = [*self.history, {"role": "user", "content": user_content}]

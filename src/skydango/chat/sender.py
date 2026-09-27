@@ -33,6 +33,29 @@ class ChatSender:
         self.cfg = cfg
         self.screen_size = screen_size  # 返回 (width, height)
         self.sleep = sleep
+        self._opened = False  # 输入框是不是我们自己提前打开的（type_ahead）
+
+    def _press_open(self) -> None:
+        width, height = self.screen_size()
+        if self.cfg.open_chat_key:
+            self.device.hw_key(self.cfg.open_chat_key)
+        else:
+            self.device.tap(*to_pixels(self.cfg.open_chat, width, height))
+        self._wait_open()
+
+    def open(self) -> bool:
+        """提前打开输入框（等模型回复时），头顶会显示“正在输入”。输入框本来就开着就不动它，返回 False。"""
+        if not (self.cfg.open_chat_key or self.cfg.open_chat) or self.device.ime_shown():
+            return False
+        self._press_open()
+        self._opened = True
+        return True
+
+    def cancel(self) -> None:
+        """不发了：只关掉我们自己打开的输入框（像打了几个字又删了），别人开的不碰。"""
+        if self._opened:
+            self.device.key(KEYCODE_BACK)
+            self._opened = False
 
     def _wait_open(self) -> None:
         """等输入框打开：实测按键后约 0.07 s 就开了，开了就走；最多等 open_delay。"""
@@ -48,12 +71,9 @@ class ChatSender:
     def send(self, text: str) -> None:
         width, height = self.screen_size()
         cfg = self.cfg
-        if (cfg.open_chat_key or cfg.open_chat) and not self.device.ime_shown():
-            if cfg.open_chat_key:
-                self.device.hw_key(cfg.open_chat_key)
-            else:
-                self.device.tap(*to_pixels(cfg.open_chat, width, height))
-            self._wait_open()
+        if (cfg.open_chat_key or cfg.open_chat) and not self._opened and not self.device.ime_shown():
+            self._press_open()
+        self._opened = False
         self.device.input_text(text)
         self.sleep(cfg.type_delay)
         if cfg.submit == "editor_action":

@@ -47,8 +47,12 @@ class Agent:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         run: RunDir | None = None,
+        env=None,  # EnvWatcher：识别身边有谁、在哪（vision/env.py）
+        social=None,  # SocialHandler：接受好友的牵手 / 拥抱 / 击掌（game/social.py），请求由 env 发现
     ) -> None:
         self.cfg = cfg
+        self.env = env
+        self.social = social
         self.device = device
         self.reader = reader
         self.responder = responder
@@ -76,6 +80,13 @@ class Agent:
             fresh = self.reader.read(frame, now)
             if self.cfg.vision.mode == "log":
                 self._maybe_reopen_log(now)
+            if self.env is not None:  # 到了间隔会在后台线程里扫一次画面
+                self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
+            if self.social is not None and self.env is not None and self.env.requests:
+                try:
+                    self.social.handle(self.env.requests, now)
+                except Exception:
+                    log.exception("处理互动请求出错")
         if fresh:
             for m in fresh:
                 log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
@@ -91,9 +102,18 @@ class Agent:
             return None
 
         batch, self.pending = self.pending, []
+        # 等模型的时候先把输入框打开：头顶显示“正在输入”，像真人在打字；发送时也省掉打开这一步
+        typing = not self.cfg.reply.dry_run and self.cfg.sender.type_ahead
+        if typing:
+            try:
+                self.sender.open()
+            except Exception:
+                log.warning("提前打开输入框失败，发送时再打开", exc_info=True)
         reply = self.responder.reply(batch)
         if reply is None:
             log.info("模型选择不回复")
+            if typing:
+                self.sender.cancel()
             if self.run_dir:
                 self.run_dir.record_reply(batch, None, sent=False)
             return None

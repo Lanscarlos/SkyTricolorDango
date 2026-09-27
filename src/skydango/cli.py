@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 from .config import Config, load_config
@@ -242,6 +243,82 @@ def cmd_memory(cfg: Config, args) -> None:
         print("长期记忆已更新" if keeper.update_now() else "没有需要整理的内容（或整理失败，见日志）")
 
 
+def _friend_names(cfg: Config):
+    from .chat.memory import MemoryStore
+
+    store = MemoryStore(cfg.reply.memory_dir) if cfg.reply.memory_dir else None
+
+    def names() -> list[str]:  # 好友名单：friends.md 的 “## 标题” + 配置里的 reply.friends；每次现取
+        found = store.friend_names() if store else []
+        return list(dict.fromkeys([*found, *cfg.reply.friends]))
+
+    return names
+
+
+def _icon_classifier(cfg: Config):
+    from .game.social import IconClassifier, load_icons
+
+    icons = load_icons(cfg.social.icons_dir) if cfg.social.enabled else {}
+    if cfg.social.enabled and not icons:
+        log.warning("没找到互动图标模板（%s），不处理牵手等请求", cfg.social.icons_dir)
+    return IconClassifier(icons) if icons else None
+
+
+def _env_watcher(cfg: Config, background: bool = True, icons=None):
+    from .vision.env import EnvWatcher
+    from .vision.ocr import make_ocr
+
+    return EnvWatcher(
+        make_ocr(cfg.ocr.engine, cfg.env.threads), cfg.env, _friend_names(cfg), cfg.vision.log_roi, background,
+        icons=icons, icon_offset=cfg.social.icon_offset,
+    )
+
+
+def cmd_env(cfg: Config, args) -> None:
+    """对当前画面识别一次环境（身边有谁、在哪），用来验证。"""
+    from .vision.chatlog import find_input_top
+    from .vision.bubbles import roi_rect
+
+    dev = _device(cfg)
+    frame = dev.screenshot()
+    height, width = frame.shape[:2]
+    area = roi_rect(cfg.vision.log_roi, width, height)
+    panel = find_input_top(frame[:, area.x : area.x2]) is not None
+    env = _env_watcher(cfg, background=False, icons=_icon_classifier(cfg))
+    env.cfg.min_score = 0.0  # 调试：全打印出来
+    lines = env.ocr.recognize(frame)
+    print(f"聊天记录面板: {'开着（左边不扫）' if panel else '关着'}；好友名单: {'、'.join(env.names()) or '（空）'}")
+    for line in lines:
+        print(f"  {line.score:.2f} ({line.box.x},{line.box.y})  {line.text}")
+    env.observe(frame, 0.0, panel_visible=panel)
+    print("\n写进提示词的环境：\n" + (env.describe(0.0) or "（什么都没认出来）"))
+    for req in env.requests.values():
+        print(f"互动请求：{req.name} → {req.kind}（圆圈在 {req.pos}）")
+
+
+def cmd_record(cfg: Config, args) -> None:
+    """连续截图存成 jpg，用来观察游戏里的界面变化（比如别人发起牵手时出现什么提示）。"""
+    import cv2
+
+    dev = _device(cfg)
+    out = Path(args.output or f"tmp/record/{time.strftime('%Y%m%d-%H%M%S')}")
+    out.mkdir(parents=True, exist_ok=True)
+    interval = 1.0 / args.fps
+    start = time.monotonic()
+    n = 0
+    print(f"录制 {args.seconds:.0f} 秒、每秒 {args.fps} 张 → {out}（Ctrl+C 提前结束）")
+    try:
+        while time.monotonic() - start < args.seconds:
+            t = time.monotonic() - start
+            frame = dev.screenshot()
+            cv2.imwrite(str(out / f"{n:04d}_{t:06.2f}s.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            n += 1
+            time.sleep(max(0.0, start + n * interval - time.monotonic()))
+    except KeyboardInterrupt:
+        pass
+    print(f"录了 {n} 张")
+
+
 def cmd_run(cfg: Config, args) -> None:
     if args.live:
         cfg.reply.dry_run = False
@@ -278,9 +355,23 @@ def _run_agent(cfg: Config, run: RunDir) -> None:
         if not store.profile():
             log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
         notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
-    responder = Responder(llm, cfg.reply, store=store, notes=notes)
+    icons = _icon_classifier(cfg) if cfg.env.enabled else None
+    env = _env_watcher(cfg, icons=icons) if cfg.env.enabled else None
+    social = None
+    if env and icons:
+        from .game.social import SocialHandler
+
+        social = SocialHandler(
+            dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel_visible=reader.panel_visible
+        )
+
+    def env_text() -> str:  # 现在的环境 + 刚接受的互动，每次回复前现取
+        now = time.monotonic()
+        return "\n".join(p for p in (env.describe(now), social.describe(now) if social else "") if p)
+
+    responder = Responder(llm, cfg.reply, store=store, notes=notes, env=env_text if env else None)
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
-    agent = Agent(cfg, dev, reader, responder, sender, self_filter, run=run)
+    agent = Agent(cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social)
     try:
         agent.run()
     except KeyboardInterrupt:
@@ -340,6 +431,14 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("memory", help="记忆：init 生成人设 / 好友文件，show 查看，update 立刻整理长期记忆")
     p.add_argument("action", choices=["init", "show", "update"])
     p.set_defaults(func=cmd_memory)
+
+    sub.add_parser("env", help="对当前画面识别一次环境（身边有谁、在哪张图），用来验证").set_defaults(func=cmd_env)
+
+    p = sub.add_parser("record", help="连续截图存到 tmp/record/，用来观察界面变化")
+    p.add_argument("--seconds", type=float, default=60.0)
+    p.add_argument("--fps", type=float, default=5.0)
+    p.add_argument("-o", "--output", help="输出目录（默认 tmp/record/<时间>）")
+    p.set_defaults(func=cmd_record)
 
     p = sub.add_parser("run", help="启动 Agent（默认 dry-run）")
     p.add_argument("--live", action="store_true", help="真的发送消息")

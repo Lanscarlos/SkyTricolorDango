@@ -30,6 +30,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/wheel.py` | 快捷动作轮盘：图标库、读取 / 编辑轮盘、按数字键做动作、扫描动作列表 |
 | `src/skydango/agent.py` | 主循环：读 → 攒一会儿 → 回复 → 限速 → 发送；默认 dry-run |
 | `src/skydango/runlog.py` | 每次 `run` 的运行目录（见下） |
+| `src/skydango/vision/env.py` | 识别环境：每隔几秒在后台 OCR 3D 画面，认好友头顶的名字（身边有谁）和地名，写进提示词 |
+| `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 
 ## 记忆（`memory/`，不进 git）
@@ -62,6 +64,20 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `frames/*.jpg` | 读到新消息时截的聊天面板（红框标新消息），`run.save_frames = false` 关掉 |
 | `config.json` | 本次实际生效的配置（含 `--live` / `--echo` 覆盖） |
 
+## 识别环境（`[env]`）
+
+每 `env.interval` 秒在后台线程对 3D 画面做一次 OCR（单独的 OCR 实例、`env.threads` 个线程，不和读聊天抢 CPU），
+面板开着时跳过被挡住的左边：
+- 身边有谁：好友头顶的名字标签（实测置信度 1.00），拿 friends.md 的 `## 标题` 去模糊匹配；`env.keep` 秒内看到过就算在旁边
+- 在哪：读到 `env.places` 里的地名就记下（进入新区域时的地名提示 —— **未在真机验证**）
+
+结果写进提示词的“现在的环境”一节。回复规则里原来“你看不到画面、别编自己在哪”那条改成了“只知道环境里写到的”，
+不改的话模型会无视环境信息。`python -m skydango env` 对当前画面识别一次，看它认出了什么。
+
+扫描时顺带看好友名字下方的圆圈（`[social]`）：图标变成牵手 / 拥抱 / 击掌就记为请求，主循环里去点圆圈接受
+（原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受点火（图标还没录到）；
+输入框开着时不点；dry-run 只打印。`python -m skydango record` 连续截图，用来观察新的界面变化。
+
 ## 常用命令
 
 ```bash
@@ -71,6 +87,7 @@ python -m skydango detect                 # 读一次聊天记录面板（先在
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
 python -m skydango run [--echo] [--live]  # Agent；默认 dry-run，--echo 不调模型
 python -m skydango memory init|show|update # 记忆：生成人设 / 好友文件、查看、立刻整理
+python -m skydango env                    # 对当前画面识别一次环境（身边有谁、在哪）
 python -m skydango emotes scan            # 截下动作列表所有图标 → emotes/scan/，总览图 _sheet.png
 python -m skydango emotes wheel           # 读轮盘 8 格
 python -m skydango emotes set 5 鞠躬       # 放动作进格子（3、8 默认锁定）

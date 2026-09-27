@@ -163,3 +163,62 @@ def test_open_chat_gives_up_waiting_after_open_delay():
     slept = []
     ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=slept.append).send("hi")
     assert abs(sum(slept) - (cfg.sender.open_delay + cfg.sender.type_delay + cfg.sender.after_delay)) < 0.11
+
+
+class RecordingResponder:
+    """记下调模型那一刻设备上已经发生了什么。"""
+
+    def __init__(self, device, reply):
+        self.device = device
+        self.reply_text = reply
+        self.calls_at_reply = None
+
+    def reply(self, batch):
+        self.calls_at_reply = list(self.device.calls)
+        return self.reply_text
+
+
+def _typing_agent(clock, reply, shown=False):
+    cfg = live_config()
+    cfg.sender.open_chat = []
+    cfg.sender.open_chat_key = 28
+    cfg.sender.close_with_back = True
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["在吗"] * 10, clock)
+    device.shown = shown
+    agent.responder = RecordingResponder(device, reply)
+    return agent, device
+
+
+def test_opens_input_box_while_waiting_for_model(clock):
+    """等模型回复时先打开输入框：头顶显示“正在输入”，发送时也省掉打开这一步。"""
+    agent, device = _typing_agent(clock, "在呢")
+    agent.step()
+    clock.advance(2)
+    assert agent.step() == "【AI】在呢"
+    assert agent.responder.calls_at_reply == [("hw_key", 28)]  # 调模型之前输入框已经打开了
+    assert device.calls == [("hw_key", 28), ("text", "【AI】在呢"), ("editor", 4), ("key", 4)]  # 只按了一次 Enter
+
+
+def test_closes_input_box_when_model_skips(clock):
+    agent, device = _typing_agent(clock, None)
+    agent.step()
+    clock.advance(2)
+    assert agent.step() is None
+    assert device.calls == [("hw_key", 28), ("key", 4)]  # 像打了几个字又删了
+
+
+def test_does_not_touch_input_box_someone_else_opened(clock):
+    agent, device = _typing_agent(clock, None, shown=True)  # 输入框本来就开着（比如用户在手动打字）
+    agent.step()
+    clock.advance(2)
+    agent.step()
+    assert device.calls == []
+
+
+def test_no_type_ahead_in_dry_run(clock):
+    agent, device = _typing_agent(clock, "在呢")
+    agent.cfg.reply.dry_run = True
+    agent.step()
+    clock.advance(2)
+    agent.step()
+    assert device.calls == []

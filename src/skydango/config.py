@@ -67,7 +67,7 @@ class VisionConfig:
     # 只在看到面板底部的“聊天……”输入框（= 面板开着）时才读；关着超过几秒会自动按 log_open_key 重新打开
     log_require_panel: bool = True
     log_reopen_after: float = 5.0  # 面板关着这么久就按键重新打开；0 表示不自动打开
-    log_reopen_cooldown: float = 30.0  # 两次自动打开之间至少隔这么久（按了没用时不要一直按）
+    log_reopen_cooldown: float = 10.0  # 两次自动打开之间至少隔这么久（切场景时界面会隐藏，按了没用；别一直按）
     # 已废弃，改用 [run]。还设着的话当作 run.dir 用
     debug_dir: str = ""
 
@@ -139,6 +139,8 @@ class SenderConfig:
     type_delay: float = 0.2
     after_delay: float = 0.3
     close_with_back: bool = False
+    # 等模型回复时先打开输入框：头顶显示“正在输入”，像真人在打字；模型不回复就关掉。dry-run 不做
+    type_ahead: bool = True
 
 
 @dataclass
@@ -179,6 +181,40 @@ class RunConfig:
 
 
 @dataclass
+class EnvConfig:
+    """识别环境：每隔几秒对 3D 画面做一次 OCR，看好友头顶的名字标签（身边有谁）和地名（在哪张图）。"""
+
+    enabled: bool = True
+    interval: float = 3.0  # 扫描间隔（秒）；整块画面 OCR 一次 0.7~1 s，在后台线程里做；也决定发现互动请求有多快
+    keep: float = 30.0  # 这么久内看到过名字标签就算在旁边（标签会被挡住、会闪）
+    place_keep: float = 600.0  # 地名提示记多久
+    roi: list[float] = field(default_factory=lambda: [0.0, 0.0, 1.0, 0.89])  # 扫描区域，排除底部输入栏
+    min_score: float = 0.8
+    threads: int = 4  # 这个 OCR 单独用的线程数，别和读聊天抢 CPU
+    # 已知地名：画面上读到其中之一就记下（进入新区域时的地名提示，未在真机验证）
+    places: list[str] = field(
+        default_factory=lambda: ["晨岛", "云野", "雨林", "霞谷", "暮土", "禁阁", "暴风眼", "伊甸之眼", "家园", "遇境", "圣岛"]
+    )
+
+
+@dataclass
+class SocialConfig:
+    """社交互动：好友头顶圆圈里的图标变成牵手 / 拥抱 / 击掌时，点圆圈接受（发现请求靠 [env] 的后台扫描）。"""
+
+    enabled: bool = True
+    icons_dir: str = "assets/social"  # 圆圈图标模板，文件名就是类型
+    accept_friends: list[str] = field(default_factory=lambda: ["hand", "hug", "highfive", "piggyback"])
+    accept_strangers: list[str] = field(default_factory=lambda: ["candle"])  # 陌生人只接受点火（图标还没录到）
+    icon_offset: float = 2.23  # 圆圈中心在名字标签上沿往下 这么多倍标签高度（实测标签 44 px 高、圆圈在下方 98 px）
+    max_age: float = 10.0  # 请求是多久之内看到的才处理（后台每 env.interval 秒扫一次）
+    cooldown: float = 15.0  # 同一个人的同一种请求处理完后隔多久才再处理
+    accept_timeout: float = 6.0  # 点了之后最多等多久（团子要走过去）
+    panel_key: int = 46  # 点屏幕会关掉聊天记录面板，接受完按这个键（C）重新打开
+    check_delay: float = 0.6  # 每次点完等多久再看
+    remember: float = 120.0  # 接受之后多久内在提示词里提一句
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
@@ -189,6 +225,8 @@ class Config:
     sender: SenderConfig = field(default_factory=SenderConfig)
     wheel: WheelConfig = field(default_factory=WheelConfig)
     run: RunConfig = field(default_factory=RunConfig)
+    env: EnvConfig = field(default_factory=EnvConfig)
+    social: SocialConfig = field(default_factory=SocialConfig)
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:

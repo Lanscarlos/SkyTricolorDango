@@ -314,7 +314,7 @@ def test_agent_reopens_closed_panel_with_cooldown():
         t[0] = step * 0.5
         agent.step()
     presses = [c for c in device.calls if c == ("hw_key", 46)]
-    assert len(presses) == 2  # 关了 5 s 后按一次；按了没用，30 s 冷却后再按一次
+    assert len(presses) == 4  # 关了 5 s 后按一次；按了没用，之后每 10 s（冷却）再按一次：5、15、25、35 s
 
 
 def test_new_row_is_confirmed_on_next_frame_to_get_full_speaker():

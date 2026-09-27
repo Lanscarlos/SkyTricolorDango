@@ -119,6 +119,10 @@ class MemoryStore:
     def friends(self) -> str:
         return _read(self.dir / "friends.md")
 
+    def friend_names(self) -> list[str]:
+        """friends.md 里每个 “## 标题” 就是一个好友的游戏昵称。"""
+        return [line[3:].strip() for line in self.friends().splitlines() if line.startswith("## ") and line[3:].strip()]
+
     def notes(self) -> str:
         return _read(self.dir / "notes.md")
 
