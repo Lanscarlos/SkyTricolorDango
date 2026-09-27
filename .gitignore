@@ -20,3 +20,4 @@ tmp/
 
 # 聊天记录（记忆），本机私有
 memory/
+.superpowers/
