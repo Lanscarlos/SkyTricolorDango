@@ -102,3 +102,10 @@ def test_library_skips_underscore_files(tmp_path):
     imwrite(tmp_path / "鞠躬.png", icon("circle"))
     imwrite(tmp_path / "_sheet.png", icon("cross"))
     assert EmoteLibrary(tmp_path).names == ["鞠躬"]
+
+
+def test_victim_limited_to_candidates(library):
+    wheel, _, _ = make_wheel(library)
+    assert wheel._victim([7, 3]) == 7  # 3 被锁定
+    with pytest.raises(WheelError, match="锁定"):
+        wheel._victim([3])

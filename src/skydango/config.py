@@ -169,6 +169,19 @@ class WheelConfig:
 
 
 @dataclass
+class EmoteConfig:
+    """聊天时做表情动作（game/emotes.py）。做动作会松开牵手：牵着手时用 `run --no-emotes`。"""
+
+    enabled: bool = True  # 图标库是空的时候自动不做
+    # 白名单：不在轮盘上时可以换上去的动作（图标库里的名字）
+    extra: list[str] = field(default_factory=list)
+    # 允许换的格子；为空就只用轮盘上现有的动作。启动时记下原来的动作，退出时换回去
+    swap_slots: list[int] = field(default_factory=list)
+    min_interval: float = 20.0  # 两次动作至少隔这么久（秒）
+    swap_min_interval: float = 120.0  # 两次换轮盘至少隔这么久：每次换要关聊天面板 5~10 秒
+
+
+@dataclass
 class RunConfig:
     """每次 `run` 在 dir 下建一个目录（时间-模式），放日志、识别记录、回复记录、截图、配置快照。"""
 
@@ -188,6 +201,7 @@ class Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     sender: SenderConfig = field(default_factory=SenderConfig)
     wheel: WheelConfig = field(default_factory=WheelConfig)
+    emotes: EmoteConfig = field(default_factory=EmoteConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 

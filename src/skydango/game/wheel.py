@@ -239,20 +239,22 @@ class Wheel:
     def slot_of(self, name: str) -> int | None:
         return next((s for s, n in self.slots.items() if n == name), None)
 
-    def _victim(self) -> int:
+    def _victim(self, candidates: list[int] | None = None) -> int:
         free = self.free_slots()
+        if candidates is not None:
+            free = [s for s in candidates if s in free]
         if not free:
-            raise WheelError("所有格子都被锁定了，没法换动作")
+            raise WheelError("能换的格子都被锁定了，没法换动作")
         # 最久没用过的先换；都没用过就按编号
         return min(free, key=lambda s: (self.last_used.get(s, float("-inf")), s))
 
-    def ensure(self, name: str) -> int:
-        """保证动作在轮盘上，返回格子编号；不在就换掉一个最久没用的空闲格子。"""
+    def ensure(self, name: str, candidates: list[int] | None = None) -> int:
+        """保证动作在轮盘上，返回格子编号；不在就换掉一个最久没用的空闲格子（candidates 限定从哪些格子里挑）。"""
         if not self.slots:
             self.refresh()
         slot = self.slot_of(name)
         if slot is None:
-            slot = self._victim()
+            slot = self._victim(candidates)
             self.assign(slot, name)
         return slot
 

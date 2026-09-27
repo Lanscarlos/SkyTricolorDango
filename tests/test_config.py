@@ -26,3 +26,11 @@ def test_nested_override(tmp_path):
     cfg = load_config(p)
     assert cfg.vision.bubble.min_value == 200
     assert cfg.vision.bubble.max_saturation == 45
+
+
+def test_emotes_section(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[emotes]\nextra = ["拥抱"]\nswap_slots = [7]\n', encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.emotes.extra == ["拥抱"] and cfg.emotes.swap_slots == [7]
+    assert cfg.emotes.enabled is True and cfg.emotes.min_interval == 20.0
