@@ -87,14 +87,20 @@ def _split_speaker(text: str) -> tuple[str, str]:
 
 def parse_rows(img: np.ndarray, lines: list[OcrLine], self_min_value: int) -> list[LogRow]:
     """img 是面板区域的截图，lines 是对它做 OCR 的结果（坐标相对 img）。按从上到下返回。"""
+    width = img.shape[1]
     rows: list[LogRow] = []
     for group in _group_rows(lines):
         text = join_lines(group)
         if not text:
             continue
         box = _union([l.box for l in group])
+        # 按面板排版过滤：别人的消息贴左边，自己的消息贴右边。
+        # 飘在 3D 场景里的名字标签、头顶气泡两头都不贴，面板关着时也就读不出“行”
         if _is_light(img, box, self_min_value):
-            rows.append(LogRow("", text, True, box))
+            if box.x2 >= width * 0.85:
+                rows.append(LogRow("", text, True, box))
+            continue
+        if box.x > width * 0.3:  # 被屏蔽的行省略号读不出来，文字框从“陌生人”开始，会往右偏一点
             continue
         speaker, content = _split_speaker(text)
         if _ONLY_DOTS.match(content):

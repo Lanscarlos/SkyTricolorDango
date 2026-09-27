@@ -32,9 +32,10 @@ def test_parse_rows_speaker_self_and_masked():
         line(0, "-陌生人"),  # “........ - 陌生人”，省略号 OCR 读不出来
         line(1, "去霞谷吗"),
         line(1, "- 懒洋洋大王", x=230, w=150),  # 同一行被拆成两段
-        line(2, "【AI】好呀", x=320, w=280),
+        line(2, "【AI】好呀", x=320, w=290),
         line(3, "…… - 陌生人"),
         line(4, "陌生人", x=60, w=100),  # 省略号和“-”都没读出来
+        line(5, "懒洋洋大王", x=370, w=160),  # 面板关着时 3D 场景里的名字标签：不贴边，不算
     ]
     rows = parse_rows(panel(light_rows=[2]), lines, self_min_value=150)
     assert [(r.speaker, r.text, r.is_self) for r in rows] == [
@@ -76,7 +77,7 @@ def test_reader_log_mode_reports_only_new_messages_from_others():
         history,
         history,
         # 滚上去一行，新增：自己的气泡 + 好友一句 + 陌生人（被屏蔽）
-        [line(0, "早上好 - 懒洋洋大王"), line(1, "【AI】早呀", x=320), line(2, "去霞谷吗-懒洋洋大王"), line(3, "-陌生人")],
+        [line(0, "早上好 - 懒洋洋大王"), line(1, "【AI】早呀", x=320, w=290), line(2, "去霞谷吗-懒洋洋大王"), line(3, "-陌生人")],
     ]
     reader = ChatReader(SeqOcr(frames), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8, "【AI】"))
     frame = np.full((PH, PW * 2, 3), 50, np.uint8)
