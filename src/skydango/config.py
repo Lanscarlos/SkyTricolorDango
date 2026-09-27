@@ -229,6 +229,39 @@ class SocialConfig:
 
 
 @dataclass
+class BrainConfig:
+    """统管大脑（brain/）：常驻的 Claude 收事件、看画面，决定说什么、做什么。`run --brain` 打开。"""
+
+    enabled: bool = False
+    model: str = "claude-sonnet-5"
+    api_key_env: str = "ANTHROPIC_API_KEY"
+    base_url: str = ""
+    timeout: float = 60.0
+    effort: str = "low"  # low / medium / high；运行中途改会让缓存失效，所以整个运行期固定
+    max_tokens: int = 4000  # 单次输出上限（含思考）
+    heartbeat: list[float] = field(default_factory=lambda: [45.0, 90.0, 180.0])  # 没事件时隔多久醒一次，闲着就退到下一档
+    max_steps: int = 6  # 每次醒来最多调几次工具
+    max_says: int = 2  # 每次醒来最多说几句
+    look_min_interval: float = 5.0  # look 最多几秒一次
+    auto_look_min: float = 20.0  # 自动附图：有人来 / 走 / 画面大变时，距上次看图至少这么久
+    auto_look_max: float = 180.0  # 超过这么久没看图，醒来时一定附一张
+    image_size: list[int] = field(default_factory=lambda: [1280, 720])  # 给模型的截图尺寸（约 1.2k tokens）
+    jpeg_quality: int = 80
+    look_at_max: int = 800  # look_at 返回图的最长边
+    keep_images: int = 2  # 对话记录里只留最近几张截图
+    prune_at: int = 4  # 攒到这么多张再一次性删（改前面的消息会让缓存失效，少改几次）
+    compact_tokens: int = 40000  # 一次请求的输入超过这么多 token，就让它写摘要、从摘要重开
+    command_timeout: float = 15.0  # 身体执行一条命令最多等多久
+    offline_fallback: float = 120.0  # 大脑连续失败这么久，聊天交给备用回复
+    max_usd_per_hour: float = 3.0  # 最近一小时估算花费超过这个：只为聊天醒，停心跳和自动附图
+    pause_usd_per_hour: float = 5.0  # 超过这个：暂停大脑，只留身体反射和备用回复
+    price_input: float = 2.0  # 每百万 token 美元（Sonnet 5）；缓存读按 0.1 倍、写按 1.25 倍估
+    price_output: float = 10.0
+    camera_step: float = 0.25  # 转视角每步按住方向键的秒数（0.5 s 约 90°）
+    scene_change: float = 0.25  # 缩略图平均差异（0~1）超过这个算画面大变
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
@@ -242,6 +275,7 @@ class Config:
     run: RunConfig = field(default_factory=RunConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
     social: SocialConfig = field(default_factory=SocialConfig)
+    brain: BrainConfig = field(default_factory=BrainConfig)
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:

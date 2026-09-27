@@ -34,3 +34,12 @@ def test_emotes_section(tmp_path):
     cfg = load_config(p)
     assert cfg.emotes.extra == ["拥抱"] and cfg.emotes.swap_slots == [7]
     assert cfg.emotes.enabled is True and cfg.emotes.min_interval == 20.0
+
+
+def test_brain_section(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[brain]\nenabled = true\nheartbeat = [30, 60]\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.brain.enabled is True and cfg.brain.heartbeat == [30, 60]
+    assert cfg.brain.model == "claude-sonnet-5" and cfg.brain.effort == "low"
+    assert cfg.brain.image_size == [1280, 720] and cfg.brain.max_steps == 6
