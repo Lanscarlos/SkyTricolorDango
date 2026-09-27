@@ -61,13 +61,8 @@ EMOTE_RULES = """
 """.strip()
 
 
-def build_system_prompt(
-    cfg: ReplyConfig, profile: str = "", friends: str = "", notes: str = "", env: str = "", emotes: Sequence[str] = ()
-) -> str:
-    """profile / friends / notes 来自记忆目录里的文件（见 chat/memory.py）；人设文件优先于配置里的 persona。
-
-    emotes：这一轮能做的动作；为空时不出现“动作”一节，模型也被告知动不了。
-    """
+def identity_sections(cfg: ReplyConfig, profile: str = "", friends: str = "", notes: str = "") -> list[str]:
+    """人设、认识的人、长期记忆：聊天回复和大脑的系统提示词共用。"""
     parts = [(profile or cfg.persona).strip()]
     people = "\n".join(f"- {name}：{note}" for name, note in cfg.friends.items())
     if people or friends:
@@ -78,6 +73,17 @@ def build_system_prompt(
         )
     if notes.strip():
         parts.append("## 长期记忆（之前聊天里记下的，可能不全；和上面冲突时以上面为准）\n" + notes.strip())
+    return parts
+
+
+def build_system_prompt(
+    cfg: ReplyConfig, profile: str = "", friends: str = "", notes: str = "", env: str = "", emotes: Sequence[str] = ()
+) -> str:
+    """profile / friends / notes 来自记忆目录里的文件（见 chat/memory.py）；人设文件优先于配置里的 persona。
+
+    emotes：这一轮能做的动作；为空时不出现“动作”一节，模型也被告知动不了。
+    """
+    parts = identity_sections(cfg, profile, friends, notes)
     if env.strip():
         parts.append("## 现在的环境（从游戏画面里认出来的，可能不全）\n" + env.strip())
     move = MOVE_WITH_EMOTES if emotes else MOVE_PLAIN
