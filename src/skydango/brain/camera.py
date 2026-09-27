@@ -39,10 +39,10 @@ class Camera:
         self.sleep = sleep
         self.offset = {"turn": 0, "pitch": 0, "zoom": 0}
 
-    def move(self, action: str, steps: int = 1) -> str:
+    def move(self, action: str, steps: int = 1, max_steps: int = MAX_STEPS) -> str:
         if action not in KEYS:
             raise ValueError(f"不认识的视角操作：{action}（可以用 {'、'.join(KEYS)}）")
-        steps = max(1, min(int(steps), MAX_STEPS))
+        steps = max(1, min(int(steps), max_steps))
         with self._ready():
             for _ in range(steps):
                 self._press(action)

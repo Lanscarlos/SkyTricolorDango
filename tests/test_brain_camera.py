@@ -51,3 +51,9 @@ def test_unknown_action_rejected():
     c, _, _ = cam()
     with pytest.raises(ValueError):
         c.move("jump")
+
+
+def test_owner_window_can_raise_the_step_cap():
+    c, dev, _ = cam(panel=False)
+    c.move("right", 10, max_steps=8)
+    assert dev.calls.count(("hw_down", 106)) == 8
