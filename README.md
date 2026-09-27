@@ -66,6 +66,7 @@ skydango chat                     # 不开游戏，在终端里和人设对话�
 
 skydango run                      # 启动 Agent，dry-run：只打印“将会发送”
 skydango run --live               # 真的发送
+skydango run --no-emotes          # 不做表情动作（牵着手时用：做动作会松开牵手）
 ```
 
 ## 需要你用真实截图调的地方
@@ -100,6 +101,9 @@ skydango emotes wheel             # 读轮盘 8 格
 skydango emotes set 5 鞠躬         # 换格子（3、8 默认锁定）
 skydango emotes do 鞠躬            # 做动作，不在轮盘上会先换上去
 ```
+
+聊天时做动作：`[emotes]` 配置。轮盘上（除锁定格外）的动作模型都能用；`extra` 里的动作会在需要时换进 `swap_slots`，退出时换回去。
+轮盘上的动作要在图标库里有命名好的图标（启动时读一次轮盘靠它们认）。
 
 ## 路线图
 
