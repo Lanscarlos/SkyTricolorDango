@@ -1,0 +1,59 @@
+# 复制为 config.toml 再改。没写的项都用默认值（见 src/skydango/config.py）。
+# 坐标一律是 0~1 的归一化值：[x, y] 相对截图宽高。用 `skydango shot --grid` 截一张带网格的图来读坐标。
+
+[device]
+# MuMu 自带的 adb 更稳：MuMu 安装目录下的 shell\adb.exe
+adb_path = "adb"
+# MuMu 12 第一个实例是 127.0.0.1:16384，多开第 N 个是 16384 + 32*N（多开器里可以查看）
+serial = "127.0.0.1:16384"
+
+[vision]
+poll_interval = 1.0
+mode = "bubble"               # 找不到气泡时可以先用 "roi" 直接 OCR 整块区域
+roi = [0.0, 0.0, 1.0, 0.85]   # 只在这块区域里找气泡，排除底部操作栏
+debug_dir = ""                # 例如 "debug"：读到新消息时保存标注截图
+
+[vision.bubble]
+# 用 `skydango detect 截图.png` 反复试这几项
+min_value = 215
+max_saturation = 45
+min_fill = 0.7
+
+[ocr]
+min_score = 0.6
+
+[chat]
+debounce = 1.5
+ignore_patterns = []          # 正则，比如 ["^\\.+$"] 忽略只有省略号的气泡
+
+[reply]
+dry_run = true                # 先 dry-run 看效果；`skydango run --live` 才会真的发
+disclosure_prefix = "【AI】"   # 让对方知道是 AI，建议保留
+max_chars = 40
+min_interval = 8.0
+max_per_minute = 4
+persona = """
+你是一只在《光遇》里闲逛的温和光之子，说话轻松、友善，偶尔俏皮。
+喜欢聊跑图、先祖、季节、乐器和风景。
+"""
+
+[llm]
+# OpenAI 兼容接口：DeepSeek / 通义千问 / Kimi / 本地 Ollama 都行，改 base_url 和 model 即可
+provider = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_API_KEY"   # 从这个环境变量读 Key，不要把 Key 写进文件
+# provider = "anthropic"
+# base_url = ""
+# model = "claude-haiku-4-5"
+# api_key_env = "ANTHROPIC_API_KEY"
+
+[sender]
+# 打开聊天输入框要点的位置，需要自己标定；留空表示发送前输入框已经是打开的
+open_chat = []
+open_delay = 0.8
+# 提交方式："editor_action"（输入法的发送动作）/ "enter"（回车键）/ "tap"（点 send_button）
+submit = "editor_action"
+editor_action = 4             # 不生效就试 6 或 2
+send_button = []
+close_with_back = false

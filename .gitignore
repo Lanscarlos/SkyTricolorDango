@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+
+# 本地配置和调试产物
+config.toml
+debug/
+shot.png
+detect.png
+*.local.*
