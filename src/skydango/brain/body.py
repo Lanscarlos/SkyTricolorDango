@@ -85,6 +85,7 @@ class Body:
         self.emoted: list[str] = []
         self.last_frame = None
         self.last_look = float("-inf")
+        self.look_frame = None  # 最近一次 look（原图）看的那张，look_at 裁它
         self.blackout = False
         self.holding: str | None = None  # 推测正牵着谁的手
         self._holding_since = 0.0
@@ -301,7 +302,7 @@ class Body:
         if now - self.last_look < brain.look_min_interval:
             raise ToolError(f"{brain.look_min_interval:.0f} 秒内刚看过，等一下再看")
         frame = self.device.screenshot()
-        self.last_frame, self.last_look = frame, now
+        self.last_frame, self.last_look, self.look_frame = frame, now, frame
         view = fit(frame, tuple(brain.image_size))
         recent = {}
         if self.env is not None:  # 最近两次扫描内看到的名字才算在画面里；先拍快照，env 后台线程会改这个 dict
@@ -313,13 +314,33 @@ class Body:
 
     def look_at(self, x: int, y: int, w: int, h: int) -> list[dict]:
         brain = self.cfg.brain
-        frame = self.device.screenshot()
+        # 大脑给的坐标是按上次 look 那张图算的；人会走动，裁新截的图会对不上
+        frame = self.look_frame if self.look_frame is not None else self.device.screenshot()
         try:
             crop, (ax, ay, aw, ah) = crop_view(frame, x, y, w, h, brain.image_size[0], brain.look_at_max)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         text = f"原图 {frame.shape[1]}×{frame.shape[0]} 上的 ({ax}, {ay}) 起 {aw}×{ah}"
         return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
+
+    def fresh_frame(self):
+        """眼睛马上要看：在身体线程里截一张新的。"""
+        frame = self.device.screenshot()
+        self.last_frame = frame
+        return frame
+
+    def capture_around(self) -> list:
+        """环顾四周：转一圈，每 90° 截一张（dry-run 不转，只截当前画面）。"""
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在看不了")
+        if self.camera is None or self.cfg.reply.dry_run:
+            return [self.fresh_frame()]
+        try:
+            frames = self.camera.around(self.device.screenshot)
+        finally:
+            self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        self.last_frame = frames[0]
+        return frames
 
     def status(self) -> str:
         now = self.clock()

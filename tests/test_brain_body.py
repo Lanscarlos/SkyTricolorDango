@@ -1,6 +1,8 @@
+import base64
 import threading
 from concurrent.futures import Future
 
+import cv2
 import numpy as np
 import pytest
 from conftest import FakeDevice, scene
@@ -458,3 +460,26 @@ def test_shutdown_fails_queued_commands_and_refuses_new_ones(clock):
     assert results and "停" in results[0]
     with pytest.raises(ToolError, match="停"):
         b.call(lambda: 1)
+
+
+def test_look_at_crops_the_last_look(clock):
+    b, device, _, _ = body(clock)
+    b.look()
+    device.frames = [np.zeros((720, 1280, 3), np.uint8)]  # 之后画面变黑了
+    img, _ = b.look_at(100, 100, 200, 100)
+    data = np.frombuffer(base64.standard_b64decode(img["source"]["data"]), np.uint8)
+    assert cv2.imdecode(data, cv2.IMREAD_COLOR).mean() > 20  # 裁的是上次 look 的图，不是新截的黑图
+
+
+def test_capture_around(clock):
+    class AroundCamera(FakeCamera):
+        def around(self, capture):
+            return [capture() for _ in range(4)]
+
+    dry, _, _, _ = body(clock, camera=AroundCamera())
+    assert len(dry.capture_around()) == 1  # dry-run 不转，只看当前画面
+    live, _, _, _ = body(clock, live=True, camera=AroundCamera())
+    assert len(live.capture_around()) == 4
+    live.blackout = True
+    with pytest.raises(ToolError, match="黑"):
+        live.capture_around()
