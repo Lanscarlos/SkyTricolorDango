@@ -55,13 +55,13 @@ def test_responder_rereads_files_so_edits_apply_without_restart(tmp_path):
 def test_history_survives_restart(tmp_path):
     t = [1000.0]
     r = Responder(ScriptedLlm(["在呢"]), ReplyConfig(), store=MemoryStore(tmp_path), clock=lambda: t[0])
-    assert r.reply([msg("醒醒")]) == "在呢"
+    assert r.reply([msg("醒醒")]).text == "在呢"
     assert len((tmp_path / "history.jsonl").read_text(encoding="utf-8").splitlines()) == 1
 
     llm = ScriptedLlm(["记得呀"])
     t[0] = 1060.0
     r2 = Responder(llm, ReplyConfig(), store=MemoryStore(tmp_path), clock=lambda: t[0])
-    assert r2.reply([msg("你还记得我吗")]) == "记得呀"
+    assert r2.reply([msg("你还记得我吗")]).text == "记得呀"
     sent = llm.calls[0][1]
     assert [m["role"] for m in sent] == ["user", "assistant", "user"]
     assert "醒醒" in sent[0]["content"] and sent[1]["content"] == "在呢"
@@ -164,7 +164,7 @@ def test_memo_is_taken_after_reply_and_used_right_away(tmp_path):
     llm = ScriptedLlm(["辛苦啦", "- 卡洛今天加班到九点", "那早点休息", "无"])
     keeper = NotesKeeper(llm, store, persona="", every=100, background=False)
     r = Responder(llm, ReplyConfig(), store=store, notes=keeper)
-    assert r.reply([msg("我今天加班到九点")]) == "辛苦啦"
+    assert r.reply([msg("我今天加班到九点")]).text == "辛苦啦"
     memo_prompt = llm.calls[1][1][0]["content"]
     assert "我今天加班到九点" in memo_prompt and "我：辛苦啦" in memo_prompt
     assert store.inbox() == "- 卡洛今天加班到九点"
@@ -186,7 +186,7 @@ def test_memo_failure_does_not_break_reply(tmp_path):
     store = MemoryStore(tmp_path)
     llm = ScriptedLlm(["在呢", RuntimeError("network")])
     keeper = NotesKeeper(llm, store, persona="", every=100, background=False)
-    assert Responder(llm, ReplyConfig(), store=store, notes=keeper).reply([msg("在吗")]) == "在呢"
+    assert Responder(llm, ReplyConfig(), store=store, notes=keeper).reply([msg("在吗")]).text == "在呢"
     assert store.inbox() == ""
 
 

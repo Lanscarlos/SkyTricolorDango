@@ -154,7 +154,7 @@ def cmd_chat(cfg: Config, args) -> None:
             if part:
                 msgs.append(Message(text.strip(), Rect(0, 0, 1, 1), 0.0, speaker.strip()) if sep else Message(part, Rect(0, 0, 1, 1), 0.0))
         reply = responder.reply(msgs)
-        print("（不回复）" if reply is None else cfg.reply.disclosure_prefix + reply)
+        print("（不回复）" if reply is None else reply.render(cfg.reply.disclosure_prefix))
 
 
 def _wheel(cfg: Config):

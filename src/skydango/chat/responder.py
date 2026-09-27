@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from ..config import ReplyConfig
 from .llm import ChatMessage, LlmClient
@@ -26,7 +27,7 @@ RULES = """
 - 像手机上随手打的：不用书面语，不用“呢”“哦”“~”堆砌，少用感叹号，不要每句都反问，不要客服腔、不要讲道理。
 - 接对方的话往下聊，别每轮都提议去哪跑图、干什么；对方没问就别主动找话题硬聊。
 - 你看不到游戏画面，不知道自己在哪张图、在干什么，所以不要编（比如“刚在云野转了一圈”）。被问在干嘛就含糊点：“瞎逛”“发呆”“在陪你聊天啊”。
-- 你现在只能打字聊天，动不了：不能走、飞、跑图、跟着别人、做动作、弹琴、送东西。别答应这些（不说“我跟着你”“我飞给你看”“走呗”），
+- {move}别答应这些（不说“我跟着你”“我飞给你看”“走呗”），
   被叫去就自然地推掉，比如“我先挂会儿”“今天懒得动，你们去吧”“我在这儿等你们”。
 - 记住聊过的内容和对方的名字，别前后矛盾。先看清每句话是谁说的、在对谁说，别把 A 说的事安到 B 头上。
 - 被问到之前聊过的事（“我喜欢什么”“你还记得吗”“我是谁”），翻一下上面的聊天和记忆，直接答出具体内容（“樱花头嘛”）；
@@ -47,9 +48,25 @@ RULES = """
 - 对方可能是未成年人：友善、适龄，不暧昧，不说教。
 """.strip()
 
+MOVE_PLAIN = "你现在只能打字聊天，动不了：不能走、飞、跑图、跟着别人、做动作、弹琴、送东西。"
+MOVE_WITH_EMOTES = "你现在只能打字聊天，除了下面“动作”一节列的几个动作，动不了：不能走、飞、跑图、跟着别人、弹琴、送东西。"
 
-def build_system_prompt(cfg: ReplyConfig, profile: str = "", friends: str = "", notes: str = "") -> str:
-    """profile / friends / notes 来自记忆目录里的文件（见 chat/memory.py）；人设文件优先于配置里的 persona。"""
+EMOTE_RULES = """
+## 动作
+你可以在游戏里做这几个动作：{names}。
+- 想做就在那句话最前面写 [动作名]，比如“[害羞]哪有啦”；只做动作不说话就只写“[害羞]”。一次最多一个。
+- 大多数时候不用做，自然的时候才做：见面、道别、被夸、特别开心，或者别人叫你做某个动作。别连着几轮都做。
+- 只能用上面列的名字，别的动作做不了；别人要你做列表外的，就用文字接话（比如“这个我还没学会”），不要自己编动作名。
+""".strip()
+
+
+def build_system_prompt(
+    cfg: ReplyConfig, profile: str = "", friends: str = "", notes: str = "", emotes: Sequence[str] = ()
+) -> str:
+    """profile / friends / notes 来自记忆目录里的文件（见 chat/memory.py）；人设文件优先于配置里的 persona。
+
+    emotes：这一轮能做的动作；为空时不出现“动作”一节，模型也被告知动不了。
+    """
     parts = [(profile or cfg.persona).strip()]
     people = "\n".join(f"- {name}：{note}" for name, note in cfg.friends.items())
     if people or friends:
@@ -60,7 +77,10 @@ def build_system_prompt(cfg: ReplyConfig, profile: str = "", friends: str = "", 
         )
     if notes.strip():
         parts.append("## 长期记忆（之前聊天里记下的，可能不全；和上面冲突时以上面为准）\n" + notes.strip())
-    parts.append(RULES.format(max_chars=cfg.max_chars, skip=SKIP_TOKEN))
+    move = MOVE_WITH_EMOTES if emotes else MOVE_PLAIN
+    parts.append(RULES.format(max_chars=cfg.max_chars, skip=SKIP_TOKEN, move=move))
+    if emotes:
+        parts.append(EMOTE_RULES.format(names="、".join(emotes)))
     return "\n\n".join(parts)
 
 
@@ -75,13 +95,16 @@ _QUOTES = "\"'“”‘’「」『』"
 _CLAIMS_HUMAN = re.compile(r"我(就|真的|本来就)?是(个|一个)?(真人|人类|活人)|我(才|真的|又)?不是(ai|机器人|人工智能|bot)", re.I)
 
 
+_PREFIX = re.compile(r"^(回复|答|AI|我)\s*[:：]\s*")
+
+
 def clean_reply(raw: str, max_chars: int) -> str | None:
     text = (raw or "").strip()
     if not text or SKIP_TOKEN in text.lower():
         return None
     # 有的模型会带“回复：”前缀或引号，或多写几行解释，只取第一行正文
     text = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    text = re.sub(r"^(回复|答|AI|我)\s*[:：]\s*", "", text)
+    text = _PREFIX.sub("", text)
     text = text.strip(_QUOTES + " *`")
     if not text:
         return None
@@ -93,6 +116,49 @@ def clean_reply(raw: str, max_chars: int) -> str | None:
     return text
 
 
+@dataclass(frozen=True)
+class Reply:
+    """一轮回复：要发的文字和 / 或要做的动作，至少有一个。"""
+
+    text: str | None = None
+    emote: str | None = None
+
+    def render(self, prefix: str = "") -> str:
+        """[害羞]哪有啦：存进聊天历史、打日志用；prefix（【AI】标识）只加在文字前面。"""
+        return (f"[{self.emote}]" if self.emote else "") + (prefix + self.text if self.text else "")
+
+
+_TAG_HEAD = re.compile(r"^[\[【]([^\[\]【】]{1,10})[\]】]\s*")
+_TAG_TAIL = re.compile(r"\s*[\[【]([^\[\]【】]{1,10})[\]】]$")
+
+
+def parse_reply(raw: str, max_chars: int, emotes: Sequence[str] = ()) -> Reply | None:
+    """模型输出 → Reply。句首或句尾的 [动作名] / 【动作名】是动作标签；名字不在 emotes 里就只留文字。"""
+    text = (raw or "").strip()
+    if not text or SKIP_TOKEN in text.lower():
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    first = _PREFIX.sub("", lines[0]).strip(_QUOTES + " *`")
+    emote = None
+    tag = _TAG_HEAD.match(first) or _TAG_TAIL.search(first)
+    if tag:
+        first = (first[: tag.start()] + first[tag.end() :]).strip()
+        name = tag.group(1).strip()
+        if name in emotes:
+            emote = name
+        else:
+            log.warning("模型用了这一轮不能做的动作「%s」，只发文字", name)
+        if not first and len(lines) > 1:  # 标签单独一行，正文在下一行
+            first = lines[1]
+    if first and _CLAIMS_HUMAN.search(first):  # 整轮都不发：动作也不做
+        log.warning("模型回复里声称自己是真人，不发: %s", first)
+        return None
+    body = clean_reply(first, max_chars) if first else None
+    if body is None and emote is None:
+        return None
+    return Reply(body, emote)
+
+
 class Responder:
     def __init__(
         self,
@@ -101,12 +167,15 @@ class Responder:
         store: MemoryStore | None = None,
         notes: NotesKeeper | None = None,
         clock: Callable[[], float] = time.time,
+        available_emotes: Callable[[], list[str]] | None = None,
     ) -> None:
         self.llm = llm
         self.cfg = cfg
         self.store = store
         self.notes = notes
         self.clock = clock
+        # 每轮调用：这一轮能做哪些动作（限速中 / 关掉了就是空列表）
+        self.available_emotes = available_emotes or (lambda: [])
         self.history: list[ChatMessage] = []
         self.last_turn_at: float | None = None
         if store is not None:  # 重启后接着上次的聊天记录
@@ -119,16 +188,15 @@ class Responder:
         if notes is not None:
             notes.maybe_update()  # 上次没整理完的，启动时补上
 
-    @property
-    def system(self) -> str:
+    def system_prompt(self, emotes: Sequence[str] = ()) -> str:
         # 每次都重新读记忆文件：用户改了人设 / 好友，或者笔记刚在后台更新过，不用重启就生效
         if self.store is None:
-            return build_system_prompt(self.cfg)
+            return build_system_prompt(self.cfg, emotes=emotes)
         notes = self.store.notes()
         inbox = self.store.inbox()
         if inbox:
             notes = (notes + "\n\n" if notes else "") + "刚记下的：\n" + inbox
-        return build_system_prompt(self.cfg, self.store.profile(), self.store.friends(), notes)
+        return build_system_prompt(self.cfg, self.store.profile(), self.store.friends(), notes, emotes)
 
     def _messages(self, user_content: str) -> list[ChatMessage]:
         msgs = [*self.history, {"role": "user", "content": user_content}]
@@ -143,34 +211,36 @@ class Responder:
             merged.pop(0)
         return merged
 
-    def _remember(self, user_content: str, reply: str | None, now: float) -> None:
+    def _remember(self, user_content: str, reply: Reply | None, now: float) -> None:
+        said = reply.render() if reply else SKIP_TOKEN  # 带着 [动作名]，模型记得自己做过什么
         self.history.append({"role": "user", "content": user_content})
-        self.history.append({"role": "assistant", "content": reply or SKIP_TOKEN})
+        self.history.append({"role": "assistant", "content": said})
         self.last_turn_at = now
         if self.store is not None:
             try:
-                self.store.history.append(user_content, reply or SKIP_TOKEN, now)
+                self.store.history.append(user_content, said, now)
             except OSError:
                 log.exception("写聊天记录失败")
         if self.notes is not None:  # 后台：挑出这一轮值得记的，攒够了再整理进长期记忆
-            self.notes.turn_added(Turn(now, user_content, reply or SKIP_TOKEN))
+            self.notes.turn_added(Turn(now, user_content, said))
         limit = max(0, self.cfg.history_turns) * 2
         if len(self.history) > limit:
             self.history = self.history[len(self.history) - limit :]
 
-    def reply(self, incoming: list[Message]) -> str | None:
-        """返回要发送的正文（不含 AI 标识前缀）；不需要回复时返回 None。"""
+    def reply(self, incoming: list[Message]) -> Reply | None:
+        """返回这一轮的回复（文字不含 AI 标识前缀）；不需要回复时返回 None。"""
         if not incoming:
             return None
         now = self.clock()
         user_content = format_incoming(incoming)
         if self.last_turn_at is not None and now - self.last_turn_at >= GAP_NOTE_AFTER:
             user_content = f"（距离上次聊天过了 {format_gap(now - self.last_turn_at)}）\n" + user_content
+        emotes = self.available_emotes()
         try:
-            raw = self.llm.complete(self.system, self._messages(user_content))
+            raw = self.llm.complete(self.system_prompt(emotes), self._messages(user_content))
         except Exception:
             log.exception("调用大模型失败")
             return None
-        reply = clean_reply(raw, self.cfg.max_chars)
+        reply = parse_reply(raw, self.cfg.max_chars, emotes)
         self._remember(user_content, reply, now)
         return reply

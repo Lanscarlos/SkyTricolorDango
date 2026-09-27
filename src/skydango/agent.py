@@ -98,7 +98,9 @@ class Agent:
                 self.run_dir.record_reply(batch, None, sent=False)
             return None
 
-        text = self.cfg.reply.disclosure_prefix + reply
+        if reply.text is None:  # Task 4 之前不会出现：没给模型可用动作
+            return None
+        text = self.cfg.reply.disclosure_prefix + reply.text
         self.limiter.record(now)
         self.sent.append(text)
         if self.cfg.reply.dry_run:
