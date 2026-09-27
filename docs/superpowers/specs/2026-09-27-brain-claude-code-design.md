@@ -54,15 +54,19 @@ Claude Code 是官方客户端，可以用订阅登录，而且支持常驻的�
 claude -p --input-format stream-json --output-format stream-json --verbose
        --model sonnet --effort low
        --mcp-config <运行目录>/brain/mcp.json --strict-mcp-config
-       --tools "mcp__sky__look,mcp__sky__look_at,..."   # 只有身体的工具，没有 Bash / 读写文件
-       --permission-mode dontAsk
-       --append-system-prompt-file <运行目录>/brain/prompt.md
+       --tools "" --allowedTools mcp__sky   # 关掉所有内置工具（Bash / 读写文件…），只放行我们的 MCP 工具
+       --permission-mode dontAsk --disable-slash-commands
+       --append-system-prompt "<大脑的规则 + 人设记忆>"
        [--resume <session_id>]
 ```
 
+- **和用户自己的 Claude Code 隔离**（实测：沿用用户登录会把用户的插件、钩子、技能一起加载进大脑）：
+  子进程用单独的配置目录 `CLAUDE_CONFIG_DIR=<项目>/.brain-claude/`（gitignore），登录用 `claude setup-token` 生成的长期令牌，
+  从用户环境变量 `brain.token_env`（默认 `SKYDANGO_CLAUDE_TOKEN`）读出来，放进子进程的 `CLAUDE_CODE_OAUTH_TOKEN`。
+  没有令牌时报错并提示运行 `claude setup-token`。
 - 子进程环境去掉 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`（有它们时 `-p` 一定用它们，不用订阅）。
 - 输入：每次醒来写一行 `{"type":"user","message":{"role":"user","content":"..."},"parent_tool_use_id":null}`。
-- 输出：后台线程逐行读，`system/init` 里记下 `session_id` 和 MCP 服务状态；`assistant` 的文字（它心里想的）和 tool_use 打进日志；
+- 输出：后台线程逐行读，`system/init`（每轮开头都会发一次）里记下 `session_id` 和 MCP 服务状态（`mcp_servers[].status == "connected"`）；`assistant` 的文字（它心里想的）和 tool_use 打进日志；
   `result` 表示这一轮结束，带 `subtype`、`session_id`、`num_turns`、`total_cost_usd`、`usage`、`stop_reason`。
 - 一轮超过 `brain.turn_timeout`（默认 120 秒）没有 `result`：按进程树结束子进程，用 `--resume <session_id>` 重新拉起，这一轮算失败。
 - 子进程自己退出了：下次发消息前用 `--resume` 重新拉起。
@@ -90,8 +94,9 @@ MCP 服务名 `sky`，在我们的进程里用 `mcp` 包起一个只监听 127.0
 - 后台线程；**不碰设备**：只读身体最近一帧 `Body.last_frame`（身体每圈换成新数组，读引用即可）和 `EnvWatcher.labels`。
 - 看的时机（沿用原自动看图条件）：身体放出 `arrive` / `leave` / `scene_change` 事件，且距上次看 ≥ `auto_look_min`（20 秒）；
   或距上次看 ≥ `auto_look_max`（180 秒）；黑屏时不看。大脑调 `look()` 时立刻看一次（同步等结果）。
-- 怎么看：一次性 `claude -p --model haiku --input-format stream-json --output-format stream-json --verbose --tools "" --strict-mcp-config
-  --permission-mode dontAsk --system-prompt <眼睛的提示词>`，工作目录是空文件夹，环境同样去掉 API Key 变量；
+- 怎么看：一次性 `claude -p --model haiku --effort low --input-format stream-json --output-format stream-json --verbose --tools ""
+  --strict-mcp-config --permission-mode dontAsk --disable-slash-commands --system-prompt <眼睛的提示词>`，
+  工作目录是空文件夹，环境和大脑一样隔离（单独配置目录 + 专用令牌）；
   输入一条带图片（1280×720 JPEG）和名字位置的消息，读到 `result` 取文字；超时 `eyes.timeout`（默认 60 秒）。
 - 描述格式固定四项：地点和环境 / 好友（每人穿什么、在干什么）/ 陌生人（几个、在干什么）/ 画面状态。看不清就说看不清，名字只用给出的。
 - 只缓存最新一份描述和它的时间；醒来的消息里写“场景（35 秒前）：……”，没有就写“还没有场景描述”。
@@ -134,6 +139,8 @@ MCP 服务名 `sky`，在我们的进程里用 `mcp` 包起一个只监听 127.0
 |---|---|---|
 | `enabled` | `false` | `run --brain` 覆盖 |
 | `claude_path` | `"claude"` | Claude Code 可执行文件 |
+| `token_env` | `"SKYDANGO_CLAUDE_TOKEN"` | 放 `claude setup-token` 令牌的用户环境变量 |
+| `config_dir` | `".brain-claude"` | 大脑和眼睛用的单独 Claude Code 配置目录 |
 | `model` / `effort` | `"sonnet"` / `"low"` | 大脑 |
 | `eyes_model` | `"haiku"` | 眼睛 |
 | `eyes_timeout` | `60` | 眼睛一次描述最多等多久（秒） |
@@ -147,6 +154,16 @@ MCP 服务名 `sky`，在我们的进程里用 `mcp` 包起一个只监听 127.0
 | `offline_fallback` / `limit_retry` | `120` / `600` | 离线判定、额度用完后多久再试 |
 | `camera_step` / `scene_change` | `0.25` / `0.25` | 同原设计 |
 
+## 实测确认过的事（2026-09-27，Claude Code 2.1.233、mcp 2.2.0）
+
+- `claude -p` stream-json 一个进程能连续收多条消息、同一个会话；每条消息以一条 `result` 结束（字段有 subtype、is_error、result、
+  session_id、num_turns、total_cost_usd、usage、stop_reason、api_error_status）。
+- `--tools "" --allowedTools mcp__sky --permission-mode dontAsk` 后工具列表只剩 `mcp__sky__*`，调用不弹确认。
+- MCP 工具返回的图片、直接放在输入消息里的图片，模型都能看到。
+- MCP 服务：`MCPServer.streamable_http_app()` + uvicorn 在后台线程跑；同步工具函数会被放到线程池执行；
+  工具返回 `CallToolResult(is_error=True)` 时错误文字原样给到模型；客户端用 `mcp.client.streamable_http.streamable_http_client`。
+- 用户登录下的无界面进程会加载用户的插件 / 钩子 / 技能 → 必须隔离（见第 2 节）。
+
 ## 9. 测试
 
 - 假的 Claude Code：一个 Python 脚本（`tests/fake_claude.py`），按环境变量指定的剧本读 stdin、输出 stream-json（init / assistant / result），
@@ -159,7 +176,8 @@ MCP 服务名 `sky`，在我们的进程里用 `mcp` 包起一个只监听 127.0
 
 ## 前置
 
-- `pip install --user mcp`（Python 的 MCP SDK）。
+- `pip install --user mcp`（Python 的 MCP SDK，实测 2.2.0：`from mcp.server.mcpserver import MCPServer`）。
+- 用户运行一次 `claude setup-token`，把生成的令牌放进用户环境变量 `SKYDANGO_CLAUDE_TOKEN`（`setx SKYDANGO_CLAUDE_TOKEN "..."`）。
 - 用户环境变量里的 `ANTHROPIC_API_KEY`（之前误放的订阅登录令牌）删掉：子进程里我们会去掉它，但它会影响用户自己用 Claude Code。
 - `claude` 已登录订阅（`claude` 能正常用即可）。
 - 本机 `config.toml` 的 `[llm]` 改回 DeepSeek。
