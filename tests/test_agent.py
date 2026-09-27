@@ -1,27 +1,46 @@
 from conftest import FakeDevice, FakeOcr, scene
 from skydango.agent import Agent, RateLimiter
 from skydango.chat.llm import EchoClient
-from skydango.chat.reader import ChatReader
+from skydango.chat.memory import MemoryStore
+from skydango.chat.reader import ChatReader, Message
 from skydango.chat.responder import Reply, Responder
 from skydango.chat.sender import ChatSender, to_pixels
 from skydango.chat.tracker import SelfFilter
 from skydango.config import Config
 from skydango.game.wheel import WheelError
+from skydango.vision.bubbles import Rect
 
 import pytest
 
 
-def build(cfg: Config, frames, ocr_texts, clock, llm=None, emotes=None):
+def build(cfg: Config, frames, ocr_texts, clock, llm=None, emotes=None, store=None):
     device = FakeDevice(frames)
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, cfg.reply.disclosure_prefix)
     reader = ChatReader(FakeOcr(ocr_texts), cfg.vision, cfg.ocr, cfg.chat, self_filter)
     available = emotes.available if emotes else None
     responder = Responder(llm or EchoClient(), cfg.reply, available_emotes=available)
     sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
-    agent = Agent(cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None, emotes=emotes)
+    agent = Agent(
+        cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None, emotes=emotes, store=store
+    )
     if emotes:
         emotes.device = device
     return agent, device
+
+
+class ScriptedReader:
+    """跳过真实 OCR：直接按顺序吐出预设的消息批次（每轮一批，用光了就不再有新消息）。"""
+
+    def __init__(self, batches: list[list[Message]]) -> None:
+        self.batches = list(batches)
+        self.panel_closed_since = None
+
+    def read(self, frame, now):
+        return self.batches.pop(0) if self.batches else []
+
+
+def msg(text: str, speaker: str = "") -> Message:
+    return Message(text, Rect(0, 0, 1, 1), 0.0, speaker)
 
 
 def live_config() -> Config:
@@ -317,3 +336,88 @@ def test_emote_with_type_ahead_closes_our_input_box_first(clock):
     assert device.calls == [
         ("hw_key", 28), ("key", 4), ("emote", "害羞"), ("hw_key", 28), ("text", "【AI】哪有啦"), ("editor", 4)
     ]
+
+
+# ---- 主人命令（# 开头） ----
+
+
+def owner_agent(clock, batches, tmp_path):
+    cfg = live_config()
+    cfg.reply.owner_name = "懒洋洋大王"
+    cfg.chat.debounce = 999  # 正常聊天要等很久才凑够 debounce 才回复，命令不受影响
+    device = FakeDevice([scene()])
+    self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, cfg.reply.disclosure_prefix)
+    reader = ScriptedReader(batches)
+    responder = Responder(EchoClient(), cfg.reply)
+    sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
+    store = MemoryStore(tmp_path)
+    agent = Agent(cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None, store=store)
+    return agent, device, store
+
+
+def test_owner_remember_command_sends_confirmation_and_skips_pending(clock, tmp_path):
+    agent, device, store = owner_agent(clock, [[msg("#remember 卡洛周三要加班", "懒洋洋大王")]], tmp_path)
+    agent.step()
+    assert agent.sent == ["【AI】记下了"]
+    assert agent.pending == []  # 没进 pending，不占 debounce
+    assert "卡洛周三要加班" in store.inbox()
+
+
+def test_owner_friend_command_writes_friends_md(clock, tmp_path):
+    agent, device, store = owner_agent(clock, [[msg("#friend 新朋友 第一次见", "懒洋洋大王")]], tmp_path)
+    agent.step()
+    assert agent.sent == ["【AI】记好啦"]
+    assert "新朋友" in store.friends() and "第一次见" in store.friends()
+
+
+def test_owner_command_does_not_use_send_rate_limit(clock, tmp_path):
+    agent, device, store = owner_agent(clock, [[msg("#remember 一", "懒洋洋大王")], [msg("#remember 二", "懒洋洋大王")]], tmp_path)
+    agent.limiter.max_per_minute = 0  # 普通聊天此时会被限速卡住，发不出任何一句
+    agent.step()
+    agent.step()  # 同一秒内连续两条命令：命令不占用限速，照样都发出去
+    assert agent.sent == ["【AI】记下了", "【AI】记下了"]
+
+
+def test_owner_pause_stops_other_peoples_messages(clock, tmp_path):
+    agent, device, store = owner_agent(
+        clock,
+        [[msg("#pause", "懒洋洋大王")], [msg("在吗", "路人")], [msg("#resume", "懒洋洋大王")], [msg("在吗", "路人")]],
+        tmp_path,
+    )
+    agent.step()
+    assert agent.paused is True
+    agent.step()
+    assert agent.pending == []  # 暂停期间别人的消息不进 pending
+    agent.step()
+    assert agent.paused is False
+    agent.step()
+    assert len(agent.pending) == 1  # 恢复后照常收消息
+
+
+def test_owner_status_command_reports_state(clock, tmp_path):
+    agent, device, store = owner_agent(clock, [[msg("#status", "懒洋洋大王")]], tmp_path)
+    agent.step()
+    assert agent.sent == ["【AI】live｜运行中｜待处理0｜限速8/8"]
+
+
+def test_unknown_owner_command(clock, tmp_path):
+    agent, device, store = owner_agent(clock, [[msg("#跳舞", "懒洋洋大王")]], tmp_path)
+    agent.step()
+    assert agent.sent == ["【AI】没这个命令"]
+
+
+def test_hash_prefix_from_non_owner_is_normal_chat(clock, tmp_path):
+    agent, device, store = owner_agent(clock, [[msg("#remember 我也想试试", "路人")]], tmp_path)
+    agent.step()
+    assert agent.sent == []  # 不是主人发的，不当命令，走普通聊天流程
+    assert len(agent.pending) == 1
+    assert store.inbox() == ""
+
+
+def test_owner_name_empty_disables_commands(clock, tmp_path):
+    agent, device, store = owner_agent(clock, [[msg("#remember 测试", "懒洋洋大王")]], tmp_path)
+    agent.cfg.reply.owner_name = ""
+    agent.step()
+    assert agent.sent == []  # 功能关闭时，即使 speaker 匹配也当普通聊天
+    assert len(agent.pending) == 1
+    assert store.inbox() == ""

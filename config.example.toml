@@ -48,6 +48,10 @@ persona = """
 # [reply.friends]
 # "好友昵称" = "本名小明，好朋友，平时叫他小明"
 
+# 主人命令模式：填游戏里显示的昵称，和聊天记录面板 speaker 精确匹配；留空 = 关闭。
+# 开启后主人发的 #friend/#remember/#pause/#resume/#status 会被当命令执行，不转发给大模型（只有 vision.mode = "log" 时生效）。
+# owner_name = "懒洋洋大王"
+
 [llm]
 # 聊天回复、记忆整理、大脑离线时的备用回复都用它（大脑自己用 [brain] 里的型号）
 provider = "anthropic"

@@ -123,6 +123,30 @@ class MemoryStore:
         """friends.md 里每个 “## 标题” 就是一个好友的游戏昵称。"""
         return [line[3:].strip() for line in self.friends().splitlines() if line.startswith("## ") and line[3:].strip()]
 
+    def add_friend_note(self, name: str, note: str) -> None:
+        """`#friend` 命令用：在 friends.md 里给 `## <name>` 这一节追加一行备注；没有这一节就新建。"""
+        path = self.dir / "friends.md"
+        text = _read(path)
+        lines = text.splitlines()
+        heading = f"## {name}"
+        start = next((i for i, line in enumerate(lines) if line.strip() == heading), None)
+        if start is None:
+            sep = "\n\n" if text else ""
+            new_text = f"{text}{sep}{heading}\n- {note}\n"
+        else:
+            end = start + 1
+            while end < len(lines) and not lines[end].startswith("## "):
+                end += 1
+            insert_at = end
+            while insert_at > start + 1 and not lines[insert_at - 1].strip():
+                insert_at -= 1
+            lines.insert(insert_at, f"- {note}")
+            new_text = "\n".join(lines) + "\n"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name("friends.md.tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        tmp.replace(path)  # 先写临时文件再改名，写到一半崩了也不会丢旧内容
+
     def notes(self) -> str:
         return _read(self.dir / "notes.md")
 
