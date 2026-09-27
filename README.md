@@ -24,6 +24,7 @@ MuMu 输入框 ◀──模拟实体键盘 Enter 打开 + ADBKeyboard 中文输�
 | 视觉 | `src/skydango/vision/` | 解析聊天记录面板（`chatlog.py`）；备选：找头顶气泡（`bubbles.py`）。不需要训练模型 |
 | 聊天 | `src/skydango/chat/` | 模糊去重、忽略自己的气泡、人设与安全规则、发送流程 |
 | 主循环 | `src/skydango/agent.py` | 攒几秒合并连发消息，限速后回复；默认 dry-run |
+| 统管大脑（可选） | `src/skydango/brain/` | `run --brain`：常驻的 Claude 看画面、决定说什么做什么、互动请求接不接、转视角 |
 
 ## 快速开始
 
@@ -67,6 +68,9 @@ skydango chat                     # 不开游戏，在终端里和人设对话�
 skydango run                      # 启动 Agent，dry-run：只打印“将会发送”
 skydango run --live               # 真的发送
 skydango run --no-emotes          # 不做表情动作（牵着手时用：做动作会松开牵手）
+
+skydango look                     # 截一张图让 Claude 描述（要 ANTHROPIC_API_KEY）
+skydango run --brain              # 统管大脑，dry-run：只打印它想说想做的
 ```
 
 ## 需要你用真实截图调的地方

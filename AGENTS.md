@@ -33,6 +33,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/runlog.py` | 每次 `run` 的运行目录（见下） |
 | `src/skydango/vision/env.py` | 识别环境：每隔几秒在后台 OCR 3D 画面，认好友头顶的名字（身边有谁）和地名，写进提示词 |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
+| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`tools.py` 工具、`context.py` 上下文和缓存、`camera.py` 视角 |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 
 ## 记忆（`memory/`，不进 git）
@@ -64,6 +65,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `replies.jsonl` | 每轮：收到的消息、回复（`null` = 不回复或被过滤）、是否真的发出 |
 | `frames/*.jpg` | 读到新消息时截的聊天面板（红框标新消息），`run.save_frames = false` 关掉 |
 | `config.json` | 本次实际生效的配置（含 `--live` / `--echo` 覆盖） |
+| `brain.jsonl` | 大脑每次调用：停止原因、用量、估算花费、调了哪些工具、它想了什么（只有 `--brain`） |
 
 ## 识别环境（`[env]`）
 
@@ -79,6 +81,19 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 （原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受点火（图标还没录到）；
 输入框开着时不点；dry-run 只打印。`python -m skydango record` 连续截图，用来观察新的界面变化。
 
+## 统管大脑（`[brain]`，`run --brain`）
+
+设计见 `docs/superpowers/specs/2026-09-27-brain-design.md`。常驻的 Claude（默认 `claude-sonnet-5`）当大脑，现有代码当身体：
+- 身体线程独占设备：截图、读聊天、OCR 认人、按规则秒接互动请求；把聊天、谁来了走了、请求、画面变化变成事件
+- 大脑线程：有事件（攒 `chat.debounce`）或到了心跳（`brain.heartbeat`，闲着逐档退后）就醒，调工具
+  look / look_at / status / chat_log / say / emote / set_request_policy / camera / camera_reset；工具经 `Body.call()` 在身体线程执行
+- 大脑的普通文字只是想法，只有 `say` 才发进游戏；`say` 照样过 `clean_reply`（声称真人整句丢弃）
+- 牵着手（推测：接受牵手后对方头顶圆圈消失）时 `emote` 会被拦下，除非 `force=true`
+- 转视角前关聊天记录面板、转完再开；退出时镜头转回原位、轮盘换回去
+- 系统提示词两段分别缓存；记忆文件只在启动 / 压缩时重读（改系统提示词会让整段对话的缓存失效）
+- API 连续失败 `brain.offline_fallback` 秒或花费超 `brain.pause_usd_per_hour`：聊天交给原来的 responder（`[llm]`）
+- 前提：`pip install "skydango[anthropic]"`、用户环境变量 `ANTHROPIC_API_KEY`；`[llm]` 也用 Claude（Sonnet 5 不接受 temperature，`AnthropicClient` 已处理）
+
 ## 常用命令
 
 ```bash
@@ -88,6 +103,8 @@ python -m skydango detect                 # 读一次聊天记录面板（先在
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
 python -m skydango chat --emotes 鞠躬,害羞  # 终端里和人设聊天，假装轮盘上有这些动作
 python -m skydango run [--echo] [--live] [--duration 秒] [--no-emotes]  # Agent；默认 dry-run，--echo 不调模型，--duration 到点自己退出，牵着手时 --no-emotes
+python -m skydango run --brain [--live] [--duration 秒]  # 统管大脑（Claude）指挥；先装 anthropic、设 ANTHROPIC_API_KEY
+python -m skydango look [--prompt 文件]    # 截一张图让 Claude 描述（调看图提示词、看它会不会编名字）
 python -m skydango memory init|show|update # 记忆：生成人设 / 好友文件、查看、立刻整理
 python -m skydango env                    # 对当前画面识别一次环境（身边有谁、在哪）
 python -m skydango emotes scan            # 截下动作列表所有图标 → emotes/scan/，总览图 _sheet.png
