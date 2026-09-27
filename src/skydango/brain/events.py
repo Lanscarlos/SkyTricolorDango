@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 
 @dataclass(frozen=True)
 class Event:
-    kind: str  # chat / arrive / leave / request / accepted / holding / released / scene_change / panel / error / fallback / dropped
+    kind: str  # chat / owner_command / arrive / leave / request / accepted / holding / released / scene_change / panel / error / fallback / dropped
     text: str  # 给大脑看的一行
     t: float
     count: int = 1  # 连着重复了几次（同一种错误连续出现只占一行）

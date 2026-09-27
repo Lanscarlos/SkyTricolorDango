@@ -85,6 +85,42 @@ def test_chat_messages_become_events(clock):
     assert list(b.chat)[-1][1:] == ("", "hi") and len(b.heard) == 2
 
 
+def test_owner_command_opens_authorization_window(clock):
+    b, _, reader, events = body(clock)
+    b.cfg.brain.owner_name = "懒洋洋大王"
+    b.cfg.brain.owner_window = 30.0
+    reader.batches = [[msg("#过来")]]
+    b.step()
+    assert [e.kind for e in events.drain()] == ["owner_command"]
+    assert b._owner_window_until == clock() + 30.0
+
+
+def test_owner_command_requires_exact_speaker_match(clock):
+    b, _, reader, events = body(clock)
+    b.cfg.brain.owner_name = "懒洋洋大王"
+    reader.batches = [[msg("#过来", speaker="懒洋洋大王2")]]
+    b.step()
+    assert [e.kind for e in events.drain()] == ["chat"]
+    assert b._owner_window_until == float("-inf")
+
+
+def test_non_hash_message_from_owner_is_normal_chat(clock):
+    b, _, reader, events = body(clock)
+    b.cfg.brain.owner_name = "懒洋洋大王"
+    reader.batches = [[msg("过来呀")]]
+    b.step()
+    assert [e.kind for e in events.drain()] == ["chat"]
+    assert b._owner_window_until == float("-inf")
+
+
+def test_owner_command_disabled_when_owner_name_empty(clock):
+    b, _, reader, events = body(clock)
+    assert b.cfg.brain.owner_name == ""
+    reader.batches = [[msg("#过来")]]
+    b.step()
+    assert [e.kind for e in events.drain()] == ["chat"]
+
+
 def test_people_arrive_leave_and_requests(clock):
     env, social = FakeEnv(), FakeSocial()
     b, _, _, events = body(clock, env=env, social=social)

@@ -85,6 +85,7 @@ class Body:
         self.holding: str | None = None  # 推测正牵着谁的手
         self._holding_since = 0.0
         self._accepted_hand: tuple[str, float] | None = None
+        self._owner_window_until = float("-inf")  # now < 这个值 = 卡洛的 # 命令还在生效
         self._nearby: set[str] = set()
         self._requests: set[tuple[str, str]] = set()
         self._ref_thumb = None
@@ -192,8 +193,14 @@ class Body:
             self._fallback_pending.extend(fresh)
             self._fallback_last_new = now
             return
+        owner = self.cfg.brain.owner_name
         for m in fresh:
-            self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：{m.text}")
+            if owner and m.speaker == owner and m.text.startswith("#"):
+                self._owner_window_until = now + self.cfg.brain.owner_window
+                self.events.put("owner_command", f"卡洛的命令：{m.text}")
+                log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
+            else:
+                self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：{m.text}")
 
     def _watch_panel(self, now: float) -> None:
         since = self.reader.panel_closed_since
