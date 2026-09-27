@@ -87,7 +87,8 @@ def test_reader_log_mode_reports_only_new_messages_from_others():
 
     assert reader.read(frame, 0.0) == []  # 基线
     assert reader.read(frame, 1.0) == []  # 没变化
-    fresh = reader.read(frame, 2.0)
+    assert reader.read(frame, 2.0) == []  # 冒出新行：先等一帧确认
+    fresh = reader.read(frame, 2.2)
     assert [(m.speaker, m.text) for m in fresh] == [("懒洋洋大王", "去霞谷吗")]
 
 
@@ -234,7 +235,8 @@ def test_reader_ignores_glitch_frame_with_few_rows():
     frame = np.full((PH, PW * 2, 3), 50, np.uint8)
     assert reader.read(frame, 0.0) == []
     assert reader.read(frame, 0.2) == []  # 坏帧：忽略，不改基准
-    assert [m.text for m in reader.read(frame, 0.4)] == ["你猜"]
+    assert reader.read(frame, 0.4) == []  # 新行先等一帧确认
+    assert [m.text for m in reader.read(frame, 0.6)] == ["你猜"]
 
 
 def test_reader_accepts_shrunk_panel_after_it_persists():
@@ -249,7 +251,7 @@ def test_reader_accepts_shrunk_panel_after_it_persists():
     frames = [full, short, short, short, short + [line(1, "再来 - 卡洛")]]
     reader = ChatReader(SeqOcr(frames), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
     frame = np.full((PH, PW * 2, 3), 50, np.uint8)
-    got = [m.text for t in range(5) for m in reader.read(frame, t * 0.2)]
+    got = [m.text for t in range(6) for m in reader.read(frame, t * 0.2)]  # 最后多一帧确认新行
     assert got == ["再来"]
 
 
@@ -313,3 +315,28 @@ def test_agent_reopens_closed_panel_with_cooldown():
         agent.step()
     presses = [c for c in device.calls if c == ("hw_key", 46)]
     assert len(presses) == 2  # 关了 5 s 后按一次；按了没用，30 s 冷却后再按一次
+
+
+def test_new_row_is_confirmed_on_next_frame_to_get_full_speaker():
+    """实测：新消息淡入时名字比内容晚出现，第一帧读成“?：嗯应该是正太”，交给模型的就没有说话人。
+    新行第一次出现先不报，强制下一帧再识别一次，用完整的版本。"""
+    cfg = Config()
+    cfg.vision.mode = "log"
+    cfg.vision.log_roi = [0.0, 0.0, 0.5, 1.0]
+    cfg.vision.log_require_panel = False
+    base = [line(0, "-陌生人"), line(1, "老登你喜欢什么发型 - 懒洋洋大王")]
+    frames = [base, base + [line(2, "嗯应该是正太 -")], base + [line(2, "嗯应该是正太 - 懒洋洋大王")]]
+    reader = ChatReader(SeqOcr(frames), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
+    before = np.full((PH, PW * 2, 3), 50, np.uint8)
+    after = before.copy()
+    for k in range(0, 30, 6):  # 底部冒出新的一行白字：2 px 粗的笔画，底色还是暗的
+        after[row_y(2) + k : row_y(2) + k + 2, 20:300] = 230
+    assert reader.read(before, 0.0) == []
+    assert reader.read(after, 0.2) == []  # 刚冒出来：先不报
+    fresh = reader.read(after, 0.4)  # 画面没变，但在等确认：照样再识别一次
+    assert [(m.speaker, m.text) for m in fresh] == [("懒洋洋大王", "嗯应该是正太")]
+
+
+def test_split_speaker_falls_back_to_middle_dot():
+    rows = parse_rows(panel(), [line(0, "嗯应该是正太·懒洋洋大王"), line(1, "哈·哈 - 卡洛")], self_min_value=150)
+    assert [(r.speaker, r.text) for r in rows] == [("懒洋洋大王", "嗯应该是正太"), ("卡洛", "哈·哈")]

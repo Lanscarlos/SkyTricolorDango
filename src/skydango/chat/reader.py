@@ -54,6 +54,7 @@ class ChatReader:
         self._ocr_at = float("-inf")
         self._shrunk = 0  # 连续几帧行数骤减
         self.panel_closed_since: float | None = None  # 从什么时候开始看不到面板
+        self._confirming = False  # 上一帧冒出了新行，等这一帧确认
         self.self_filter = self_filter
         self.ignore = [re.compile(p) for p in chat.ignore_patterns]
         self.trace_path: Path | None = None  # 设了就把面板每次变化记下来（运行目录里的 rows.log）
@@ -130,7 +131,8 @@ class ChatReader:
         sig = text_signature(area.crop(frame))
         # 面板里的文字没变就不跑 OCR（截图约 9 ms，OCR 约 0.4 s）；隔一阵还是强制识别一次，以防万一
         if (
-            self._sig is not None
+            not self._confirming
+            and self._sig is not None
             and changed_pixels(self._sig, sig) < self.vision.log_change_pixels
             and now - self._ocr_at < self.vision.log_max_skip
         ):
@@ -152,6 +154,12 @@ class ChatReader:
         added = new_rows(self._prev_keys, keys, lambda a, b: similar(a, b, self.similarity))
         if self.trace_path and keys != self._prev_keys:
             self._trace(now, rows, added)
+        # 新消息淡入时名字比内容晚出现（实测第一帧读成“?：嗯应该是正太”）：新行第一次出现先不报、
+        # 也不更新基准，下一帧强制再识别一次，用完整的版本
+        if added and not self._confirming:
+            self._confirming = True
+            return []
+        self._confirming = False
         self._prev_keys = keys
         fresh: list[Message] = []
         for row in (rows[i] for i in added):

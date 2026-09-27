@@ -78,7 +78,7 @@ class Agent:
                 self._maybe_reopen_log(now)
         if fresh:
             for m in fresh:
-                log.info("读到: %s", m.text)
+                log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             if self.run_dir:
                 self.run_dir.save_frame(frame, [m.box for m in fresh])
             self.pending.extend(fresh)

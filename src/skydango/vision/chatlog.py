@@ -108,6 +108,8 @@ def _split_speaker(text: str) -> tuple[str, str]:
     """
     # OCR 有时把“ - ”读成全角“－”或长破折号
     idx = max(text.rfind(d) for d in _DASHES)
+    if idx < 0:  # 偶尔还会读成间隔号；内容里也可能有“·”，所以只在找不到横线时才用
+        idx = text.rfind("·")
     if idx < 0:
         return text.strip(), ""
     return text[idx + 1 :].strip(), text[:idx].strip()
