@@ -13,7 +13,7 @@ ChatMessage = dict[str, str]  # {"role": "user" | "assistant", "content": ...}
 
 
 class LlmClient(Protocol):
-    def complete(self, system: str, messages: list[ChatMessage]) -> str: ...
+    def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str: ...
 
 
 def _user_env(name: str) -> str:
@@ -45,12 +45,12 @@ class OpenAICompatClient:
         self.cfg = cfg
         self._client = OpenAI(base_url=cfg.base_url or None, api_key=_api_key(cfg), timeout=cfg.timeout)
 
-    def complete(self, system: str, messages: list[ChatMessage]) -> str:
+    def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
         resp = self._client.chat.completions.create(
             model=self.cfg.model,
             messages=[{"role": "system", "content": system}, *messages],
             temperature=self.cfg.temperature,
-            max_tokens=self.cfg.max_tokens,
+            max_tokens=max_tokens or self.cfg.max_tokens,  # 整理记忆时要比回复长
         )
         return resp.choices[0].message.content or ""
 
@@ -67,13 +67,13 @@ class AnthropicClient:
             kwargs["base_url"] = cfg.base_url
         self._client = anthropic.Anthropic(**kwargs)
 
-    def complete(self, system: str, messages: list[ChatMessage]) -> str:
+    def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
         resp = self._client.messages.create(
             model=self.cfg.model,
             system=system,
             messages=messages,
             temperature=self.cfg.temperature,
-            max_tokens=self.cfg.max_tokens,
+            max_tokens=max_tokens or self.cfg.max_tokens,  # 整理记忆时要比回复长
         )
         return "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
 
@@ -81,7 +81,7 @@ class AnthropicClient:
 class EchoClient:
     """不调用模型，用来联调截屏 → 识别 → 发送整条链路。"""
 
-    def complete(self, system: str, messages: list[ChatMessage]) -> str:
+    def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
         last = messages[-1]["content"] if messages else ""
         quoted = re.findall(r"「(.*)」", last)  # format_incoming 的格式："名字：「内容」" 或 "「内容」"
         return "收到：" + " / ".join(quoted or [last])

@@ -139,7 +139,7 @@ def cmd_chat(cfg: Config, args) -> None:
     if args.echo:
         cfg.llm.provider = "echo"
     responder = Responder(make_llm(cfg.llm), cfg.reply)
-    print("输入一句话模拟别人的聊天气泡（多句用 | 分隔），空行退出。")
+    print("输入一句话模拟别人的聊天（“名字：内容”带上说话人，多句用 | 分隔），空行退出。")
     while True:
         try:
             line = input("> ").strip()
@@ -147,7 +147,11 @@ def cmd_chat(cfg: Config, args) -> None:
             break
         if not line:
             break
-        msgs = [Message(t.strip(), Rect(0, 0, 1, 1), 0.0) for t in line.split("|") if t.strip()]
+        msgs = []
+        for part in (t.strip() for t in line.split("|")):
+            speaker, sep, text = part.partition("：")  # “名字：内容”模拟面板里带说话人的消息
+            if part:
+                msgs.append(Message(text.strip(), Rect(0, 0, 1, 1), 0.0, speaker.strip()) if sep else Message(part, Rect(0, 0, 1, 1), 0.0))
         reply = responder.reply(msgs)
         print("（不回复）" if reply is None else cfg.reply.disclosure_prefix + reply)
 
@@ -179,6 +183,64 @@ def cmd_emotes(cfg: Config, args) -> None:
         print(f"做了「{args.name}」（格子 {slot}）")
 
 
+PROFILE_TEMPLATE = """{persona}
+
+## 外貌
+- （比如：樱花发型、小个子、爱穿什么）
+
+## 说话习惯
+- （口头禅、常用的语气词、不喜欢说的话）
+"""
+
+FRIENDS_TEMPLATE = """# 好友资料：每个人一节，标题写游戏里显示的昵称（要和聊天记录面板里的名字一致）
+# 可以写：本名、怎么称呼、是什么关系、和其他朋友的关系、需要注意的事
+
+{friends}"""
+
+
+def cmd_memory(cfg: Config, args) -> None:
+    from .chat.memory import MemoryStore, NotesKeeper
+
+    if not cfg.reply.memory_dir:
+        raise ValueError("reply.memory_dir 为空，没有启用记忆")
+    store = MemoryStore(cfg.reply.memory_dir)
+    if args.action == "init":
+        store.dir.mkdir(parents=True, exist_ok=True)
+        files = {
+            "profile.md": PROFILE_TEMPLATE.format(persona=cfg.reply.persona.strip()),
+            "friends.md": FRIENDS_TEMPLATE.format(
+                friends="\n\n".join(f"## {name}\n- {note}" for name, note in cfg.reply.friends.items())
+                or "## 好友昵称\n- 本名 / 怎么称呼 / 什么关系"
+            ),
+        }
+        for name, content in files.items():
+            path = store.dir / name
+            if path.exists():
+                print(f"已存在，跳过: {path}")
+            else:
+                path.write_text(content, encoding="utf-8")
+                print(f"已生成: {path}")
+        print(f"记忆目录: {store.dir.resolve()}")
+        print("profile.md 是人设、friends.md 是好友，都可以直接改；notes.md / inbox.md 聊天时自动生成")
+        if cfg.reply.friends:
+            print("提示：friends.md 已包含配置里的 [reply.friends]，可以把 config.toml 里那一节删掉，免得重复")
+    elif args.action == "show":
+        print(f"记忆目录: {store.dir.resolve()}")
+        for title, text in (
+            ("人设 profile.md", store.profile()),
+            ("好友 friends.md", store.friends()),
+            ("长期记忆 notes.md", store.notes()),
+            ("随手记 inbox.md", store.inbox()),
+        ):
+            print(f"\n===== {title} =====\n{text or '（空）'}")
+        print(f"\n聊天记录 {len(store.history.all())} 轮，其中 {len(store.pending_turns())} 轮还没整理进长期记忆")
+    elif args.action == "update":
+        from .chat.llm import make_llm
+
+        keeper = NotesKeeper(make_llm(cfg.llm), store, cfg.reply.persona, background=False)
+        print("长期记忆已更新" if keeper.update_now() else "没有需要整理的内容（或整理失败，见日志）")
+
+
 def cmd_run(cfg: Config, args) -> None:
     from .agent import Agent
     from .chat.llm import make_llm
@@ -191,7 +253,16 @@ def cmd_run(cfg: Config, args) -> None:
         cfg.llm.provider = "echo"
     dev = _device(cfg)
     reader, self_filter = _build_reader(cfg)
-    responder = Responder(make_llm(cfg.llm), cfg.reply)
+    llm = make_llm(cfg.llm)
+    store = notes = None
+    if cfg.reply.memory_dir and not cfg.reply.dry_run:  # dry-run 的回复没真的发出去，不记
+        from .chat.memory import MemoryStore, NotesKeeper
+
+        store = MemoryStore(cfg.reply.memory_dir)
+        if not store.profile():
+            log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
+        notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
+    responder = Responder(llm, cfg.reply, store=store, notes=notes)
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
     agent = Agent(cfg, dev, reader, responder, sender, self_filter)
     try:
@@ -249,6 +320,10 @@ def main(argv: list[str] | None = None) -> None:
     q = esub.add_parser("do", help="做一个动作（不在轮盘上就先换上去）")
     q.add_argument("name")
     p.set_defaults(func=cmd_emotes)
+
+    p = sub.add_parser("memory", help="记忆：init 生成人设 / 好友文件，show 查看，update 立刻整理长期记忆")
+    p.add_argument("action", choices=["init", "show", "update"])
+    p.set_defaults(func=cmd_memory)
 
     p = sub.add_parser("run", help="启动 Agent（默认 dry-run）")
     p.add_argument("--live", action="store_true", help="真的发送消息")

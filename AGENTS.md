@@ -26,10 +26,23 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/chatlog.py` | 解析聊天记录面板（C）：分行、拆说话人、认自己的消息 / 被屏蔽的消息、前后帧对齐找新消息 |
 | `src/skydango/vision/icons.py` | 动作图标的剪影匹配（多尺度 matchTemplate） |
 | `src/skydango/vision/bubbles.py` | 旧方案：3D 画面里找头顶气泡（不推荐，见 game-ops） |
-| `src/skydango/chat/` | 读消息（`reader.py`）、大模型回复（`responder.py`）、发送（`sender.py`）、去重 |
+| `src/skydango/chat/` | 读消息（`reader.py`）、大模型回复（`responder.py`）、发送（`sender.py`）、去重、记忆（`memory.py`，见下） |
 | `src/skydango/game/wheel.py` | 快捷动作轮盘：图标库、读取 / 编辑轮盘、按数字键做动作、扫描动作列表 |
 | `src/skydango/agent.py` | 主循环：读 → 攒一会儿 → 回复 → 限速 → 发送；默认 dry-run |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
+
+## 记忆（`memory/`，不进 git）
+
+| 文件 | 内容 | 谁写 |
+|---|---|---|
+| `profile.md` | 三彩团子的人设（优先于配置里的 `reply.persona`） | 用户 |
+| `friends.md` | 好友：游戏昵称、本名、称呼、关系 | 用户 |
+| `inbox.md` | 随手记：每轮回复后后台单独调一次模型，只挑值得记的新信息，下一句就能用上 | 自动 |
+| `notes.md` | 长期记忆：每 `notes_every` 轮把聊天记录 + inbox 整理进来（合并去重、删过期） | 自动，用户可改 |
+| `history.jsonl` | 逐轮聊天记录，重启读回最近 `history_turns` 轮 | 自动 |
+
+每次回复前都重新读这些文件，改了不用重启。只有 `run --live` 读写记忆（dry-run 的回复没真的发出去）。
+`memory init` 用配置生成 profile / friends，`memory show` 查看，`memory update` 立刻整理。
 
 ## 常用命令
 
@@ -39,6 +52,7 @@ python -m skydango shot [--grid]          # 截图到 tmp/shot.png
 python -m skydango detect                 # 读一次聊天记录面板（先在游戏里按 C），标注图 tmp/detect.png
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
 python -m skydango run [--echo] [--live]  # Agent；默认 dry-run，--echo 不调模型
+python -m skydango memory init|show|update # 记忆：生成人设 / 好友文件、查看、立刻整理
 python -m skydango emotes scan            # 截下动作列表所有图标 → emotes/scan/，总览图 _sheet.png
 python -m skydango emotes wheel           # 读轮盘 8 格
 python -m skydango emotes set 5 鞠躬       # 放动作进格子（3、8 默认锁定）

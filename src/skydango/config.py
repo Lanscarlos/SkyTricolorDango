@@ -96,10 +96,16 @@ class ReplyConfig:
     # 让对方知道是 AI 在回复。光遇里未成年玩家不少，强烈建议保留
     disclosure_prefix: str = "【AI】"
     max_chars: int = 40
-    min_interval: float = 8.0  # 两次发送之间至少间隔（秒）
-    max_per_minute: int = 4
-    history_turns: int = 20
+    min_interval: float = 3.0  # 两次发送之间至少间隔（秒）
+    max_per_minute: int = 8  # 几个人一起聊时 4 句/分钟会让回复拖到 10 多秒
+    history_turns: int = 40  # 带给模型的最近几轮对话
     persona: str = DEFAULT_PERSONA
+    # 认识的人：游戏昵称 → 说明。更推荐写在记忆目录的 friends.md 里（`skydango memory init` 生成）
+    friends: dict[str, str] = field(default_factory=dict)
+    # 记忆目录（不进 git）：profile.md 人设、friends.md 好友、notes.md 长期记忆、inbox.md 随手记、history.jsonl 聊天记录。
+    # 为空不启用；dry-run 时不读也不写（dry-run 的回复没真的发出去）
+    memory_dir: str = "memory"
+    notes_every: int = 15  # 每攒够这么多轮，把聊天记录和随手记整理进长期记忆；0 表示不整理（随手记照常）
 
 
 @dataclass

@@ -30,13 +30,17 @@ ignore_patterns = []          # 正则，比如 ["^\\.+$"] 忽略只有省略号
 dry_run = true                # 先 dry-run 看效果；`skydango run --live` 才会真的发
 disclosure_prefix = "【AI】"   # 让对方知道是 AI，建议保留
 max_chars = 40
-min_interval = 8.0
-max_per_minute = 4
+min_interval = 3.0
+max_per_minute = 8
 persona = """
 你叫三彩团子，是光遇里一个很可爱的女孩子，玩了挺久了。
 最喜欢樱花发型，特意把自己的光之子调成了小个子，平时爱穿可爱风的衣服，看到好看的斗篷和发型会走不动路。
 性格软萌但不做作，爱开玩笑，偶尔吐槽；喜欢跑图、收集先祖、坐着看风景。聊天像和熟人说话，不端着。
 """
+
+# 认识的人：游戏昵称 = 说明（本名、怎么称呼、什么关系），会写进提示词
+# [reply.friends]
+# "好友昵称" = "本名小明，好朋友，平时叫他小明"
 
 [llm]
 # OpenAI 兼容接口：DeepSeek / 通义千问 / Kimi / 本地 Ollama 都行，改 base_url 和 model 即可

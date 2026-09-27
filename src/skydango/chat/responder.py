@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from collections.abc import Callable
 
 from ..config import ReplyConfig
 from .llm import ChatMessage, LlmClient
+from .memory import GAP_NOTE_AFTER, MemoryStore, NotesKeeper, Turn, format_gap
 from .reader import Message
 
 log = logging.getLogger(__name__)
@@ -41,8 +44,20 @@ RULES = """
 """.strip()
 
 
-def build_system_prompt(cfg: ReplyConfig) -> str:
-    return cfg.persona.strip() + "\n\n" + RULES.format(max_chars=cfg.max_chars, skip=SKIP_TOKEN)
+def build_system_prompt(cfg: ReplyConfig, profile: str = "", friends: str = "", notes: str = "") -> str:
+    """profile / friends / notes 来自记忆目录里的文件（见 chat/memory.py）；人设文件优先于配置里的 persona。"""
+    parts = [(profile or cfg.persona).strip()]
+    people = "\n".join(f"- {name}：{note}" for name, note in cfg.friends.items())
+    if people or friends:
+        parts.append(
+            "## 认识的人\n"
+            + "\n\n".join(p for p in (people, friends.strip()) if p)
+            + "\n\n称呼他们时用这里的叫法。朋友之间互相起的外号是在叫对方，别当成在叫你。"
+        )
+    if notes.strip():
+        parts.append("## 长期记忆（之前聊天里记下的，可能不全；和上面冲突时以上面为准）\n" + notes.strip())
+    parts.append(RULES.format(max_chars=cfg.max_chars, skip=SKIP_TOKEN))
+    return "\n\n".join(parts)
 
 
 def format_incoming(messages: list[Message]) -> str:
@@ -75,11 +90,41 @@ def clean_reply(raw: str, max_chars: int) -> str | None:
 
 
 class Responder:
-    def __init__(self, llm: LlmClient, cfg: ReplyConfig) -> None:
+    def __init__(
+        self,
+        llm: LlmClient,
+        cfg: ReplyConfig,
+        store: MemoryStore | None = None,
+        notes: NotesKeeper | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
         self.llm = llm
         self.cfg = cfg
-        self.system = build_system_prompt(cfg)
+        self.store = store
+        self.notes = notes
+        self.clock = clock
         self.history: list[ChatMessage] = []
+        self.last_turn_at: float | None = None
+        if store is not None:  # 重启后接着上次的聊天记录
+            turns = store.history.load(cfg.history_turns)
+            for turn in turns:
+                self.history += [{"role": "user", "content": turn.user}, {"role": "assistant", "content": turn.reply}]
+            if turns:
+                self.last_turn_at = turns[-1].t
+                log.info("读回了 %d 轮聊天记录（%s）", len(turns), store.dir)
+        if notes is not None:
+            notes.maybe_update()  # 上次没整理完的，启动时补上
+
+    @property
+    def system(self) -> str:
+        # 每次都重新读记忆文件：用户改了人设 / 好友，或者笔记刚在后台更新过，不用重启就生效
+        if self.store is None:
+            return build_system_prompt(self.cfg)
+        notes = self.store.notes()
+        inbox = self.store.inbox()
+        if inbox:
+            notes = (notes + "\n\n" if notes else "") + "刚记下的：\n" + inbox
+        return build_system_prompt(self.cfg, self.store.profile(), self.store.friends(), notes)
 
     def _messages(self, user_content: str) -> list[ChatMessage]:
         msgs = [*self.history, {"role": "user", "content": user_content}]
@@ -94,9 +139,17 @@ class Responder:
             merged.pop(0)
         return merged
 
-    def _remember(self, user_content: str, reply: str | None) -> None:
+    def _remember(self, user_content: str, reply: str | None, now: float) -> None:
         self.history.append({"role": "user", "content": user_content})
         self.history.append({"role": "assistant", "content": reply or SKIP_TOKEN})
+        self.last_turn_at = now
+        if self.store is not None:
+            try:
+                self.store.history.append(user_content, reply or SKIP_TOKEN, now)
+            except OSError:
+                log.exception("写聊天记录失败")
+        if self.notes is not None:  # 后台：挑出这一轮值得记的，攒够了再整理进长期记忆
+            self.notes.turn_added(Turn(now, user_content, reply or SKIP_TOKEN))
         limit = max(0, self.cfg.history_turns) * 2
         if len(self.history) > limit:
             self.history = self.history[len(self.history) - limit :]
@@ -105,12 +158,15 @@ class Responder:
         """返回要发送的正文（不含 AI 标识前缀）；不需要回复时返回 None。"""
         if not incoming:
             return None
+        now = self.clock()
         user_content = format_incoming(incoming)
+        if self.last_turn_at is not None and now - self.last_turn_at >= GAP_NOTE_AFTER:
+            user_content = f"（距离上次聊天过了 {format_gap(now - self.last_turn_at)}）\n" + user_content
         try:
             raw = self.llm.complete(self.system, self._messages(user_content))
         except Exception:
             log.exception("调用大模型失败")
             return None
         reply = clean_reply(raw, self.cfg.max_chars)
-        self._remember(user_content, reply)
+        self._remember(user_content, reply, now)
         return reply
