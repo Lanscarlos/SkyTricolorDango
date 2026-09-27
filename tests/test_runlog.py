@@ -138,3 +138,10 @@ def test_reader_traces_panel_changes_to_rows_log(tmp_path):
     assert "t=0.0" in text and "t=2.0" in text  # 基线、冒出新行
     assert "t=1.0" not in text  # 没变化的那帧不记
     assert "* y=" in text and "去霞谷吗" in text
+
+
+def test_record_brain_appends_jsonl(tmp_path):
+    run = RunDir.create(make_cfg(tmp_path), "dry-brain", now=0)
+    run.record_brain({"usd": 0.01, "tools": ["say"]})
+    line = json.loads((run.path / "brain.jsonl").read_text(encoding="utf-8"))
+    assert line["tools"] == ["say"] and line["usd"] == 0.01 and "time" in line

@@ -6,6 +6,7 @@
       replies.jsonl   每轮：收到的消息 → 回复 → 发没发
       frames/*.jpg    读到新消息时的面板截图（标了框）
       config.json     本次实际生效的配置（含命令行覆盖）
+      brain.jsonl     大脑每次调用：停在哪、用量、估算花费、调了哪些工具、它想了什么（--brain）
 """
 
 from __future__ import annotations
@@ -115,3 +116,9 @@ class RunDir:
         }
         with (self.path / "replies.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def record_brain(self, entry: dict) -> None:
+        """记大脑的一次调用：停在哪、用量、估算花费、调了哪些工具、它想了什么。"""
+        entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), **entry}
+        with (self.path / "brain.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
