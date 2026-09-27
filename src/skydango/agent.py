@@ -63,6 +63,7 @@ class Agent:
         self.pending: list[Message] = []
         self.last_new_at = 0.0
         self.sent: list[str] = []  # 记录（含 dry-run），方便测试和日志
+        self._last_reopen = float("-inf")
 
     def _save_debug(self, frame: np.ndarray, messages: list[Message]) -> None:
         if not self.cfg.vision.debug_dir:
@@ -83,6 +84,8 @@ class Agent:
             log.warning("截图失败，这一轮不读新消息: %s", str(exc).splitlines()[0])
         if frame is not None:
             fresh = self.reader.read(frame, now)
+            if self.cfg.vision.mode == "log":
+                self._maybe_reopen_log(now)
         if fresh:
             for m in fresh:
                 log.info("读到: %s", m.text)
@@ -112,19 +115,33 @@ class Agent:
             self.self_filter.remember(text, self.clock())
         return text
 
-    def ensure_log_open(self) -> None:
-        """log 模式：面板里一行都读不到、也没在打字时，按一下打开面板的键（默认 C）。"""
+    def ensure_log_open(self) -> bool:
+        """log 模式：看不到聊天记录面板、也没在打字时，按一下打开面板的键（默认 C）。返回面板现在开没开。"""
         key = self.cfg.vision.log_open_key
         if self.cfg.vision.mode != "log" or not key:
-            return
-        if self.reader.log_rows(self.device.screenshot()):
-            return
+            return True
+        if self.reader.panel_visible(self.device.screenshot()):
+            return True
         if self.device.ime_shown():
             log.warning("输入框开着，没法用按键打开聊天记录面板；请手动打开（光遇里按 C）")
-            return
+            return False
         log.info("聊天记录面板没打开，按键 %d 打开", key)
         self.device.hw_key(key)
         self.sleep(1.0)
+        if self.reader.panel_visible(self.device.screenshot()):
+            return True
+        log.warning("按了键聊天记录面板还是没出现，可能被别的界面挡住了，请看一下游戏画面")
+        return False
+
+    def _maybe_reopen_log(self, now: float) -> None:
+        since = self.reader.panel_closed_since
+        vision = self.cfg.vision
+        if since is None or not vision.log_reopen_after or now - since < vision.log_reopen_after:
+            return
+        if now - self._last_reopen < vision.log_reopen_cooldown:
+            return
+        self._last_reopen = now
+        self.ensure_log_open()
 
     def run(self) -> None:
         mode = "dry-run（只打印不发送）" if self.cfg.reply.dry_run else "LIVE（会真的发送）"

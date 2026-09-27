@@ -64,6 +64,10 @@ class VisionConfig:
     # 面板里的文字像素变化少于这么多（半分辨率下）就不重新 OCR；背景里飘过的小光点不算
     log_change_pixels: int = 40
     log_max_skip: float = 3.0  # 最多这么久不 OCR，到时间了强制识别一次
+    # 只在看到面板底部的“聊天……”输入框（= 面板开着）时才读；关着超过几秒会自动按 log_open_key 重新打开
+    log_require_panel: bool = True
+    log_reopen_after: float = 5.0  # 面板关着这么久就按键重新打开；0 表示不自动打开
+    log_reopen_cooldown: float = 30.0  # 两次自动打开之间至少隔这么久（按了没用时不要一直按）
     # 非空时，每次读到新消息就把标注后的截图存到这里，方便调参
     debug_dir: str = ""
 
@@ -73,6 +77,7 @@ class OcrConfig:
     engine: str = "rapidocr"
     min_score: float = 0.6
     min_chars: int = 1
+    threads: int = 8  # OCR 用的 CPU 线程数；默认会用满所有核，实测 8 线程和用满一样快
 
 
 @dataclass

@@ -71,6 +71,7 @@ class SeqOcr:
 def test_reader_log_mode_reports_only_new_messages_from_others():
     cfg = Config()
     cfg.vision.mode = "log"
+    cfg.vision.log_require_panel = False  # 合成画面里没画面板底部的输入框
     cfg.vision.log_roi = [0.0, 0.0, 0.5, 1.0]
     cfg.vision.log_change_pixels = 0  # 同一张画面配不同的 OCR 结果：每次都识别
     history = [line(0, "-陌生人"), line(1, "早上好 - 懒洋洋大王")]
@@ -96,33 +97,6 @@ def test_format_incoming_includes_speaker():
 
     text = format_incoming([Message("去霞谷吗", Rect(0, 0, 1, 1), 0.0, "懒洋洋大王"), Message("嗯", Rect(0, 0, 1, 1), 0.0)])
     assert "懒洋洋大王：「去霞谷吗」" in text and "\n「嗯」" in text
-
-
-def _agent(ocr_frames, shown=False):
-    from conftest import FakeDevice
-
-    from skydango.agent import Agent
-
-    cfg = Config()
-    cfg.vision.mode = "log"
-    device = FakeDevice([np.full((PH, PW * 2, 3), 50, np.uint8)])
-    device.shown = shown
-    reader = ChatReader(SeqOcr(ocr_frames), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
-    return Agent(cfg, device, reader, None, None, None, sleep=lambda s: None), device
-
-
-def test_ensure_log_open_presses_c_only_when_panel_closed():
-    agent, device = _agent([[]])
-    agent.ensure_log_open()
-    assert device.calls == [("hw_key", 46)]
-
-    agent, device = _agent([[line(0, "-陌生人")]])  # 面板已经开着
-    agent.ensure_log_open()
-    assert device.calls == []
-
-    agent, device = _agent([[]], shown=True)  # 正在打字：按 C 会变成输入字母
-    agent.ensure_log_open()
-    assert device.calls == []
 
 
 def screen_with_pill(top, bg=50):
@@ -195,6 +169,7 @@ def test_reader_skips_ocr_when_panel_text_unchanged():
     """截图很便宜（MuMu 原生约 9 ms），OCR 贵（约 0.4 s）：面板文字没变就不识别。"""
     cfg = Config()
     cfg.vision.mode = "log"
+    cfg.vision.log_require_panel = False  # 合成画面里没画面板底部的输入框
     calls = []
 
     class CountOcr:
@@ -249,6 +224,7 @@ def test_reader_ignores_glitch_frame_with_few_rows():
     """实测：界面滚动 / 重绘的瞬间截到一帧只读出一行“陌生人”，拿它当基准会把已经读过的几行又当成新消息。"""
     cfg = Config()
     cfg.vision.mode = "log"
+    cfg.vision.log_require_panel = False  # 合成画面里没画面板底部的输入框
     cfg.vision.log_roi = [0.0, 0.0, 0.5, 1.0]
     cfg.vision.log_change_pixels = 0
     # 最后一条“陌生人”后面还有已经读过的行：坏帧的“陌生人”会对齐到它，后面的全被当成新的
@@ -265,6 +241,7 @@ def test_reader_accepts_shrunk_panel_after_it_persists():
     """面板真的变短了（不是一闪而过的坏帧）：连续几帧都这样就接受为新基准，不回复旧消息。"""
     cfg = Config()
     cfg.vision.mode = "log"
+    cfg.vision.log_require_panel = False  # 合成画面里没画面板底部的输入框
     cfg.vision.log_roi = [0.0, 0.0, 0.5, 1.0]
     cfg.vision.log_change_pixels = 0
     full = [line(i, f"第{i}句 - 卡洛") for i in range(6)]
@@ -274,3 +251,65 @@ def test_reader_accepts_shrunk_panel_after_it_persists():
     frame = np.full((PH, PW * 2, 3), 50, np.uint8)
     got = [m.text for t in range(5) for m in reader.read(frame, t * 0.2)]
     assert got == ["再来"]
+
+
+def _agent(frames, shown=False, clock=None):
+    from conftest import FakeDevice
+
+    from skydango.agent import Agent
+
+    cfg = Config()
+    cfg.vision.mode = "log"
+    device = FakeDevice(frames)
+    device.shown = shown
+    reader = ChatReader(SeqOcr([[]]), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
+    kwargs = {"clock": clock} if clock else {}
+    return Agent(cfg, device, reader, None, None, None, sleep=lambda s: None, **kwargs), device
+
+
+def test_ensure_log_open_uses_input_box_as_panel_marker():
+    """实测：面板关着时，3D 场景里的名字标签被读成一行，以为面板开着，没按 C → 整轮读不到消息。
+    现在看面板底部的“聊天……”输入框：它是面板的一部分，面板关了就没有。"""
+    closed = np.full((1080, 1920, 3), 50, np.uint8)
+    closed[400:440, 300:600] = 230  # 场景里的名字标签
+    agent, device = _agent([closed, screen_with_pill(1006)])
+    assert agent.ensure_log_open() is True
+    assert device.calls == [("hw_key", 46)]
+
+    agent, device = _agent([screen_with_pill(1006)])  # 面板已经开着
+    assert agent.ensure_log_open() is True and device.calls == []
+
+    agent, device = _agent([closed], shown=True)  # 正在打字：按 C 会变成输入字母
+    assert agent.ensure_log_open() is False and device.calls == []
+
+
+def test_reader_skips_ocr_while_panel_closed():
+    """面板关着时不跑 OCR：既不会误读场景里的字，也不会因为 3D 画面一直在动而让 OCR 把 CPU 跑满。"""
+    cfg = Config()
+    cfg.vision.mode = "log"
+    calls = []
+
+    class CountOcr:
+        def recognize(self, img):
+            calls.append(1)
+            return []
+
+    reader = ChatReader(CountOcr(), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
+    closed = np.full((1080, 1920, 3), 50, np.uint8)
+    for t in range(5):
+        closed[400:440, 300:600] = 100 + 30 * t  # 场景在动
+        assert reader.read(closed.copy(), float(t)) == []
+    assert calls == [] and reader.panel_closed_since == 0.0
+    reader.read(screen_with_pill(1006), 5.0)
+    assert calls == [1] and reader.panel_closed_since is None
+
+
+def test_agent_reopens_closed_panel_with_cooldown():
+    t = [0.0]
+    closed = np.full((1080, 1920, 3), 50, np.uint8)
+    agent, device = _agent([closed], clock=lambda: t[0])
+    for step in range(80):  # 每步 0.5 s，一共 40 s，面板一直关着
+        t[0] = step * 0.5
+        agent.step()
+    presses = [c for c in device.calls if c == ("hw_key", 46)]
+    assert len(presses) == 2  # 关了 5 s 后按一次；按了没用，30 s 冷却后再按一次

@@ -69,7 +69,7 @@ def _build_reader(cfg: Config):
     from .vision.ocr import make_ocr
 
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, cfg.reply.disclosure_prefix)
-    return ChatReader(make_ocr(cfg.ocr.engine), cfg.vision, cfg.ocr, cfg.chat, self_filter), self_filter
+    return ChatReader(make_ocr(cfg.ocr.engine, cfg.ocr.threads), cfg.vision, cfg.ocr, cfg.chat, self_filter), self_filter
 
 
 # ---- 命令 ----

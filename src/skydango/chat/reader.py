@@ -53,23 +53,32 @@ class ChatReader:
         self._sig: np.ndarray | None = None  # 上次 OCR 时面板文字的“指纹”
         self._ocr_at = float("-inf")
         self._shrunk = 0  # 连续几帧行数骤减
+        self.panel_closed_since: float | None = None  # 从什么时候开始看不到面板
         self.self_filter = self_filter
         self.ignore = [re.compile(p) for p in chat.ignore_patterns]
 
     def _good(self, lines: list[OcrLine]) -> list[OcrLine]:
         return [l for l in lines if l.score >= self.ocr_cfg.min_score and l.text.strip()]
 
-    def _log_area(self, frame: np.ndarray) -> Rect:
+    def _log_area(self, frame: np.ndarray) -> tuple[Rect, bool]:
+        """(读取区域, 看没看到面板底部的输入框)。看到了就读到它上沿为止（面板高度随输入框开关变化）。"""
         height, width = frame.shape[:2]
         area = roi_rect(self.vision.log_roi, width, height)
         top = find_input_top(frame[:, area.x : area.x2])
-        if top is not None and top > area.y:  # 读到面板输入框上沿为止（面板高度随输入框开关变化）
-            area = Rect(area.x, area.y, area.w, top - 4 - area.y)
-        return area
+        if top is None or top <= area.y:
+            return area, False
+        return Rect(area.x, area.y, area.w, top - 4 - area.y), True
+
+    def panel_visible(self, frame: np.ndarray) -> bool:
+        """聊天记录面板开着没：看面板底部的“聊天……”输入框（它是面板的一部分，面板关了就没有）。
+
+        不能看“读不读得出字”：面板关着时 3D 场景里的名字标签也会被读成一行（实测因此没按 C，整轮读不到消息）。
+        """
+        return self._log_area(frame)[1]
 
     def log_rows(self, frame: np.ndarray, area: Rect | None = None) -> list[LogRow]:
         """log 模式：读出聊天记录面板里的所有行（坐标换算回整张图）。"""
-        area = area or self._log_area(frame)
+        area = area or self._log_area(frame)[0]
         crop = area.crop(frame)
         rows = parse_rows(crop, self._good(self.ocr.recognize(crop)), self.vision.log_self_min_value)
         return [
@@ -108,7 +117,17 @@ class ChatReader:
             fh.write("\n".join(lines) + "\n")
 
     def _read_log(self, frame: np.ndarray, now: float) -> list[Message]:
-        area = self._log_area(frame)
+        area, visible = self._log_area(frame)
+        if self.vision.log_require_panel:
+            # 面板关着就不跑 OCR：不会误读场景里的字，也不会因为 3D 画面一直在动而每帧都 OCR（实测 CPU 拉满）
+            if not visible:
+                if self.panel_closed_since is None:
+                    self.panel_closed_since = now
+                    log.warning("没看到聊天记录面板（底部的“聊天……”输入框），暂停读取")
+                return []
+            if self.panel_closed_since is not None:
+                log.info("聊天记录面板又出现了，继续读取")
+                self.panel_closed_since = None
         sig = text_signature(area.crop(frame))
         # 面板里的文字没变就不跑 OCR（截图约 9 ms，OCR 约 0.4 s）；隔一阵还是强制识别一次，以防万一
         if (

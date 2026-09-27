@@ -32,18 +32,24 @@ def _box_from_points(points: Any) -> Rect:
 class RapidOcrEngine:
     """兼容 rapidocr_onnxruntime 1.x 和 rapidocr 2.x/3.x 两套 API。"""
 
-    def __init__(self) -> None:
+    def __init__(self, threads: int = 8) -> None:
+        # onnxruntime 默认用满所有核（实测 32 核机器上一跑 OCR 就 CPU 拉满），8 线程时速度一样
         try:
             from rapidocr_onnxruntime import RapidOCR  # 1.x：模型随包附带，可离线
 
-            self._engine = RapidOCR()
+            self._engine = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1)
             self._legacy = True
         except ImportError:
             try:
                 from rapidocr import RapidOCR  # 2.x/3.x：首次运行会下载模型
             except ImportError as exc:
                 raise ImportError("没有安装 OCR：pip install \"skydango[ocr]\"") from exc
-            self._engine = RapidOCR()
+            self._engine = RapidOCR(
+                params={
+                    "EngineConfig.onnxruntime.intra_op_num_threads": threads,
+                    "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+                }
+            )
             self._legacy = False
 
     def recognize(self, img: np.ndarray) -> list[OcrLine]:
@@ -105,7 +111,7 @@ def join_lines(lines: list[OcrLine]) -> str:
     return _concat(parts)
 
 
-def make_ocr(engine: str) -> OcrEngine:
+def make_ocr(engine: str, threads: int = 8) -> OcrEngine:
     if engine == "rapidocr":
-        return RapidOcrEngine()
+        return RapidOcrEngine(threads)
     raise ValueError(f"不支持的 OCR 引擎: {engine}")
