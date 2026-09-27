@@ -119,3 +119,12 @@ def test_responder_asks_available_emotes_each_turn_and_keeps_tag_in_history():
     assert r.reply([msg("真的")]) == Reply("嗯嗯", None)
     assert "## 动作" not in llm.calls[1][0]
     assert llm.calls[1][1][1] == {"role": "assistant", "content": "[害羞]哪有啦"}
+
+
+def test_claims_human_filter_catches_variants():
+    from skydango.chat.responder import clean_reply
+
+    for bad in ("我当然是真人", "我可是活人", "当然不是AI啦", "真人一个", "我是真人", "我不是机器人哦"):
+        assert clean_reply(bad, 40) is None, bad
+    for ok in ("你才是AI吧", "哈哈哈随你怎么想", "我是AI", "在呢"):
+        assert clean_reply(ok, 40) == ok, ok

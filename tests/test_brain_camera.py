@@ -57,3 +57,40 @@ def test_owner_window_can_raise_the_step_cap():
     c, dev, _ = cam(panel=False)
     c.move("right", 10, max_steps=8)
     assert dev.calls.count(("hw_down", 106)) == 8
+
+
+def test_arrow_key_is_released_even_when_interrupted():
+    c, dev, _ = cam(panel=False)
+
+    def boom(s):
+        raise KeyboardInterrupt
+
+    c.sleep = boom
+    with pytest.raises(KeyboardInterrupt):
+        c.move("left", 3)
+    assert ("hw_up", 105) in dev.calls  # 方向键一定松开，不然镜头会一直转
+    assert c.offset["turn"] == 0  # 第一步就被打断：这一步没走完，不记
+
+
+def test_offset_counts_each_finished_step():
+    c, dev, _ = cam(panel=False)
+    presses = []
+
+    def sleep(s):
+        presses.append(s)
+        if len(presses) == 3:  # 每步两次 sleep（按住、松开后）：第 3 次是第 2 步按住时，这时出错
+            raise RuntimeError("adb 失败")
+
+    c.sleep = sleep
+    with pytest.raises(RuntimeError):
+        c.move("right", 3)
+    assert c.offset["turn"] == 1
+
+
+def test_around_captures_four_directions_and_turns_full_circle():
+    c, dev, state = cam()
+    shots = []
+    frames = c.around(lambda: shots.append(len(shots)) or len(shots))
+    assert frames == [1, 2, 3, 4]
+    assert dev.calls.count(("hw_down", 106)) == 8  # 每 90°（2 步）一张，最后再转 90° 回到原来的朝向
+    assert c.offset["turn"] == 0 and state["panel"] is True

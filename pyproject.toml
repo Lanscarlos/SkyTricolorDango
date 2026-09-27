@@ -24,8 +24,9 @@ ocr = [
 # OpenAI 兼容接口：DeepSeek / 通义千问 / Kimi / Ollama / vLLM 等
 openai = ["openai>=1.30"]
 anthropic = ["anthropic>=0.116"]
+brain = ["mcp>=2.2", "uvicorn>=0.30"]
 dev = ["pytest>=8", "pillow>=10"]
-all = ["skydango[ocr,openai,anthropic]"]
+all = ["skydango[ocr,openai,anthropic,brain]"]
 
 [project.scripts]
 skydango = "skydango.cli:main"

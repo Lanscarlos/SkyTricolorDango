@@ -1,0 +1,74 @@
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from skydango.brain.claude import ClaudeError, StreamProcess, check_result, claude_env, one_shot, resolve_claude
+
+FAKE = [sys.executable, str(Path(__file__).parent / "fake_claude.py")]
+IMG = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}
+
+
+def fake_env(tmp_path, mode="ok"):
+    env = claude_env("tok", tmp_path / "cfg")
+    env.update(FAKE_CLAUDE_MODE=mode, FAKE_CLAUDE_LOG=str(tmp_path / "log.jsonl"))
+    return env
+
+
+def log_lines(tmp_path):
+    return [json.loads(l) for l in (tmp_path / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_claude_env_isolates_from_user_login(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-oat01-bad")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "x")
+    env = claude_env("tok", tmp_path)
+    assert "ANTHROPIC_API_KEY" not in env and "ANTHROPIC_AUTH_TOKEN" not in env
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok" and env["CLAUDE_CONFIG_DIR"] == str(tmp_path.resolve())
+
+
+def test_resolve_claude_reports_missing():
+    with pytest.raises(RuntimeError, match="找不到 Claude Code"):
+        resolve_claude("definitely-not-a-command-xyz")
+
+
+def test_round_trip_text_and_image(tmp_path):
+    p = StreamProcess(FAKE, fake_env(tmp_path), tmp_path / "work")
+    seen = []
+    p.send("你好")
+    assert check_result(p.until_result(10, seen.append)) == "收到：你好"
+    assert [m["type"] for m in seen] == ["system", "assistant", "result"]
+    p.send([{"type": "text", "text": "看图"}, IMG])
+    assert check_result(p.until_result(10)) == "收到：看图"
+    p.close()
+    assert not p.alive()
+    lines = log_lines(tmp_path)
+    assert lines[0]["token"] == "tok" and lines[0]["api_key"] is None
+    assert lines[2] == {"message": "看图", "images": 1}
+
+
+def test_timeout_and_death(tmp_path):
+    hang = StreamProcess(FAKE, fake_env(tmp_path, "hang"), tmp_path / "w1")
+    hang.send("x")
+    with pytest.raises(ClaudeError, match="没有结果"):
+        hang.until_result(0.5)
+    hang.kill()
+    assert not hang.alive()
+    die = StreamProcess(FAKE, fake_env(tmp_path, "die"), tmp_path / "w2")
+    die.send("x")
+    with pytest.raises(ClaudeError, match="退出了"):
+        die.until_result(10)
+
+
+def test_limit_is_flagged(tmp_path):
+    p = StreamProcess(FAKE, fake_env(tmp_path, "limit"), tmp_path / "w")
+    p.send("x")
+    with pytest.raises(ClaudeError) as err:
+        check_result(p.until_result(10))
+    assert err.value.limit
+    p.close()
+
+
+def test_one_shot(tmp_path):
+    assert one_shot(FAKE, fake_env(tmp_path), tmp_path / "w", [{"type": "text", "text": "描述"}, IMG], 10) == "收到：描述"

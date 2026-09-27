@@ -1,8 +1,10 @@
-"""大脑的工具：给 Claude 的定义 + 执行（参数逐个校验，交给身体在身体线程里做）。出错不抛异常，原因交给大脑。"""
+"""大脑的工具：说明（给 MCP 服务用）+ 执行（参数逐个校验、每轮计数，交给身体在身体线程里做）。出错不抛异常，原因交给大脑。"""
 
 from __future__ import annotations
 
+import json
 import logging
+import threading
 from collections.abc import Callable
 
 from .body import REQUEST_KINDS, ToolError
@@ -10,83 +12,29 @@ from .camera import KEYS
 
 log = logging.getLogger(__name__)
 
-EMPTY = {"type": "object", "properties": {}}
-
-TOOLS = [
-    {
-        "name": "look",
-        "description": "截一张现在的游戏画面（缩到 1280×720），附带身体认出的好友名字和它们在图里的位置。5 秒内只能看一次。",
-        "input_schema": EMPTY,
-    },
-    {
-        "name": "look_at",
-        "description": "放大看画面的一块（看小图标、装扮细节）。坐标按 look 返回的 1280×720 图给：左上角 x、y，宽 w，高 h。",
-        "input_schema": {
-            "type": "object",
-            "properties": {k: {"type": "integer"} for k in ("x", "y", "w", "h")},
-            "required": ["x", "y", "w", "h"],
-        },
-    },
-    {
-        "name": "status",
-        "description": "看身体现在的状态：面板和输入框开没开、身边有谁、是不是牵着手、镜头、能做的动作、互动规则、刚说过的话。",
-        "input_schema": EMPTY,
-    },
-    {
-        "name": "chat_log",
-        "description": "看最近 n 条聊天记录（含你自己说的，标成“我”）。",
-        "input_schema": {"type": "object", "properties": {"n": {"type": "integer", "description": "条数，1~50，默认 20"}}},
-    },
-    {
-        "name": "say",
-        "description": "在游戏里发一句话。一次一句，口语，短。",
-        "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
-    },
-    {
-        "name": "emote",
-        "description": "做一个动作（只能用 status 里“能做的动作”列出的）。牵着手时会被拦下，确定要松手才传 force=true。",
-        "input_schema": {
-            "type": "object",
-            "properties": {"name": {"type": "string"}, "force": {"type": "boolean"}},
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "set_request_policy",
-        "description": (
-            "改互动请求的规则（本次运行有效）。who：好友昵称，或 \"*\" 表示所有好友、\"stranger\" 表示陌生人；"
-            "kind：hand 牵手 / hug 拥抱 / highfive 击掌 / piggyback 背背 / candle 点火 / \"*\" 所有；accept：接不接。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "who": {"type": "string"},
-                "kind": {"type": "string", "enum": list(REQUEST_KINDS)},
-                "accept": {"type": "boolean"},
-            },
-            "required": ["who", "kind", "accept"],
-        },
-    },
-    {
-        "name": "camera",
-        "description": (
-            "转视角 / 缩放：left、right 左右转（每步约 45°），up 往上看，down 往下看，zoom_in 拉近，zoom_out 拉远。"
-            "steps 1~4，默认 1。转之前身体会关掉聊天记录面板，转完再打开。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"action": {"type": "string", "enum": list(KEYS)}, "steps": {"type": "integer"}},
-            "required": ["action"],
-        },
-    },
-    {
-        "name": "camera_reset",
-        "description": "把镜头转回原位（按之前转过的反着转回去）。",
-        "input_schema": EMPTY,
-    },
-]
-
+DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
+    "look": "看现在的画面。默认让眼睛马上看一眼，返回文字描述；image=true 时返回原图（1280×720）和认出的名字位置，"
+            "只在文字不够用、要自己看细节时才要原图。",
+    "look_at": "放大看局部原图：坐标按 look(image=true) 那张 1280×720 的图给（左上角 x、y，宽 w，高 h），裁的就是那一张。",
+    "look_around": "环顾四周：原地转一圈（每 90° 看一次），眼睛描述前 / 右 / 后 / 左各有什么，最后转回原来的朝向。要十几秒，别常用。",
+    "status": "看身体现在的状态：面板和输入框开没开、身边有谁、是不是牵着手、镜头、能做的动作、互动规则、刚说过的话。",
+    "chat_log": "看最近 n 条聊天记录（含你自己说的，标成“我”），n 1~50，默认 20。",
+    "say": "在游戏里发一句话。一次一句，口语，短。",
+    "emote": "做一个动作（只能用 status 里“能做的动作”列出的）。牵着手时会被拦下，确定要松手才传 force=true。",
+    "set_request_policy": (
+        "改互动请求的规则（本次运行有效）。who：好友昵称，或 \"*\" 表示所有好友、\"stranger\" 表示陌生人；"
+        f"kind：{' / '.join(REQUEST_KINDS)}（hand 牵手、hug 拥抱、highfive 击掌、piggyback 背背、candle 点火、* 所有）；"
+        "accept：接不接。陌生人只能接点火。"
+    ),
+    "camera": (
+        f"转视角 / 缩放，action：{' / '.join(KEYS)}（left、right 左右转，每步约 45°；up 往上看、down 往下看；zoom_in 拉近、zoom_out 拉远）。"
+        "steps 1~4，默认 1。转之前身体会关掉聊天记录面板，转完再打开。"
+    ),
+    "camera_reset": "把镜头转回原位（按之前转过的反着转回去）。",
+}
+TOOL_NAMES = list(DESCRIPTIONS)
 ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset"}  # 算“做了事”的工具（心跳退档用）
+AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
 
 _MISSING = object()
 
@@ -113,24 +61,74 @@ def _bool(args: dict, key: str, default=_MISSING) -> bool:
 
 
 class ToolBox:
-    def __init__(self, body) -> None:
+    def __init__(self, body, eyes=None, max_steps: int = 6, max_says: int = 2) -> None:
         self.body = body
+        self.eyes = eyes
+        self.max_steps = max_steps
+        self.max_says = max_says
+        self._lock = threading.Lock()  # Claude Code 可能并行调工具：计数要加锁
+        self.begin_turn()
+
+    def begin_turn(self) -> None:
+        """每次醒来开始时清零：这一轮最多 max_steps 次工具、max_says 句话。"""
+        with self._lock:
+            self.calls = 0
+            self.says = 0
+            self.acted = False
+            self.used: list[str] = []
+
+    def status(self) -> str:
+        """醒来时拼消息用：不算这一轮的工具次数。"""
+        try:
+            return self.body.call(self.body.status)
+        except ToolError as exc:
+            return f"（状态读不到：{exc}）"
 
     def run(self, name: str, args: dict) -> tuple[str | list[dict], bool]:
-        """执行一个工具，返回 (tool_result 的 content, 是不是出错)。"""
+        """执行一个工具，返回 (结果内容, 是不是出错)。"""
+        with self._lock:
+            self.calls += 1
+            self.used.append(name)
+            if self.calls > self.max_steps:
+                return "这一轮做的事够多了，先停下，下次醒来再说", True
+            if name == "say":
+                if self.says >= self.max_says:
+                    return "这一轮已经说得够多了，别刷屏", True
+                self.says += 1  # 先占上名额：并行调 say 也不会超；没说成再还回去
         try:
-            fn = self._bind(name, args or {})
-            return self.body.call(fn), False
-        except ToolError as exc:
-            return str(exc), True
+            out = self._exec(name, args or {})
         except Exception as exc:
-            log.exception("工具 %s 出错", name)
-            return f"出错了：{exc}", True
+            if name == "say":
+                with self._lock:
+                    self.says -= 1
+            if not isinstance(exc, ToolError):
+                log.exception("工具 %s 出错", name)
+                return f"出错了：{exc}", True
+            return str(exc), True
+        if name in ACTIONS:
+            self.acted = True
+        log.info("工具 %s %s → %s", name, json.dumps(args or {}, ensure_ascii=False), out if isinstance(out, str) else "[图片]")
+        return out, False
+
+    def _exec(self, name: str, a: dict):
+        b = self.body
+        if name == "look":
+            image = _bool(a, "image", False)
+            if image or self.eyes is None:
+                return b.call(b.look)
+            now = b.clock()
+            if self.eyes.latest is not None and now - self.eyes.last_look < b.cfg.brain.look_min_interval:
+                return self.eyes.summary(now)
+            return self.eyes.describe_frame(b.call(b.fresh_frame), now)
+        if name == "look_around":
+            if self.eyes is None:
+                raise ToolError("没开眼睛，看不了四周")
+            frames = b.call(b.capture_around, timeout=AROUND_TIMEOUT)
+            return self.eyes.describe_around(frames, b.clock())
+        return b.call(self._bind(name, a))
 
     def _bind(self, name: str, a: dict) -> Callable[[], object]:
         b = self.body
-        if name == "look":
-            return b.look
         if name == "look_at":
             x, y, w, h = _int(a, "x"), _int(a, "y"), _int(a, "w"), _int(a, "h")
             return lambda: b.look_at(x, y, w, h)

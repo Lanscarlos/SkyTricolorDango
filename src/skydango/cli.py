@@ -421,23 +421,40 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
                 log.exception("恢复轮盘失败，请用 emotes wheel 检查")
 
 
+def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
+    """大脑和眼睛的 Claude Code：命令 + 隔离的环境（单独配置目录 + claude setup-token 令牌）。"""
+    from .brain.claude import claude_env, resolve_claude
+    from .chat.llm import read_key
+
+    try:
+        token = read_key(cfg.brain.token_env)
+    except RuntimeError:
+        raise RuntimeError(
+            f"没有找到大脑用的 Claude 令牌：先运行 claude setup-token，再 setx {cfg.brain.token_env} \"<令牌>\""
+        ) from None
+    return resolve_claude(cfg.brain.claude_path), claude_env(token, cfg.brain.config_dir)
+
+
 def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0) -> None:
-    """统管大脑：身体在当前线程跑（独占设备），大脑在后台线程调 Claude。"""
+    """统管大脑：身体在当前线程跑（独占设备）；大脑（常驻 Claude Code）和眼睛各一个后台线程；工具经本机 MCP 服务。"""
+    import dataclasses
     import threading
 
     from .brain.body import Body
-    from .brain.budget import Budget
     from .brain.camera import Camera
-    from .brain.client import BrainClient
-    from .brain.context import Context
+    from .brain.claude import one_shot
     from .brain.events import EventQueue
-    from .brain.loop import Brain
-    from .brain.prompt import memory_prompt, static_prompt
+    from .brain.eyes import Eyes, eyes_command
+    from .brain.loop import Brain, log_brain_message
+    from .brain.mcp_server import SkyServer
+    from .brain.prompt import brain_prompt
+    from .brain.session import BrainSession
     from .brain.tools import ToolBox
     from .chat.llm import make_llm
     from .chat.responder import Responder
     from .chat.sender import ChatSender
 
+    base, claude_vars = _brain_env(cfg)  # 先检查令牌和 claude 命令，缺了早点报错
     dev = _device(cfg)
     reader, self_filter = _build_reader(cfg)
     reader.trace_path = run.rows_log
@@ -465,45 +482,64 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         panel_visible, panel_key = (lambda: False), 0
     camera = Camera(dev, cfg.brain.camera_step, panel_visible, panel_key)
     events = EventQueue()
-    # 大脑离线时的备用回复：不带记忆存储，免得和身体重复记聊天记录
-    fallback = Responder(make_llm(cfg.llm), cfg.reply)
+    # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
+    fallback = Responder(make_llm(dataclasses.replace(cfg.llm, timeout=10.0, max_retries=0)), cfg.reply)
     body = Body(
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
         env=env, social=social, emotes=emotes, camera=camera, fallback=fallback, store=live_store, notes=notes, run=run,
     )
-    context = Context(cfg.brain, static_prompt(cfg.reply), lambda: memory_prompt(cfg.reply, store))
-    brain = Brain(
-        cfg.brain, cfg.chat, BrainClient(cfg.brain), context, ToolBox(body), events, Budget(cfg.brain),
-        nearby=env.nearby if env else (lambda now: []), run=run, store=live_store,
+    work = run.path / "brain"
+    eyes = Eyes(
+        cfg.brain,
+        describe=lambda content: one_shot(eyes_command(base, cfg.brain), claude_vars, work / "eyes", content, cfg.brain.eyes_timeout),
+        frame=lambda: body.last_frame,
+        labels=lambda: dict(env.labels) if env else {},
+        blackout=lambda: body.blackout,
+        label_keep=cfg.env.interval * 2 + 1,
     )
-    body.brain_offline = brain.offline
+    events.subscribe(eyes.notice)
+    toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says)
+    server = SkyServer(toolbox)
+    server.start()
+    session = BrainSession(
+        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store),
+        cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout, on_message=log_brain_message,
+    )
+    brain = Brain(
+        cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
+        eyes=eyes, run=run, store=live_store,
+    )
     stop = threading.Event()
-    thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
-    thread.start()
+    brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
+    eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
+    body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
+    brain_thread.start()
+    eyes_thread.start()
     try:
         body.run(duration, stop)
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
         stop.set()
-        thread.join(timeout=cfg.brain.timeout)
-        body.shutdown()
-        if live_store is not None and not thread.is_alive():
+        body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
+        brain_thread.join(timeout=5)
+        if live_store is not None and not brain_thread.is_alive():
             try:
-                brain.compact()  # 把这次的经过记进 inbox.md
+                brain.farewell()  # 把这次的经过记进 inbox.md
             except Exception:
-                log.exception("退出前写摘要失败")
+                log.exception("退出前写经过失败")
+        session.close()
+        server.stop()
 
 
 def cmd_look(cfg: Config, args) -> None:
-    """截一张图交给 Claude 描述一遍：在真实画面上调看图提示词，看它认得准不准、会不会编名字。"""
-    from .brain.budget import Budget
-    from .brain.client import BrainClient
-    from .brain.images import fit, image_block, label_note
-    from .brain.prompt import LOOK_QUESTION
+    """截一张图让眼睛（Haiku）描述一遍：在真实画面上调眼睛的提示词，看它认得准不准、会不会编名字。"""
+    from .brain.claude import one_shot
+    from .brain.eyes import Eyes, eyes_command
     from .vision.bubbles import roi_rect
     from .vision.chatlog import find_input_top
 
+    base, claude_vars = _brain_env(cfg)
     dev = _device(cfg)
     frame = dev.screenshot()
     height, width = frame.shape[:2]
@@ -511,24 +547,24 @@ def cmd_look(cfg: Config, args) -> None:
     panel = find_input_top(frame[:, area.x : area.x2]) is not None
     env = _env_watcher(cfg, background=False)
     env.observe(frame, 0.0, panel_visible=panel)
-    view = fit(frame, tuple(cfg.brain.image_size))
     Path("tmp").mkdir(exist_ok=True)
-    imwrite("tmp/look.jpg", view)
-    question = Path(args.prompt).read_text(encoding="utf-8") if args.prompt else LOOK_QUESTION
-    note = label_note(env.labels, view.shape[1] / width)
-    content = [image_block(view, cfg.brain.jpeg_quality), {"type": "text", "text": note + "\n\n" + question}]
+    imwrite("tmp/look.jpg", frame)
+    eyes = Eyes(
+        cfg.brain,
+        describe=lambda content: one_shot(
+            eyes_command(base, cfg.brain), claude_vars, Path("tmp/look-claude"), content, cfg.brain.eyes_timeout
+        ),
+        frame=lambda: frame,
+        labels=lambda: dict(env.labels),
+        blackout=lambda: False,
+        clock=lambda: 0.0,
+    )
+    if args.prompt:
+        eyes.look_request = Path(args.prompt).read_text(encoding="utf-8")
     started = time.perf_counter()
-    resp = BrainClient(cfg.brain).create(
-        [{"type": "text", "text": "你在帮一个《光遇》玩家看游戏截图。"}], [{"role": "user", "content": content}]
-    )
-    elapsed = time.perf_counter() - started
-    answer = "".join(b.get("text", "") for b in resp.get("content") or [] if b.get("type") == "text").strip()
-    usage = resp.get("usage") or {}
-    print(note + "\n\n" + answer)
-    print(
-        f"\n{cfg.brain.model}：{elapsed:.1f} 秒，输入 {usage.get('input_tokens')} / 输出 {usage.get('output_tokens')} tokens，"
-        f"约 ${Budget(cfg.brain).cost(usage):.4f}；截图存在 tmp/look.jpg"
-    )
+    text = eyes.describe_frame(frame, 0.0)
+    print(text)
+    print(f"\n{cfg.brain.eyes_model}：{time.perf_counter() - started:.1f} 秒；截图存在 tmp/look.jpg")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -588,7 +624,7 @@ def main(argv: list[str] | None = None) -> None:
 
     sub.add_parser("env", help="对当前画面识别一次环境（身边有谁、在哪张图），用来验证").set_defaults(func=cmd_env)
 
-    p = sub.add_parser("look", help="截一张图交给 Claude 描述一遍（调看图提示词，看它认得准不准）")
+    p = sub.add_parser("look", help="截一张图让眼睛（Claude Haiku）描述一遍（调眼睛的提示词，看它认得准不准）")
     p.add_argument("--prompt", help="换一个问题：文本文件路径")
     p.set_defaults(func=lambda cfg, args: cmd_look(cfg, args))
 
@@ -603,7 +639,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显（联调用）")
     p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动结束（默认一直跑）")
     p.add_argument("--no-emotes", action="store_true", help="这次不做动作（牵着手时用：做动作会松开牵手）")
-    p.add_argument("--brain", action="store_true", help="用统管大脑（Claude）指挥：看画面、决定说什么做什么")
+    p.add_argument("--brain", action="store_true", help="用统管大脑（Claude Code）指挥：看画面、决定说什么做什么")
     p.set_defaults(func=lambda cfg, args: cmd_run(cfg, args))
 
     args = parser.parse_args(argv)

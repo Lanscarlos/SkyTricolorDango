@@ -1,6 +1,8 @@
+import base64
 import threading
 from concurrent.futures import Future
 
+import cv2
 import numpy as np
 import pytest
 from conftest import FakeDevice, scene
@@ -81,7 +83,7 @@ def test_chat_messages_become_events(clock):
     b, _, reader, events = body(clock)
     reader.batches = [[msg("在吗"), msg("hi", speaker="")]]
     b.step()
-    assert [e.text for e in events.drain()] == ["聊天  懒洋洋大王：在吗", "聊天  （看不出是谁）：hi"]
+    assert [e.text for e in events.drain()] == ["聊天  懒洋洋大王：「在吗」", "聊天  （看不出是谁）：「hi」"]
     assert list(b.chat)[-1][1:] == ("", "hi") and len(b.heard) == 2
 
 
@@ -427,3 +429,93 @@ def test_fallback_replies_when_brain_offline(clock):
     b.step()
     assert ("text", "在呢") in device.calls
     assert events.drain()[-1].kind == "fallback"
+
+
+def test_sensing_error_does_not_block_chat_and_commands(clock):
+    class BrokenEnv(FakeEnv):
+        def observe(self, frame, now, panel_visible):
+            raise RuntimeError("OCR 出错")
+
+    b, _, reader, events = body(clock, env=BrokenEnv())
+    reader.batches = [[msg("在吗")]]
+    b.step()
+    kinds = [e.kind for e in events.drain()]
+    assert "chat" in kinds and "error" in kinds
+
+
+def test_screenshot_error_with_empty_message(clock):
+    b, device, _, events = body(clock)
+
+    def broken():
+        raise RuntimeError()
+
+    device.screenshot = broken
+    b.step()
+    assert events.drain()[-1].text == "截图失败：RuntimeError"
+
+
+def test_holding_is_cleared_when_friend_leaves(clock):
+    env = FakeEnv()
+    b, _, _, events = body(clock, env=env)
+    env.near = ["懒洋洋大王"]
+    b.step()
+    b.holding = "懒洋洋大王"
+    env.near = []
+    b.step()
+    assert b.holding is None
+    assert any(e.kind == "released" for e in events.drain())
+
+
+def test_strangers_can_only_get_candle(clock):
+    social = FakeSocial()
+    b, _, _, _ = body(clock, social=social)
+    for kind in ("hand", "hug", "*"):
+        with pytest.raises(ToolError, match="点火"):
+            b.set_policy("stranger", kind, True)
+    b.set_policy("stranger", "candle", True)
+    b.set_policy("stranger", "hand", False)  # 不接总是可以的
+    assert social.policy_calls == [("stranger", "candle", True), ("stranger", "hand", False)]
+
+
+def test_shutdown_fails_queued_commands_and_refuses_new_ones(clock):
+    b, _, _, _ = body(clock)
+    results = []
+
+    def caller():
+        try:
+            b.call(lambda: "做了")
+        except ToolError as exc:
+            results.append(str(exc))
+
+    t = threading.Thread(target=caller)
+    t.start()
+    while b._commands.empty():
+        pass
+    b.shutdown()
+    t.join(2)
+    assert results and "停" in results[0]
+    with pytest.raises(ToolError, match="停"):
+        b.call(lambda: 1)
+
+
+def test_look_at_crops_the_last_look(clock):
+    b, device, _, _ = body(clock)
+    b.look()
+    device.frames = [np.zeros((720, 1280, 3), np.uint8)]  # 之后画面变黑了
+    img, _ = b.look_at(100, 100, 200, 100)
+    data = np.frombuffer(base64.standard_b64decode(img["source"]["data"]), np.uint8)
+    assert cv2.imdecode(data, cv2.IMREAD_COLOR).mean() > 20  # 裁的是上次 look 的图，不是新截的黑图
+
+
+def test_capture_around(clock):
+    class AroundCamera(FakeCamera):
+        def around(self, capture):
+            return [capture() for _ in range(4)]
+
+    dry, _, _, _ = body(clock, camera=AroundCamera())
+    assert len(dry.capture_around()) == 1  # dry-run 不转，只看当前画面
+    live, _, _, _ = body(clock, live=True, camera=AroundCamera())
+    assert len(live.capture_around()) == 4
+    live.blackout = True
+    with pytest.raises(ToolError, match="黑"):
+        live.capture_around()

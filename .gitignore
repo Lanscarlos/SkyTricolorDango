@@ -21,3 +21,6 @@ tmp/
 # 聊天记录（记忆），本机私有
 memory/
 .superpowers/
+
+# 大脑用的单独 Claude Code 配置目录（登录状态、会话记录）
+.brain-claude/

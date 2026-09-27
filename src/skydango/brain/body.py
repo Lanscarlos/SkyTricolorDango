@@ -31,6 +31,10 @@ PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）�
 SCENE_EVENT_COOLDOWN = 10.0
 
 
+def _first_line(exc: BaseException) -> str:
+    return (str(exc).splitlines() or [type(exc).__name__])[0]
+
+
 class ToolError(Exception):
     """工具做不成：原因原样告诉大脑，让它换个办法。"""
 
@@ -81,6 +85,7 @@ class Body:
         self.emoted: list[str] = []
         self.last_frame = None
         self.last_look = float("-inf")
+        self.look_frame = None  # 最近一次 look（原图）看的那张，look_at 裁它
         self.blackout = False
         self.holding: str | None = None  # 推测正牵着谁的手
         self._holding_since = 0.0
@@ -97,6 +102,7 @@ class Body:
         self.limiter = RateLimiter(cfg.reply.min_interval, cfg.reply.max_per_minute)
         self._fallback_pending: list[Message] = []
         self._fallback_last_new = 0.0
+        self.stopped = False  # shutdown 之后不再接大脑的命令
 
     # ---- 主循环 ----
     def step(self) -> None:
@@ -105,20 +111,31 @@ class Body:
         try:
             frame = self.device.screenshot()
         except Exception as exc:  # 实测 adb 截图偶尔会连续失败几秒
-            self.events.put("error", f"截图失败：{str(exc).splitlines()[0]}")
+            self.events.put("error", f"截图失败：{_first_line(exc)}")
         if frame is not None:
             self.last_frame = frame
-            fresh = self.reader.read(frame, now)
-            if self.cfg.vision.mode == "log":
-                self.panel.maybe_reopen(now)
-                self._watch_panel(now)
-            self._watch_screen(frame, now)
-            if self.env is not None:
-                self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
-                self._watch_people(now)
+            fresh: list[Message] = []
+            try:
+                fresh = self.reader.read(frame, now)
+            except Exception:
+                log.exception("读聊天出错")
+            try:
+                self._sense(frame, now)
+            except Exception:
+                log.exception("感知出错，这一圈跳过")
+                self.events.put("error", "身体感知出错了（详见日志）")
             self._heard(fresh, frame, now)
         self._run_commands()
         self._fallback(now)
+
+    def _sense(self, frame, now: float) -> None:
+        if self.cfg.vision.mode == "log":
+            self.panel.maybe_reopen(now)
+            self._watch_panel(now)
+        self._watch_screen(frame, now)
+        if self.env is not None:
+            self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
+            self._watch_people(now)
 
     def run(self, duration: float = 0.0, stop: threading.Event | None = None) -> None:
         """一直跑；duration > 0 时跑这么多秒后自己退出（别在外面套 timeout）。stop 被设置时也退出。"""
@@ -137,7 +154,15 @@ class Body:
             self.sleep(max(0.0, self.cfg.vision.poll_interval - (self.clock() - started)))
 
     def shutdown(self) -> None:
-        """退出时：镜头转回原位、轮盘换回去。"""
+        """退出时（不等大脑）：不再接命令、排队的命令全部失败、镜头转回原位、轮盘换回去。"""
+        self.stopped = True
+        while True:
+            try:
+                _, fut = self._commands.get_nowait()
+            except queue.Empty:
+                break
+            if fut.set_running_or_notify_cancel():
+                fut.set_exception(ToolError("身体已经停了"))
         if self.camera is not None and not self.cfg.reply.dry_run:
             try:
                 log.info(self.camera.reset())
@@ -151,6 +176,8 @@ class Body:
 
     # ---- 命令队列：大脑的工具在身体线程里执行 ----
     def call(self, fn: Callable[[], Any], timeout: float | None = None) -> Any:
+        if self.stopped:
+            raise ToolError("身体已经停了")
         if threading.get_ident() == self._thread:
             return fn()
         fut: Future = Future()
@@ -200,7 +227,7 @@ class Body:
                 self.events.put("owner_command", f"卡洛的命令：{m.text}")
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
             else:
-                self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：{m.text}")
+                self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」")
 
     def _watch_panel(self, now: float) -> None:
         since = self.reader.panel_closed_since
@@ -235,6 +262,9 @@ class Body:
             self.events.put("arrive", f"{name} 来到身边")
         for name in sorted(self._nearby - near):
             self.events.put("leave", f"{name} 走开了（{self.cfg.env.keep:.0f} 秒没看到名字）")
+            if name == self.holding:  # 人都走开了，肯定没牵着了
+                self.events.put("released", f"（推测）和 {name} 分开了")
+                self.holding = None
         self._nearby = near
 
         requests = dict(self.env.requests)
@@ -279,7 +309,7 @@ class Body:
         if now - self.last_look < brain.look_min_interval:
             raise ToolError(f"{brain.look_min_interval:.0f} 秒内刚看过，等一下再看")
         frame = self.device.screenshot()
-        self.last_frame, self.last_look = frame, now
+        self.last_frame, self.last_look, self.look_frame = frame, now, frame
         view = fit(frame, tuple(brain.image_size))
         recent = {}
         if self.env is not None:  # 最近两次扫描内看到的名字才算在画面里；先拍快照，env 后台线程会改这个 dict
@@ -291,13 +321,33 @@ class Body:
 
     def look_at(self, x: int, y: int, w: int, h: int) -> list[dict]:
         brain = self.cfg.brain
-        frame = self.device.screenshot()
+        # 大脑给的坐标是按上次 look 那张图算的；人会走动，裁新截的图会对不上
+        frame = self.look_frame if self.look_frame is not None else self.device.screenshot()
         try:
             crop, (ax, ay, aw, ah) = crop_view(frame, x, y, w, h, brain.image_size[0], brain.look_at_max)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         text = f"原图 {frame.shape[1]}×{frame.shape[0]} 上的 ({ax}, {ay}) 起 {aw}×{ah}"
         return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
+
+    def fresh_frame(self):
+        """眼睛马上要看：在身体线程里截一张新的。"""
+        frame = self.device.screenshot()
+        self.last_frame = frame
+        return frame
+
+    def capture_around(self) -> list:
+        """环顾四周：转一圈，每 90° 截一张（dry-run 不转，只截当前画面）。"""
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在看不了")
+        if self.camera is None or self.cfg.reply.dry_run:
+            return [self.fresh_frame()]
+        try:
+            frames = self.camera.around(self.device.screenshot)
+        finally:
+            self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        self.last_frame = frames[0]
+        return frames
 
     def status(self) -> str:
         now = self.clock()
@@ -393,7 +443,10 @@ class Body:
             raise ToolError("这次没开互动请求处理（[social] 关了或者没有图标模板）")
         if kind not in REQUEST_KINDS:
             raise ToolError(f"不认识的请求类型 {kind}，可以用：{'、'.join(REQUEST_KINDS)}")
-        self.social.set_policy(who.strip() or "*", kind, accept)
+        who = who.strip() or "*"
+        if who == "stranger" and accept and kind != "candle":
+            raise ToolError("陌生人只能接点火，牵手 / 拥抱 / 击掌 / 背背都不接陌生人的")
+        self.social.set_policy(who, kind, accept)
         return "现在的规则：" + self.social.describe_policy()
 
     def camera_move(self, action: str, steps: int = 1) -> str:

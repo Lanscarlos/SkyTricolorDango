@@ -1,0 +1,117 @@
+"""把身体的工具通过本机 MCP 服务交给 Claude Code（大脑）：只监听 127.0.0.1、随机端口、后台线程跑。
+
+工具先过 ToolBox（参数校验、每轮计数），再经 Body.call() 在身体线程执行。同步的工具函数 mcp 会放到线程池里跑。
+"""
+
+from __future__ import annotations
+
+import base64
+import logging
+import socket
+import threading
+import time
+
+import uvicorn
+from mcp.server.mcpserver import Image, MCPServer
+from mcp.types import CallToolResult, TextContent
+
+from .tools import DESCRIPTIONS, ToolBox
+
+log = logging.getLogger(__name__)
+
+
+def to_mcp(out) -> list:
+    """ToolBox 的结果（文字，或图片块 + 文字块的列表）→ MCP 工具返回值。"""
+    if isinstance(out, str):
+        return [out]
+    items: list = []
+    for block in out:
+        if block.get("type") == "image":
+            items.append(Image(data=base64.standard_b64decode(block["source"]["data"]), format="jpeg"))
+        elif block.get("type") == "text":
+            items.append(block["text"])
+    return items
+
+
+def build_server(toolbox: ToolBox) -> MCPServer:
+    srv = MCPServer("sky", instructions="光遇里的身体：看画面、说话、做动作、转视角。")
+
+    def call(tool: str, **args):
+        out, err = toolbox.run(tool, args)
+        if err:  # 错误文字原样给模型，让它换个办法
+            return CallToolResult(content=[TextContent(type="text", text=str(out))], is_error=True)
+        return to_mcp(out)
+
+    # 参数写在函数签名里（MCP 用它生成给模型看的参数说明），注册顺序 = DESCRIPTIONS 的顺序
+    @srv.tool(name="look", description=DESCRIPTIONS["look"])
+    def look(image: bool = False):
+        return call("look", image=image)
+
+    @srv.tool(name="look_at", description=DESCRIPTIONS["look_at"])
+    def look_at(x: int, y: int, w: int, h: int):
+        return call("look_at", x=x, y=y, w=w, h=h)
+
+    @srv.tool(name="look_around", description=DESCRIPTIONS["look_around"])
+    def look_around():
+        return call("look_around")
+
+    @srv.tool(name="status", description=DESCRIPTIONS["status"])
+    def status():
+        return call("status")
+
+    @srv.tool(name="chat_log", description=DESCRIPTIONS["chat_log"])
+    def chat_log(n: int = 20):
+        return call("chat_log", n=n)
+
+    @srv.tool(name="say", description=DESCRIPTIONS["say"])
+    def say(text: str):
+        return call("say", text=text)
+
+    @srv.tool(name="emote", description=DESCRIPTIONS["emote"])
+    def emote(name: str, force: bool = False):
+        return call("emote", name=name, force=force)
+
+    @srv.tool(name="set_request_policy", description=DESCRIPTIONS["set_request_policy"])
+    def set_request_policy(who: str, kind: str, accept: bool):
+        return call("set_request_policy", who=who, kind=kind, accept=accept)
+
+    @srv.tool(name="camera", description=DESCRIPTIONS["camera"])
+    def camera(action: str, steps: int = 1):
+        return call("camera", action=action, steps=steps)
+
+    @srv.tool(name="camera_reset", description=DESCRIPTIONS["camera_reset"])
+    def camera_reset():
+        return call("camera_reset")
+
+    return srv
+
+
+def _free_port(host: str) -> int:
+    with socket.socket() as s:
+        s.bind((host, 0))
+        return s.getsockname()[1]
+
+
+class SkyServer:
+    def __init__(self, toolbox: ToolBox, host: str = "127.0.0.1") -> None:
+        self.port = _free_port(host)
+        self.url = f"http://{host}:{self.port}/mcp"
+        app = build_server(toolbox).streamable_http_app()
+        self._server = uvicorn.Server(uvicorn.Config(app, host=host, port=self.port, log_level="warning"))
+        self._thread: threading.Thread | None = None
+
+    def start(self, timeout: float = 10.0) -> None:
+        logging.getLogger("mcp").setLevel(logging.WARNING)  # 每个请求都打 INFO，太吵
+        self._thread = threading.Thread(target=self._server.run, name="mcp", daemon=True)
+        self._thread.start()
+        deadline = time.monotonic() + timeout
+        while not self._server.started:
+            if not self._thread.is_alive() or time.monotonic() > deadline:
+                raise RuntimeError("MCP 服务没起来")
+            time.sleep(0.05)
+        log.info("MCP 服务：%s", self.url)
+
+    def stop(self) -> None:
+        self._server.should_exit = True
+        if self._thread is not None:
+            self._thread.join(5)
