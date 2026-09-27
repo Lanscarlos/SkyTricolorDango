@@ -6,17 +6,21 @@ from skydango.chat.responder import Responder
 from skydango.chat.sender import ChatSender, to_pixels
 from skydango.chat.tracker import SelfFilter
 from skydango.config import Config
+from skydango.game.wheel import WheelError
 
 import pytest
 
 
-def build(cfg: Config, frames, ocr_texts, clock):
+def build(cfg: Config, frames, ocr_texts, clock, llm=None, emotes=None):
     device = FakeDevice(frames)
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, cfg.reply.disclosure_prefix)
     reader = ChatReader(FakeOcr(ocr_texts), cfg.vision, cfg.ocr, cfg.chat, self_filter)
-    responder = Responder(EchoClient(), cfg.reply)
+    available = emotes.available if emotes else None
+    responder = Responder(llm or EchoClient(), cfg.reply, available_emotes=available)
     sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
-    agent = Agent(cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None)
+    agent = Agent(cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None, emotes=emotes)
+    if emotes:
+        emotes.device = device
     return agent, device
 
 
@@ -163,3 +167,71 @@ def test_open_chat_gives_up_waiting_after_open_delay():
     slept = []
     ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=slept.append).send("hi")
     assert abs(sum(slept) - (cfg.sender.open_delay + cfg.sender.type_delay + cfg.sender.after_delay)) < 0.11
+
+
+class FixedLlm:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def complete(self, system, messages):
+        return self.reply
+
+
+class FakeEmotes:
+    def __init__(self, names=("鞠躬", "害羞"), fail=False):
+        self.names = list(names)
+        self.fail = fail
+        self.pretended = []
+        self.device = None
+
+    def available(self):
+        return list(self.names)
+
+    def perform(self, name):
+        if self.fail:
+            raise WheelError("动作列表里没找到")
+        self.device.calls.append(("emote", name))
+        return 1
+
+    def pretend(self, name):
+        self.pretended.append(name)
+
+
+def run_one_turn(agent, clock):
+    agent.step()
+    clock.advance(2)
+    return agent.step()
+
+
+def test_emote_before_text(clock):
+    cfg = live_config()
+    emotes = FakeEmotes()
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
+    assert run_one_turn(agent, clock) == "【AI】哪有啦"
+    assert device.calls == [("emote", "害羞"), ("tap", 64, 72), ("text", "【AI】哪有啦"), ("editor", 4)]
+    assert agent.emoted == ["害羞"]
+
+
+def test_emote_only_turn_does_not_use_send_quota(clock):
+    cfg = live_config()
+    emotes = FakeEmotes()
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["晚安"] * 5, clock, FixedLlm("[鞠躬]"), emotes)
+    assert run_one_turn(agent, clock) is None
+    assert device.calls == [("emote", "鞠躬")]
+    assert agent.sent == [] and agent.limiter.allow(clock())
+
+
+def test_dry_run_pretends_emote(clock):
+    cfg = Config()  # 默认 dry_run
+    emotes = FakeEmotes()
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
+    assert run_one_turn(agent, clock) == "【AI】哪有啦"
+    assert device.calls == [] and emotes.pretended == ["害羞"]
+
+
+def test_emote_failure_still_sends_text(clock):
+    cfg = live_config()
+    emotes = FakeEmotes(fail=True)
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
+    assert run_one_turn(agent, clock) == "【AI】哪有啦"
+    assert ("text", "【AI】哪有啦") in device.calls
