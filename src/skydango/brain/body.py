@@ -14,12 +14,15 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any
 
+from ..agent import RateLimiter
+from ..chat.memory import Turn
 from ..chat.panel import PanelKeeper
 from ..chat.reader import Message
+from ..chat.responder import clean_reply, format_incoming
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES
 from .events import EventQueue
-from .images import difference, is_black, thumb
+from .images import crop_view, difference, fit, image_block, is_black, label_note, thumb
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +93,9 @@ class Body:
         self._panel_lost = False
         self._commands: queue.Queue = queue.Queue()
         self._thread = threading.get_ident()  # 身体线程；run() 里会更新成实际跑循环的线程
+        self.limiter = RateLimiter(cfg.reply.min_interval, cfg.reply.max_per_minute)
+        self._fallback_pending: list[Message] = []
+        self._fallback_last_new = 0.0
 
     # ---- 主循环 ----
     def step(self) -> None:
@@ -111,6 +117,7 @@ class Body:
                 self._watch_people(now)
             self._heard(fresh, frame, now)
         self._run_commands()
+        self._fallback(now)
 
     def run(self, duration: float = 0.0, stop: threading.Event | None = None) -> None:
         """一直跑；duration > 0 时跑这么多秒后自己退出（别在外面套 timeout）。stop 被设置时也退出。"""
@@ -176,6 +183,10 @@ class Body:
         self.heard = (self.heard + fresh)[-20:]
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
+        if self.brain_offline(now):  # 大脑离线：交给备用回复，不排进大脑的事件
+            self._fallback_pending.extend(fresh)
+            self._fallback_last_new = now
+            return
         for m in fresh:
             self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：{m.text}")
 
@@ -248,3 +259,168 @@ class Body:
             if seen > self._holding_since and kind == IDLE:
                 self.events.put("released", f"（推测）和 {self.holding} 松手了")
                 self.holding = None
+
+    # ---- 给大脑用的：都在身体线程里执行（经 call()） ----
+    def look(self) -> list[dict]:
+        now = self.clock()
+        brain = self.cfg.brain
+        if now - self.last_look < brain.look_min_interval:
+            raise ToolError(f"{brain.look_min_interval:.0f} 秒内刚看过，等一下再看")
+        frame = self.device.screenshot()
+        self.last_frame, self.last_look = frame, now
+        view = fit(frame, tuple(brain.image_size))
+        recent = {}
+        if self.env is not None:  # 最近两次扫描内看到的名字才算在画面里
+            recent = {n: v for n, v in self.env.labels.items() if now - v[4] <= self.cfg.env.interval * 2 + 1}
+        note = label_note(recent, view.shape[1] / frame.shape[1]) if self.env is not None else "（没开环境识别，认不出名字）"
+        if self.blackout:
+            note += "\n画面现在是黑的（可能在切场景）"
+        return [image_block(view, brain.jpeg_quality), {"type": "text", "text": note}]
+
+    def look_at(self, x: int, y: int, w: int, h: int) -> list[dict]:
+        brain = self.cfg.brain
+        frame = self.device.screenshot()
+        try:
+            crop, (ax, ay, aw, ah) = crop_view(frame, x, y, w, h, brain.image_size[0], brain.look_at_max)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        text = f"原图 {frame.shape[1]}×{frame.shape[0]} 上的 ({ax}, {ay}) 起 {aw}×{ah}"
+        return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
+
+    def status(self) -> str:
+        now = self.clock()
+        parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
+        try:
+            parts.append("输入框" + ("开" if self.device.ime_shown() else "关"))
+        except Exception:
+            parts.append("输入框状态读不到")
+        near = self.env.nearby(now) if self.env is not None else []
+        parts.append("身边的好友：" + ("、".join(near) if near else "没看到"))
+        if self.holding:
+            parts.append(f"牵着手：{self.holding}（推测）")
+        if self.blackout:
+            parts.append("画面黑着")
+        if self.camera is not None:
+            parts.append("镜头：" + self.camera.describe())
+        parts.append("上次看图：" + (f"{now - self.last_look:.0f} 秒前" if self.last_look > float("-inf") else "还没看过"))
+        if self.emotes is not None:
+            parts.append("能做的动作：" + ("、".join(self.emotes.available()) or "暂时没有（刚做过，要等一会儿）"))
+        if self.social is not None:
+            parts.append("互动规则：" + self.social.describe_policy())
+        if self.said:
+            parts.append("刚说过：" + " | ".join(self.said[-3:]))
+        if self.cfg.reply.dry_run:
+            parts.append("dry-run（说话、动作、转视角都不会真的执行）")
+        return " / ".join(parts)
+
+    def chat_log(self, n: int = 20) -> str:
+        rows = list(self.chat)[-max(1, min(n, 50)) :]
+        if not rows:
+            return "还没有聊天"
+        return "\n".join(
+            f"{time.strftime('%H:%M:%S', time.localtime(t))} {who or '（看不出是谁）'}：{text}" for t, who, text in rows
+        )
+
+    def say(self, text: str) -> str:
+        now = self.clock()
+        body = clean_reply(text, self.cfg.reply.max_chars)  # 含“不能声称自己是真人”的硬过滤
+        if body is None:
+            raise ToolError("这句没发：是空的、<skip>，或者说了自己是真人（不能这么说）。换个说法")
+        if not self.limiter.allow(now):
+            raise ToolError("说得太快了，等几秒再说")
+        full = self.cfg.reply.disclosure_prefix + body
+        self.limiter.record(now)
+        self.said.append(full)
+        self.chat.append((self.wall(), "我", full))
+        if self.cfg.reply.dry_run:
+            log.info("[dry-run] 将会发送: %s", full)
+            self._remember(body, full, sent=False)
+            return f"dry-run：没真的发，“{full}”"
+        self.sender.send(full)
+        self.self_filter.remember(full, self.clock())
+        self._remember(body, full, sent=True)
+        return f"已发送：{full}"
+
+    def _remember(self, body: str, full: str, sent: bool) -> None:
+        heard, self.heard = self.heard, []
+        if self.run_dir is not None:
+            self.run_dir.record_reply(heard, full, sent=sent)
+        if not sent or self.store is None:  # dry-run 的话没真的说出去，不记
+            return
+        user = format_incoming(heard) if heard else "（没人说话，你主动开口）"
+        now = self.wall()
+        try:
+            self.store.history.append(user, body, now)
+        except OSError:
+            log.exception("写聊天记录失败")
+        if self.notes is not None:
+            self.notes.turn_added(Turn(now, user, body))
+
+    def emote(self, name: str, force: bool = False) -> str:
+        if self.emotes is None:
+            raise ToolError("这次没开动作（--no-emotes 或者图标库是空的）")
+        available = self.emotes.available()
+        if name not in available:
+            raise ToolError(f"「{name}」现在做不了；能做的：{'、'.join(available) or '暂时没有（刚做过动作，要等一会儿）'}")
+        if self.holding and not force:
+            raise ToolError(f"正牵着 {self.holding} 的手，做动作会松手；确定要松手再做就传 force=true")
+        self.emoted.append(name)
+        if self.cfg.reply.dry_run:
+            self.emotes.pretend(name)
+            return f"dry-run：没真的做「{name}」"
+        try:
+            self.emotes.perform(name)
+        except Exception as exc:
+            raise ToolError(f"「{name}」没做成：{exc}") from None
+        return f"做了「{name}」"
+
+    def set_policy(self, who: str, kind: str, accept: bool) -> str:
+        if self.social is None:
+            raise ToolError("这次没开互动请求处理（[social] 关了或者没有图标模板）")
+        if kind not in REQUEST_KINDS:
+            raise ToolError(f"不认识的请求类型 {kind}，可以用：{'、'.join(REQUEST_KINDS)}")
+        self.social.set_policy(who.strip() or "*", kind, accept)
+        return "现在的规则：" + self.social.describe_policy()
+
+    def camera_move(self, action: str, steps: int = 1) -> str:
+        if self.camera is None:
+            raise ToolError("没有视角控制")
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在转不了")
+        if self.cfg.reply.dry_run:
+            return f"dry-run：没真的转（{action} ×{steps}）"
+        try:
+            result = self.camera.move(action, steps)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        return "镜头现在：" + result
+
+    def camera_reset(self) -> str:
+        if self.camera is None:
+            raise ToolError("没有视角控制")
+        if self.cfg.reply.dry_run:
+            return "dry-run：没真的转"
+        result = self.camera.reset()
+        self._ref_thumb = None
+        return result
+
+    # ---- 大脑离线时的备用回复 ----
+    def _fallback(self, now: float) -> None:
+        if not self._fallback_pending:
+            return
+        if self.fallback is None:
+            self._fallback_pending.clear()
+            return
+        if now - self._fallback_last_new < self.cfg.chat.debounce or not self.limiter.allow(now):
+            return
+        batch, self._fallback_pending = self._fallback_pending, []
+        reply = self.fallback.reply(batch)
+        if reply is None or reply.text is None:
+            return
+        try:
+            self.say(reply.text)
+        except ToolError as exc:
+            log.warning("备用回复没发出去：%s", exc)
+            return
+        self.events.put("fallback", f"大脑离线时，备用回复说了：{reply.text}")

@@ -167,3 +167,150 @@ def test_call_runs_in_body_thread_and_times_out(clock):
     t.join(2)
     assert errors and "超时" in errors[0]
     b.step()  # 超时的命令已经取消，不会再执行，也不报错
+
+
+def test_say_filters_rate_limits_and_records(clock):
+    b, device, reader, _ = body(clock, live=True)
+    reader.batches = [[msg("你是真人吗")]]
+    b.step()
+    with pytest.raises(ToolError, match="真人"):
+        b.say("我是真人啊")  # 身份底线：硬过滤
+    assert b.say("哈哈你猜") == "已发送：哈哈你猜"
+    assert ("text", "哈哈你猜") in device.calls
+    with pytest.raises(ToolError, match="太快"):
+        b.say("再说一句")  # reply.min_interval = 3 秒
+    assert b.heard == []
+
+
+def test_say_in_dry_run_does_not_touch_device(clock):
+    b, device, _, _ = body(clock)
+    assert b.say("在呢").startswith("dry-run")
+    assert device.calls == [] and b.said == ["在呢"]
+
+
+def test_say_writes_memory_when_live(clock, tmp_path):
+    from skydango.chat.memory import MemoryStore
+
+    store = MemoryStore(tmp_path)
+    b, _, reader, _ = body(clock, live=True, store=store)
+    reader.batches = [[msg("在吗")]]
+    b.step()
+    b.say("在呢")
+    (turn,) = store.history.all()
+    assert "懒洋洋大王：「在吗」" in turn.user and turn.reply == "在呢"
+
+
+class FakeEmotes:
+    def __init__(self):
+        self.done = []
+
+    def available(self):
+        return ["鞠躬"]
+
+    def perform(self, name):
+        self.done.append(name)
+
+    def pretend(self, name):
+        pass
+
+
+def test_emote_refused_while_holding_unless_forced(clock):
+    emotes = FakeEmotes()
+    b, _, _, _ = body(clock, live=True, emotes=emotes)
+    with pytest.raises(ToolError, match="能做的：鞠躬"):
+        b.emote("跳舞")
+    b.holding = "懒洋洋大王"
+    with pytest.raises(ToolError, match="force=true"):
+        b.emote("鞠躬")
+    assert b.emote("鞠躬", force=True) == "做了「鞠躬」" and emotes.done == ["鞠躬"]
+
+
+def test_look_rate_limited_and_lists_names(clock):
+    env = FakeEnv()
+    env.labels = {"懒洋洋大王": (560, 200, 160, 44, clock())}
+    b, _, _, _ = body(clock, env=env)
+    img, note = b.look()
+    assert img["type"] == "image"
+    assert "懒洋洋大王：名字在 (640, 200)" in note["text"]  # 截图本来就是 1280 宽，不缩放
+    with pytest.raises(ToolError, match="刚看过"):
+        b.look()
+    clock.advance(6)
+    b.look()
+
+
+def test_look_at_crops_region(clock):
+    b, _, _, _ = body(clock)
+    img, note = b.look_at(100, 100, 200, 100)
+    assert img["type"] == "image" and "(100, 100) 起 200×100" in note["text"]
+    with pytest.raises(ToolError):
+        b.look_at(5000, 0, 10, 10)
+
+
+class FakeCamera:
+    def __init__(self):
+        self.moves = []
+
+    def move(self, action, steps):
+        self.moves.append((action, steps))
+        return "左转了 1 步"
+
+    def reset(self):
+        return "镜头转回原位了"
+
+    def describe(self):
+        return "原位"
+
+
+def test_camera_refused_in_blackout_and_dry_run(clock):
+    cam = FakeCamera()
+    b, _, _, _ = body(clock, live=True, camera=cam)
+    assert b.camera_move("left", 1) == "镜头现在：左转了 1 步"
+    b.blackout = True
+    with pytest.raises(ToolError, match="黑"):
+        b.camera_move("left", 1)
+    dry, _, _, _ = body(clock, camera=FakeCamera())
+    assert dry.camera_move("left", 1).startswith("dry-run")
+
+
+def test_policy_and_status(clock):
+    env, social = FakeEnv(), FakeSocial()
+    env.near = ["懒洋洋大王"]
+    b, _, _, _ = body(clock, env=env, social=social)
+    with pytest.raises(ToolError, match="不认识"):
+        b.set_policy("*", "dance", True)
+    assert b.set_policy("懒洋洋大王", "piggyback", False).startswith("现在的规则")
+    assert social.policy_calls == [("懒洋洋大王", "piggyback", False)]
+    s = b.status()
+    assert "身边的好友：懒洋洋大王" in s and "dry-run" in s and "互动规则" in s
+
+
+def test_chat_log_includes_own_lines(clock):
+    b, _, reader, _ = body(clock)
+    reader.batches = [[msg("在吗")]]
+    b.step()
+    b.say("在呢")
+    text = b.chat_log(10)
+    assert "懒洋洋大王：在吗" in text and "我：在呢" in text
+
+
+def test_fallback_replies_when_brain_offline(clock):
+    from skydango.chat.responder import Reply
+
+    class Responder:
+        def __init__(self):
+            self.batches = []
+
+        def reply(self, batch):
+            self.batches.append(batch)
+            return Reply("在呢")
+
+    fallback = Responder()
+    b, device, reader, events = body(clock, live=True, fallback=fallback)
+    b.brain_offline = lambda now: True
+    reader.batches = [[msg("在吗")]]
+    b.step()
+    assert events.drain() == [] and fallback.batches == []  # 不排给大脑；先等 debounce
+    clock.advance(2)
+    b.step()
+    assert ("text", "在呢") in device.calls
+    assert events.drain()[-1].kind == "fallback"
