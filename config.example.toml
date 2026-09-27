@@ -79,6 +79,10 @@ effort = "low"                 # 要快；运行中途不改（改了缓存失�
 heartbeat = [45, 90, 180]      # 没事件时多久醒一次（身边有好友从第一档起），闲着就退到下一档
 max_usd_per_hour = 3.0         # 最近一小时估算花费超过：只为聊天醒
 pause_usd_per_hour = 5.0       # 超过：暂停大脑，聊天交给 [llm] 的备用回复
+move_step = 0.3                # 移动每步按住方向键的秒数（0.3 s 几乎不动、1 s 幅度很大，见 game-ops §2）
+move_min_interval = 3.0        # 两次 move 调用最小间隔（秒）
+owner_name = ""                # 卡洛的游戏昵称，精确匹配；留空 = 主人命令模式关闭
+owner_window = 30.0            # 收到卡洛一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
 
 [sender]
 # 打开聊天输入框：光遇（MuMu「PC端操作方案」）里按实体键盘 Enter 就会打开。

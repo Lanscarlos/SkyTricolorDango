@@ -259,6 +259,10 @@ class BrainConfig:
     price_output: float = 10.0
     camera_step: float = 0.25  # 转视角每步按住方向键的秒数（0.5 s 约 90°）
     scene_change: float = 0.25  # 缩略图平均差异（0~1）超过这个算画面大变
+    move_step: float = 0.3  # 移动每步按住方向键的秒数（实测 0.3 s 几乎不动、1 s 幅度很大，先取偏小的默认值）
+    move_min_interval: float = 3.0  # 两次 move 调用最小间隔（秒），避免连续走位
+    owner_name: str = ""  # 卡洛的游戏昵称，精确匹配；留空 = 主人命令模式关闭
+    owner_window: float = 30.0  # 收到一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
 
 
 @dataclass

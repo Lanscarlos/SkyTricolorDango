@@ -43,3 +43,5 @@ def test_brain_section(tmp_path):
     assert cfg.brain.enabled is True and cfg.brain.heartbeat == [30, 60]
     assert cfg.brain.model == "claude-sonnet-5" and cfg.brain.effort == "low"
     assert cfg.brain.image_size == [1280, 720] and cfg.brain.max_steps == 6
+    assert cfg.brain.move_step == 0.3 and cfg.brain.move_min_interval == 3.0
+    assert cfg.brain.owner_name == "" and cfg.brain.owner_window == 30.0
