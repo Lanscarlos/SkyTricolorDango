@@ -48,14 +48,14 @@ class ToolBoxSpy:
         return f"{name} ok", False
 
 
-def make(clock, client, store=None, **cfg):
+def make(clock, client, store=None, run=None, **cfg):
     c = BrainConfig(**cfg)
     events = EventQueue(clock=clock)
     ctx = Context(c, "规则", lambda: "记忆")
     tb = ToolBoxSpy()
     near = []
     brain = Brain(c, ChatConfig(), client, ctx, tb, events, Budget(c), lambda now: list(near),
-                  clock=clock, wall=lambda: 0.0, store=store)
+                  clock=clock, wall=lambda: 0.0, store=store, run=run)
     return brain, events, tb, ctx, near
 
 
@@ -156,3 +156,132 @@ def test_long_context_is_compacted_into_summary(clock, tmp_path):
     assert "不要调用工具" in client.calls[1][-1]["content"][0]["text"]
     assert len(ctx.messages) == 1 and "在雨林" in ctx.messages[0]["content"][0]["text"]
     assert "在雨林" in store.inbox()
+
+
+# ---- Group D review fixes ----
+
+class FakeRun:
+    """假运行目录：只收集 record_brain 记的条目。"""
+
+    def __init__(self):
+        self.entries = []
+
+    def record_brain(self, entry):
+        self.entries.append(entry)
+
+
+class BoomRun:
+    """假运行目录：record_brain 一调就炸，用来测它不该打断当前这一轮。"""
+
+    def record_brain(self, entry):
+        raise RuntimeError("写日志炸了")
+
+
+class Http400(Exception):
+    """模拟 anthropic.BadRequestError：带 status_code == 400。"""
+
+    def __init__(self, msg="记录不合法"):
+        super().__init__(msg)
+        self.status_code = 400
+
+
+def test_refusal_stop_drops_turn_and_nothing_runs(clock):
+    brain, _, tb, ctx, _ = make(clock, ScriptedClient(tools(("say", {"text": "在"}), stop="refusal")))
+    tb.body.last_look = clock()
+    brain.wake(clock(), "heartbeat")
+    assert "say" not in [n for n, _ in tb.ran]
+    assert ctx.messages[-1]["role"] == "user"  # 没有结果的 tool_use 不能留在记录里
+
+
+def test_record_brain_logs_one_entry_per_model_call(clock):
+    run = FakeRun()
+    client = ScriptedClient(tools(("say", {"text": "在呢"})), text("好"))
+    brain, _, tb, ctx, _ = make(clock, client, run=run)
+    tb.body.last_look = clock()
+    brain.wake(clock(), "heartbeat")
+    assert len(run.entries) == 2  # 调了两次模型，各记一条
+    assert run.entries[0]["tools"] == ["say"]
+    assert run.entries[1]["text"] == "好"
+
+
+def test_log_error_does_not_break_turn(clock):
+    """_log 写 brain.jsonl 出错不该让 tool_use 没有配对结果留在记录里（否则下次请求 400）。"""
+    client = ScriptedClient(tools(("say", {"text": "在呢"})), text("好"))
+    brain, _, tb, ctx, _ = make(clock, client, run=BoomRun())
+    tb.body.last_look = clock()
+    brain.wake(clock(), "heartbeat")
+    assert ("say", {"text": "在呢"}) in tb.ran
+    assert ctx.messages[-1]["content"][0]["text"] == "好"
+
+
+def test_runaway_say_retries_are_capped_by_requests(clock):
+    """模型不停调 say（一直被 max_says 拒绝）：每次 tool_use 都要计进 calls，且请求次数有硬上限。"""
+    responses = [tools(("say", {"text": "还是要说"})) for _ in range(10)]
+    client = ScriptedClient(*responses)
+    brain, _, tb, ctx, _ = make(clock, client, max_steps=3, max_says=0)
+    tb.body.last_look = clock()
+    brain.wake(clock(), "heartbeat")
+    assert len(client.calls) <= brain.cfg.max_steps + 1
+
+
+def test_empty_assistant_content_is_not_stored(clock):
+    empty = {"content": [], "stop_reason": "end_turn", "usage": {"input_tokens": 10, "output_tokens": 0}}
+    client = ScriptedClient(tools(("say", {"text": "好的"})), empty)
+    brain, _, tb, ctx, _ = make(clock, client)
+    tb.body.last_look = clock()
+    brain.wake(clock(), "heartbeat")
+    assert not any(m["role"] == "assistant" and m["content"] == [] for m in ctx.messages)
+    assert all(m["content"] for m in ctx.messages)  # 不留空 content 的消息
+
+
+def test_400_error_resets_context(clock):
+    client = ScriptedClient(tools(("say", {"text": "喂"})), Http400())
+    brain, _, tb, ctx, _ = make(clock, client)
+    tb.body.last_look = clock()
+    brain.wake(clock(), "heartbeat")
+    assert len(ctx.messages) == 1
+    assert "清空" in ctx.messages[0]["content"][0]["text"]
+    assert brain.failing_since is not None  # 仍然按普通失败退避
+
+
+def test_failure_backoff_uses_clock_at_failure_time(clock):
+    """慢请求失败：退避该从失败发生的那一刻算，不是这一轮醒来时的 now。"""
+
+    class SlowFailClient:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, system, messages, tools=None, max_tokens=None):
+            self.calls += 1
+            clock.advance(60.0)  # 模拟这次请求花了 60 秒才失败
+            raise RuntimeError("网络断了")
+
+    brain, _, tb, _, _ = make(clock, SlowFailClient())
+    tb.body.last_look = clock()
+    t0 = clock()
+    brain.wake(t0, "heartbeat")
+    # 用旧的 now（t0）算的话退避到 t0+10，此时早就过去了；用失败发生那一刻（t0+60）算才对
+    assert brain.backoff_until == t0 + 60.0 + 10.0
+    assert brain.due(t0 + 65) is None  # 还在退避里
+
+
+def test_compact_skipped_while_failing(clock):
+    client = ScriptedClient(text("摘要"))  # 若没做防护，这条会被拿去用，压缩“成功”
+    brain, _, tb, ctx, _ = make(clock, client)
+    brain.failing_since = clock()
+    ctx.messages.append({"role": "user", "content": [{"type": "text", "text": "x"}]})
+    ctx.messages.append({"role": "assistant", "content": [{"type": "text", "text": "y"}]})
+    assert brain.compact() is False  # 正在退避，不该再去调模型
+    assert client.calls == []
+
+
+def test_compact_rejects_non_end_turn_stop(clock):
+    partial = {"content": [{"type": "text", "text": "摘要写了一半"}], "stop_reason": "max_tokens",
+               "usage": {"input_tokens": 50, "output_tokens": 5}}
+    client = ScriptedClient(partial)
+    brain, _, tb, ctx, _ = make(clock, client)
+    ctx.messages.append({"role": "user", "content": [{"type": "text", "text": "x"}]})
+    ctx.messages.append({"role": "assistant", "content": [{"type": "text", "text": "y"}]})
+    before = len(ctx.messages)
+    assert brain.compact() is False
+    assert len(ctx.messages) == before  # 追加的摘要请求被弹出，没有留痕

@@ -111,7 +111,7 @@ class Brain:
         w = self.wall()
         stamp = f"{format_date(w)} {time.strftime('%H:%M:%S', time.localtime(w))}"
         self.context.add_user(wake_message(stamp, events, str(status), images))
-        acted = self._turn(now)
+        acted = self._turn()
         self._idle = 0 if (reason == "events" or acted) else self._idle + 1
         self.context.prune()
         if self.last_prompt_tokens > self.cfg.compact_tokens:
@@ -130,24 +130,41 @@ class Brain:
         content, error = self.toolbox.run("look", {})
         return [] if error else list(content)
 
-    def _turn(self, now: float) -> bool:
+    def _turn(self) -> bool:
         """调模型 → 执行工具 → 把结果给它 → ……，直到它不再调工具或到了上限。返回有没有用手脚工具。"""
-        acted, calls, says = False, 0, 0
+        acted, calls, says, requests = False, 0, 0, 0
+        max_requests = self.cfg.max_steps + 1  # 硬上限：就算 calls 计数出了别的漏洞，也不会无限请求下去
         while True:
+            if requests >= max_requests:
+                log.warning("大脑这一轮请求模型太多次（%d 次），先停下，下次醒来再说", requests)
+                return acted
+            requests += 1
             try:
                 resp = self.client.create(self.context.system(), self.context.messages, TOOLS)
             except Exception as exc:
-                self._failed(now, exc)
+                self._failed(self.clock(), exc)  # 用失败发生的时间，不是这一轮醒来时的 now
+                if getattr(exc, "status_code", None) == 400:
+                    # 400 多半是记录本身不合法（比如留了没配对结果的 tool_use）：清空重来，免得每次都 400
+                    log.error("请求出错（400），对话记录大概率已经不合法，清空重来：%s", exc)
+                    self.context.reset("（之前的对话记录出错被清空了；最近的聊天可以用 chat_log 看）")
                 return acted
             self._ok()
             usage = resp.get("usage") or {}
-            cost = self.budget.record(usage, now)
+            cost = self.budget.record(usage, self.clock())
             self.last_prompt_tokens = sum(
                 usage.get(k) or 0 for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
             )
             content = resp.get("content") or []
+            if not content:
+                # 空回复（比如工具结果之后又是一个空的 end_turn）：当成说完了，别把空 content 存进记录
+                # （下次请求会 400："all messages must have non-empty content"）
+                log.warning("大脑这一轮回复是空的，当作说完了")
+                return acted
             self.context.add_assistant(content)
-            self._log(resp, cost)
+            try:
+                self._log(resp, cost)
+            except Exception:
+                log.exception("记这一轮大脑日志出错，不影响这一轮继续")
             stop = resp.get("stop_reason")
             if stop in ("refusal", "max_tokens"):
                 log.warning("大脑这一轮没说完（%s），什么都不做", stop)
@@ -159,12 +176,12 @@ class Brain:
             results = []
             for use in uses:
                 name, args = use.get("name"), use.get("input") or {}
-                if calls >= self.cfg.max_steps:
+                calls += 1  # 每个 tool_use 都要算数，不管是真执行了还是被拒了，否则模型死缠 say 会一直不到上限
+                if calls > self.cfg.max_steps:
                     out, err = "这一轮做的事够多了，先停下，下次醒来再说", True
                 elif name == "say" and says >= self.cfg.max_says:
                     out, err = "这一轮已经说得够多了，别刷屏", True
                 else:
-                    calls += 1
                     out, err = self.toolbox.run(name, args)
                     if not err and name in ACTIONS:
                         acted = True
@@ -182,6 +199,9 @@ class Brain:
 
     def compact(self) -> bool:
         """对话记录太长：让它写摘要，从摘要开一段新记录；live 时摘要也记进 inbox.md。退出时也调一次。"""
+        if self.failing_since is not None:
+            # 正在失败退避：这时候多半还是失败，且会把失败时间又刷新一遍，等恢复了再压缩
+            return False
         if len(self.context.messages) < 2:
             return False
         self.context.add_user([{"type": "text", "text": COMPACT_REQUEST}])
@@ -192,6 +212,11 @@ class Brain:
             self.context.messages.pop()
             return False
         self.budget.record(resp.get("usage") or {}, self.clock())
+        if resp.get("stop_reason") != "end_turn":
+            # 没正常说完（被截断 / 拒绝）：摘要多半不完整，别拿来用
+            log.warning("写摘要没正常说完（%s），下次再试", resp.get("stop_reason"))
+            self.context.messages.pop()
+            return False
         summary = "".join(b.get("text", "") for b in resp.get("content") or [] if b.get("type") == "text").strip()
         if not summary:
             self.context.messages.pop()
