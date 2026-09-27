@@ -1,7 +1,7 @@
 # AGENTS.md — 给接手这个仓库的 Agent
 
 SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉：只截图 + 模拟输入，不读内存、不注入、不抓包。
-当前能力：读聊天记录 → 大模型回复 → 在游戏里发言；快捷动作轮盘的读取 / 编辑 / 做动作。
+当前能力：读聊天记录 → 大模型回复 → 在游戏里发言（可以带表情动作）；快捷动作轮盘的读取 / 编辑 / 做动作。
 
 **先读 [docs/game-ops.md](docs/game-ops.md)**：光遇 + MuMu 的操作方式、界面坐标、实测踩过的坑都在里面。
 不看它直接往游戏里发输入，很容易打错字、卡在界面里，或者覆盖掉用户的轮盘配置。
@@ -28,6 +28,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/bubbles.py` | 旧方案：3D 画面里找头顶气泡（不推荐，见 game-ops） |
 | `src/skydango/chat/` | 读消息（`reader.py`）、大模型回复（`responder.py`）、发送（`sender.py`）、去重、记忆（`memory.py`，见下） |
 | `src/skydango/game/wheel.py` | 快捷动作轮盘：图标库、读取 / 编辑轮盘、按数字键做动作、扫描动作列表 |
+| `src/skydango/game/emotes.py` | 聊天时做动作：可用动作 + 限速、轮盘上的直接按键、白名单动作换进 swap_slots、退出恢复 |
 | `src/skydango/agent.py` | 主循环：读 → 攒一会儿 → 回复 → 限速 → 发送；默认 dry-run |
 | `src/skydango/runlog.py` | 每次 `run` 的运行目录（见下） |
 | `src/skydango/vision/env.py` | 识别环境：每隔几秒在后台 OCR 3D 画面，认好友头顶的名字（身边有谁）和地名，写进提示词 |
@@ -85,7 +86,8 @@ python -m skydango devices                # 连接 / 截图尺寸 / 当前输入
 python -m skydango shot [--grid]          # 截图到 tmp/shot.png
 python -m skydango detect                 # 读一次聊天记录面板（先在游戏里按 C），标注图 tmp/detect.png
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
-python -m skydango run [--echo] [--live] [--duration 秒]  # Agent；默认 dry-run，--echo 不调模型，--duration 到点自己退出
+python -m skydango chat --emotes 鞠躬,害羞  # 终端里和人设聊天，假装轮盘上有这些动作
+python -m skydango run [--echo] [--live] [--duration 秒] [--no-emotes]  # Agent；默认 dry-run，--echo 不调模型，--duration 到点自己退出，牵着手时 --no-emotes
 python -m skydango memory init|show|update # 记忆：生成人设 / 好友文件、查看、立刻整理
 python -m skydango env                    # 对当前画面识别一次环境（身边有谁、在哪）
 python -m skydango emotes scan            # 截下动作列表所有图标 → emotes/scan/，总览图 _sheet.png
@@ -112,3 +114,4 @@ python -m pytest -q                       # 单元测试（合成画面 + 假设
   光遇未成年玩家多，不要删掉这两处。
 - 光遇用户协议禁止自动化工具，有封号风险 —— 这是用户知情的前提，不要在游戏里做破坏性 / 刷屏类操作。
 - 新增游戏交互时，先在真实游戏里手动验证（截图确认），再写进代码和 game-ops 文档。
+- 聊天时做动作会松开牵手；Agent 退出时会把 `emotes.swap_slots` 换回原样，改换轮盘的逻辑要保证这一点。

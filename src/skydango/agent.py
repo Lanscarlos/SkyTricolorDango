@@ -13,6 +13,7 @@ from .chat.sender import ChatSender
 from .chat.tracker import SelfFilter
 from .config import Config
 from .device.base import Device
+from .game.emotes import EmotePlayer
 from .runlog import RunDir
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class Agent:
         run: RunDir | None = None,
         env=None,  # EnvWatcher：识别身边有谁、在哪（vision/env.py）
         social=None,  # SocialHandler：接受好友的牵手 / 拥抱 / 击掌（game/social.py），请求由 env 发现
+        emotes: EmotePlayer | None = None,
     ) -> None:
         self.cfg = cfg
         self.env = env
@@ -66,6 +68,8 @@ class Agent:
         self.sent: list[str] = []  # 记录（含 dry-run），方便测试和日志
         self._last_reopen = float("-inf")
         self.run_dir = run
+        self.emotes = emotes
+        self.emoted: list[str] = []  # 做过（含 dry-run）的动作，方便测试和日志
 
     def step(self) -> str | None:
         """跑一轮；如果这一轮发出（或 dry-run 模拟发出）了回复，返回那句话。"""
@@ -110,6 +114,7 @@ class Agent:
             except Exception:
                 log.warning("提前打开输入框失败，发送时再打开", exc_info=True)
         reply = self.responder.reply(batch)
+        dry = self.cfg.reply.dry_run
         if reply is None:
             log.info("模型选择不回复")
             if typing:
@@ -117,18 +122,39 @@ class Agent:
             if self.run_dir:
                 self.run_dir.record_reply(batch, None, sent=False)
             return None
+        if reply.emote:
+            if typing:  # 输入框开着时数字键会变成打字：先关掉提前打开的输入框，发文字时再打开
+                self.sender.cancel()
+            self._emote(reply.emote)
+        if reply.text is None:  # 只做动作不说话：不占发送限速
+            if self.run_dir:
+                self.run_dir.record_reply(batch, reply.render(), sent=not dry)
+            return None
 
-        text = self.cfg.reply.disclosure_prefix + reply
+        text = self.cfg.reply.disclosure_prefix + reply.text
         self.limiter.record(now)
         self.sent.append(text)
-        if self.cfg.reply.dry_run:
+        if dry:
             log.info("[dry-run] 将会发送: %s", text)
         else:
             self.sender.send(text)
             self.self_filter.remember(text, self.clock())
         if self.run_dir:
-            self.run_dir.record_reply(batch, text, sent=not self.cfg.reply.dry_run)
+            self.run_dir.record_reply(batch, reply.render(self.cfg.reply.disclosure_prefix), sent=not dry)
         return text
+
+    def _emote(self, name: str) -> None:
+        self.emoted.append(name)
+        if self.emotes is None:
+            return
+        if self.cfg.reply.dry_run:
+            log.info("[dry-run] 将会做动作: %s", name)
+            self.emotes.pretend(name)
+            return
+        try:
+            self.emotes.perform(name)
+        except Exception:  # 换轮盘没找到图标、adb 出错……动作做不成，话照样说
+            log.exception("做动作「%s」失败，跳过", name)
 
     def ensure_log_open(self) -> bool:
         """log 模式：看不到聊天记录面板、也没在打字时，按一下打开面板的键（默认 C）。返回面板现在开没开。"""

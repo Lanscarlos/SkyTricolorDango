@@ -1,5 +1,5 @@
 from skydango.chat.reader import Message
-from skydango.chat.responder import SKIP_TOKEN, Responder, build_system_prompt, clean_reply
+from skydango.chat.responder import SKIP_TOKEN, Reply, Responder, build_system_prompt, clean_reply, parse_reply
 from skydango.config import ReplyConfig
 from skydango.vision.bubbles import Rect
 
@@ -36,9 +36,9 @@ def test_system_prompt_contains_rules():
 def test_reply_history_alternates_and_trims():
     llm = ScriptedLlm(["你好呀", "<skip>", "去霞谷吧"])
     r = Responder(llm, ReplyConfig(history_turns=2))
-    assert r.reply([msg("你好")]) == "你好呀"
+    assert r.reply([msg("你好")]).text == "你好呀"
     assert r.reply([msg("啊啊啊")]) is None
-    assert r.reply([msg("去哪"), msg("一起吗")]) == "去霞谷吧"
+    assert r.reply([msg("去哪"), msg("一起吗")]).text == "去霞谷吧"
     roles = [m["role"] for m in llm.calls[-1][1]]
     assert roles == ["user", "assistant", "user", "assistant", "user"]
     assert "「去哪」\n「一起吗」" in llm.calls[-1][1][-1]["content"]
@@ -67,3 +67,55 @@ def test_clean_reply_drops_claims_of_being_human():
         assert clean_reply(bad, 40) is None, bad
     for ok in ["哈哈哈你才是ai", "你猜呗", "不装了，我是ai", "你是真人吗", "真人快打"]:
         assert clean_reply(ok, 40) == ok, ok
+
+
+EMOTES = ["鞠躬", "害羞", "欢呼"]
+
+
+def test_parse_reply_splits_emote_tag():
+    assert parse_reply("[害羞]哪有啦", 40, EMOTES) == Reply("哪有啦", "害羞")
+    assert parse_reply("【欢呼】好耶", 40, EMOTES) == Reply("好耶", "欢呼")
+    assert parse_reply("哪有啦 [害羞]", 40, EMOTES) == Reply("哪有啦", "害羞")
+    assert parse_reply("[鞠躬]", 40, EMOTES) == Reply(None, "鞠躬")
+    assert parse_reply("[鞠躬]\n晚安", 40, EMOTES) == Reply("晚安", "鞠躬")  # 标签单独一行
+    assert parse_reply("回复：“[害羞]哪有啦”", 40, EMOTES) == Reply("哪有啦", "害羞")
+    assert parse_reply("好呀", 40, EMOTES) == Reply("好呀", None)
+    assert parse_reply("<skip>", 40, EMOTES) is None
+
+
+def test_parse_reply_drops_unknown_emote_but_keeps_text():
+    assert parse_reply("[跳舞]来了", 40, EMOTES) == Reply("来了", None)
+    assert parse_reply("[跳舞]", 40, EMOTES) is None
+    assert parse_reply("[害羞]哪有啦", 40, []) == Reply("哪有啦", None)  # 这一轮不让做动作
+
+
+def test_parse_reply_claim_of_human_drops_emote_too():
+    assert parse_reply("[害羞]我是真人啦", 40, EMOTES) is None
+
+
+def test_parse_reply_truncates_only_text():
+    assert parse_reply("[欢呼]" + "一" * 50, 10, EMOTES) == Reply("一" * 10, "欢呼")
+
+
+def test_reply_render():
+    assert Reply("哪有啦", "害羞").render("【AI】") == "[害羞]【AI】哪有啦"
+    assert Reply(None, "鞠躬").render("【AI】") == "[鞠躬]"
+    assert Reply("好呀").render() == "好呀"
+
+
+def test_prompt_emote_section_only_when_available():
+    plain = build_system_prompt(ReplyConfig())
+    assert "## 动作" not in plain and "做动作" in plain  # 没动作可用：还是“动不了”
+    with_emotes = build_system_prompt(ReplyConfig(), emotes=["鞠躬", "害羞"])
+    assert "## 动作" in with_emotes and "鞠躬、害羞" in with_emotes and "[动作名]" in with_emotes
+
+
+def test_responder_asks_available_emotes_each_turn_and_keeps_tag_in_history():
+    llm = ScriptedLlm(["[害羞]哪有啦", "嗯嗯"])
+    offers = [["害羞"], []]
+    r = Responder(llm, ReplyConfig(), available_emotes=lambda: offers.pop(0))
+    assert r.reply([msg("你真可爱")]) == Reply("哪有啦", "害羞")
+    assert "## 动作" in llm.calls[0][0]
+    assert r.reply([msg("真的")]) == Reply("嗯嗯", None)
+    assert "## 动作" not in llm.calls[1][0]
+    assert llm.calls[1][1][1] == {"role": "assistant", "content": "[害羞]哪有啦"}

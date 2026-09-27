@@ -140,7 +140,8 @@ def cmd_chat(cfg: Config, args) -> None:
 
     if args.echo:
         cfg.llm.provider = "echo"
-    responder = Responder(make_llm(cfg.llm), cfg.reply)
+    names = [n.strip() for n in args.emotes.split(",") if n.strip()]  # 假装轮盘上有这些动作
+    responder = Responder(make_llm(cfg.llm), cfg.reply, available_emotes=lambda: names)
     print("输入一句话模拟别人的聊天（“名字：内容”带上说话人，多句用 | 分隔），空行退出。")
     while True:
         try:
@@ -155,7 +156,7 @@ def cmd_chat(cfg: Config, args) -> None:
             if part:
                 msgs.append(Message(text.strip(), Rect(0, 0, 1, 1), 0.0, speaker.strip()) if sep else Message(part, Rect(0, 0, 1, 1), 0.0))
         reply = responder.reply(msgs)
-        print("（不回复）" if reply is None else cfg.reply.disclosure_prefix + reply)
+        print("（不回复）" if reply is None else reply.render(cfg.reply.disclosure_prefix))
 
 
 def _wheel(cfg: Config):
@@ -332,12 +333,38 @@ def cmd_run(cfg: Config, args) -> None:
     run.attach_log()
     log.info("本次运行的日志和截图: %s", run.path.resolve())
     try:
-        _run_agent(cfg, run)
+        _run_agent(cfg, run, args.no_emotes, args.duration)
     finally:
         run.close()
 
 
-def _run_agent(cfg: Config, run: RunDir) -> None:
+def _build_emotes(cfg: Config, dev, reader, no_emotes: bool):
+    """准备聊天时做动作：读一次轮盘。做不了（关掉了 / 图标库空 / 读轮盘失败）返回 None，聊天照常。"""
+    if no_emotes or not cfg.emotes.enabled:
+        log.info("这次不做动作")
+        return None
+    from .game.emotes import EmotePlayer
+    from .game.wheel import EmoteLibrary, Wheel
+
+    library = EmoteLibrary(cfg.wheel.library_dir)
+    if not library.names:
+        log.warning("图标库 %s 是空的，这次不做动作（先 emotes scan，把用得上的改名放进去）", cfg.wheel.library_dir)
+        return None
+    if cfg.vision.mode == "log":
+        panel_visible, panel_key = (lambda: reader.panel_visible(dev.screenshot())), cfg.vision.log_open_key
+    else:
+        panel_visible, panel_key = (lambda: False), 0
+    player = EmotePlayer(dev, Wheel(dev, cfg.wheel, library), cfg.emotes, panel_visible, panel_key)
+    try:
+        player.start()
+    except Exception as exc:
+        log.warning("读轮盘失败，这次不做动作: %s", exc)
+        return None
+    log.info("能做的动作: 轮盘上 %s；可以换上去的 %s", "、".join(player.on_wheel()) or "（无）", "、".join(player.extra) or "（无）")
+    return player
+
+
+def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0) -> None:
     from .agent import Agent
     from .chat.llm import make_llm
     from .chat.responder import Responder
@@ -369,13 +396,23 @@ def _run_agent(cfg: Config, run: RunDir) -> None:
         now = time.monotonic()
         return "\n".join(p for p in (env.describe(now), social.describe(now) if social else "") if p)
 
-    responder = Responder(llm, cfg.reply, store=store, notes=notes, env=env_text if env else None)
+    emotes = _build_emotes(cfg, dev, reader, no_emotes)
+    responder = Responder(
+        llm, cfg.reply, store=store, notes=notes, env=env_text if env else None,
+        available_emotes=emotes.available if emotes else None,
+    )
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
-    agent = Agent(cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social)
+    agent = Agent(cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes)
     try:
-        agent.run(args.duration)
+        agent.run(duration)
     except KeyboardInterrupt:
         print("\n已停止")
+    finally:
+        if emotes is not None:
+            try:
+                emotes.restore()
+            except Exception:
+                log.exception("恢复轮盘失败，请用 emotes wheel 检查")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -413,6 +450,7 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("chat", help="在终端里和人设对话，调提示词")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显")
+    p.add_argument("--emotes", default="", help="假装轮盘上有这些动作（逗号分隔），看模型怎么用")
     p.set_defaults(func=cmd_chat)
 
     p = sub.add_parser("emotes", help="快捷动作轮盘：扫描图标库 / 查看 / 编辑 / 做动作")
@@ -444,6 +482,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--live", action="store_true", help="真的发送消息")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显（联调用）")
     p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动结束（默认一直跑）")
+    p.add_argument("--no-emotes", action="store_true", help="这次不做动作（牵着手时用：做动作会松开牵手）")
     p.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)

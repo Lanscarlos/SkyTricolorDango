@@ -2,21 +2,25 @@ from conftest import FakeDevice, FakeOcr, scene
 from skydango.agent import Agent, RateLimiter
 from skydango.chat.llm import EchoClient
 from skydango.chat.reader import ChatReader
-from skydango.chat.responder import Responder
+from skydango.chat.responder import Reply, Responder
 from skydango.chat.sender import ChatSender, to_pixels
 from skydango.chat.tracker import SelfFilter
 from skydango.config import Config
+from skydango.game.wheel import WheelError
 
 import pytest
 
 
-def build(cfg: Config, frames, ocr_texts, clock):
+def build(cfg: Config, frames, ocr_texts, clock, llm=None, emotes=None):
     device = FakeDevice(frames)
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, cfg.reply.disclosure_prefix)
     reader = ChatReader(FakeOcr(ocr_texts), cfg.vision, cfg.ocr, cfg.chat, self_filter)
-    responder = Responder(EchoClient(), cfg.reply)
+    available = emotes.available if emotes else None
+    responder = Responder(llm or EchoClient(), cfg.reply, available_emotes=available)
     sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
-    agent = Agent(cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None)
+    agent = Agent(cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None, emotes=emotes)
+    if emotes:
+        emotes.device = device
     return agent, device
 
 
@@ -175,7 +179,7 @@ class RecordingResponder:
 
     def reply(self, batch):
         self.calls_at_reply = list(self.device.calls)
-        return self.reply_text
+        return Reply(self.reply_text) if self.reply_text else None
 
 
 def _typing_agent(clock, reply, shown=False):
@@ -230,3 +234,86 @@ def test_run_stops_after_duration(clock):
     agent.sleep = lambda s: clock.advance(max(s, 0.1))
     agent.run(duration=5.0)  # 不传 duration 会一直跑；传了就自己退出，不用在外面套 timeout
     assert clock() >= 5.0
+
+
+class FixedLlm:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def complete(self, system, messages):
+        return self.reply
+
+
+class FakeEmotes:
+    def __init__(self, names=("鞠躬", "害羞"), fail=False):
+        self.names = list(names)
+        self.fail = fail
+        self.pretended = []
+        self.device = None
+
+    def available(self):
+        return list(self.names)
+
+    def perform(self, name):
+        if self.fail:
+            raise WheelError("动作列表里没找到")
+        self.device.calls.append(("emote", name))
+        return 1
+
+    def pretend(self, name):
+        self.pretended.append(name)
+
+
+def run_one_turn(agent, clock):
+    agent.step()
+    clock.advance(2)
+    return agent.step()
+
+
+def test_emote_before_text(clock):
+    cfg = live_config()
+    cfg.sender.type_ahead = False  # 提前开输入框的情况见 test_emote_with_type_ahead_closes_our_input_box_first
+    emotes = FakeEmotes()
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
+    assert run_one_turn(agent, clock) == "【AI】哪有啦"
+    assert device.calls == [("emote", "害羞"), ("tap", 64, 72), ("text", "【AI】哪有啦"), ("editor", 4)]
+    assert agent.emoted == ["害羞"]
+
+
+def test_emote_only_turn_does_not_use_send_quota(clock):
+    cfg = live_config()
+    cfg.sender.type_ahead = False  # 提前开输入框的情况见 test_emote_with_type_ahead_closes_our_input_box_first
+    emotes = FakeEmotes()
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["晚安"] * 5, clock, FixedLlm("[鞠躬]"), emotes)
+    assert run_one_turn(agent, clock) is None
+    assert device.calls == [("emote", "鞠躬")]
+    assert agent.sent == [] and agent.limiter.allow(clock())
+
+
+def test_dry_run_pretends_emote(clock):
+    cfg = Config()  # 默认 dry_run
+    emotes = FakeEmotes()
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
+    assert run_one_turn(agent, clock) == "【AI】哪有啦"
+    assert device.calls == [] and emotes.pretended == ["害羞"]
+
+
+def test_emote_failure_still_sends_text(clock):
+    cfg = live_config()
+    emotes = FakeEmotes(fail=True)
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
+    assert run_one_turn(agent, clock) == "【AI】哪有啦"
+    assert ("text", "【AI】哪有啦") in device.calls
+
+
+def test_emote_with_type_ahead_closes_our_input_box_first(clock):
+    """等模型时提前开了输入框；要做动作就先关掉（数字键会变成打字），发文字时再打开。"""
+    cfg = live_config()
+    cfg.sender.open_chat = []
+    cfg.sender.open_chat_key = 28
+    emotes = FakeEmotes()
+    agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
+    assert run_one_turn(agent, clock) == "【AI】哪有啦"
+    assert device.calls == [
+        ("hw_key", 28), ("key", 4), ("emote", "害羞"), ("hw_key", 28), ("text", "【AI】哪有啦"), ("editor", 4)
+    ]

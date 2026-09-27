@@ -59,6 +59,16 @@ api_key_env = "DEEPSEEK_API_KEY"   # 从这个环境变量读 Key，不要把 Ke
 # model = "claude-haiku-4-5"
 # api_key_env = "ANTHROPIC_API_KEY"
 
+[emotes]
+# 聊天时让模型挑时机做动作。做动作会松开牵手：牵着手时用 `run --no-emotes`
+enabled = true
+# 可以换上轮盘的动作（图标库 emotes/ 里的名字），不在轮盘上时会换到 swap_slots 里再做
+extra = []
+# 允许换的格子；为空就只用轮盘上现有的动作。退出时换回原来的动作
+swap_slots = []
+min_interval = 20.0           # 两次动作至少隔几秒
+swap_min_interval = 120.0     # 两次换轮盘至少隔几秒（换一次要关聊天面板 5~10 秒）
+
 [sender]
 # 打开聊天输入框：光遇（MuMu「PC端操作方案」）里按实体键盘 Enter 就会打开。
 # 28 是 Linux 的 KEY_ENTER，通过 sendevent 模拟实体键盘；adb 的 input keyevent 游戏不认
