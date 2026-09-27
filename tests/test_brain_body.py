@@ -1,4 +1,5 @@
 import threading
+from concurrent.futures import Future
 
 import numpy as np
 import pytest
@@ -155,10 +156,11 @@ def test_call_runs_in_body_thread_and_times_out(clock):
 
     b.cfg.brain.command_timeout = 0.05
     errors = []
+    ran = []  # 取消成功的话这个命令不该被执行到
 
     def nobody_steps():
         try:
-            b.call(lambda: 1)
+            b.call(lambda: ran.append(1))
         except ToolError as exc:
             errors.append(str(exc))
 
@@ -167,6 +169,81 @@ def test_call_runs_in_body_thread_and_times_out(clock):
     t.join(2)
     assert errors and "超时" in errors[0]
     b.step()  # 超时的命令已经取消，不会再执行，也不报错
+    assert ran == []  # 真的没有被执行到
+
+
+def test_call_timeout_message_uses_actual_timeout_value(clock):
+    b, _, _, _ = body(clock)  # cfg.brain.command_timeout 默认 15 秒，不应该出现在消息里
+    errors = []
+
+    def nobody_steps():
+        try:
+            b.call(lambda: 1, timeout=0.05)
+        except ToolError as exc:
+            errors.append(str(exc))
+
+    t = threading.Thread(target=nobody_steps)
+    t.start()
+    t.join(2)
+    assert errors and "0 秒" in errors[0] and "15" not in errors[0]
+
+
+def test_call_timeout_after_command_already_started_no_retry(clock):
+    """命令已经被身体线程取出并开始执行时调用者超时：不能说“超时了”，得说“别重试”。"""
+    b, _, _, _ = body(clock)
+    b.cfg.brain.command_timeout = 0.05
+    started = threading.Event()
+    release = threading.Event()
+
+    def fn():
+        started.set()
+        assert release.wait(2)
+        return 1
+
+    def body_runner():
+        # 用阻塞 get() 而不是 _run_commands()（get_nowait），避免和入队产生竞争
+        cmd_fn, fut = b._commands.get()
+        if fut.set_running_or_notify_cancel():
+            try:
+                fut.set_result(cmd_fn())
+            except BaseException as exc:  # noqa: BLE001 - 和 _run_commands 保持一致
+                fut.set_exception(exc)
+
+    t_body = threading.Thread(target=body_runner)
+    t_body.start()
+
+    errors = []
+
+    def caller():
+        try:
+            b.call(fn)
+        except ToolError as exc:
+            errors.append(str(exc))
+
+    t_caller = threading.Thread(target=caller)
+    t_caller.start()
+
+    assert started.wait(2)  # 命令确实已经开始执行了
+    t_caller.join(2)
+    assert errors and "别重试" in errors[0] and "已经开始" in errors[0]
+
+    release.set()
+    t_body.join(2)
+
+
+def test_keyboard_interrupt_in_command_propagates_out_of_step(clock):
+    """Ctrl+C 是在身体线程 fn() 执行时来的：不能被吞进 Future 里让 step() 若无其事地继续。"""
+    b, _, _, _ = body(clock)
+    fut: Future = Future()
+
+    def boom():
+        raise KeyboardInterrupt()
+
+    b._commands.put((boom, fut))
+    with pytest.raises(KeyboardInterrupt):
+        b.step()
+    with pytest.raises(KeyboardInterrupt):
+        fut.result(timeout=0)  # Future 也记下了这个异常
 
 
 def test_say_filters_rate_limits_and_records(clock):

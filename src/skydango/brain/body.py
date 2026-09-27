@@ -154,11 +154,13 @@ class Body:
             return fn()
         fut: Future = Future()
         self._commands.put((fn, fut))
+        used = timeout if timeout is not None else self.cfg.brain.command_timeout
         try:
-            return fut.result(timeout=timeout if timeout is not None else self.cfg.brain.command_timeout)
+            return fut.result(timeout=used)
         except TimeoutError:
-            fut.cancel()  # 身体还没开始做就不做了
-            raise ToolError(f"身体忙不过来，这个命令超时了（{self.cfg.brain.command_timeout:.0f} 秒）") from None
+            if not fut.cancel():  # cancel() 返回 False：身体已经开始做了，取消不掉
+                raise ToolError("身体还在做这件事（已经开始了），别重试，等下次醒来看结果") from None
+            raise ToolError(f"身体忙不过来，这个命令超时了（{used:.0f} 秒）") from None
 
     def _run_commands(self) -> None:
         while True:
@@ -170,8 +172,11 @@ class Body:
                 continue
             try:
                 fut.set_result(fn())
-            except BaseException as exc:
+            except Exception as exc:
                 fut.set_exception(exc)
+            except BaseException as exc:  # KeyboardInterrupt 等：Future 记下异常，再往外抛，别吞掉 Ctrl+C
+                fut.set_exception(exc)
+                raise
 
     # ---- 看到了什么 → 事件 ----
     def _heard(self, fresh: list[Message], frame, now: float) -> None:
@@ -270,8 +275,8 @@ class Body:
         self.last_frame, self.last_look = frame, now
         view = fit(frame, tuple(brain.image_size))
         recent = {}
-        if self.env is not None:  # 最近两次扫描内看到的名字才算在画面里
-            recent = {n: v for n, v in self.env.labels.items() if now - v[4] <= self.cfg.env.interval * 2 + 1}
+        if self.env is not None:  # 最近两次扫描内看到的名字才算在画面里；先拍快照，env 后台线程会改这个 dict
+            recent = {n: v for n, v in dict(self.env.labels).items() if now - v[4] <= self.cfg.env.interval * 2 + 1}
         note = label_note(recent, view.shape[1] / frame.shape[1]) if self.env is not None else "（没开环境识别，认不出名字）"
         if self.blackout:
             note += "\n画面现在是黑的（可能在切场景）"
@@ -331,6 +336,7 @@ class Body:
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
         self.said.append(full)
+        self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
         if self.cfg.reply.dry_run:
             log.info("[dry-run] 将会发送: %s", full)
@@ -365,6 +371,7 @@ class Body:
         if self.holding and not force:
             raise ToolError(f"正牵着 {self.holding} 的手，做动作会松手；确定要松手再做就传 force=true")
         self.emoted.append(name)
+        self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长
         if self.cfg.reply.dry_run:
             self.emotes.pretend(name)
             return f"dry-run：没真的做「{name}」"
