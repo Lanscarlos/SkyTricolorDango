@@ -120,3 +120,46 @@ def test_open_chat_with_hardware_key_only_when_closed():
     sender.send("again")
     assert ("hw_key", 28) not in device.calls
     assert device.calls[0] == ("text", "again")
+
+
+def test_screenshot_failure_does_not_block_pending_reply(clock):
+    """实测 adb 截图会偶尔连续失败几秒；已经读到的消息照样要回复。"""
+    cfg = live_config()
+    cfg.sender.close_with_back = True
+    frame = scene([(400, 200, 300, 50)])
+    agent, device = build(cfg, [frame], ["你在干啥"] * 10, clock)
+    assert agent.step() is None  # 读到，等 debounce
+
+    def broken():
+        raise RuntimeError("adb 失败 (3221225794)")
+
+    device.screenshot = broken
+    clock.advance(2)
+    assert agent.step() == "【AI】收到：你在干啥"
+    assert device.calls[-1] == ("key", 4)  # 发完按 BACK 关掉输入框，头顶不再一直显示“正在输入”
+
+
+def test_open_chat_waits_only_until_input_box_is_shown():
+    """实测按 Enter 后输入框约 0.07 s 就开了，不必每次固定等 open_delay。"""
+    cfg = Config()
+    cfg.sender.open_chat_key = 28
+    device = FakeDevice([scene()])
+    slept = []
+
+    def sleep(s):
+        slept.append(s)
+        if len(slept) == 2:  # 第二次查看时输入框开了
+            device.shown = True
+
+    ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=sleep).send("hi")
+    assert device.calls[:2] == [("hw_key", 28), ("text", "hi")]
+    assert sum(slept[:3]) < 0.3  # 等了两小步 + 一点缓冲，而不是 open_delay
+
+
+def test_open_chat_gives_up_waiting_after_open_delay():
+    cfg = Config()
+    cfg.sender.open_chat_key = 28
+    device = FakeDevice([scene()])  # 输入框一直没显示
+    slept = []
+    ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=slept.append).send("hi")
+    assert abs(sum(slept) - (cfg.sender.open_delay + cfg.sender.type_delay + cfg.sender.after_delay)) < 0.11

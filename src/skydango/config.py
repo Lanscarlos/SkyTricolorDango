@@ -23,6 +23,10 @@ class DeviceConfig:
     ime_id: str = "com.android.adbkeyboard/.AdbIME"
     # 模拟实体键盘用的输入设备，例如 "/dev/input/event4"；为空自动找带 KEY_ENTER 的设备
     key_device: str = ""
+    # 截图方式："auto"（找得到 MuMu 的 external_renderer_ipc.dll 就用 MuMu 原生截图，约 9 ms；
+    # 否则 adb screencap，约 400 ms）/ "mumu" / "adb"。MuMu 的安装目录从 adb_path 推出来
+    capture: str = "auto"
+    mumu_instance: int = 0  # MuMu 多开时的实例编号
 
 
 @dataclass
@@ -44,7 +48,8 @@ class BubbleConfig:
 
 @dataclass
 class VisionConfig:
-    poll_interval: float = 1.0  # 截屏间隔（秒）
+    # 截屏间隔（秒）。MuMu 原生截图约 9 ms，面板没变时不跑 OCR，所以可以看得很勤；用 adb 截图时一轮约 0.8 s
+    poll_interval: float = 0.15
     # "log"：读聊天记录面板（光遇按 C 打开，推荐）；"bubble"：找头顶气泡再 OCR；"roi"：直接对整块区域 OCR
     mode: str = "bubble"
     # 搜索区域 [x1, y1, x2, y2]（归一化），默认排除底部操作栏
@@ -56,6 +61,9 @@ class VisionConfig:
     log_open_key: int = 46
     # 文字框背景亮度中位数 ≥ 这个值算“自己的消息”（浅色气泡），别人的消息是深色底
     log_self_min_value: int = 150
+    # 面板里的文字像素变化少于这么多（半分辨率下）就不重新 OCR；背景里飘过的小光点不算
+    log_change_pixels: int = 40
+    log_max_skip: float = 3.0  # 最多这么久不 OCR，到时间了强制识别一次
     # 非空时，每次读到新消息就把标注后的截图存到这里，方便调参
     debug_dir: str = ""
 
@@ -71,14 +79,15 @@ class OcrConfig:
 class ChatConfig:
     dedupe_ttl: float = 20.0  # 同一句话在这么久内再出现不算新消息（气泡会停留好几秒）
     similarity: float = 0.8  # 模糊去重阈值，吸收 OCR 抖动
-    debounce: float = 1.5  # 收到新消息后再等这么久，把连发的几句合并成一次回复
+    debounce: float = 0.8  # 收到新消息后再等这么久，把连发的几句合并成一次回复
     self_window: float = 60.0  # 自己发出的话在这段时间内被读回来时忽略
     max_pending: int = 8
     ignore_patterns: list[str] = field(default_factory=list)  # 正则，命中的气泡直接忽略
 
 
-DEFAULT_PERSONA = """你是一只在《光遇》里闲逛的温和光之子，说话轻松、友善，偶尔俏皮。
-喜欢聊跑图、先祖、季节、乐器和风景。"""
+DEFAULT_PERSONA = """你叫三彩团子，是光遇里一个很可爱的女孩子，玩了挺久了。
+最喜欢樱花发型，特意把自己的光之子调成了小个子，平时爱穿可爱风的衣服，看到好看的斗篷和发型会走不动路。
+性格软萌但不做作，爱开玩笑，偶尔吐槽；喜欢跑图、收集先祖、坐着看风景。聊天像和熟人说话，不端着。"""
 
 
 @dataclass
@@ -111,13 +120,13 @@ class SenderConfig:
     open_chat: list[float] = field(default_factory=list)
     # 用实体键盘按键打开聊天框（Linux 键码，28 = Enter），优先于 open_chat；0 表示不用
     open_chat_key: int = 0
-    open_delay: float = 0.8
+    open_delay: float = 1.0  # 打开输入框后最多等多久（输入框一出现就开始输入，实测约 0.07 s）
     # 提交方式："editor_action"（输入法回车动作）/ "enter"（回车键）/ "tap"（点发送按钮）
     submit: str = "editor_action"
     editor_action: int = 4  # EditorInfo.IME_ACTION_SEND；不灵的话试 6（DONE）或 2（GO）
     send_button: list[float] = field(default_factory=list)
-    type_delay: float = 0.3
-    after_delay: float = 0.5
+    type_delay: float = 0.2
+    after_delay: float = 0.3
     close_with_back: bool = False
 
 

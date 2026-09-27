@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 from ..config import ChatConfig, OcrConfig, VisionConfig
 from ..vision.bubbles import Rect, find_bubbles, roi_rect
-from ..vision.chatlog import LogRow, new_rows, parse_rows
+from ..vision.chatlog import LogRow, changed_pixels, find_input_top, new_rows, parse_rows, text_signature
 from ..vision.ocr import OcrEngine, OcrLine, join_lines
 from .tracker import SeenTracker, SelfFilter, similar
 
@@ -48,16 +50,25 @@ class ChatReader:
         self.tracker = SeenTracker(chat.dedupe_ttl, chat.similarity)
         self.similarity = chat.similarity
         self._prev_keys: list[str] = []  # log 模式：上一帧面板里的行
+        self._sig: np.ndarray | None = None  # 上次 OCR 时面板文字的“指纹”
+        self._ocr_at = float("-inf")
         self.self_filter = self_filter
         self.ignore = [re.compile(p) for p in chat.ignore_patterns]
 
     def _good(self, lines: list[OcrLine]) -> list[OcrLine]:
         return [l for l in lines if l.score >= self.ocr_cfg.min_score and l.text.strip()]
 
-    def log_rows(self, frame: np.ndarray) -> list[LogRow]:
-        """log 模式：读出聊天记录面板里的所有行（坐标换算回整张图）。"""
+    def _log_area(self, frame: np.ndarray) -> Rect:
         height, width = frame.shape[:2]
         area = roi_rect(self.vision.log_roi, width, height)
+        top = find_input_top(frame[:, area.x : area.x2])
+        if top is not None and top > area.y:  # 读到面板输入框上沿为止（面板高度随输入框开关变化）
+            area = Rect(area.x, area.y, area.w, top - 4 - area.y)
+        return area
+
+    def log_rows(self, frame: np.ndarray, area: Rect | None = None) -> list[LogRow]:
+        """log 模式：读出聊天记录面板里的所有行（坐标换算回整张图）。"""
+        area = area or self._log_area(frame)
         crop = area.crop(frame)
         rows = parse_rows(crop, self._good(self.ocr.recognize(crop)), self.vision.log_self_min_value)
         return [
@@ -86,12 +97,33 @@ class ChatReader:
             raise ValueError(f"未知的 vision.mode: {self.vision.mode}")
         return detections
 
+    def _trace(self, now: float, rows: list[LogRow], added: list[int]) -> None:
+        """调试：面板内容每次变化都记一笔（每行的识别结果、哪几行被判成新的），排查漏读 / 晚读。"""
+        out = Path(self.vision.debug_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        lines = [f"== {time.strftime('%H:%M:%S')} t={now:.1f} 新增行={added}"]
+        lines += [f"  {'*' if i in added else ' '} y={r.box.y:4d} {r.display()}" for i, r in enumerate(rows)]
+        with (out / "rows.log").open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+
     def _read_log(self, frame: np.ndarray, now: float) -> list[Message]:
-        rows = self.log_rows(frame)
+        area = self._log_area(frame)
+        sig = text_signature(area.crop(frame))
+        # 面板里的文字没变就不跑 OCR（截图约 9 ms，OCR 约 0.4 s）；隔一阵还是强制识别一次，以防万一
+        if (
+            self._sig is not None
+            and changed_pixels(self._sig, sig) < self.vision.log_change_pixels
+            and now - self._ocr_at < self.vision.log_max_skip
+        ):
+            return []
+        self._sig, self._ocr_at = sig, now
+        rows = self.log_rows(frame, area)
         if not rows:  # 面板被挡住 / 关掉了：保留上一帧的状态
             return []
         keys = [r.key() for r in rows]
         added = new_rows(self._prev_keys, keys, lambda a, b: similar(a, b, self.similarity))
+        if self.vision.debug_dir and keys != self._prev_keys:
+            self._trace(now, rows, added)
         self._prev_keys = keys
         fresh: list[Message] = []
         for row in (rows[i] for i in added):

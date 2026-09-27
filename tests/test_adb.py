@@ -138,3 +138,44 @@ def test_hw_key_without_keyboard_device():
 @pytest.mark.parametrize("shown", [True, False])
 def test_ime_shown(shown):
     assert AdbDevice("x:1", runner=ShellRunner(ime_shown=shown)).ime_shown() is shown
+
+
+def test_find_mumu_new_and_old_layout(tmp_path):
+    from skydango.device.mumu import DLL_NAME, find_mumu
+
+    new = tmp_path / "MuMu"
+    shell = new / "nx_device" / "12.0" / "shell"
+    (shell / "sdk").mkdir(parents=True)
+    (shell / "sdk" / DLL_NAME).write_bytes(b"")
+    assert find_mumu(str(shell / "adb.exe")) == (new, shell / "sdk" / DLL_NAME)
+
+    old = tmp_path / "MuMuPlayer-12.0"
+    (old / "shell" / "sdk").mkdir(parents=True)
+    (old / "shell" / "sdk" / DLL_NAME).write_bytes(b"")
+    assert find_mumu(str(old / "shell" / "adb.exe")) == (old, old / "shell" / "sdk" / DLL_NAME)
+
+    assert find_mumu("adb") is None  # PATH 里的 adb：不是 MuMu 自带的
+
+
+class FlakyCapture:
+    def __init__(self):
+        self.fail = False
+
+    def screenshot(self):
+        if self.fail:
+            raise RuntimeError("MuMu 截图失败")
+        return np.zeros((3, 4, 3), np.uint8)
+
+
+def test_screenshot_prefers_fast_capture_and_falls_back_to_adb():
+    rec = Recorder(stdout=raw(4, 3))
+    cap = FlakyCapture()
+    dev = AdbDevice("emulator-5554", runner=rec, capture=cap)
+    assert dev.screenshot().shape == (3, 4, 3)
+    assert rec.cmds == []  # 没走 adb
+    cap.fail = True
+    img = dev.screenshot()
+    assert tuple(img[0, 0]) == (30, 20, 10) and rec.cmds[-1][-1] == "screencap"
+    cap.fail = False
+    dev.screenshot()
+    assert len(rec.cmds) == 1  # 恢复后又用回快速截图

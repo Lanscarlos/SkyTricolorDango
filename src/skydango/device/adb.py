@@ -47,6 +47,7 @@ class AdbDevice:
         ime_id: str = "com.android.adbkeyboard/.AdbIME",
         key_device: str = "",
         runner: Runner = subprocess.run,
+        capture=None,
     ) -> None:
         self.serial = serial
         self.adb_path = adb_path
@@ -54,6 +55,8 @@ class AdbDevice:
         self.ime_id = ime_id
         self.key_device = key_device  # 为空时自动探测
         self._run = runner
+        self.capture = capture  # 更快的截图方式（如 MuMuCapture），失败时回退到 adb screencap
+        self._capture_failed = False
 
     # ---- 基础 ----
     def _adb(self, args: Sequence[str], *, serial: bool = True, timeout: float | None = None) -> bytes:
@@ -90,6 +93,15 @@ class AdbDevice:
 
     # ---- 画面 ----
     def screenshot(self) -> np.ndarray:
+        if self.capture is not None:
+            try:
+                img = self.capture.screenshot()
+                self._capture_failed = False
+                return img
+            except Exception as exc:
+                if not self._capture_failed:  # 只在刚开始失败时提示一次，免得刷屏
+                    log.warning("快速截图失败，改用 adb screencap: %s", exc)
+                self._capture_failed = True
         data = self._adb(["exec-out", "screencap"])
         try:
             return parse_raw_screencap(data)

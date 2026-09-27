@@ -49,3 +49,21 @@ def test_llm_failure_returns_none():
     r = Responder(ScriptedLlm([RuntimeError("network")]), ReplyConfig())
     assert r.reply([msg("在吗")]) is None
     assert r.reply([]) is None
+
+
+def test_echo_client_quotes_messages_with_speaker():
+    from skydango.chat.llm import EchoClient
+    from skydango.chat.reader import Message
+    from skydango.chat.responder import format_incoming
+    from skydango.vision.bubbles import Rect
+
+    msgs = [Message("看？", Rect(0, 0, 1, 1), 0.0, "懒洋洋大王"), Message("嗯", Rect(0, 0, 1, 1), 0.0)]
+    assert EchoClient().complete("", [{"role": "user", "content": format_incoming(msgs)}]) == "收到：看？ / 嗯"
+
+
+def test_clean_reply_drops_claims_of_being_human():
+    """提示词里写了不许说自己是真人，但实测模型三次里有两次还是会说：输出端再拦一道。"""
+    for bad in ["行行行，那我是真人还不行吗", "我不是AI啦", "我才不是机器人", "我就是个真人", "我是人类好吗"]:
+        assert clean_reply(bad, 40) is None, bad
+    for ok in ["哈哈哈你才是ai", "你猜呗", "不装了，我是ai", "你是真人吗", "真人快打"]:
+        assert clean_reply(ok, 40) == ok, ok

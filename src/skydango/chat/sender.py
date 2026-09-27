@@ -34,6 +34,17 @@ class ChatSender:
         self.screen_size = screen_size  # 返回 (width, height)
         self.sleep = sleep
 
+    def _wait_open(self) -> None:
+        """等输入框打开：实测按键后约 0.07 s 就开了，开了就走；最多等 open_delay。"""
+        step, waited = 0.05, 0.0
+        while waited < self.cfg.open_delay:
+            self.sleep(step)
+            waited += step
+            if self.device.ime_shown():
+                self.sleep(0.1)  # 留一点时间让输入法连上输入框
+                return
+        log.warning("等了 %.1f 秒输入框还没打开，照样输入", self.cfg.open_delay)
+
     def send(self, text: str) -> None:
         width, height = self.screen_size()
         cfg = self.cfg
@@ -42,7 +53,7 @@ class ChatSender:
                 self.device.hw_key(cfg.open_chat_key)
             else:
                 self.device.tap(*to_pixels(cfg.open_chat, width, height))
-            self.sleep(cfg.open_delay)
+            self._wait_open()
         self.device.input_text(text)
         self.sleep(cfg.type_delay)
         if cfg.submit == "editor_action":

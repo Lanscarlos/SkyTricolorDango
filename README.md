@@ -58,7 +58,7 @@ skydango devices                  # 能连上、能截图、看当前输入法
 skydango ime on                   # 切到 ADBKeyboard（ime off 恢复默认输入法）
 
 skydango shot --grid              # 截一张带 0~1 坐标网格的图，用来量 vision.log_roi 等区域
-skydango detect                   # 对当前画面读一次聊天记录面板（先在游戏里按 C），输出标注图 detect.png
+skydango detect                   # 对当前画面读一次聊天记录面板（先在游戏里按 C），输出标注图 tmp/detect.png
 skydango detect 某张截图.png       # 也可以对存下来的截图调参
 
 skydango say "测试一下"            # 只测发送流程：（输入框没开时）按 Enter → 输入 → 提交
@@ -89,11 +89,23 @@ pytest
 
 测试用合成画面覆盖了聊天记录解析、前后帧对齐、气泡检测、去重、限速、发送流程；装了 OCR 时还会跑一次真实 RapidOCR 的端到端识别。
 
+- [AGENTS.md](AGENTS.md)：代码结构、常用命令、工作约定（给接手的 Agent / 开发者）
+- [docs/game-ops.md](docs/game-ops.md)：光遇 × MuMu 的实测操作手册——按键、界面坐标、聊天记录格式、动作轮盘编辑、踩过的坑
+
+快捷动作轮盘（数字键 1~8 触发）：
+
+```bash
+skydango emotes scan              # 截下动作列表所有图标到 emotes/scan/，把想用的改名放到 emotes/（如 emotes/鞠躬.png）
+skydango emotes wheel             # 读轮盘 8 格
+skydango emotes set 5 鞠躬         # 换格子（3、8 默认锁定）
+skydango emotes do 鞠躬            # 做动作，不在轮盘上会先换上去
+```
+
 ## 路线图
 
 - [x] v0.1 聊天闭环：截屏 → 气泡 → OCR → 大模型 → 发送
 - [x] 读聊天记录面板：区分说话人、识别自己的消息和被屏蔽的消息
 - [ ] 滚动聊天记录面板，启动时读取更早的上下文
-- [ ] MuMu 原生截图接口（比 adb 更快）
+- [x] MuMu 原生截图接口（约 9 ms/张，adb 约 400 ms）；面板文字没变时跳过 OCR
 - [ ] 自动弹琴、固定 UI 操作（点蜡烛、收发爱心）
 - [ ] 跑图：场景识别定位 + 路线回放

@@ -5,7 +5,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-rapid = pytest.importorskip("rapidocr_onnxruntime")
+try:
+    import rapidocr_onnxruntime  # noqa: F401  1.x（Python < 3.13）
+except ImportError:
+    pytest.importorskip("rapidocr")  # 2.x/3.x
 PIL = pytest.importorskip("PIL")
 
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402

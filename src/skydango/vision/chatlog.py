@@ -64,6 +64,32 @@ def _group_rows(lines: list[OcrLine]) -> list[list[OcrLine]]:
     return rows
 
 
+def _merge_wrapped(
+    groups: list[list[OcrLine]], img: np.ndarray, width: int, self_min_value: int
+) -> list[list[OcrLine]]:
+    """把一条长消息折出来的几行拼回去。
+
+    实测同一个框里的折行几乎贴着（上一行下沿到下一行上沿 0~2 px），而且上一行一定写满了；
+    不同消息之间隔着 25~30 px。只看间距不够：两条短消息也可能挨得近，所以还要求上一行够宽、底色深浅一致。
+    """
+    merged: list[list[OcrLine]] = []
+    for group in groups:
+        if merged:
+            prev, cur = _union([l.box for l in merged[-1]]), _union([l.box for l in group])
+            # 上一个 group 可能已经合并过好几行，拿它最后一行的宽度判断
+            last = _union([l.box for l in _group_rows(merged[-1])[-1]])
+            gap = cur.y - prev.y2
+            if (
+                last.w >= width * 0.75
+                and gap < 0.4 * min(last.h, cur.h)
+                and _is_light(img, last, self_min_value) == _is_light(img, cur, self_min_value)
+            ):
+                merged[-1] = merged[-1] + group
+                continue
+        merged.append(group)
+    return merged
+
+
 def _is_light(img: np.ndarray, box: Rect, min_value: int) -> bool:
     """自己的消息是浅色气泡：文字框里占多数的背景像素是亮的。"""
     patch = box.crop(img)
@@ -89,7 +115,7 @@ def parse_rows(img: np.ndarray, lines: list[OcrLine], self_min_value: int) -> li
     """img 是面板区域的截图，lines 是对它做 OCR 的结果（坐标相对 img）。按从上到下返回。"""
     width = img.shape[1]
     rows: list[LogRow] = []
-    for group in _group_rows(lines):
+    for group in _merge_wrapped(_group_rows(lines), img, width, self_min_value):
         text = join_lines(group)
         if not text:
             continue
@@ -107,6 +133,44 @@ def parse_rows(img: np.ndarray, lines: list[OcrLine], self_min_value: int) -> li
             content = ""
         rows.append(LogRow(speaker, content, False, box))
     return rows
+
+
+def find_input_top(panel: np.ndarray) -> int | None:
+    """找面板底部“聊天……”胶囊输入框的上沿（y，相对 panel），找不到返回 None。
+
+    面板的高度会变：输入框关着时胶囊上沿在 y≈1006，按 Enter 打开输入框后整个面板上移到 y≈932。
+    固定的读取区域总有一种状态会切掉最新一条，所以每帧找胶囊。它是个空心框（关着时白色描边、开着时蓝色）：
+    - 上沿是一条横贯面板的细亮线，线上、线下都是暗的
+    - 往下 57~60 px 还有一条同样亮的下沿
+    只看“亮线 + 下面变暗”不够：自己发的长回复是几乎横贯面板的浅色气泡，它的下沿也长这样（实测因此漏读）；
+    气泡下沿的上面是亮的气泡本体，也没有第二条线，用这两点排除。
+    """
+    height, width = panel.shape[:2]
+    value = cv2.cvtColor(panel, cv2.COLOR_BGR2HSV)[:, int(width * 0.125) : int(width * 0.87), 2]
+    bright = (value > 170).mean(axis=1)
+    for y in range(int(height * 0.6), height - 50):
+        if bright[y] <= 0.8 or bright[y + 8] >= 0.3 or bright[y - 8] >= 0.5:
+            continue
+        if bright[y + 50 : y + 67].max() > 0.8:  # 胶囊的下沿
+            return y
+    return None
+
+
+def text_signature(panel: np.ndarray) -> np.ndarray:
+    """面板文字的“指纹”：亮像素（白字、自己的浅色气泡）缩到一半大小。用来判断要不要重新 OCR。
+
+    面板是半透明的，背后的 3D 场景一直在动，所以不直接比整块画面，只比亮到像文字的像素。
+    """
+    gray = cv2.cvtColor(panel, cv2.COLOR_BGR2GRAY) if panel.ndim == 3 else panel
+    small = cv2.resize(gray, (max(1, gray.shape[1] // 2), max(1, gray.shape[0] // 2)), interpolation=cv2.INTER_AREA)
+    return small > 180
+
+
+def changed_pixels(a: np.ndarray, b: np.ndarray) -> int:
+    """两个指纹之间变了多少像素；尺寸不同（面板高度变了）算全变。"""
+    if a.shape != b.shape:
+        return a.size + b.size
+    return int(np.count_nonzero(a != b))
 
 
 def new_rows(prev: list[str], cur: list[str], same: Callable[[str, str], bool]) -> list[int]:

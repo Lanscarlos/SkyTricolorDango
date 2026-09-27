@@ -13,11 +13,38 @@ from .imageio import imread, imwrite
 log = logging.getLogger("skydango")
 
 
+def _capture(cfg: Config):
+    mode = cfg.device.capture
+    if mode == "adb":
+        return None
+    if mode not in ("auto", "mumu"):
+        raise ValueError(f"不支持的 device.capture: {mode}")
+    from .device.mumu import MumuCapture, MumuError, find_mumu
+
+    found = find_mumu(cfg.device.adb_path)
+    if found is None:
+        if mode == "mumu":
+            raise RuntimeError("device.capture = \"mumu\" 但没找到 MuMu 的截图接口，device.adb_path 要指向 MuMu 自带的 adb")
+        return None
+    try:
+        return MumuCapture(*found, instance=cfg.device.mumu_instance)
+    except MumuError:
+        if mode == "mumu":
+            raise
+        log.warning("MuMu 截图接口加载失败，改用 adb screencap", exc_info=True)
+        return None
+
+
 def _device(cfg: Config):
     from .device.adb import AdbDevice
 
     dev = AdbDevice(
-        cfg.device.serial, cfg.device.adb_path, cfg.device.adb_timeout, cfg.device.ime_id, cfg.device.key_device
+        cfg.device.serial,
+        cfg.device.adb_path,
+        cfg.device.adb_timeout,
+        cfg.device.ime_id,
+        cfg.device.key_device,
+        capture=_capture(cfg),
     )
     if cfg.device.auto_connect:
         log.debug(dev.connect())
@@ -49,8 +76,13 @@ def _build_reader(cfg: Config):
 def cmd_devices(cfg: Config, args) -> None:
     dev = _device(cfg)
     print("已连接设备:", ", ".join(dev.devices()) or "（无）")
+    import time
+
+    t = time.perf_counter()
     img = dev.screenshot()
-    print(f"{cfg.device.serial} 截图尺寸: {img.shape[1]}x{img.shape[0]}")
+    ms = (time.perf_counter() - t) * 1000
+    how = "MuMu 原生" if dev.capture is not None and not dev._capture_failed else "adb screencap"
+    print(f"{cfg.device.serial} 截图尺寸: {img.shape[1]}x{img.shape[0]}（{how}，{ms:.0f} ms）")
     print("当前输入法:", dev.current_ime())
 
 
@@ -170,7 +202,7 @@ def cmd_run(cfg: Config, args) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     if sys.platform == "win32":
-        for stream in (sys.stdout, sys.stderr):
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
             try:
                 stream.reconfigure(encoding="utf-8")
             except AttributeError:

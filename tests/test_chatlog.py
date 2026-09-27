@@ -72,6 +72,7 @@ def test_reader_log_mode_reports_only_new_messages_from_others():
     cfg = Config()
     cfg.vision.mode = "log"
     cfg.vision.log_roi = [0.0, 0.0, 0.5, 1.0]
+    cfg.vision.log_change_pixels = 0  # 同一张画面配不同的 OCR 结果：每次都识别
     history = [line(0, "-陌生人"), line(1, "早上好 - 懒洋洋大王")]
     frames = [
         history,
@@ -122,3 +123,116 @@ def test_ensure_log_open_presses_c_only_when_panel_closed():
     agent, device = _agent([[]], shown=True)  # 正在打字：按 C 会变成输入字母
     agent.ensure_log_open()
     assert device.calls == []
+
+
+def screen_with_pill(top, bg=50):
+    """1920×1080 截图：左侧面板底部画一个“聊天……”胶囊输入框（亮色描边、深色内部），上沿在 top。"""
+    img = np.full((1080, 1920, 3), bg, np.uint8)
+    img[top : top + 3, 15:625] = (230, 230, 230)
+    img[top + 3 : top + 60, 15:625] = 45
+    img[top + 57 : top + 60, 15:625] = (230, 230, 230)
+    return img
+
+
+def test_find_input_top_follows_panel_layout():
+    from skydango.vision.chatlog import find_input_top
+
+    assert find_input_top(screen_with_pill(1006)[:, :643]) == 1006  # 输入框关着：面板往下伸
+    assert find_input_top(screen_with_pill(932)[:, :643]) == 932  # 输入框开着：整体上移
+    assert find_input_top(np.full((1080, 643, 3), 50, np.uint8)) is None
+    assert find_input_top(np.full((1080, 643, 3), 235, np.uint8)) is None  # 雪地之类的亮背景不算
+
+
+def test_reader_reads_rows_down_to_the_input_box():
+    """输入框关着时最新一行在 y≈955，在默认 log_roi（到 0.855）外面，也要读到。"""
+    cfg = Config()
+    cfg.vision.mode = "log"
+    seen = []
+
+    class SizeOcr:
+        def recognize(self, img):
+            seen.append(img.shape[:2])
+            return []
+
+    reader = ChatReader(SizeOcr(), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
+    reader.log_rows(screen_with_pill(1006))
+    reader.log_rows(screen_with_pill(932))
+    reader.log_rows(np.full((1080, 1920, 3), 50, np.uint8))  # 找不到输入框：用 log_roi
+    assert [h for h, _ in seen] == [1006 - 4, 932 - 4, round(0.855 * 1080)]
+
+
+def test_parse_rows_merges_wrapped_long_message():
+    """长消息在同一个深色框里折成几行（实测：行与行几乎贴着，上一行写满），要拼回一条。"""
+    img = panel(light_rows=[8])
+    lines = [
+        line(0, "-陌生人"),
+        OcrLine("啊哈哈哈哈你在干什么，好搞笑啊我跟你说今", 0.99, Rect(13, 80, 566, 37)),
+        OcrLine("天上班的时候有个超级好玩的瓜，想不想听听", 0.99, Rect(13, 115, 567, 36)),
+        OcrLine("看？-懒洋洋大王", 0.96, Rect(11, 152, 228, 39)),
+        OcrLine("-陌生人", 0.95, Rect(20, 222, 100, 40)),  # 下一条：隔了 30 px，不合并
+        line(8, "【AI】好呀", x=320, w=290),
+    ]
+    rows = parse_rows(img, lines, self_min_value=150)
+    assert [(r.speaker, r.text, r.is_self) for r in rows] == [
+        ("陌生人", "", False),
+        ("懒洋洋大王", "啊哈哈哈哈你在干什么，好搞笑啊我跟你说今天上班的时候有个超级好玩的瓜，想不想听听看？", False),
+        ("陌生人", "", False),
+        ("", "【AI】好呀", True),
+    ]
+
+
+def test_parse_rows_does_not_merge_short_rows_that_touch():
+    """上一行没写满就不是折行，哪怕挨得很近。"""
+    lines = [
+        OcrLine("早 - 懒洋洋大王", 0.99, Rect(13, 80, 200, 37)),
+        OcrLine("晚安 - 卡洛", 0.99, Rect(13, 119, 180, 37)),
+    ]
+    rows = parse_rows(panel(), lines, self_min_value=150)
+    assert [(r.speaker, r.text) for r in rows] == [("懒洋洋大王", "早"), ("卡洛", "晚安")]
+
+
+def test_reader_skips_ocr_when_panel_text_unchanged():
+    """截图很便宜（MuMu 原生约 9 ms），OCR 贵（约 0.4 s）：面板文字没变就不识别。"""
+    cfg = Config()
+    cfg.vision.mode = "log"
+    calls = []
+
+    class CountOcr:
+        def recognize(self, img):
+            calls.append(1)
+            return [line(0, "早 - 懒洋洋大王")]
+
+    reader = ChatReader(CountOcr(), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
+    frame = np.full((1080, 1920, 3), 50, np.uint8)
+    frame[100:130, 20:300] = 230  # 一行白字
+    reader.read(frame, 0.0)
+    reader.read(frame.copy(), 0.2)
+    assert len(calls) == 1  # 没变：跳过
+
+    noisy = frame.copy()
+    noisy[500:504, 400:404] = 255  # 背景里飘过一个小光点：不算变化
+    reader.read(noisy, 0.4)
+    assert len(calls) == 1
+
+    changed = frame.copy()
+    changed[140:170, 20:200] = 230  # 底部多了一行
+    reader.read(changed, 0.6)
+    assert len(calls) == 2
+
+    reader.read(changed, 0.6 + cfg.vision.log_max_skip + 0.1)  # 太久没识别：强制识别一次
+    assert len(calls) == 3
+
+
+def test_find_input_top_ignores_long_self_bubble():
+    """实测漏读：自己的长回复是一条几乎横贯面板的浅色气泡，它的下沿也是“亮线、下面变暗”，
+    落到面板下半部分时被当成了输入框，读取范围被截在气泡下沿，下面的新消息全读不到。"""
+    from skydango.vision.chatlog import find_input_top
+
+    for bubble_y in (700, 760, 850, 900):
+        img = screen_with_pill(1006)
+        img[bubble_y : bubble_y + 45, 75:630] = (200, 225, 232)  # 浅色气泡
+        img[bubble_y + 15 : bubble_y + 30, 90:600:12] = 40  # 气泡里的深色字
+        assert find_input_top(img[:, :643]) == 1006, bubble_y
+    img = screen_with_pill(932)
+    img[830:920, 75:630] = (200, 225, 232)  # 折成两行的长气泡，紧挨着打开状态的输入框
+    assert find_input_top(img[:, :643]) == 932

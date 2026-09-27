@@ -75,8 +75,14 @@ class Agent:
     def step(self) -> str | None:
         """跑一轮；如果这一轮发出（或 dry-run 模拟发出）了回复，返回那句话。"""
         now = self.clock()
-        frame = self.device.screenshot()
-        fresh = self.reader.read(frame, now)
+        fresh: list[Message] = []
+        frame = None
+        try:
+            frame = self.device.screenshot()
+        except Exception as exc:  # 实测 adb 截图偶尔会连续失败几秒；只跳过“读”，攒着的消息照样回复
+            log.warning("截图失败，这一轮不读新消息: %s", str(exc).splitlines()[0])
+        if frame is not None:
+            fresh = self.reader.read(frame, now)
         if fresh:
             for m in fresh:
                 log.info("读到: %s", m.text)
