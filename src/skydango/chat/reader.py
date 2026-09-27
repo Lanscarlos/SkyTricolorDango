@@ -56,6 +56,7 @@ class ChatReader:
         self.panel_closed_since: float | None = None  # 从什么时候开始看不到面板
         self.self_filter = self_filter
         self.ignore = [re.compile(p) for p in chat.ignore_patterns]
+        self.trace_path: Path | None = None  # 设了就把面板每次变化记下来（运行目录里的 rows.log）
 
     def _good(self, lines: list[OcrLine]) -> list[OcrLine]:
         return [l for l in lines if l.score >= self.ocr_cfg.min_score and l.text.strip()]
@@ -109,11 +110,9 @@ class ChatReader:
 
     def _trace(self, now: float, rows: list[LogRow], added: list[int]) -> None:
         """调试：面板内容每次变化都记一笔（每行的识别结果、哪几行被判成新的），排查漏读 / 晚读。"""
-        out = Path(self.vision.debug_dir)
-        out.mkdir(parents=True, exist_ok=True)
         lines = [f"== {time.strftime('%H:%M:%S')} t={now:.1f} 新增行={added}"]
         lines += [f"  {'*' if i in added else ' '} y={r.box.y:4d} {r.display()}" for i, r in enumerate(rows)]
-        with (out / "rows.log").open("a", encoding="utf-8") as fh:
+        with self.trace_path.open("a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
 
     def _read_log(self, frame: np.ndarray, now: float) -> list[Message]:
@@ -151,7 +150,7 @@ class ChatReader:
             return []
         self._shrunk = 0
         added = new_rows(self._prev_keys, keys, lambda a, b: similar(a, b, self.similarity))
-        if self.vision.debug_dir and keys != self._prev_keys:
+        if self.trace_path and keys != self._prev_keys:
             self._trace(now, rows, added)
         self._prev_keys = keys
         fresh: list[Message] = []

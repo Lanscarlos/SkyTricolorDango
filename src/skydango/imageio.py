@@ -8,10 +8,10 @@ import cv2
 import numpy as np
 
 
-def imwrite(path: str | Path, img: np.ndarray) -> None:
+def imwrite(path: str | Path, img: np.ndarray, params: list[int] | None = None) -> None:
     ext = Path(path).suffix or ".png"
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    ok, buf = cv2.imencode(ext, img)
+    ok, buf = cv2.imencode(ext, img, params or [])
     if not ok:
         raise RuntimeError(f"图片编码失败: {path}")
     Path(path).write_bytes(buf.tobytes())

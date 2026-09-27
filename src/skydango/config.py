@@ -68,7 +68,7 @@ class VisionConfig:
     log_require_panel: bool = True
     log_reopen_after: float = 5.0  # 面板关着这么久就按键重新打开；0 表示不自动打开
     log_reopen_cooldown: float = 30.0  # 两次自动打开之间至少隔这么久（按了没用时不要一直按）
-    # 非空时，每次读到新消息就把标注后的截图存到这里，方便调参
+    # 已废弃，改用 [run]。还设着的话当作 run.dir 用
     debug_dir: str = ""
 
 
@@ -169,6 +169,16 @@ class WheelConfig:
 
 
 @dataclass
+class RunConfig:
+    """每次 `run` 在 dir 下建一个目录（时间-模式），放日志、识别记录、回复记录、截图、配置快照。"""
+
+    dir: str = "runs"
+    keep: int = 20  # 只留最近这么多次运行，旧的自动删；0 表示不删
+    save_frames: bool = True  # 读到新消息时截面板存 JPG
+    jpeg_quality: int = 85
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
@@ -178,6 +188,7 @@ class Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     sender: SenderConfig = field(default_factory=SenderConfig)
     wheel: WheelConfig = field(default_factory=WheelConfig)
+    run: RunConfig = field(default_factory=RunConfig)
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:

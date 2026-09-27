@@ -6,9 +6,6 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable
-from pathlib import Path
-
-import numpy as np
 
 from .chat.reader import ChatReader, Message
 from .chat.responder import Responder
@@ -16,8 +13,7 @@ from .chat.sender import ChatSender
 from .chat.tracker import SelfFilter
 from .config import Config
 from .device.base import Device
-from .imageio import imwrite
-from .vision.bubbles import annotate
+from .runlog import RunDir
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +46,7 @@ class Agent:
         self_filter: SelfFilter,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        run: RunDir | None = None,
     ) -> None:
         self.cfg = cfg
         self.device = device
@@ -64,14 +61,7 @@ class Agent:
         self.last_new_at = 0.0
         self.sent: list[str] = []  # 记录（含 dry-run），方便测试和日志
         self._last_reopen = float("-inf")
-
-    def _save_debug(self, frame: np.ndarray, messages: list[Message]) -> None:
-        if not self.cfg.vision.debug_dir:
-            return
-        out = Path(self.cfg.vision.debug_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        name = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}.png"
-        imwrite(out / name, annotate(frame, [m.box for m in messages]))
+        self.run_dir = run
 
     def step(self) -> str | None:
         """跑一轮；如果这一轮发出（或 dry-run 模拟发出）了回复，返回那句话。"""
@@ -89,7 +79,8 @@ class Agent:
         if fresh:
             for m in fresh:
                 log.info("读到: %s", m.text)
-            self._save_debug(frame, fresh)
+            if self.run_dir:
+                self.run_dir.save_frame(frame, [m.box for m in fresh])
             self.pending.extend(fresh)
             self.pending = self.pending[-self.cfg.chat.max_pending :]
             self.last_new_at = now
@@ -103,6 +94,8 @@ class Agent:
         reply = self.responder.reply(batch)
         if reply is None:
             log.info("模型选择不回复")
+            if self.run_dir:
+                self.run_dir.record_reply(batch, None, sent=False)
             return None
 
         text = self.cfg.reply.disclosure_prefix + reply
@@ -113,6 +106,8 @@ class Agent:
         else:
             self.sender.send(text)
             self.self_filter.remember(text, self.clock())
+        if self.run_dir:
+            self.run_dir.record_reply(batch, text, sent=not self.cfg.reply.dry_run)
         return text
 
     def ensure_log_open(self) -> bool:

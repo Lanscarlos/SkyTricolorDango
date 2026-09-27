@@ -11,7 +11,6 @@ serial = "127.0.0.1:16384"
 poll_interval = 0.15
 mode = "log"                  # 读聊天记录面板（光遇按 C 打开）；"bubble" 找头顶气泡；"roi" 整块 OCR
 roi = [0.0, 0.0, 1.0, 0.85]   # 只在这块区域里找气泡，排除底部操作栏
-debug_dir = ""                # 例如 "debug"：读到新消息时保存标注截图
 
 [vision.bubble]
 # 用 `skydango detect 截图.png` 反复试这几项
@@ -21,6 +20,13 @@ min_fill = 0.7
 
 [ocr]
 min_score = 0.6
+
+[run]
+# 每次 `skydango run` 在这里建一个目录（如 runs/20260927-153012-live/）：
+# agent.log 日志、rows.log 面板识别记录、replies.jsonl 回复记录、frames/ 面板截图、config.json 配置快照
+dir = "runs"
+keep = 20                     # 只留最近 20 次，旧的自动删；0 表示不删
+save_frames = true            # 读到新消息时截聊天面板存 JPG
 
 [chat]
 debounce = 0.8

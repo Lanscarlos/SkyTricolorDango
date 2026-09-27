@@ -29,6 +29,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/chat/` | 读消息（`reader.py`）、大模型回复（`responder.py`）、发送（`sender.py`）、去重、记忆（`memory.py`，见下） |
 | `src/skydango/game/wheel.py` | 快捷动作轮盘：图标库、读取 / 编辑轮盘、按数字键做动作、扫描动作列表 |
 | `src/skydango/agent.py` | 主循环：读 → 攒一会儿 → 回复 → 限速 → 发送；默认 dry-run |
+| `src/skydango/runlog.py` | 每次 `run` 的运行目录（见下） |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 
 ## 记忆（`memory/`，不进 git）
@@ -42,7 +43,24 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `history.jsonl` | 逐轮聊天记录，重启读回最近 `history_turns` 轮 | 自动 |
 
 每次回复前都重新读这些文件，改了不用重启。只有 `run --live` 读写记忆（dry-run 的回复没真的发出去）。
+
+**改了回复规则后要注意 history**：模型会模仿读回来的旧回复，盖过新规则（实测加了"动不了、别答应跑图"之后，
+历史里"行，我跟着你们跑"那几句让它照样答应；清掉历史后立刻生效）。规则大改时把 `history.jsonl` 挪到 `memory/archive/`，
+要点已经在 notes.md 里，不会失忆。
 `memory init` 用配置生成 profile / friends，`memory show` 查看，`memory update` 立刻整理。
+
+## 运行目录（`runs/`，不进 git）
+
+每次 `run` 建一个 `runs/<时间>-<dry|live>[-echo]/`，启动时会打印路径；只留最近 `run.keep` 次（默认 20）。
+排查问题先翻这里，不用再手动重定向日志：
+
+| 文件 | 内容 |
+|---|---|
+| `agent.log` | 全量日志（DEBUG；终端照旧 INFO，`-v` 才显示 DEBUG） |
+| `rows.log` | 面板每次变化时每行的识别结果，`*` 标出被判成新消息的行 —— 查漏读 / 晚读 / 读错说话人 |
+| `replies.jsonl` | 每轮：收到的消息、回复（`null` = 不回复或被过滤）、是否真的发出 |
+| `frames/*.jpg` | 读到新消息时截的聊天面板（红框标新消息），`run.save_frames = false` 关掉 |
+| `config.json` | 本次实际生效的配置（含 `--live` / `--echo` 覆盖） |
 
 ## 常用命令
 

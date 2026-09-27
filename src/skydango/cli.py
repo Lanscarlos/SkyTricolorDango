@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import Config, load_config
 from .imageio import imread, imwrite
+from .runlog import RunDir
 
 log = logging.getLogger("skydango")
 
@@ -242,17 +243,32 @@ def cmd_memory(cfg: Config, args) -> None:
 
 
 def cmd_run(cfg: Config, args) -> None:
+    if args.live:
+        cfg.reply.dry_run = False
+    if args.echo:
+        cfg.llm.provider = "echo"
+    if cfg.vision.debug_dir:
+        log.warning("vision.debug_dir 已废弃，改用 [run] dir；这次先把它当 run.dir 用")
+        cfg.run.dir = cfg.vision.debug_dir
+    mode = ("dry" if cfg.reply.dry_run else "live") + ("-echo" if cfg.llm.provider == "echo" else "")
+    run = RunDir.create(cfg, mode)
+    run.attach_log()
+    log.info("本次运行的日志和截图: %s", run.path.resolve())
+    try:
+        _run_agent(cfg, run)
+    finally:
+        run.close()
+
+
+def _run_agent(cfg: Config, run: RunDir) -> None:
     from .agent import Agent
     from .chat.llm import make_llm
     from .chat.responder import Responder
     from .chat.sender import ChatSender
 
-    if args.live:
-        cfg.reply.dry_run = False
-    if args.echo:
-        cfg.llm.provider = "echo"
     dev = _device(cfg)
     reader, self_filter = _build_reader(cfg)
+    reader.trace_path = run.rows_log
     llm = make_llm(cfg.llm)
     store = notes = None
     if cfg.reply.memory_dir and not cfg.reply.dry_run:  # dry-run 的回复没真的发出去，不记
@@ -264,7 +280,7 @@ def cmd_run(cfg: Config, args) -> None:
         notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
     responder = Responder(llm, cfg.reply, store=store, notes=notes)
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
-    agent = Agent(cfg, dev, reader, responder, sender, self_filter)
+    agent = Agent(cfg, dev, reader, responder, sender, self_filter, run=run)
     try:
         agent.run()
     except KeyboardInterrupt:
