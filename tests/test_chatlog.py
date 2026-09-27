@@ -236,3 +236,41 @@ def test_find_input_top_ignores_long_self_bubble():
     img = screen_with_pill(932)
     img[830:920, 75:630] = (200, 225, 232)  # 折成两行的长气泡，紧挨着打开状态的输入框
     assert find_input_top(img[:, :643]) == 932
+
+
+def test_split_speaker_accepts_fullwidth_dash():
+    """实测 OCR 会把“ - ”读成全角“－”或长破折号。"""
+    lines = [line(0, "马上你就知道了－ 懒洋洋大王"), line(1, "你这个号是别人的了—番茄炒蛋盖饭")]
+    rows = parse_rows(panel(), lines, self_min_value=150)
+    assert [(r.speaker, r.text) for r in rows] == [("懒洋洋大王", "马上你就知道了"), ("番茄炒蛋盖饭", "你这个号是别人的了")]
+
+
+def test_reader_ignores_glitch_frame_with_few_rows():
+    """实测：界面滚动 / 重绘的瞬间截到一帧只读出一行“陌生人”，拿它当基准会把已经读过的几行又当成新消息。"""
+    cfg = Config()
+    cfg.vision.mode = "log"
+    cfg.vision.log_roi = [0.0, 0.0, 0.5, 1.0]
+    cfg.vision.log_change_pixels = 0
+    # 最后一条“陌生人”后面还有已经读过的行：坏帧的“陌生人”会对齐到它，后面的全被当成新的
+    full = [line(0, "-陌生人"), line(1, "在哪 - 卡洛"), line(2, "-陌生人"), line(3, "啥意思 - 卡洛"), line(4, "号是别人的了 - 卡洛")]
+    frames = [full, [line(10, "-陌生人")], full + [line(5, "你猜 - 卡洛")]]
+    reader = ChatReader(SeqOcr(frames), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
+    frame = np.full((PH, PW * 2, 3), 50, np.uint8)
+    assert reader.read(frame, 0.0) == []
+    assert reader.read(frame, 0.2) == []  # 坏帧：忽略，不改基准
+    assert [m.text for m in reader.read(frame, 0.4)] == ["你猜"]
+
+
+def test_reader_accepts_shrunk_panel_after_it_persists():
+    """面板真的变短了（不是一闪而过的坏帧）：连续几帧都这样就接受为新基准，不回复旧消息。"""
+    cfg = Config()
+    cfg.vision.mode = "log"
+    cfg.vision.log_roi = [0.0, 0.0, 0.5, 1.0]
+    cfg.vision.log_change_pixels = 0
+    full = [line(i, f"第{i}句 - 卡洛") for i in range(6)]
+    short = [line(0, "新的 - 卡洛")]
+    frames = [full, short, short, short, short + [line(1, "再来 - 卡洛")]]
+    reader = ChatReader(SeqOcr(frames), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
+    frame = np.full((PH, PW * 2, 3), 50, np.uint8)
+    got = [m.text for t in range(5) for m in reader.read(frame, t * 0.2)]
+    assert got == ["再来"]

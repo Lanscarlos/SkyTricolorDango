@@ -20,6 +20,7 @@ import numpy as np
 from .bubbles import Rect
 from .ocr import OcrLine, join_lines
 
+_DASHES = "-－—–―"
 _ONLY_DOTS = re.compile(r"^[\s.。·…,，_~\-—]*$")
 
 
@@ -105,7 +106,8 @@ def _split_speaker(text: str) -> tuple[str, str]:
     被屏蔽的行“........ - 陌生人”里，省略号和短横线经常一起被 OCR 丢掉，只剩“陌生人”。
     所以没有分隔符时当成只读到了说话人、内容为空：宁可漏回一句，也不把名字当成消息。
     """
-    idx = text.rfind("-")
+    # OCR 有时把“ - ”读成全角“－”或长破折号
+    idx = max(text.rfind(d) for d in _DASHES)
     if idx < 0:
         return text.strip(), ""
     return text[idx + 1 :].strip(), text[:idx].strip()

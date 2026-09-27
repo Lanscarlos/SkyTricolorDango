@@ -52,6 +52,7 @@ class ChatReader:
         self._prev_keys: list[str] = []  # log 模式：上一帧面板里的行
         self._sig: np.ndarray | None = None  # 上次 OCR 时面板文字的“指纹”
         self._ocr_at = float("-inf")
+        self._shrunk = 0  # 连续几帧行数骤减
         self.self_filter = self_filter
         self.ignore = [re.compile(p) for p in chat.ignore_patterns]
 
@@ -121,6 +122,15 @@ class ChatReader:
         if not rows:  # 面板被挡住 / 关掉了：保留上一帧的状态
             return []
         keys = [r.key() for r in rows]
+        # 实测界面滚动 / 重绘的瞬间会截到只读出一两行的坏帧；拿它当基准，下一帧会把读过的行又当成新的。
+        # 行数骤减先忽略；连续几帧都这样才认为面板真的变短了，接受为新基准（不回复里面的行）
+        if len(self._prev_keys) >= 4 and len(rows) < 0.5 * len(self._prev_keys):
+            self._shrunk += 1
+            log.debug("面板行数从 %d 骤减到 %d（第 %d 帧）", len(self._prev_keys), len(rows), self._shrunk)
+            if self._shrunk >= 3:
+                self._prev_keys, self._shrunk = keys, 0
+            return []
+        self._shrunk = 0
         added = new_rows(self._prev_keys, keys, lambda a, b: similar(a, b, self.similarity))
         if self.vision.debug_dir and keys != self._prev_keys:
             self._trace(now, rows, added)
