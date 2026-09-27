@@ -101,7 +101,8 @@ def format_incoming(messages: list[Message]) -> str:
 _QUOTES = "\"'“”‘’「」『』"
 
 # 陪玩可以不主动提自己是 AI，但不能声称自己是真人：提示词里写了，模型还是偶尔会说，这里硬拦
-_CLAIMS_HUMAN = re.compile(r"我(就|真的|本来就)?是(个|一个)?(真人|人类|活人)|我(才|真的|又)?不是(ai|机器人|人工智能|bot)", re.I)
+# 宁可多拦：“我当然是真人”“我可是活人”“当然不是AI啦”“真人一个”都要拦下
+_CLAIMS_HUMAN = re.compile(r"我.{0,4}是.{0,2}(真人|人类|活人)|(真人|活人)一个|不是\s*(ai|机器人|人工智能|bot)", re.I)
 
 
 _PREFIX = re.compile(r"^(回复|答|AI|我)\s*[:：]\s*")

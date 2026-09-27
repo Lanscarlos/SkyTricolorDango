@@ -123,6 +123,7 @@ class LlmConfig:
     temperature: float = 0.8
     max_tokens: int = 200
     timeout: float = 30.0
+    max_retries: int = 2  # SDK 自己的重试次数；大脑离线时的备用回复用 0（在身体线程里跑，不能卡太久）
 
 
 @dataclass

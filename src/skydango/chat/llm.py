@@ -47,7 +47,9 @@ class OpenAICompatClient:
         except ImportError as exc:
             raise ImportError("pip install \"skydango[openai]\"") from exc
         self.cfg = cfg
-        self._client = OpenAI(base_url=cfg.base_url or None, api_key=_api_key(cfg), timeout=cfg.timeout)
+        self._client = OpenAI(
+            base_url=cfg.base_url or None, api_key=_api_key(cfg), timeout=cfg.timeout, max_retries=cfg.max_retries
+        )
 
     def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
         resp = self._client.chat.completions.create(
@@ -70,7 +72,7 @@ class AnthropicClient:
         except ImportError as exc:
             raise ImportError("pip install \"skydango[anthropic]\"") from exc
         self.cfg = cfg
-        kwargs = {"api_key": _api_key(cfg), "timeout": cfg.timeout}
+        kwargs = {"api_key": _api_key(cfg), "timeout": cfg.timeout, "max_retries": cfg.max_retries}
         if cfg.base_url:
             kwargs["base_url"] = cfg.base_url
         self._client = anthropic.Anthropic(**kwargs)

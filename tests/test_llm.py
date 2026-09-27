@@ -50,3 +50,15 @@ def test_read_key_reports_missing_variable(monkeypatch):
     monkeypatch.setattr("skydango.chat.llm._user_env", lambda name: "")
     with pytest.raises(RuntimeError, match="SKYDANGO_NO_SUCH_KEY"):
         read_key("SKYDANGO_NO_SUCH_KEY")
+
+
+def test_max_retries_is_passed_to_sdk(monkeypatch):
+    made = {}
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = lambda **kw: made.update(kw) or types.SimpleNamespace(messages=FakeMessages())
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+    monkeypatch.setenv("SKYDANGO_TEST_KEY", "k")
+    cfg = llm_cfg("claude-sonnet-5")
+    cfg.max_retries = 0
+    AnthropicClient(cfg)
+    assert made["max_retries"] == 0

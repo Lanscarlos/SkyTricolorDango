@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from typing import Any
 
 from ..device.base import KEYCODE_BACK
 
@@ -45,9 +46,7 @@ class Camera:
         steps = max(1, min(int(steps), MAX_STEPS))
         with self._ready():
             for _ in range(steps):
-                self._press(action)
-        axis, sign = AXIS[action]
-        self.offset[axis] += sign * steps
+                self._step(action)
         return self.describe()
 
     def reset(self) -> str:
@@ -57,9 +56,28 @@ class Camera:
         with self._ready():
             for action, n in undo:
                 for _ in range(n):
-                    self._press(action)
-        self.offset = {axis: 0 for axis in self.offset}
+                    self._step(action)
         return "镜头转回原位了（来回转会有一点偏差）"
+
+    def around(self, capture: Callable[[], Any], turns: int = 4, steps: int = 2) -> list:
+        """环顾一圈：每转 steps 步（约 90°）截一张，共 turns 张，最后转满一圈回到原来的朝向（偏移不变）。"""
+        frames = []
+        with self._ready():
+            for i in range(turns):
+                if i:
+                    for _ in range(steps):
+                        self._press("right")
+                    self.sleep(0.3)  # 等镜头停稳再截
+                frames.append(capture())
+            for _ in range(steps):
+                self._press("right")
+        return frames
+
+    def _step(self, action: str) -> None:
+        """走一步并马上记下偏移：中途出错时复原也准。"""
+        self._press(action)
+        axis, sign = AXIS[action]
+        self.offset[axis] += sign
 
     def describe(self) -> str:
         turn, pitch, zoom = self.offset["turn"], self.offset["pitch"], self.offset["zoom"]
@@ -77,11 +95,13 @@ class Camera:
         if action.startswith("zoom"):
             self.device.hw_key(code)
             self.sleep(0.3)
-        else:
-            self.device.hw_key_down(code)
+            return
+        self.device.hw_key_down(code)
+        try:
             self.sleep(self.step)
-            self.device.hw_key_up(code)
-            self.sleep(0.2)
+        finally:
+            self.device.hw_key_up(code)  # Ctrl+C / 出错时也要松开，不然镜头会一直转
+        self.sleep(0.2)
 
     @contextmanager
     def _ready(self) -> Iterator[None]:
