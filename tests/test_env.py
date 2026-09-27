@@ -138,3 +138,30 @@ def test_scan_spots_interaction_requests_below_friend_labels():
     img[cy - 40 : cy + 40, cx - 40 : cx + 40] = cv2.imread("assets/social/star.png")  # 取消了
     w.observe(img, 10.0, panel_visible=False)
     assert "懒洋洋大王" not in w.requests
+
+
+def test_scan_records_label_positions_and_circle_state():
+    import cv2
+
+    from skydango.game.social import IconClassifier, load_icons
+    from skydango.vision.bubbles import roi_rect
+
+    img = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+    cx, top, h = 1400, 300, 44
+    cy = top + round(2.23 * h)
+    img[cy - 40 : cy + 40, cx - 40 : cx + 40] = cv2.imread("assets/social/star.png")
+    left = roi_rect([0.0, 0.0, 0.335, 0.855], 1920, 1080).x2  # 面板开着：扫描区域从面板右边开始
+
+    class LabelOcr:
+        def recognize(self, region):
+            return [OcrLine("懒洋洋大王", 0.99, Rect(cx - 80 - left, top, 160, h))]  # OCR 给的是区域内坐标
+
+    w = EnvWatcher(LabelOcr(), EnvConfig(), lambda: ["懒洋洋大王"], log_roi=[0.0, 0.0, 0.335, 0.855],
+                   background=False, icons=IconClassifier(load_icons("assets/social")), icon_offset=2.23)
+    w.observe(img, 5.0, panel_visible=True)
+    assert w.labels["懒洋洋大王"] == (cx - 80, top, 160, h, 5.0)  # 换回整张图的坐标
+    assert w.circles["懒洋洋大王"] == ("star", 5.0)
+
+    img[cy - 40 : cy + 40, cx - 40 : cx + 40] = (60, 90, 40)  # 圆圈没了（牵着手时就是这样）
+    w.observe(img, 10.0, panel_visible=True)
+    assert w.circles["懒洋洋大王"] == (None, 10.0)

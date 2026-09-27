@@ -41,6 +41,8 @@ class EnvWatcher:
         self.icons = icons
         self.icon_offset = icon_offset
         self.requests: dict = {}  # 好友名 → game.social.Request（圆圈里是牵手 / 拥抱 / 击掌等图标）
+        self.labels: dict[str, tuple[int, int, int, int, float]] = {}  # 好友名 → 名字标签在整张截图里的 (x, y, w, h, 看到的时间)
+        self.circles: dict[str, tuple[str | None, float]] = {}  # 好友名 → 名字下方圆圈最近认出的图标（None = 认不出 / 没有）和时间
         self.last_seen: dict[str, float] = {}
         self.place = ""
         self.place_at = float("-inf")
@@ -81,6 +83,8 @@ class EnvWatcher:
                 for name in names:
                     if similar(text, name, 0.75):
                         self.last_seen[name] = now
+                        b = line.box
+                        self.labels[name] = (b.x + offset[0], b.y + offset[1], b.w, b.h, now)
                         seen.append(name)
                         self._check_request(region, line.box, name, now, offset)
                 place = next((p for p in self.cfg.places if normalize(text) == normalize(p)), "")
@@ -104,6 +108,7 @@ class EnvWatcher:
 
         cx, cy = box.x + box.w // 2, box.y + round(self.icon_offset * box.h)
         kind, _ = self.icons.classify(region[max(0, cy - 56) : cy + 56, max(0, cx - 56) : cx + 56])
+        self.circles[name] = (kind, now)
         if kind and kind != IDLE:
             if name not in self.requests or self.requests[name].kind != kind:
                 log.info("%s 发起了互动：%s", name, kind)
