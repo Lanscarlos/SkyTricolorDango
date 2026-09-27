@@ -10,6 +10,7 @@ import numpy as np
 
 def imwrite(path: str | Path, img: np.ndarray) -> None:
     ext = Path(path).suffix or ".png"
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     ok, buf = cv2.imencode(ext, img)
     if not ok:
         raise RuntimeError(f"图片编码失败: {path}")

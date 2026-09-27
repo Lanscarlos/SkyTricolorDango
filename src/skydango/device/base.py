@@ -31,5 +31,10 @@ class Device(Protocol):
     def hw_key(self, code: int) -> None:
         """模拟实体键盘按一下（Linux 键码）。有的游戏只认实体键盘，不认 `input keyevent`。"""
 
+    def hw_key_down(self, code: int) -> None:
+        """按住实体键盘的一个键（长按用），之后要 hw_key_up。"""
+
+    def hw_key_up(self, code: int) -> None: ...
+
     def ime_shown(self) -> bool:
         """软键盘 / 输入框当前是否打开。"""

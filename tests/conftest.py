@@ -85,6 +85,12 @@ class FakeDevice:
     def hw_key(self, code):
         self.calls.append(("hw_key", code))
 
+    def hw_key_down(self, code):
+        self.calls.append(("hw_down", code))
+
+    def hw_key_up(self, code):
+        self.calls.append(("hw_up", code))
+
     def ime_shown(self):
         return self.shown
 

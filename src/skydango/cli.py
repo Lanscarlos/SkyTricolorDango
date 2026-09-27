@@ -120,6 +120,33 @@ def cmd_chat(cfg: Config, args) -> None:
         print("（不回复）" if reply is None else cfg.reply.disclosure_prefix + reply)
 
 
+def _wheel(cfg: Config):
+    from .game.wheel import EmoteLibrary, Wheel
+
+    return Wheel(_device(cfg), cfg.wheel, EmoteLibrary(cfg.wheel.library_dir))
+
+
+def cmd_emotes(cfg: Config, args) -> None:
+    wheel = _wheel(cfg)
+    if args.action == "scan":
+        out = args.output or str(Path(cfg.wheel.library_dir) / "scan")
+        paths = wheel.scan_list(out)
+        print(f"截了 {len(paths)} 个图标到 {out}，总览图 {Path(out) / '_sheet.png'}")
+        print(f"把想用的复制到 {cfg.wheel.library_dir}/ 并改名成动作名，例如 {cfg.wheel.library_dir}/鞠躬.png")
+    elif args.action == "wheel":
+        names = wheel.library.names
+        print(f"图标库（{cfg.wheel.library_dir}）: {', '.join(names) or '（空）'}")
+        for slot, (name, score) in wheel.refresh().items():
+            lock = " [锁定]" if slot in cfg.wheel.locked_slots else ""
+            print(f"  {slot}: {name or '?'}  ({score:.2f}){lock}")
+    elif args.action == "set":
+        wheel.assign(args.slot, args.name, force=args.force)
+        print(f"格子 {args.slot} → {args.name}")
+    elif args.action == "do":
+        slot = wheel.perform(args.name)
+        print(f"做了「{args.name}」（格子 {slot}）")
+
+
 def cmd_run(cfg: Config, args) -> None:
     from .agent import Agent
     from .chat.llm import make_llm
@@ -157,13 +184,13 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("devices", help="检查 adb 连接、截图尺寸、当前输入法").set_defaults(func=cmd_devices)
 
     p = sub.add_parser("shot", help="截一张图（--grid 叠加坐标网格，用来标定按钮位置）")
-    p.add_argument("-o", "--output", default="shot.png")
+    p.add_argument("-o", "--output", default="tmp/shot.png")
     p.add_argument("--grid", action="store_true")
     p.set_defaults(func=cmd_shot)
 
     p = sub.add_parser("detect", help="对截图 / 当前画面做一次气泡检测和 OCR，用来调参")
     p.add_argument("image", nargs="?", help="图片路径；不填则实时截屏")
-    p.add_argument("-o", "--output", default="detect.png", help="标注图输出路径")
+    p.add_argument("-o", "--output", default="tmp/detect.png", help="标注图输出路径")
     p.set_defaults(func=cmd_detect)
 
     p = sub.add_parser("ime", help="切换 ADBKeyboard 输入法")
@@ -177,6 +204,19 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("chat", help="在终端里和人设对话，调提示词")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显")
     p.set_defaults(func=cmd_chat)
+
+    p = sub.add_parser("emotes", help="快捷动作轮盘：扫描图标库 / 查看 / 编辑 / 做动作")
+    esub = p.add_subparsers(dest="action", required=True)
+    q = esub.add_parser("scan", help="把动作列表里的所有图标截下来，用来建图标库")
+    q.add_argument("-o", "--output", help="输出目录（默认 <library_dir>/scan）")
+    esub.add_parser("wheel", help="打开编辑界面，读出轮盘 8 个格子现在是什么")
+    q = esub.add_parser("set", help="把某个动作放进轮盘的某个格子")
+    q.add_argument("slot", type=int)
+    q.add_argument("name")
+    q.add_argument("--force", action="store_true", help="允许覆盖锁定的格子")
+    q = esub.add_parser("do", help="做一个动作（不在轮盘上就先换上去）")
+    q.add_argument("name")
+    p.set_defaults(func=cmd_emotes)
 
     p = sub.add_parser("run", help="启动 Agent（默认 dry-run）")
     p.add_argument("--live", action="store_true", help="真的发送消息")

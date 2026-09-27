@@ -13,3 +13,6 @@ debug/
 shot.png
 detect.png
 *.local.*
+
+# 调试用的临时截图、扫描结果
+tmp/

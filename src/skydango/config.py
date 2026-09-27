@@ -122,6 +122,33 @@ class SenderConfig:
 
 
 @dataclass
+class WheelConfig:
+    """快捷动作轮盘：光遇里按 1~8 直接做对应格子的动作；长按 Z 打开轮盘时按 E 进入编辑。
+
+    编辑界面：点右侧列表里的动作 → 点轮盘格子，就换好了（实时生效）；点右上角 × 关闭。
+    格子编号从正上方开始顺时针 1~8。坐标都按 1920×1080 的编辑界面标定。
+    """
+
+    library_dir: str = "emotes"  # 图标库：每个动作一张图，文件名就是动作名（如 鞠躬.png）
+    locked_slots: list[int] = field(default_factory=lambda: [3, 8])  # 不让程序覆盖的格子
+    open_key: int = 44  # Z（Linux 键码）
+    edit_key: int = 18  # E
+    slot_keys: list[int] = field(default_factory=lambda: [2, 3, 4, 5, 6, 7, 8, 9])  # 数字键 1~8
+    editor_center: list[float] = field(default_factory=lambda: [0.335, 0.5])
+    # 关闭编辑界面点右上角的 ×：中间的 ✓ 只有改过东西之后才能关
+    editor_close: list[float] = field(default_factory=lambda: [0.983, 0.03])
+    editor_radius: float = 0.18  # 格子中心到轮盘中心的距离，相对截图高度
+    slot_icon_size: float = 0.12  # 格子图标的裁剪边长，相对截图高度
+    list_roi: list[float] = field(default_factory=lambda: [0.693, 0.037, 0.9375, 1.0])  # 右侧动作列表
+    list_scroll_x: float = 0.815
+    list_scroll_from: float = 0.83  # 往下翻：从这个高度拖到 list_scroll_to
+    list_scroll_to: float = 0.42
+    match_threshold: float = 0.8  # 在动作列表里找图标（和图标库同尺寸）
+    slot_match_threshold: float = 0.72  # 认轮盘格子里的图标（更大，还可能带“2级”之类的字）
+    ui_delay: float = 0.8  # 每次操作后等界面动画
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
@@ -130,6 +157,7 @@ class Config:
     reply: ReplyConfig = field(default_factory=ReplyConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
     sender: SenderConfig = field(default_factory=SenderConfig)
+    wheel: WheelConfig = field(default_factory=WheelConfig)
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:

@@ -133,12 +133,23 @@ class AdbDevice:
                 return current
         raise AdbError("没找到带 KEY_ENTER 的输入设备，可以在 device.key_device 里手动指定（adb shell getevent -pl 查看）")
 
+    def _key_device(self) -> str:
+        if not self.key_device:
+            self.key_device = self._find_key_device()
+        return self.key_device
+
+    def hw_key_down(self, code: int) -> None:
+        dev, code = self._key_device(), int(code)
+        self.shell(f"sendevent {dev} 1 {code} 0; sendevent {dev} 0 0 0; sendevent {dev} 1 {code} 1; sendevent {dev} 0 0 0")
+
+    def hw_key_up(self, code: int) -> None:
+        dev, code = self._key_device(), int(code)
+        self.shell(f"sendevent {dev} 1 {code} 0; sendevent {dev} 0 0 0")
+
     def hw_key(self, code: int) -> None:
         # adb shell 属于 input 组，可以直接写 /dev/input/eventX，游戏会当成实体键盘。
         # 先补一个抬起：之前的按键如果漏了抬起事件，按下会被当成重复而没反应。
-        if not self.key_device:
-            self.key_device = self._find_key_device()
-        dev, code = self.key_device, int(code)
+        dev, code = self._key_device(), int(code)
         self.shell(
             f"sendevent {dev} 1 {code} 0; sendevent {dev} 0 0 0; "
             f"sendevent {dev} 1 {code} 1; sendevent {dev} 0 0 0; sleep 0.05; "
