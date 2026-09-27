@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,11 @@ class EventQueue:
         self._items: list[Event] = []
         self._dropped = 0
         self._cond = threading.Condition()
+        self._listeners: list[Callable[[str], None]] = []
+
+    def subscribe(self, fn: Callable[[str], None]) -> None:
+        """每放一个事件就调 fn(kind)（在放事件的线程里调）；眼睛用它知道有人来了、画面变了。"""
+        self._listeners.append(fn)
 
     def put(self, kind: str, text: str) -> None:
         with self._cond:
@@ -41,6 +49,11 @@ class EventQueue:
                     self._dropped += 1
             self.last_put = now
             self._cond.notify_all()
+        for fn in list(self._listeners):
+            try:
+                fn(kind)
+            except Exception:
+                log.exception("事件订阅者出错")
 
     def drain(self) -> list[Event]:
         with self._cond:

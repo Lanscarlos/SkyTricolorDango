@@ -260,6 +260,8 @@ class BrainConfig:
     price_output: float = 10.0
     camera_step: float = 0.25  # 转视角每步按住方向键的秒数（0.5 s 约 90°）
     scene_change: float = 0.25  # 缩略图平均差异（0~1）超过这个算画面大变
+    eyes_model: str = "haiku"  # 眼睛：把截图写成文字的模型（一次性 claude -p）
+    eyes_timeout: float = 60.0  # 眼睛一次描述最多等多久（秒）
 
 
 @dataclass

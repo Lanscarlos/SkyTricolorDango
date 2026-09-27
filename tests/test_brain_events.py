@@ -41,3 +41,13 @@ def test_has_kind_and_last_put(clock):
     assert not q.has("chat") and q.last_put == float("-inf")
     q.put("chat", "x")
     assert q.has("chat") and not q.has("arrive") and q.last_put == 100.0
+
+
+def test_subscribers_hear_every_event(clock):
+    q = EventQueue(clock=clock)
+    heard = []
+    q.subscribe(heard.append)
+    q.subscribe(lambda kind: 1 / 0)  # 订阅者出错不影响放事件
+    q.put("arrive", "懒懒 来到身边")
+    q.put("chat", "x")
+    assert heard == ["arrive", "chat"] and len(q) == 2
