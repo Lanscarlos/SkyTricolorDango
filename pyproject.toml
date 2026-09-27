@@ -23,7 +23,7 @@ ocr = [
 ]
 # OpenAI 兼容接口：DeepSeek / 通义千问 / Kimi / Ollama / vLLM 等
 openai = ["openai>=1.30"]
-anthropic = ["anthropic>=0.40"]
+anthropic = ["anthropic>=0.116"]
 dev = ["pytest>=8", "pillow>=10"]
 all = ["skydango[ocr,openai,anthropic]"]
 

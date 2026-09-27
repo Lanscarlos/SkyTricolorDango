@@ -29,11 +29,15 @@ def _user_env(name: str) -> str:
         return ""
 
 
-def _api_key(cfg: LlmConfig) -> str:
-    key = (os.environ.get(cfg.api_key_env, "") or _user_env(cfg.api_key_env)) if cfg.api_key_env else ""
+def read_key(env_name: str) -> str:
+    key = (os.environ.get(env_name, "") or _user_env(env_name)) if env_name else ""
     if not key:
-        raise RuntimeError(f"没有找到 API Key，请设置环境变量 {cfg.api_key_env}")
+        raise RuntimeError(f"没有找到 API Key，请设置环境变量 {env_name}")
     return key
+
+
+def _api_key(cfg: LlmConfig) -> str:
+    return read_key(cfg.api_key_env)
 
 
 class OpenAICompatClient:
@@ -55,6 +59,10 @@ class OpenAICompatClient:
         return resp.choices[0].message.content or ""
 
 
+# 这些型号不再接受 temperature（传了返回 400）；不传 thinking 时默认会思考，回复的 max_tokens 只有 200，会被思考吃光
+_NO_SAMPLING = ("claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-8")
+
+
 class AnthropicClient:
     def __init__(self, cfg: LlmConfig) -> None:
         try:
@@ -68,13 +76,17 @@ class AnthropicClient:
         self._client = anthropic.Anthropic(**kwargs)
 
     def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
-        resp = self._client.messages.create(
-            model=self.cfg.model,
-            system=system,
-            messages=messages,
-            temperature=self.cfg.temperature,
-            max_tokens=max_tokens or self.cfg.max_tokens,  # 整理记忆时要比回复长
-        )
+        kwargs = {
+            "model": self.cfg.model,
+            "system": system,
+            "messages": messages,
+            "max_tokens": max_tokens or self.cfg.max_tokens,  # 整理记忆时要比回复长
+        }
+        if self.cfg.model.startswith(_NO_SAMPLING):
+            kwargs["thinking"] = {"type": "disabled"}
+        else:
+            kwargs["temperature"] = self.cfg.temperature
+        resp = self._client.messages.create(**kwargs)
         return "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
 
 
