@@ -225,6 +225,7 @@ class SocialConfig:
     panel_key: int = 46  # 点屏幕会关掉聊天记录面板，接受完按这个键（C）重新打开
     check_delay: float = 0.6  # 每次点完等多久再看
     remember: float = 120.0  # 接受之后多久内在提示词里提一句
+    error_backoff: float = 10.0  # adb 出错（比如查输入框失败）后这么久不处理请求，免得每 0.15 s 起一个 adb 进程
 
 
 @dataclass

@@ -155,3 +155,43 @@ def test_stale_requests_are_ignored():
     device = AcceptDevice()
     h, _ = handler(device)
     assert h.handle({"懒洋洋大王": Request("懒洋洋大王", "hand", (1400, 400), 0.0)}, now=30.0) == []
+
+
+class BrokenImeDevice(FakeDevice):
+    """实测 18:32：adb 起不来（0xC0000142），查输入框每次都失败。"""
+
+    def __init__(self):
+        super().__init__([scene("hand")])
+        self.ime_calls = 0
+
+    def ime_shown(self):
+        self.ime_calls += 1
+        raise RuntimeError("adb 失败 (3221225794)")
+
+
+def test_adb_error_backs_off_instead_of_retrying_every_frame():
+    dev = BrokenImeDevice()
+    h = SocialHandler(dev, SocialConfig(), IconClassifier(ICONS), lambda: ["懒洋洋大王"])
+    reqs = {"懒洋洋大王": Request("懒洋洋大王", "hand", (1400, 400), 0.0)}
+    assert h.handle(reqs, 0.0) == []
+    assert h.handle(reqs, 0.15) == [] and h.handle(reqs, 5.0) == []
+    assert dev.ime_calls == 1  # 退避期间不再碰 adb（旧逻辑每 0.15 s 起一个 adb 进程）
+    reqs = {"懒洋洋大王": Request("懒洋洋大王", "hand", (1400, 400), 10.5)}
+    h.handle(reqs, 10.5)  # 退避（10 s）过了，再试一次
+    assert dev.ime_calls == 2
+
+
+def test_policy_overrides_config():
+    h = SocialHandler(FakeDevice([scene()]), SocialConfig(), IconClassifier(ICONS), lambda: ["懒洋洋大王", "番茄炒蛋盖饭"])
+    hand = Request("懒洋洋大王", "hand", (0, 0), 0.0)
+    piggy = Request("番茄炒蛋盖饭", "piggyback", (0, 0), 0.0)
+    assert h.allowed(hand) and h.allowed(piggy)
+    h.set_policy("*", "piggyback", False)
+    assert not h.allowed(piggy) and h.allowed(hand)
+    h.set_policy("番茄炒蛋盖饭", "*", True)  # 点名的比“所有好友”优先
+    assert h.allowed(piggy)
+    assert not h.allowed(Request("路人", "hug", (0, 0), 0.0))
+    h.set_policy("stranger", "hug", True)
+    assert h.allowed(Request("路人", "hug", (0, 0), 0.0))
+    text = h.describe_policy()
+    assert text.startswith("好友默认接受：牵手") and "所有好友的背背：不接" in text

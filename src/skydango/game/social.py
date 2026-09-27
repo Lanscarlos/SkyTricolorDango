@@ -133,30 +133,57 @@ class SocialHandler:
         self.clock = clock
         self._done: dict[tuple[str, str], float] = {}  # (谁, 什么) → 什么时候处理过，冷却用
         self.last: tuple[str, str, float] | None = None  # 最近一次接受的（谁, 什么, 时间）
+        self.policy: dict[tuple[str, str], bool] = {}  # 大脑定的规则：(谁, 哪种) → 接不接；谁 = 昵称 / "*" / "stranger"
+        self._backoff_until = float("-inf")
 
     def allowed(self, req: Request) -> bool:
-        if req.name in self.friends():
+        friend = req.name in self.friends()
+        for who in (req.name, "*" if friend else "stranger"):  # 点名的优先
+            for kind in (req.kind, "*"):
+                if (who, kind) in self.policy:
+                    return self.policy[(who, kind)]
+        if friend:
             return req.kind in self.cfg.accept_friends
         return req.kind in self.cfg.accept_strangers
+
+    def set_policy(self, who: str, kind: str, accept: bool) -> None:
+        self.policy[(who, kind)] = accept
+
+    def describe_policy(self) -> str:
+        """给大脑看的当前规则。"""
+        base = "好友默认接受：" + ("、".join(KIND_NAMES.get(k, k) for k in self.cfg.accept_friends) or "都不接")
+        rules = []
+        for (who, kind), ok in self.policy.items():
+            person = {"*": "所有好友", "stranger": "陌生人"}.get(who, who)
+            what = "所有请求" if kind == "*" else KIND_NAMES.get(kind, kind)
+            rules.append(f"{person}的{what}：{'接' if ok else '不接'}")
+        return base + ("；" + "；".join(rules) if rules else "")
 
     def handle(self, requests: dict[str, Request], now: float) -> list[str]:
         """主循环每轮调一次：把还新鲜、允许、不在冷却里的请求接受掉。返回处理了哪些（“谁:什么”）。"""
         handled = []
+        if now < self._backoff_until:
+            return handled
         for req in list(requests.values()):
             key = (req.name, req.kind)
             if now - req.seen_at > self.cfg.max_age or not self.allowed(req):
                 continue
             if now - self._done.get(key, float("-inf")) < self.cfg.cooldown:
                 continue
-            if self.device.ime_shown():  # 正在打字：点屏幕会打断输入，等打完再说
+            try:
+                if self.device.ime_shown():  # 正在打字：点屏幕会打断输入，等打完再说
+                    return handled
+                self._done[key] = now
+                if self.dry_run:
+                    log.info("[dry-run] 将会接受 %s 的%s", req.name, KIND_NAMES.get(req.kind, req.kind))
+                    continue
+                if self.accept(req):
+                    self.last = (req.name, req.kind, now)
+                    handled.append(f"{req.name}:{req.kind}")
+            except Exception:  # 实测 adb 会连续失败一阵：退避，别每帧都起一个 adb 进程
+                self._backoff_until = now + self.cfg.error_backoff
+                log.warning("处理互动请求时出错，%.0f 秒内不再处理", self.cfg.error_backoff, exc_info=True)
                 return handled
-            self._done[key] = now
-            if self.dry_run:
-                log.info("[dry-run] 将会接受 %s 的%s", req.name, KIND_NAMES.get(req.kind, req.kind))
-                continue
-            if self.accept(req):
-                self.last = (req.name, req.kind, now)
-                handled.append(f"{req.name}:{req.kind}")
         return handled
 
     def accept(self, req: Request) -> bool:
