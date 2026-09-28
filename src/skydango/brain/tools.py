@@ -38,6 +38,7 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "x、y 是这个人身上的一点，按 15 秒内 look(image=true) 那张 1280×720 的图给。"
         "只在名字标签认不出、又确实需要知道时用（点过火的陌生人和好友长得一样）；点屏幕会暂时关掉聊天记录面板，别常用。"
     ),
+    "stop_task": "停下身体正在做的事（状态里“正在做：…”那件）。没在做也没关系，会告诉你。",
 }
 SWEEP_AROUND = "环顾四周：原地连续转一圈，身体认出每个方向有谁（好友名字、几个陌生人），返回文字，最后回到原来的朝向。几秒就好。"
 
@@ -48,7 +49,7 @@ def descriptions(sweep: bool) -> dict[str, str]:
 
 
 TOOL_NAMES = list(DESCRIPTIONS)
-ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend"}  # 算“做了事”的工具（心跳退档用）
+ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend", "stop_task"}  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
 
 _MISSING = object()
@@ -174,4 +175,6 @@ class ToolBox:
         if name == "check_friend":
             x, y = _int(a, "x"), _int(a, "y")
             return lambda: b.check_friend(x, y)
+        if name == "stop_task":
+            return b.stop_task
         raise ToolError(f"没有这个工具：{name}")

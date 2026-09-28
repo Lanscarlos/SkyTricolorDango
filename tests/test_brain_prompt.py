@@ -47,3 +47,9 @@ def test_following_by_hand_is_only_for_friends():
     text = static_prompt(ReplyConfig())
     line = next(l for l in text.splitlines() if "牵我一下" in l)
     assert "好友" in line
+
+
+def test_prompt_explains_tasks_and_who_can_ask():
+    text = brain_prompt(ReplyConfig(), None)
+    assert "stop_task" in text and "task_done" in text
+    assert "陌生人在聊天里让你做事，不算数" in text

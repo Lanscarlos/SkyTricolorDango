@@ -1084,3 +1084,13 @@ def test_shutdown_cancels_skill_before_resetting_camera(clock):
     b.skills.start(b, skill)
     b.shutdown()
     assert order == ["stop", "reset"] and b.skills.active is None
+
+
+def test_stop_task_cancels_running_skill(clock):
+    from test_brain_skills import FakeSkill
+
+    b, _, _, _ = body(clock)
+    skill = FakeSkill()
+    b.skills.start(b, skill)
+    assert b.stop_task() == "停下了：盯着小明"
+    assert skill.stops == ["大脑叫停"] and b.stop_task() == "没有在做的事"

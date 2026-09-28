@@ -40,6 +40,10 @@ class FakeBody:
     def status(self):
         return "状态"
 
+    def stop_task(self):
+        self.calls.append(("stop_task",))
+        return "停下了"
+
     def chat_log(self, n):
         self.calls.append(("chat_log", n))
         return "log"
@@ -83,9 +87,9 @@ class FakeEyes:
 def test_tool_names_and_actions():
     assert TOOL_NAMES == [
         "look", "look_at", "look_person", "look_around", "status", "chat_log", "say", "emote", "set_request_policy", "camera", "camera_reset",
-        "check_friend",
+        "check_friend", "stop_task",
     ]
-    assert ACTIONS == {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend"}
+    assert ACTIONS == {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend", "stop_task"}
 
 
 def test_look_uses_eyes_unless_image_requested():
@@ -150,9 +154,11 @@ def test_run_dispatches_with_defaults():
     tb.run("set_request_policy", {"who": "*", "kind": "hug", "accept": False})
     tb.run("look_at", {"x": 1, "y": 2, "w": 30, "h": 40})
     tb.run("look_person", {"name": "小明"})
+    tb.begin_turn()  # 一轮最多 6 次工具
+    tb.run("stop_task", {})
     assert body.calls == [
         ("chat_log", 20), ("emote", "鞠躬", False), ("camera", "left", 1), ("policy", "*", "hug", False), ("look_at", 1, 2, 30, 40),
-        ("look_person", "小明"),
+        ("look_person", "小明"), ("stop_task",),
     ]
 
 

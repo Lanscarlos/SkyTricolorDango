@@ -692,6 +692,9 @@ class Body:
         self._forget_self()
         return "镜头现在：" + result
 
+    def stop_task(self) -> str:
+        return self.skills.cancel(self, "大脑叫停")
+
     def camera_reset(self, live: bool = False) -> str:
         if self.camera is None:
             raise ToolError("没有视角控制")
