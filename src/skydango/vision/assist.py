@@ -7,14 +7,22 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import logging
+import threading
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
 import numpy as np
 
+from ..brain.claude import ClaudeError
 from ..brain.images import image_block
+from ..config import AssistConfig
 from .bubbles import Rect
+
+log = logging.getLogger(__name__)
 
 PROMPT_VERSION = 1  # 改了提示词里的规则就加一：缓存按它失效，重跑会重新核对
 
@@ -228,3 +236,101 @@ def review_report(results: list[tuple[str, FrameReview | None]]) -> str:
     lines += [f"- {s}：" + "；".join(filter(None, [r.unsure, *r.problems])) for s, r in unsure] or ["（无）"]
     lines += ["", f"## 4. 其余 {rest} 帧：抽查几张就行", ""]
     return "\n".join(lines)
+
+
+def assist_command(base: list[str], cfg: AssistConfig) -> list[str]:
+    """一次性 claude -p：图片直接放在消息里，不需要任何内置工具。"""
+    return [
+        *base, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+        "--model", cfg.model, "--tools", "", "--strict-mcp-config",
+        "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", ASSIST_SYSTEM,
+    ]
+
+
+@dataclass
+class FrameInput:
+    stem: str
+    image: np.ndarray
+    candidates: list[Rect]
+
+
+class AssistLimit(RuntimeError):
+    """订阅额度用完：已核对的帧都在缓存里，额度恢复后重跑同一条命令会接着做。"""
+
+
+class Reviewer:
+    """分批、并发地让 Claude 核对；每帧结果缓存成 <cache_dir>/<帧名>.json，重跑跳过已核对的帧。
+
+    run：内容块 → result 消息（{"result": 文字, "usage": {...}}），失败抛 ClaudeError（测试里换成假的）。
+    source：候选框来源（模型路径），和提示词版本、候选框坐标一起决定缓存算不算数。
+    """
+
+    def __init__(self, run: Callable[[list[dict]], dict], cache_dir: Path, cfg: AssistConfig, source: str) -> None:
+        self.run = run
+        self.cache_dir = Path(cache_dir)
+        self.cfg = cfg
+        self.source = source
+        self.usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}
+        self._lock = threading.Lock()
+
+    def _key(self, f: FrameInput) -> dict:
+        return {"prompt_version": PROMPT_VERSION, "source": self.source, "candidates": [[b.x, b.y, b.x2, b.y2] for b in f.candidates]}
+
+    def _cached(self, f: FrameInput) -> FrameReview | None:
+        path = self.cache_dir / f"{f.stem}.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if {k: data.get(k) for k in ("prompt_version", "source", "candidates")} != self._key(f):
+            return None
+        h, w = f.image.shape[:2]
+        return parse_review(json.dumps({f.stem: data.get("review")}), {f.stem: len(f.candidates)}, w, h).get(f.stem)
+
+    def _batch(self, frames: list[FrameInput]) -> dict[str, FrameReview | None]:
+        content = build_message([(f.stem, f.image, f.candidates) for f in frames], self.cfg.self_hint)
+        for attempt in (1, 2):
+            try:
+                m = self.run(content)
+                break
+            except ClaudeError as e:
+                if e.limit:
+                    raise AssistLimit(str(e)) from e
+                log.warning("核对 %s 失败（第 %d 次）：%s", ",".join(f.stem for f in frames), attempt, e)
+        else:
+            return {f.stem: None for f in frames}
+        with self._lock:
+            for k in self.usage:
+                self.usage[k] += int((m.get("usage") or {}).get(k) or 0)
+        text = m.get("result") or ""
+        h, w = frames[0].image.shape[:2]
+        parsed = parse_review(text, {f.stem: len(f.candidates) for f in frames}, w, h)
+        start, end = text.find("{"), text.rfind("}")
+        raw = json.loads(text[start : end + 1]) if parsed else {}
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        for f in frames:
+            if f.stem in parsed:
+                entry = {**self._key(f), "review": raw[f.stem]}
+                (self.cache_dir / f"{f.stem}.json").write_text(json.dumps(entry, ensure_ascii=False, indent=1), encoding="utf-8")
+        return {f.stem: parsed.get(f.stem) for f in frames}
+
+    def review(self, frames: list[FrameInput]) -> dict[str, FrameReview | None]:
+        out: dict[str, FrameReview | None] = {}
+        todo = []
+        for f in frames:
+            hit = self._cached(f)
+            if hit is not None:
+                out[f.stem] = hit
+            else:
+                todo.append(f)
+        batches = [todo[i : i + self.cfg.batch] for i in range(0, len(todo), self.cfg.batch)]
+        limit: AssistLimit | None = None
+        with ThreadPoolExecutor(max(1, self.cfg.jobs)) as pool:
+            for fut in [pool.submit(self._batch, b) for b in batches]:
+                try:
+                    out.update(fut.result())
+                except AssistLimit as e:  # 等别的批次跑完、写好缓存再报
+                    limit = e
+        if limit is not None:
+            raise limit
+        return out

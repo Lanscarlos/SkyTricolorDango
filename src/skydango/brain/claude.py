@@ -145,11 +145,18 @@ def check_result(m: dict) -> str:
     return text
 
 
-def one_shot(cmd: list[str], env: dict[str, str], cwd: Path, content, timeout: float) -> str:
-    """眼睛用：起一个进程，发一条消息，拿到结果就关。"""
+def one_shot_message(cmd: list[str], env: dict[str, str], cwd: Path, content, timeout: float) -> dict:
+    """起一个进程，发一条消息，拿到结果就关；返回完整的 result 消息（辅助标注要里面的 usage）。失败抛 ClaudeError。"""
     p = StreamProcess(cmd, env, cwd)
     try:
         p.send(content)
-        return check_result(p.until_result(timeout))
+        m = p.until_result(timeout)
+        check_result(m)
+        return m
     finally:
         p.close()
+
+
+def one_shot(cmd: list[str], env: dict[str, str], cwd: Path, content, timeout: float) -> str:
+    """眼睛用：起一个进程，发一条消息，拿到结果就关。"""
+    return check_result(one_shot_message(cmd, env, cwd, content, timeout))

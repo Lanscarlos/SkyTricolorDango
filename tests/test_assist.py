@@ -1,9 +1,17 @@
 """Claude 辅助标注（vision/assist.py）：挑帧、候选框图、提示词、解析、合并、Reviewer。不连 Claude、不要 GPU。"""
 
-import numpy as np
+import json
 
-from skydango.config import Config
+import numpy as np
+import pytest
+
+from skydango.brain.claude import ClaudeError
+from skydango.config import AssistConfig, Config
 from skydango.vision.assist import (
+    AssistLimit,
+    FrameInput,
+    Reviewer,
+    assist_command,
     FrameReview,
     Verdict,
     apply_review,
@@ -98,3 +106,72 @@ def test_review_report_orders_sections():
 def test_draw_review_marks_unreviewed():
     frame = np.zeros((1080, 1920, 3), np.uint8)
     assert draw_review(frame, [], [], None).max() > 0 and frame.max() == 0
+
+
+def _fake_run(calls, fail_times=0, limit=False):
+    state = {"fails": fail_times}
+
+    def run(content):
+        stems = [b["text"].split()[1].split("：")[0] for b in content if b["type"] == "text" and b["text"].startswith("帧 ")]
+        calls.append(stems)
+        if limit:
+            raise ClaudeError("额度用完", limit=True)
+        if state["fails"] > 0:
+            state["fails"] -= 1
+            raise ClaudeError("超时")
+        body = {s: {"boxes": {"1": {"cls": "player"}}, "missing": [], "unsure": ""} for s in stems}
+        return {"result": json.dumps(body), "usage": {"input_tokens": 10, "output_tokens": 2}}
+
+    return run
+
+
+def _frames(n, cands=1):
+    return [FrameInput(f"f{i}", np.zeros((1080, 1920, 3), np.uint8), [Rect(0, 0, 10, 10)] * cands) for i in range(n)]
+
+
+def test_reviewer_batches(tmp_path):
+    calls = []
+    out = Reviewer(_fake_run(calls), tmp_path, AssistConfig(batch=2, jobs=1), "m").review(_frames(5))
+    assert sorted(map(len, calls)) == [1, 2, 2] and all(out[f"f{i}"] is not None for i in range(5))
+    assert out["f0"].verdicts[1].cls == "player"
+
+
+def test_reviewer_cache_hit_and_invalidation(tmp_path):
+    calls = []
+    cfg = AssistConfig(batch=5, jobs=1)
+    Reviewer(_fake_run(calls), tmp_path, cfg, "m").review(_frames(3))
+    out = Reviewer(_fake_run(calls), tmp_path, cfg, "m").review(_frames(3))
+    assert len(calls) == 1 and out["f2"].verdicts[1].cls == "player"
+    Reviewer(_fake_run(calls), tmp_path, cfg, "other").review(_frames(3))
+    assert len(calls) == 2
+
+
+def test_reviewer_retries_once_then_gives_up(tmp_path):
+    calls = []
+    out = Reviewer(_fake_run(calls, fail_times=1), tmp_path, AssistConfig(batch=5, jobs=1), "m").review(_frames(2))
+    assert len(calls) == 2 and out["f0"] is not None
+    calls2 = []
+    out2 = Reviewer(_fake_run(calls2, fail_times=9), tmp_path / "b", AssistConfig(batch=5, jobs=1), "m").review(_frames(2))
+    assert len(calls2) == 2 and out2 == {"f0": None, "f1": None}
+
+
+def test_reviewer_limit_raises_and_keeps_done(tmp_path):
+    with pytest.raises(AssistLimit):
+        Reviewer(_fake_run([], limit=True), tmp_path, AssistConfig(batch=1, jobs=1), "m").review(_frames(2))
+
+
+def test_reviewer_sends_frames_without_candidates(tmp_path):
+    calls = []
+    Reviewer(_fake_run(calls), tmp_path, AssistConfig(batch=5, jobs=1), "m").review(_frames(2, cands=0))
+    assert calls == [["f0", "f1"]]
+
+
+def test_reviewer_counts_usage(tmp_path):
+    r = Reviewer(_fake_run([]), tmp_path, AssistConfig(batch=1, jobs=2), "m")
+    r.review(_frames(3))
+    assert r.usage["input_tokens"] == 30 and r.usage["output_tokens"] == 6
+
+
+def test_assist_command_uses_model_and_no_tools():
+    cmd = assist_command(["claude"], AssistConfig(model="sonnet"))
+    assert cmd[cmd.index("--model") + 1] == "sonnet" and cmd[cmd.index("--tools") + 1] == ""
