@@ -61,9 +61,7 @@ class Agent:
         social=None,  # SocialHandler：接受好友的牵手 / 拥抱 / 击掌（game/social.py），请求由 env 发现
         emotes: EmotePlayer | None = None,
         store: MemoryStore | None = None,  # 主人命令（#friend/#remember）用；跟 dry_run 无关，配了就写
-        viewer=None,  # vision.viewer.Viewer：网页上实时显示识别框
     ) -> None:
-        self.viewer = viewer
         self.cfg = cfg
         self.env = env
         self.social = social
@@ -86,19 +84,6 @@ class Agent:
         # sleep 包一层：测试会在构造之后替换 agent.sleep
         self.panel = PanelKeeper(cfg.vision, device, reader, lambda s: self.sleep(s))
 
-    def _show(self, frame, now: float, fresh: list[Message]) -> None:
-        from .vision.bubbles import roi_rect
-
-        panel_open = self.cfg.vision.mode == "log" and self.reader.panel_closed_since is None
-        height, width = frame.shape[:2]
-        info = {"模式": "dry-run" if self.cfg.reply.dry_run else "LIVE", "待回复": f"{len(self.pending)} 条",
-                "刚说过": self.sent[-3:][::-1] or "还没说话"}
-        try:
-            self.viewer.update(frame, now, env=self.env, panel=roi_rect(self.cfg.vision.log_roi, width, height) if panel_open else None,
-                               messages=fresh, info=info)
-        except Exception:
-            log.debug("可视化更新出错", exc_info=True)
-
     def step(self) -> str | None:
         """跑一轮；如果这一轮发出（或 dry-run 模拟发出）了回复，返回那句话。"""
         now = self.clock()
@@ -114,8 +99,6 @@ class Agent:
                 self.panel.maybe_reopen(now)
             if self.env is not None:  # 到了间隔会在后台线程里扫一次画面
                 self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
-            if self.viewer is not None:
-                self._show(frame, now, fresh)
             if self.social is not None and self.env is not None and self.env.requests:
                 try:
                     self.social.handle(self.env.requests, now)

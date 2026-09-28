@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
@@ -32,7 +31,6 @@ class EventQueue:
         self._dropped = 0
         self._cond = threading.Condition()
         self._listeners: list[Callable[[str], None]] = []
-        self.history: deque[Event] = deque(maxlen=20)  # 最近的事件（可视化页面显示用，drain 不清）
 
     def subscribe(self, fn: Callable[[str], None]) -> None:
         """每放一个事件就调 fn(kind)（在放事件的线程里调）；眼睛用它知道有人来了、画面变了。"""
@@ -46,7 +44,6 @@ class EventQueue:
                 self._items[-1] = replace(last, count=last.count + 1, t=now)
             else:
                 self._items.append(Event(kind, text, now))
-                self.history.append(self._items[-1])
                 if len(self._items) > self.limit:  # 大脑很久没醒（离线 / 退避）：丢最旧的
                     self._items.pop(0)
                     self._dropped += 1

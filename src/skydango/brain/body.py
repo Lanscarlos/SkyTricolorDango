@@ -21,9 +21,9 @@ from ..chat.reader import Message
 from ..chat.responder import clean_reply, format_incoming
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES
+from .events import EventQueue
 from ..imageio import imwrite
 from ..vision.bubbles import roi_rect
-from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, thumb
 
 log = logging.getLogger(__name__)
@@ -55,7 +55,6 @@ class Body:
         emotes=None,  # game.emotes.EmotePlayer
         camera=None,  # brain.camera.Camera
         friend_checker=None,  # game.friendtree.FriendChecker：点人物看好友树
-        viewer=None,  # vision.viewer.Viewer：网页上实时显示识别框
         fallback=None,  # chat.responder.Responder：大脑离线时的备用回复
         store=None,  # chat.memory.MemoryStore：live 时记聊天记录
         notes=None,  # chat.memory.NotesKeeper
@@ -75,7 +74,6 @@ class Body:
         self.emotes = emotes
         self.camera = camera
         self.friend_checker = friend_checker
-        self.viewer = viewer
         self._last_friend_check = float("-inf")
         self.fallback = fallback
         self.store = store
@@ -133,23 +131,8 @@ class Body:
                 log.exception("感知出错，这一圈跳过")
                 self.events.put("error", "身体感知出错了（详见日志）")
             self._heard(fresh, frame, now)
-            if self.viewer is not None:
-                self._show(frame, now, fresh)
         self._run_commands()
         self._fallback(now)
-
-    def _show(self, frame, now: float, fresh: list[Message]) -> None:
-        panel_open = self.cfg.vision.mode == "log" and self.reader.panel_closed_since is None
-        height, width = frame.shape[:2]
-        info = {"模式": "dry-run" if self.cfg.reply.dry_run else "LIVE", "牵着手": self.holding or "没有"}
-        if self.blackout:
-            info["画面"] = "黑着（切场景？）"
-        info["最近事件"] = [e.line() for e in list(self.events.history)[-6:]][::-1] or "还没有"
-        try:
-            self.viewer.update(frame, now, env=self.env, panel=roi_rect(self.cfg.vision.log_roi, width, height) if panel_open else None,
-                               messages=fresh, info=info)
-        except Exception:
-            log.debug("可视化更新出错", exc_info=True)
 
     def _sense(self, frame, now: float) -> None:
         if self.cfg.vision.mode == "log":

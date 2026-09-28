@@ -275,10 +275,10 @@ def _env_watcher(cfg: Config, background: bool = True, icons=None):
     )
 
 
-def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True):
+def _scene_watcher(cfg: Config, icons=None, dev=None):
     """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。"""
     if not cfg.perception.enabled:
-        return _env_watcher(cfg, background=background, icons=icons)
+        return _env_watcher(cfg, icons=icons)
     from .vision.detect import make_detector
     from .vision.ocr import make_ocr
     from .vision.perception import PerceptionWatcher
@@ -289,62 +289,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True):
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
     return PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
-        icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
+        icons=icons, capture=dev.screenshot if dev is not None else None,
     )
-
-
-def _viewer(cfg: Config, open_browser: bool = True):
-    from .vision.viewer import Viewer
-
-    viewer = Viewer(cfg.viewer)
-    url = viewer.start()
-    print(f"可视化：{url}（浏览器打开这个地址；只有本机能看）")
-    if open_browser:
-        import webbrowser
-
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
-    return viewer
-
-
-def cmd_view(cfg: Config, args) -> None:
-    """只看不动：实时截图 → 读聊天记录面板 + 认人（整图 OCR 或 YOLO）→ 网页上画框。不往游戏里发任何输入。"""
-    from .vision.bubbles import roi_rect
-
-    if args.model:
-        cfg.perception.enabled, cfg.perception.model = True, args.model
-    if args.port is not None:
-        cfg.viewer.port = args.port
-    files = _images(args.images) if args.images else []
-    dev = None if files else _device(cfg)
-    reader, _ = _build_reader(cfg)
-    env = _scene_watcher(cfg, _icon_classifier(cfg), background=not files)
-    viewer = _viewer(cfg, open_browser=not args.no_browser)
-    period = 1.0 / max(cfg.viewer.fps, 0.1)
-    print("Ctrl+C 结束" + (f"；回放 {len(files)} 张图" if files else ""))
-    i = 0
-    try:
-        while True:
-            started = time.monotonic()
-            frame = imread(files[i % len(files)]) if files else dev.screenshot()
-            i += 1
-            now = time.monotonic()
-            fresh = reader.read(frame, now) if cfg.vision.mode == "log" else []
-            panel_open = cfg.vision.mode == "log" and reader.panel_closed_since is None
-            env.observe(frame, now, panel_visible=panel_open)
-            height, width = frame.shape[:2]
-            info = {"来源": f"回放 {files[(i - 1) % len(files)].name}" if files else "实时截图（只看，不操作游戏）"}
-            viewer.update(frame, now, env=env, panel=roi_rect(cfg.vision.log_roi, width, height) if panel_open else None,
-                          messages=fresh, info=info)
-            time.sleep(max(0.0, period - (time.monotonic() - started)))
-    except KeyboardInterrupt:
-        print("\n已停止")
-    finally:
-        if hasattr(env, "stop"):
-            env.stop()
-        viewer.stop()
 
 
 def cmd_env(cfg: Config, args) -> None:
@@ -622,15 +568,12 @@ def cmd_run(cfg: Config, args) -> None:
     run = RunDir.create(cfg, mode)
     run.attach_log()
     log.info("本次运行的日志和截图: %s", run.path.resolve())
-    viewer = _viewer(cfg) if args.view else None
     try:
         if cfg.brain.enabled:
-            _run_brain(cfg, run, args.no_emotes, args.duration, viewer)
+            _run_brain(cfg, run, args.no_emotes, args.duration)
         else:
-            _run_agent(cfg, run, args.no_emotes, args.duration, viewer)
+            _run_agent(cfg, run, args.no_emotes, args.duration)
     finally:
-        if viewer is not None:
-            viewer.stop()
         run.close()
 
 
@@ -660,7 +603,7 @@ def _build_emotes(cfg: Config, dev, reader, no_emotes: bool):
     return player
 
 
-def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0, viewer=None) -> None:
+def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0) -> None:
     from .agent import Agent
     from .chat.llm import make_llm
     from .chat.responder import Responder
@@ -703,8 +646,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     )
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
     agent = Agent(
-        cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store,
-        viewer=viewer,
+        cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store
     )
     try:
         agent.run(duration)
@@ -734,7 +676,7 @@ def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
     return resolve_claude(cfg.brain.claude_path), claude_env(token, cfg.brain.config_dir)
 
 
-def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0, viewer=None) -> None:
+def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0) -> None:
     """统管大脑：身体在当前线程跑（独占设备）；大脑（常驻 Claude Code）和眼睛各一个后台线程；工具经本机 MCP 服务。"""
     import dataclasses
     import threading
@@ -787,7 +729,6 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     body = Body(
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
         env=env, social=social, emotes=emotes, camera=camera, friend_checker=friend_checker, fallback=fallback, store=live_store, notes=notes, run=run,
-        viewer=viewer,
     )
     work = run.path / "brain"
     eyes = Eyes(
@@ -965,20 +906,12 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--preview", action="store_true", help="另存一份画了框的图到 <output>/_preview/，快速检查")
     p.set_defaults(func=cmd_perception)
 
-    p = sub.add_parser("view", help="只看不动：实时截图 → 认人 / 读聊天 → 网页上画识别框（不操作游戏）")
-    p.add_argument("--images", help="回放这个目录 / 这张图（比如 record 录的），不用连模拟器")
-    p.add_argument("--model", help="用这个 YOLO 模型（等于临时打开 [perception]）")
-    p.add_argument("--port", type=int, help="网页端口（默认 viewer.port）")
-    p.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
-    p.set_defaults(func=cmd_view)
-
     p = sub.add_parser("run", help="启动 Agent（默认 dry-run）")
     p.add_argument("--live", action="store_true", help="真的发送消息")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显（联调用）")
     p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动结束（默认一直跑）")
     p.add_argument("--no-emotes", action="store_true", help="这次不做动作（牵着手时用：做动作会松开牵手）")
     p.add_argument("--brain", action="store_true", help="用统管大脑（Claude Code）指挥：看画面、决定说什么做什么")
-    p.add_argument("--view", action="store_true", help="开可视化网页：实时显示画面和识别框")
     p.set_defaults(func=lambda cfg, args: cmd_run(cfg, args))
 
     args = parser.parse_args(argv)

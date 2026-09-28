@@ -116,24 +116,6 @@ class EnvWatcher:
         else:
             self.requests.pop(name, None)
 
-    def overlay(self, now: float) -> list[dict]:
-        """可视化用：最近两次扫描里认出的名字标签和下面的圆圈（整张截图坐标）。"""
-        from ..game.social import IDLE, KIND_NAMES
-
-        out = []
-        fresh = self.cfg.interval * 2 + 1
-        for name, (x, y, w, h, t) in list(self.labels.items()):
-            if now - t > fresh:
-                continue
-            out.append({"x": x, "y": y, "w": w, "h": h, "kind": "name", "label": name})
-            kind, seen = self.circles.get(name, (None, float("-inf")))
-            if self.icons is not None and now - seen <= fresh:
-                cx, cy = x + w // 2, y + round(self.icon_offset * h)
-                label = KIND_NAMES.get(kind, "✦" if kind == IDLE else "?")
-                out.append({"x": cx - 50, "y": cy - 50, "w": 100, "h": 100,
-                            "kind": "request" if kind and kind != IDLE else "ring", "label": label})
-        return out
-
     def nearby(self, now: float) -> list[str]:
         """最近 keep 秒内看到过名字标签的好友（按名单顺序）。标签会被挡住、会闪，所以不要求每次都看到。"""
         return [n for n in self.names() if now - self.last_seen.get(n, float("-inf")) <= self.cfg.keep]

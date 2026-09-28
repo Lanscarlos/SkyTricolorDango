@@ -283,17 +283,6 @@ class FriendCheckConfig:
 
 
 @dataclass
-class ViewerConfig:
-    """识别过程可视化：本机网页实时显示画面 + 识别框（`run --view` 或 `python -m skydango view`）。"""
-
-    host: str = "127.0.0.1"  # 只给本机看：画面里有好友昵称和聊天
-    port: int = 8765
-    fps: float = 10.0  # 最多每秒更新几帧
-    width: int = 1280  # 发给浏览器的图缩到这么宽
-    quality: int = 70  # JPEG 质量
-
-
-@dataclass
 class BrainConfig:
     """统管大脑（brain/）：常驻的 Claude Code（订阅）收事件、调身体的工具；眼睛（Haiku）把画面写成文字。`run --brain` 打开。
 
@@ -345,7 +334,6 @@ class Config:
     social: SocialConfig = field(default_factory=SocialConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
-    viewer: ViewerConfig = field(default_factory=ViewerConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
 
 
