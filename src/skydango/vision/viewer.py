@@ -309,6 +309,16 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 .legend{display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 #status{margin-left:auto}#status.off{color:#f87171}
+#control{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}#control[hidden]{display:none}
+#control .row{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin:6px 0;font-size:13px}
+#control .row>b{width:3em;flex:none;color:var(--muted);font-weight:600}
+#control input[type=text]{flex:1;min-width:160px}#control input[type=number]{width:4em}
+#control input[type=text],#control input[type=number],#control select{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px;font:inherit}
+#control button:disabled,#control select:disabled,#control input:disabled{opacity:.45;cursor:not-allowed}
+#ctl-warn{color:#facc15;font-size:12px}#ctl-count,#ctl-pick-tip{color:var(--muted);font-size:12px}
+#ctl-pick.on{border-color:#f472b6;color:#f472b6}
+#ctl-log{list-style:none;margin:6px 0 0;padding:6px 0 0;border-top:1px solid var(--line);font:12px/1.6 ui-monospace,Consolas,monospace}
+#ctl-log li{word-break:break-all}#ctl-log .ok{color:#3ddc84}#ctl-log .bad{color:#f87171}#ctl-log .t{color:var(--muted)}
 #brain{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}#brain[hidden]{display:none}
 .bhead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:6px;font-size:13px}
 .bhead label{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer}
@@ -328,6 +338,13 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 </style></head><body><main>
 <div id="stage"><div class="bar"><button id="pause">暂停</button><button id="boxes">隐藏框</button><button id="save">存图</button>
 <span id="status">连接中…</span></div><canvas id="c"></canvas>
+<section id="control" hidden><div class="bhead"><b>手动控制</b><span id="ctl-warn" hidden>手动操作会真的在游戏里执行（大脑是 dry-run 也一样）</span></div>
+<div class="row" id="ctl-say"><b>说话</b><input type="text" id="ctl-say-text" placeholder="让团子说一句…"><span id="ctl-count"></span><button id="ctl-say-go">说</button></div>
+<div class="row" id="ctl-emote"><b>动作</b><select id="ctl-emote-name"></select><label><input type="checkbox" id="ctl-force">牵着手也做（会松手）</label><button id="ctl-emote-go">做</button></div>
+<div class="row" id="ctl-camera"><b>视角</b><button data-cam="left">左转</button><button data-cam="right">右转</button><button data-cam="up">抬头</button><button data-cam="down">低头</button><button data-cam="zoom_in">拉近</button><button data-cam="zoom_out">拉远</button>
+步数<input type="number" id="ctl-steps" value="1" min="1"><button id="ctl-reset">复位</button><button id="ctl-around">环视一圈</button></div>
+<div class="row"><b>看人</b><button id="ctl-pick">在画面上选人</button><span id="ctl-pick-tip" class="n"></span></div>
+<ul id="ctl-log"></ul></section>
 <section id="brain" hidden><div class="bhead"><b>大脑</b><span id="brain-state">连接中…</span>
 <label><input type="checkbox" id="brain-acted">只看做了事的轮次</label></div><div id="brain-turns"></div></section></div>
 <aside><h1>团子看到的</h1><dl id="info"></dl><div class="legend" id="legend"></div></aside>
@@ -344,7 +361,7 @@ $("boxes").onclick=e=>{showBoxes=!showBoxes;e.target.textContent=showBoxes?"隐�
 $("save").onclick=()=>{if(!last)return;const a=document.createElement("a");
   a.download=`dango-${new Date().toISOString().replace(/[-:T]/g,"").slice(0,14)}.png`;a.href=c.toDataURL("image/png");a.click()};
 function draw(s){
-  c.width=img.naturalWidth;c.height=img.naturalHeight;ctx.drawImage(img,0,0);
+  c.width=img.naturalWidth;c.height=img.naturalHeight;ctx.drawImage(img,0,0);drawMark(s);
   if(!showBoxes)return;const k=c.width/s.width,fs=Math.max(12,Math.round(c.width/80));
   ctx.font=`${fs}px system-ui,"Microsoft YaHei",sans-serif`;ctx.textBaseline="middle";
   for(const b of s.boxes){const col=COLORS[b.kind]||"#fff",x=b.x*k,y=b.y*k,w=b.w*k,h=b.h*k;
@@ -372,6 +389,57 @@ async function loop(){
   running=false;
 }
 loop();
+// ---- control ----
+const CAM={left:"左转",right:"右转",up:"抬头",down:"低头",zoom_in:"拉近",zoom_out:"拉远"};
+const K={opts:null,busy:false,picking:false,mark:null};
+function toFrame(clientX,clientY,rect,width,height){return [Math.round((clientX-rect.left)*width/rect.width),Math.round((clientY-rect.top)*height/rect.height)]}
+function controlLine(action,args,res){const a=args||{};let what;
+  if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」${a.force?"（松手也做）":""}`;
+  else if(action==="camera")what=`${CAM[a.action]||a.action} ×${a.steps}`;else if(action==="camera_reset")what="复位";
+  else if(action==="look_around")what="环视一圈";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;else what=action;
+  return `${what} → ${res.text}`}
+function drawMark(s){if(!K.mark||!s)return;const k=c.width/s.width,x=K.mark[0]*k,y=K.mark[1]*k,r=Math.max(12,c.width/60);
+  ctx.strokeStyle="#f472b6";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-r,y);ctx.lineTo(x+r,y);ctx.moveTo(x,y-r);ctx.lineTo(x,y+r);ctx.stroke()}
+function ctlApply(){const o=K.opts;if(!o)return;
+  $("ctl-warn").hidden=!o.dry_run;
+  const sel=$("ctl-emote-name"),keep=sel.value;while(sel.firstChild)sel.firstChild.remove();
+  for(const n of o.emotes){const op=el("option","",n);op.value=n;sel.append(op)}if(o.emotes.includes(keep))sel.value=keep;
+  $("ctl-steps").max=o.max_steps;ctlCount();ctlLock()}
+function ctlLock(){const o=K.opts||{emotes:[],camera:[]},b=K.busy;
+  $("ctl-say-text").disabled=b;$("ctl-say-go").disabled=b||!$("ctl-say-text").value.trim();
+  $("ctl-emote-name").disabled=$("ctl-emote-go").disabled=$("ctl-force").disabled=b||!o.emotes.length;
+  for(const x of document.querySelectorAll("#ctl-camera button,#ctl-steps"))x.disabled=b||!o.camera.length;
+  const pick=$("ctl-pick");pick.disabled=b||!o.friend_check;pick.title=o.friend_check?"":"[friend_check] enabled = false";
+  $("ctl-pick-tip").textContent=o.friend_check?(K.picking?"点一下画面上的人":""):"没开（[friend_check] enabled = false）";
+  pick.className=K.picking?"on":""}
+function ctlCount(){const n=[...$("ctl-say-text").value.trim()].length,max=K.opts?K.opts.max_chars:0;
+  $("ctl-count").textContent=`${n} / ${max}`;ctlLock()}
+function ctlLog(action,args,res){const li=el("li");li.append(el("span","t",new Date().toTimeString().slice(0,8)+" "),el("span",res.ok?"ok":"bad",controlLine(action,args,res)));
+  const ul=$("ctl-log");ul.prepend(li);while(ul.children.length>10)ul.lastChild.remove()}
+async function ctlOptions(retry){
+  try{const r=await fetch("/control/options",{cache:"no-store"});
+    if(r.status===404){if(retry)setTimeout(()=>ctlOptions(true),3000);return}  // 身体还没建好：3 秒后再试
+    if(!r.ok)throw new Error(r.status);K.opts=await r.json();$("control").hidden=false;ctlApply();
+  }catch(e){if(retry)setTimeout(()=>ctlOptions(true),3000)}}
+async function ctlSend(action,args){if(K.busy)return;K.busy=true;ctlLock();let res;
+  try{const r=await fetch("/control",{method:"POST",headers:{"Content-Type":"application/json","X-Skydango":"1"},body:JSON.stringify({action,args})});
+    res=await r.json().catch(()=>({ok:false,text:`HTTP ${r.status}`}));if(!r.ok&&res.ok===undefined)res={ok:false,text:`HTTP ${r.status}`};
+  }catch(e){res={ok:false,text:"连不上（程序停了？）"}}
+  ctlLog(action,args,res);K.busy=false;ctlLock();await ctlOptions(false);return res}
+$("ctl-say-text").oninput=ctlCount;
+$("ctl-say-text").onkeydown=e=>{if(e.key==="Enter"&&!e.isComposing)$("ctl-say-go").click()};
+$("ctl-say-go").onclick=async()=>{const t=$("ctl-say-text").value.trim();if(!t)return;const res=await ctlSend("say",{text:t});if(res&&res.ok){$("ctl-say-text").value="";ctlCount()}};
+$("ctl-emote-go").onclick=()=>ctlSend("emote",{name:$("ctl-emote-name").value,force:$("ctl-force").checked});
+for(const x of document.querySelectorAll("#ctl-camera button[data-cam]"))
+  x.onclick=()=>{const max=K.opts?K.opts.max_steps:4,n=Math.min(max,Math.max(1,parseInt($("ctl-steps").value,10)||1));$("ctl-steps").value=n;ctlSend("camera",{action:x.dataset.cam,steps:n})};
+$("ctl-reset").onclick=()=>ctlSend("camera_reset",{});
+$("ctl-around").onclick=()=>ctlSend("look_around",{});
+$("ctl-pick").onclick=()=>{K.picking=!K.picking;K.mark=null;ctlLock();if(last)draw(last)};
+c.addEventListener("click",e=>{if(!K.picking||!last)return;
+  const [x,y]=toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height);K.mark=[x,y];draw(last);
+  setTimeout(async()=>{const go=confirm(`点 (${x}, ${y}) 这个人？`);K.picking=false;ctlLock();
+    if(go)await ctlSend("check_friend",{x,y});K.mark=null;if(last)draw(last)},30)});
+ctlOptions(true);
 // ---- brain ----
 const B={turns:new Map(),els:new Map(),version:0,boot:null,want:new Map(),acted:false};
 const REASONS={events:"新消息 / 事件",heartbeat:"心跳",farewell:"退出前总结",outside:"轮外"};

@@ -542,3 +542,37 @@ def test_control_bad_body():
         assert v.control.calls == []
     finally:
         v.stop()
+
+
+def _control_script():
+    from skydango.vision.viewer import PAGE
+
+    assert "// ---- control ----" in PAGE
+    return PAGE.split("// ---- control ----", 1)[1].split("// ---- brain ----", 1)[0]
+
+
+def test_page_has_control_section():
+    from skydango.vision.viewer import PAGE
+
+    for part in ('id="control"', 'id="ctl-say"', 'id="ctl-emote"', 'id="ctl-camera"', 'id="ctl-pick"', 'id="ctl-log"',
+                 "/control/options", "X-Skydango"):
+        assert part in PAGE
+
+
+def test_control_script_never_uses_innerhtml():
+    assert "innerHTML" not in _control_script()
+
+
+def test_click_maps_to_frame_pixels():
+    # 画布被 CSS 缩放显示：按显示尺寸换算回原图像素
+    from skydango.vision.viewer import PAGE
+
+    [fn] = [line for line in PAGE.splitlines() if line.startswith("function toFrame(")]
+    out = _node(fn + "\nconsole.log(JSON.stringify(toFrame(650, 400, {left:50, top:100, width:960, height:540}, 1920, 1080)));")
+    assert json.loads(out) == [1200, 600]
+
+
+def test_page_retries_control_options():
+    # 控制对象要等身体建好才挂上：拿到 404 过 3 秒再试，不能像时间线那样就此放弃
+    script = _control_script()
+    assert "404" in script and "3000" in script
