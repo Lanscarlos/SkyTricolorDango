@@ -3,6 +3,7 @@
 - 方向键 ←→ 水平转、↑ 镜头压低往上看、↓ 抬回来：按住 step 秒算一步（0.5 s 约 90°）
 - 减号拉近、加号拉远（和直觉相反）；聊天记录面板开着时缩放没反应 → 操作前先关面板，做完再打开
 - 输入框开着时按键会变成打字 → 先按 BACK
+- spin：按住 → 连续转整圈、边转边按 fps 截图（`#spin` / `camera spin` / 打开感知层时的 look_around）
 """
 
 from __future__ import annotations
@@ -10,9 +11,13 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from ..device.base import KEYCODE_BACK
+from .images import is_black
 
 KEYS = {"left": 105, "right": 106, "up": 103, "down": 108, "zoom_in": 12, "zoom_out": 13}  # Linux 键码
 AXIS = {
@@ -24,6 +29,16 @@ UNDO = {"turn": ("right", "left"), "pitch": ("up", "down"), "zoom": ("zoom_in", 
 MAX_STEPS = 4
 
 
+@dataclass
+class SpinResult:
+    before: np.ndarray  # 转之前
+    frames: list[tuple[float, np.ndarray]]  # (按住后第几秒, 图)
+    after: np.ndarray  # 转完停稳后
+    seconds: float  # 实际按住了多久
+    panel_reopened: bool  # 面板原来开着且转完重新打开了；原来就关着也算 True
+    blackout: bool  # 中途有整屏黑的帧（切场景）
+
+
 class Camera:
     def __init__(
         self,
@@ -32,12 +47,14 @@ class Camera:
         panel_visible: Callable[[], bool],
         panel_key: int,
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.device = device
         self.step = step
         self.panel_visible = panel_visible
         self.panel_key = panel_key  # 开关聊天记录面板的键；0 表示没有面板要管
         self.sleep = sleep
+        self.clock = clock
         self.offset = {"turn": 0, "pitch": 0, "zoom": 0}
 
     def move(self, action: str, steps: int = 1, max_steps: int = MAX_STEPS) -> str:
@@ -73,6 +90,31 @@ class Camera:
                 self._press("right")
         return frames
 
+    def spin(
+        self, capture: Callable[[], np.ndarray], turns: int = 1, seconds_per_turn: float = 2.0, fps: float = 15.0
+    ) -> SpinResult:
+        """按住右键连续转 turns 整圈，按住期间按 fps 截图（每张记按住后第几秒）。整圈回到原朝向，偏移不变。"""
+        total = turns * seconds_per_turn
+        period = 1.0 / max(fps, 0.1)
+        code = KEYS["right"]
+        frames: list[tuple[float, np.ndarray]] = []
+        with self._ready() as was_open:
+            before = capture()
+            self.device.hw_key_down(code)
+            start = self.clock()
+            try:
+                while (t := self.clock() - start) < total - 1e-6:
+                    frames.append((t, capture()))
+                    self.sleep(max(0.0, period - (self.clock() - start - t)))
+                seconds = self.clock() - start
+            finally:
+                self.device.hw_key_up(code)  # 出错 / Ctrl+C 也要松开，不然镜头会一直转
+            self.sleep(0.3)  # 等镜头停稳
+            after = capture()
+        reopened = not was_open or bool(self.panel_visible())
+        blackout = any(is_black(f) for _, f in frames)
+        return SpinResult(before, frames, after, seconds, reopened, blackout)
+
     def _step(self, action: str) -> None:
         """走一步并马上记下偏移：中途出错时复原也准。"""
         self._press(action)
@@ -104,7 +146,7 @@ class Camera:
         self.sleep(0.2)
 
     @contextmanager
-    def _ready(self) -> Iterator[None]:
+    def _ready(self) -> Iterator[bool]:
         if self.device.ime_shown():
             self.device.key(KEYCODE_BACK)
             self.sleep(0.3)
@@ -113,7 +155,7 @@ class Camera:
             self.device.hw_key(self.panel_key)
             self.sleep(0.8)
         try:
-            yield
+            yield was_open
         finally:
             if was_open:
                 self.device.hw_key(self.panel_key)

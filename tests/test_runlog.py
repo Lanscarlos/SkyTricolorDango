@@ -150,3 +150,20 @@ def test_record_brain_appends_jsonl(tmp_path):
 def test_run_dir_hard_path(tmp_path):
     run = RunDir.create(make_cfg(tmp_path), "dry", now=0)
     assert run.hard == run.path / "hard" and not run.hard.exists()  # 用到时才建
+
+
+def test_save_spin_writes_frames_and_summary(tmp_path):
+    import numpy as np
+
+    from skydango.brain.camera import SpinResult
+
+    run = RunDir.create(make_cfg(tmp_path), "dry", now=0)
+    black = np.zeros((108, 192, 3), np.uint8)
+    result = SpinResult(before=black, frames=[(0.0, scene()), (0.07, scene())], after=black.copy(), seconds=0.14,
+                        panel_reopened=False, blackout=True)
+    folder = run.save_spin(result, 1, "101530")
+    assert folder == run.path / "spin" / "101530"
+    assert {p.name for p in folder.iterdir()} == {"before.jpg", "after.jpg", "000_0.00s.jpg", "001_0.07s.jpg", "summary.json"}
+    s = json.loads((folder / "summary.json").read_text("utf-8"))
+    assert s["turns"] == 1 and s["frames"] == 2 and s["seconds"] == 0.14 and s["fps"] == round(2 / 0.14, 1)
+    assert s["drift"] == 0.0 and s["panel_reopened"] is False and s["blackout"] is True

@@ -94,3 +94,59 @@ def test_around_captures_four_directions_and_turns_full_circle():
     assert frames == [1, 2, 3, 4]
     assert dev.calls.count(("hw_down", 106)) == 8  # 每 90°（2 步）一张，最后再转 90° 回到原来的朝向
     assert c.offset["turn"] == 0 and state["panel"] is True
+
+
+# ---- spin：转一圈、按 fps 截图 ----
+def spin_cam(panel=True):
+    c, dev, state = cam(panel)
+    clock = {"t": 0.0}
+    c.clock = lambda: clock["t"]
+    c.sleep = lambda s: clock.__setitem__("t", clock["t"] + s)
+    return c, dev, state
+
+
+def test_spin_holds_right_and_captures_at_fps():
+    c, dev, state = spin_cam()
+    r = c.spin(lambda: scene(), turns=1, seconds_per_turn=1.0, fps=10)
+    assert [round(t, 2) for t, _ in r.frames] == [round(0.1 * i, 2) for i in range(10)]
+    assert dev.calls[0] == ("hw_key", 46) and dev.calls[-1] == ("hw_key", 46)
+    assert dev.calls.count(("hw_down", 106)) == 1 and dev.calls.count(("hw_up", 106)) == 1
+    assert r.seconds == pytest.approx(1.0) and r.panel_reopened and not r.blackout
+    assert r.before is not None and r.after is not None
+    assert c.describe() == "原位"  # 整圈不改偏移
+
+
+def test_spin_releases_key_and_reopens_panel_on_error():
+    c, dev, state = spin_cam()
+    n = {"i": 0}
+
+    def capture():
+        n["i"] += 1
+        if n["i"] == 3:
+            raise RuntimeError("截图失败")
+        return scene()
+
+    with pytest.raises(RuntimeError):
+        c.spin(capture, seconds_per_turn=1.0, fps=10)
+    assert ("hw_up", 106) in dev.calls and state["panel"] is True
+
+
+def test_spin_turns_multiply_duration():
+    c, _, _ = spin_cam(panel=False)
+    r = c.spin(lambda: scene(), turns=2, seconds_per_turn=1.0, fps=5)
+    assert len(r.frames) == 10
+
+
+def test_spin_reports_panel_not_reopened_and_blackout():
+    c, dev, state = spin_cam()
+    import numpy as np
+
+    def hw_key(code):  # 按 C 只能关、开不回来
+        dev.calls.append(("hw_key", code))
+        if code == 46:
+            state["panel"] = False
+
+    dev.hw_key = hw_key
+    frames = iter([scene()] + [np.zeros((1080, 1920, 3), np.uint8)] * 50)
+    r = c.spin(lambda: next(frames), seconds_per_turn=0.5, fps=10)
+    assert r.panel_reopened is False and r.blackout is True

@@ -302,6 +302,19 @@ class ViewerConfig:
 
 
 @dataclass
+class SpinConfig:
+    """转一圈（`#spin` / `camera spin` / 打开感知层时的 look_around），见感知层二期设计 §0、§1。"""
+
+    seconds_per_turn: float = 2.0  # 按住方向键转一圈要几秒（按 0.5 s ≈ 90° 估的，待 camera spin 标定）
+    fps: float = 15.0  # 转的时候每秒截几张
+    max_turns: int = 2  # #spin 最多转几圈
+    min_interval: float = 10.0  # 两次 #spin 至少隔几秒
+    hfov: float = 90.0  # 画面水平视野角（度），算方位用（待 camera spin 标定）
+    merge_deg: float = 30.0  # 陌生人方位相差不到这么多度算同一个
+    self_motion: float = 0.03  # 转一圈时框中心平均移动不到画面宽的这么多，才可能是团子
+
+
+@dataclass
 class BrainConfig:
     """统管大脑（brain/）：常驻的 Claude Code（订阅）收事件、调身体的工具；眼睛（Haiku）把画面写成文字。`run --brain` 打开。
 
@@ -354,6 +367,7 @@ class Config:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
+    spin: SpinConfig = field(default_factory=SpinConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
 
 

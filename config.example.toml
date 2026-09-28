@@ -90,6 +90,16 @@ audit_interval = 30.0           # 难例的旁路核对：每隔这么久后台�
 hardcase_max = 200
 low_conf = 0.25                 # 检测器出框阈值；conf 以下的框只给难例收集看
 
+[spin]
+# 转一圈：主人发 #spin（普通模式）、命令行 camera spin、打开感知层时大脑的 look_around
+seconds_per_turn = 2.0          # 按住方向键转一圈要几秒（估的，待 camera spin 标定）
+fps = 15.0                      # 转的时候每秒截几张
+max_turns = 2                   # #spin 最多转几圈
+min_interval = 10.0             # 两次 #spin 至少隔几秒
+hfov = 90.0                     # 画面水平视野角（度），算方位用（待 camera spin 标定）
+merge_deg = 30.0                # 陌生人方位相差不到这么多度算同一个
+self_motion = 0.03              # 转一圈时几乎不动（移动 < 画面宽 × 这个）、一直在中间的就是团子
+
 [viewer]
 # 识别可视化网页：python -m skydango view（只看不动）或 run --view，浏览器里实时看画面 + 识别框
 # 画面里有好友昵称和聊天：默认只给本机看。改成 "0.0.0.0" 手机也能看，但同一局域网的人都能看
