@@ -32,6 +32,8 @@ log = logging.getLogger(__name__)
 MESSAGE_KEEP = 3.0  # 新消息的框留几秒
 MESSAGE_CHARS = 24  # 新消息的标签最多显示几个字
 WAIT = 2.0  # /snapshot 没有新帧时最多等几秒
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")  # 只有这些地址才开手动控制、才收 /control 请求
+MAX_BODY = 4096  # /control 请求体上限（字节）
 
 
 class _Server(ThreadingHTTPServer):
@@ -57,6 +59,7 @@ class Viewer:
         self._messages: deque[tuple[float, dict]] = deque()
         self._server: ThreadingHTTPServer | None = None
         self.brain = None  # brain.trace.BrainTrace：有它网页才显示大脑时间线
+        self.control = None  # brain.manual.ManualControl：有它网页才显示手动控制栏（只在本机模式挂）
         self.frames = 0  # 更新了多少帧（测试 / 统计用）
         self.encodes = 0  # 压了多少次 JPEG（测试用）
 
@@ -154,12 +157,68 @@ class Viewer:
                         self._send(204, "application/json", b"")
                     else:
                         self._send(200, "application/json; charset=utf-8", body)
+                elif url.path == "/control/options" and viewer.control is not None:
+                    if not self._local_host():
+                        self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                    else:
+                        self._json(200, viewer.control.options())
                 elif url.path == "/brain" and viewer.brain is not None:
                     # errors="replace"：截断在 emoji 中间的半个代理字符不能让整条时间线卡在"连不上"
                     body = json.dumps(viewer.brain.since(self._after(url), WAIT), ensure_ascii=False).encode(errors="replace")
                     self._send(200, "application/json; charset=utf-8", body)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
+
+            def do_POST(self) -> None:  # noqa: N802
+                """手动控制：只收本机（Host）、带 X-Skydango 头的 JSON（别的网页借浏览器发不过来：要先预检，我们不应答）。"""
+                if urlparse(self.path).path != "/control" or viewer.control is None:
+                    self._drain()
+                    self._send(404, "text/plain; charset=utf-8", b"not found")
+                    return
+                ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if not self._local_host() or self.headers.get("X-Skydango") != "1" or ctype != "application/json":
+                    self._drain()
+                    self._json(403, {"ok": False, "text": "只接受本机网页发来的请求"})
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length") or -1)
+                except ValueError:
+                    length = -1
+                if not 0 <= length <= MAX_BODY:
+                    self._drain()
+                    self._json(413, {"ok": False, "text": f"请求太大（上限 {MAX_BODY} 字节）"})
+                    return
+                try:
+                    req = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(req, dict):
+                        raise ValueError("请求要是一个 JSON 对象")
+                    result = viewer.control.run(str(req.get("action") or ""), req.get("args") or {})
+                except ValueError as exc:  # 坏 JSON、参数不对：不交给身体
+                    self._json(400, {"ok": False, "text": str(exc)})
+                    return
+                self._json(200, result)
+
+            def _local_host(self) -> bool:
+                """Host 头必须是本机地址 + 这个服务的端口（防 DNS 重绑定：恶意域名解析到 127.0.0.1）。"""
+                host = self.headers.get("Host") or ""
+                if host.startswith("["):
+                    name, _, rest = host[1:].partition("]")
+                    port = rest.removeprefix(":")
+                else:
+                    name, _, port = host.rpartition(":")
+                return name.lower() in LOCAL_HOSTS and port == str(self.server.server_address[1])
+
+            def _drain(self) -> None:
+                """没读的请求体读掉（最多 64 KB），否则直接关连接浏览器那边会报连接被重置、看不到状态码。"""
+                try:
+                    left = min(int(self.headers.get("Content-Length") or 0), 65536)
+                    if left > 0:
+                        self.rfile.read(left)
+                except (ValueError, OSError):
+                    pass
+
+            def _json(self, code: int, data) -> None:
+                self._send(code, "application/json; charset=utf-8", json.dumps(data, ensure_ascii=False).encode(errors="replace"))
 
             def _after(self, url) -> int:
                 try:

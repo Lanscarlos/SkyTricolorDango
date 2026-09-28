@@ -452,3 +452,93 @@ const live={id:5,end:null},done={id:5,end:1},old={id:4,end:1};
 console.log(JSON.stringify([wantOpen(live,undefined,5),wantOpen(done,undefined,5),wantOpen(old,undefined,5),
   wantOpen(old,true,5),wantOpen(done,false,5)]));""")
     assert json.loads(out) == [True, True, False, True, False]
+
+
+# ---- 手动控制（/control） ----
+class FakeControl:
+    OPTIONS = {"emotes": ["鞠躬"], "camera": ["left"], "max_steps": 4, "friend_check": False, "max_chars": 40, "dry_run": True}
+
+    def __init__(self):
+        self.calls = []
+
+    def options(self):
+        return self.OPTIONS
+
+    def run(self, action, args):
+        if action == "bad":
+            raise ValueError("不认识")
+        self.calls.append((action, args))
+        return {"ok": True, "text": "已发送：晚安"}
+
+
+GOOD = {"Content-Type": "application/json", "X-Skydango": "1"}
+
+
+def request(url, body: bytes | None = None, headers: dict | None = None):
+    """返回 (状态码, JSON 或 None)；HTTP 错误也返回状态码。"""
+    req = urllib.request.Request(url, data=body, headers=headers or {}, method="POST" if body is not None else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            raw, status = r.read(), r.status
+    except urllib.error.HTTPError as err:
+        raw, status = err.read(), err.code
+    try:
+        return status, json.loads(raw) if raw else None
+    except ValueError:
+        return status, None
+
+
+def control_viewer():
+    v = viewer()
+    v.control = FakeControl()
+    return v, v.start()
+
+
+def test_control_404_without_control():
+    v = viewer()
+    url = v.start()
+    try:
+        assert request(url + "control/options")[0] == 404
+        assert request(url + "control", b"{}", GOOD)[0] == 404
+    finally:
+        v.stop()
+
+
+def test_control_options_and_run():
+    v, url = control_viewer()
+    try:
+        assert request(url + "control/options") == (200, FakeControl.OPTIONS)
+        body = json.dumps({"action": "say", "args": {"text": "晚安"}}).encode()
+        assert request(url + "control", body, GOOD) == (200, {"ok": True, "text": "已发送：晚安"})
+        assert v.control.calls == [("say", {"text": "晚安"})]
+    finally:
+        v.stop()
+
+
+def test_control_rejects_cross_site_style_requests():
+    v, url = control_viewer()
+    port = v._server.server_address[1]
+    body = json.dumps({"action": "say", "args": {"text": "晚安"}}).encode()
+    try:
+        assert request(url + "control", body, {"Content-Type": "application/json"})[0] == 403  # 缺自定义头
+        assert request(url + "control", body, {"Content-Type": "text/plain", "X-Skydango": "1"})[0] == 403  # 表单式
+        evil = {**GOOD, "Host": f"evil.example:{port}"}  # DNS 重绑定
+        assert request(url + "control", body, evil)[0] == 403
+        assert request(url + "control/options", None, {"Host": f"evil.example:{port}"})[0] == 403
+        assert request(url + "control", body, {**GOOD, "Host": f"localhost:{port}"})[0] == 200
+        assert v.control.calls == [("say", {"text": "晚安"})]  # 只有最后那个合规的做了
+    finally:
+        v.stop()
+
+
+def test_control_bad_body():
+    v, url = control_viewer()
+    try:
+        assert request(url + "control", b"x" * 5000, GOOD)[0] == 413
+        assert request(url + "control", "不是json".encode(), GOOD)[0] == 400
+        assert request(url + "control", b"[1, 2]", GOOD)[0] == 400
+        assert request(url + "control", json.dumps({"action": "bad", "args": {}}).encode(), GOOD) == (
+            400, {"ok": False, "text": "不认识"})
+        assert v.control.calls == []
+    finally:
+        v.stop()
