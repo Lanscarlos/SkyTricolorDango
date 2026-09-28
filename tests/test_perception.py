@@ -642,3 +642,66 @@ def test_self_box_from_sweep_excludes_self_at_runtime():
     for t in (0.0, 1.0, 2.0):
         w.process(frame(), t, panel_visible=False)
     assert w.strangers(2.0) == 0
+
+
+# ---- 二期：认说话人（typing 气泡） ----
+def bubble(x, y=180, w=80, h=60):
+    return Detection("typing", Rect(x, y, w, h), 0.9)
+
+
+def unlit(x, y=400, w=90, h=220):
+    return Detection("player_unlit", Rect(x, y, w, h), 0.9)
+
+
+def test_bubble_over_unlit_stranger_gives_hint():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(12.0) == "（说话的可能是右边近处那个没点火的陌生人）"  # 220 ÷ (0.2 × 1080) ≈ 1.02 → 近
+    assert w.speaker_hint(19.0) is None  # 过了 typing_window（8 秒）
+
+
+def test_far_stranger_on_the_left():
+    det = FakeDetector()
+    det.frames = [[player(200, y=500, w=40, h=80), bubble(190, y=420, w=60, h=40)]]  # 80 ÷ 216 ≈ 0.37 → 远
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(10.0) == "（说话的可能是左边远处那个陌生人）"
+
+
+def test_bubble_over_friend_gives_no_hint():
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110), bubble(1005, y=260)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(10.0) is None
+
+
+def test_bubble_over_self_is_ignored():
+    det = FakeDetector()
+    det.frames = [[Detection("self", Rect(900, 400, 90, 220), 0.9), player(905), bubble(905)]]  # 团子框和人物框叠在一起
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(10.0) is None
+
+
+def test_two_strangers_typing_gives_no_hint():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505), unlit(300), bubble(305)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(10.0) is None
+
+
+def test_overlay_marks_typing():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert {"kind": "typing", "label": "正在输入"}.items() <= next(b for b in w.overlay(10.0) if b["kind"] == "typing").items()
+
+
+def test_default_classes_end_with_typing():
+    assert PerceptionConfig().classes == ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"]
+    assert PerceptionConfig().typing_window == 8.0

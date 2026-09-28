@@ -360,3 +360,9 @@ def test_view_command_is_registered():
         cli.main(["view", "--help"])
     with pytest.raises(SystemExit):
         cli.main(["run", "--help"])
+
+
+def test_page_has_typing_colour_and_legend():
+    from skydango.vision.viewer import PAGE
+
+    assert 'typing:"#e879f9"' in PAGE and 'typing:"正在输入"' in PAGE

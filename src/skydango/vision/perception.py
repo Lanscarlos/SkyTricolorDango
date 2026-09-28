@@ -15,6 +15,7 @@
 
 二期（docs/superpowers/specs/2026-09-28-perception-phase2-design.md）：
 - `sweep()`：转一圈截下的帧单独汇总成"哪个方向有谁"（vision/sweep.py 算方位、合并），顺带认出团子（self_box，之后代替 self_roi）
+- `typing`（头顶"正在输入"气泡）：挂到正下方的人身上；陌生人的消息靠它猜是画面上哪个人说的（`speaker_hint`）
 
 以上规则和阈值都还**没在真机验证**（模型还没训练），见 docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md。
 """
@@ -37,7 +38,7 @@ from ..game.social import IDLE, KIND_NAMES, Request
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
 from .ocr import OcrEngine, join_lines
-from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, find_self, merge
+from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import Track, Tracker, iou
 
 log = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ class PerceptionWatcher:
         self.timings: deque[tuple[float, float]] = deque(maxlen=300)  # (检测 ms, 整帧 ms)
         self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
+        self._typing: deque[tuple] = deque()  # (时间, 轨迹 id, 是好友, 没点火, 框中心 x, 框高, 画面宽, 画面高)
         self._strangers: deque[tuple[float, int]] = deque()  # (时间, 这一帧有几个陌生人)
         self._panel_visible = False
         self._holds: Counter = Counter()  # 暂停的原因 → 次数（可以嵌套）
@@ -284,6 +286,7 @@ class PerceptionWatcher:
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs)]
         tags = [t for t in tracks if t.cls == "name_tag"]
         rings = [t for t in tracks if t.cls == "social_ring"]
+        bubbles = [t for t in tracks if t.cls == "typing"]
 
         friends = self.names()
         for tag in tags:
@@ -351,6 +354,7 @@ class PerceptionWatcher:
             )
             player.data["stranger"] = is_stranger
             strangers += is_stranger
+        self._watch_typing(bubbles, players, selfs, now, width, height)
         with self._lock:  # 身体线程会同时读（strangers()）
             self._strangers.append((now, strangers, unlit))
             while self._strangers and now - self._strangers[0][0] > self.cfg.keep:
@@ -511,6 +515,50 @@ class PerceptionWatcher:
         return best
 
     @staticmethod
+    def _person_below(bubble: Rect, people: list):
+        """气泡正下方的人：气泡水平中心落在人物框（左右各放宽 25%）内，气泡下沿在人物上沿往上 2.5 个身高到身体上部之间。"""
+        bx = bubble.x + bubble.w / 2
+        best, best_gap = None, float("inf")
+        for person in people:
+            p = person.box
+            if not p.x - p.w * 0.25 <= bx <= p.x2 + p.w * 0.25:
+                continue
+            if not p.y - 2.5 * p.h <= bubble.y2 <= p.y + 0.3 * p.h:
+                continue
+            gap = abs(p.y - bubble.y2)
+            if gap < best_gap:
+                best, best_gap = person, gap
+        return best
+
+    def _watch_typing(self, bubbles: list[Track], players: list[Track], selfs: list[Track], now: float,
+                      width: int, height: int) -> None:
+        """头顶的"正在输入"气泡挂到下面的人身上（团子自己的不算），记下来给 speaker_hint 用。"""
+        me = [s.box for s in selfs] + ([self.self_box] if self.self_box is not None else [])
+        for b in bubbles:
+            if self._person_below(b.box, [Track(0, "self", r, 1.0, now, now) for r in me]) is not None:
+                continue  # 团子自己在打字（输入框开着时头顶也有气泡）
+            owner = self._person_below(b.box, players)
+            if owner is None:
+                continue
+            owner.data["typing_at"] = now
+            friend = bool(owner.data.get("name") or owner.data.get("tagged"))
+            self._typing.append((now, owner.id, friend, owner.cls == UNLIT, owner.box.x + owner.box.w / 2, owner.box.h,
+                                 width, height))
+        while self._typing and now - self._typing[0][0] > self.cfg.typing_window:
+            self._typing.popleft()
+
+    def speaker_hint(self, now: float) -> str | None:
+        """陌生人的消息是谁说的：最近 typing_window 秒内头顶冒过气泡、又不是好友的人恰好一个 → 说出他在画面哪儿。"""
+        recent = [r for r in list(self._typing) if now - r[0] <= self.cfg.typing_window and not r[2]]
+        if len({r[1] for r in recent}) != 1:
+            return None
+        _, _, _, dark, cx, h, width, height = recent[-1]
+        side = "左边" if cx < width / 3 else ("右边" if cx > width * 2 / 3 else "前面")
+        far = distance(h, self._ref_height(height), self.cfg.near, self.cfg.far) == "远"
+        who = "没点火的陌生人" if dark else "陌生人"
+        return f"（说话的可能是{side}{'远处' if far else '近处'}那个{who}）"
+
+    @staticmethod
     def _ring_center(ring: Track) -> tuple[int, int]:
         cx, cy = _center(ring.box)
         return int(cx), int(cy)
@@ -536,6 +584,8 @@ class PerceptionWatcher:
                 kind, label = "unlit", "陌生人（没点火）"
             elif t.cls == "self":
                 kind, label = "self", "团子"
+            elif t.cls == "typing":
+                kind, label = "typing", "正在输入"
             elif t.cls == "name_tag":
                 kind = "name" if d.get("name") else "tag"
                 label = d.get("name") or (f"?{d['text']}" if d.get("text") else "?")
