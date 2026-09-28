@@ -560,3 +560,15 @@ def test_spin_reply_includes_sweep_text(clock, tmp_path):
     agent.step()
     assert agent.sent == ["【AI】转完了，1.9 秒 28 张；正前方：懒洋洋大王"]
     assert agent.env.holds == [("hold", "camera"), ("sweep", 29), ("release", "camera")]
+
+
+class HintHoldEnv(HoldEnv):
+    def speaker_hint(self, now):
+        return "（说话的可能是右边远处那个没点火的陌生人）"
+
+
+def test_agent_pending_message_carries_hint(clock, tmp_path):
+    agent, _, _ = owner_agent(clock, [[msg("你好呀", "陌生人"), msg("嗨", "番茄炒蛋盖饭")]], tmp_path)
+    agent.env = HintHoldEnv()
+    agent.step()
+    assert [m.text for m in agent.pending] == ["你好呀（说话的可能是右边远处那个没点火的陌生人）", "嗨"]

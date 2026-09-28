@@ -18,7 +18,7 @@ from typing import Any
 from ..agent import RateLimiter
 from ..chat.memory import Turn
 from ..chat.panel import PanelKeeper
-from ..chat.reader import Message
+from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES
@@ -238,6 +238,7 @@ class Body:
     def _heard(self, fresh: list[Message], frame, now: float) -> None:
         if not fresh:
             return
+        fresh = with_speaker_hint(self.env, fresh, now)
         for m in fresh:
             log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             self.chat.append((self.wall(), m.speaker, m.text))

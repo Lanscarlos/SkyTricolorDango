@@ -743,3 +743,32 @@ def test_body_look_uses_scene_note_with_perception(clock):
     b, _, _, _ = body(clock, env=SceneEnv())
     _, note = b.look()
     assert "- 懒洋洋大王：(550, 400) 附近" in note["text"] and "没列出的人都叫" in note["text"]
+
+
+# ---- 二期：陌生人的消息加注说话人 ----
+class HintEnv(FakeEnv):
+    def speaker_hint(self, now):
+        return "（说话的可能是左边近处那个陌生人）"
+
+
+def test_stranger_message_gets_speaker_hint_in_event(clock):
+    b, _, reader, events = body(clock, env=HintEnv())
+    reader.batches = [[msg("你好", "陌生人"), msg("在吗", "")]]
+    b.step()
+    texts = [e.text for e in events.drain()]
+    assert "聊天  陌生人：「你好（说话的可能是左边近处那个陌生人）」" in texts
+    assert "聊天  （看不出是谁）：「在吗（说话的可能是左边近处那个陌生人）」" in texts
+
+
+def test_friend_message_gets_no_hint(clock):
+    b, _, reader, events = body(clock, env=HintEnv())
+    reader.batches = [[msg("你好", "懒洋洋大王")]]
+    b.step()
+    assert [e.text for e in events.drain()] == ["聊天  懒洋洋大王：「你好」"]
+
+
+def test_no_hint_without_perception(clock):
+    b, _, reader, events = body(clock, env=FakeEnv())
+    reader.batches = [[msg("你好", "陌生人")]]
+    b.step()
+    assert [e.text for e in events.drain()] == ["聊天  陌生人：「你好」"]

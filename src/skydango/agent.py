@@ -12,7 +12,7 @@ from contextlib import AbstractContextManager, nullcontext
 from .chat.commands import CommandRouter, is_command
 from .chat.memory import MemoryStore
 from .chat.panel import PanelKeeper
-from .chat.reader import ChatReader, Message
+from .chat.reader import ChatReader, Message, with_speaker_hint
 from .chat.responder import Responder
 from .chat.sender import ChatSender
 from .chat.tracker import SelfFilter
@@ -142,6 +142,7 @@ class Agent:
                 fresh = [m for m in fresh if id(m) not in skip]
 
         if fresh:
+            fresh = with_speaker_hint(self.env, fresh, now)
             for m in fresh:
                 log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             if self.run_dir:
