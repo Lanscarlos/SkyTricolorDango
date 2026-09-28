@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 import numpy as np
 
@@ -133,6 +134,19 @@ class EnvWatcher:
                 out.append({"x": cx - 50, "y": cy - 50, "w": 100, "h": 100,
                             "kind": "request" if kind and kind != IDLE else "ring", "label": label})
         return out
+
+    # 暂停计时：只有 YOLO 感知层需要（keep 只有 5 s）；这里 keep 30 s，用不着，留空实现让身体不用区分
+    paused = False
+
+    def hold(self, reason: str) -> None:
+        pass
+
+    def release(self, reason: str) -> None:
+        pass
+
+    @contextmanager
+    def held(self, reason: str) -> Iterator[None]:
+        yield
 
     def nearby(self, now: float) -> list[str]:
         """最近 keep 秒内看到过名字标签的好友（按名单顺序）。标签会被挡住、会闪，所以不要求每次都看到。"""

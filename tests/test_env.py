@@ -165,3 +165,12 @@ def test_scan_records_label_positions_and_circle_state():
     img[cy - 40 : cy + 40, cx - 40 : cx + 40] = (60, 90, 40)  # 圆圈没了（牵着手时就是这样）
     w.observe(img, 10.0, panel_visible=True)
     assert w.circles["懒洋洋大王"] == (None, 10.0)
+
+
+def test_env_watcher_hold_is_noop():
+    w = watcher(FakeOcr([]))
+    w.hold("camera")
+    with w.held("blackout"):
+        assert not w.paused
+    w.release("camera")
+    assert not w.paused

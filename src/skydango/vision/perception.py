@@ -22,7 +22,8 @@ import logging
 import threading
 import time
 from collections import Counter, deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 import numpy as np
 
@@ -86,16 +87,91 @@ class PerceptionWatcher:
         self.timings: deque[tuple[float, float]] = deque(maxlen=300)  # (检测 ms, 整帧 ms)
         self._strangers: deque[tuple[float, int]] = deque()  # (时间, 这一帧有几个陌生人)
         self._panel_visible = False
+        self._holds: Counter = Counter()  # 暂停的原因 → 次数（可以嵌套）
+        self._held_since: float | None = None
         self._last_run = float("-inf")
         self._busy = False
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    # ---- 画面被挡时暂停计时（一期设计 §4） ----
+    @property
+    def paused(self) -> bool:
+        return self._held_since is not None
+
+    def hold(self, reason: str) -> None:
+        """开始暂停：不跑检测、不累计"没看到"的时间。原因可以叠加，全部 release 才恢复。"""
+        with self._lock:
+            if self._held_since is None:
+                self._held_since = self.clock()
+                log.debug("感知暂停：%s", reason)
+            self._holds[reason] += 1
+
+    def release(self, reason: str) -> None:
+        with self._lock:
+            if self._holds[reason] <= 0:
+                self._holds.pop(reason, None)
+                return
+            self._holds[reason] -= 1
+            if self._holds[reason] <= 0:
+                del self._holds[reason]
+            if self._holds or self._held_since is None:
+                return
+            since, self._held_since = self._held_since, None
+        self._resume(since, reason)
+
+    @contextmanager
+    def held(self, reason: str) -> Iterator[None]:
+        self.hold(reason)
+        try:
+            yield
+        finally:
+            self.release(reason)
+
+    def _release_all(self, why: str) -> None:
+        with self._lock:
+            if self._held_since is None:
+                return
+            since, self._held_since = self._held_since, None
+            self._holds.clear()
+        self._resume(since, why)
+
+    def _resume(self, since: float, why: str) -> None:
+        """暂停了 d 秒：把所有"最后看到"的时间往后挪 d，恢复后要再过 keep 秒没看到才算走开。"""
+        now = self.clock()
+        d = now - since
+        log.debug("感知恢复（%s），暂停了 %.1f 秒", why, d)
+        if d <= 0:
+            return
+        for name, t in list(self.last_seen.items()):
+            self.last_seen[name] = min(t + d, now)
+        for name, (x, y, w, h, t) in list(self.labels.items()):
+            self.labels[name] = (x, y, w, h, min(t + d, now))
+        for name, (kind, t) in list(self.circles.items()):
+            self.circles[name] = (kind, min(t + d, now))
+        with self._lock:
+            self._strangers = deque((min(t + d, now), n, u) for t, n, u in self._strangers)
+        self.tracker.shift(d)
+
+    def _check_hold_max(self) -> None:
+        since = self._held_since
+        if since is not None and self.clock() - since > self.cfg.hold_max:
+            log.warning("感知暂停超过 %.0f 秒（%s），自动恢复", self.cfg.hold_max, "、".join(self._holds) or "?")
+            self._release_all("hold_max")
+
+    def _frozen(self, now: float) -> float:
+        """暂停期间按暂停开始那一刻算：给身体的结果停在暂停前。"""
+        since = self._held_since
+        return min(now, since) if since is not None else now
+
     # ---- 帧从哪来 ----
     def observe(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
         """身体主循环每圈调一次。capture = "own" 时只记下面板开没开，帧由感知线程自己截。"""
         self._panel_visible = panel_visible
+        self._check_hold_max()
+        if self.paused:
+            return
         if self.cfg.capture == "own" and self.capture is not None:
             self._ensure_thread()
             return
@@ -130,6 +206,10 @@ class PerceptionWatcher:
         period = 1.0 / max(self.cfg.fps, 0.1)
         while not self._stop.is_set():
             started = self.clock()
+            self._check_hold_max()
+            if self.paused:
+                self._stop.wait(period)
+                continue
             try:
                 self.process(self.capture(), started, self._panel_visible)
             except Exception:
@@ -344,16 +424,19 @@ class PerceptionWatcher:
 
     # ---- 给身体 / 提示词用的（和 EnvWatcher 一样） ----
     def nearby(self, now: float) -> list[str]:
+        now = self._frozen(now)
         return [n for n in self.names() if now - self.last_seen.get(n, float("-inf")) <= self.cfg.keep]
 
     def strangers(self, now: float) -> int:
         """最近 keep 秒里同一帧最多看到几个陌生人（轨迹会断，所以不数轨迹条数）。"""
+        now = self._frozen(now)
         with self._lock:
             recent = list(self._strangers)
         return max((n for t, n, _ in recent if now - t <= self.cfg.keep), default=0)
 
     def unlit(self, now: float) -> int:
         """其中还没点火（黑影）的有几个。"""
+        now = self._frozen(now)
         with self._lock:
             recent = list(self._strangers)
         return max((u for t, _, u in recent if now - t <= self.cfg.keep), default=0)

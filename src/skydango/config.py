@@ -261,6 +261,9 @@ class PerceptionConfig:
     ocr_votes: int = 3  # 同一条标签轨迹最多 OCR 几次（取出现最多的名字）
     ocr_threads: int = 2
     self_roi: list[float] = field(default_factory=list)  # 团子自己所在区域 [x1, y1, x2, y2]（归一化）；空 = 靠 self 类别排除
+    # 画面被挡时暂停计时（黑屏、转镜头、开好友树、换轮盘……见一期设计 §4）
+    hold_max: float = 60.0  # 暂停超过这么久自动恢复（防止哪里忘了恢复，永远不报"走开了"）
+    occlusion_hold: float = 30.0  # 多人同时消失 + 画面大变（玩家自己开了全屏界面）时最多暂停这么久
 
 
 @dataclass

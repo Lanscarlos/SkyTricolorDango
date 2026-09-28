@@ -75,8 +75,10 @@ def test_iou():
 class FakeDetector:
     def __init__(self):
         self.frames = []  # 每次 detect 依次返回一组；用完了一直返回最后一组
+        self.calls = 0
 
     def detect(self, img):
+        self.calls += 1
         return self.frames.pop(0) if len(self.frames) > 1 else (self.frames[0] if self.frames else [])
 
 
@@ -120,12 +122,21 @@ def ring(cx, tag_y=330, tag_h=44):
     return Detection("social_ring", Rect(cx - 50, cy - 50, 100, 100), 0.9)
 
 
-def watcher(detector, ocr=None, icons=None, **cfg):
+def watcher(detector, ocr=None, icons=None, clock=None, **cfg):
     cfg.setdefault("stranger_after", 1.0)
+    extra = {"clock": clock} if clock is not None else {}
     return PerceptionWatcher(
         detector, ocr or FakeOcr({}), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
-        log_roi=[0.0, 0.0, 0.335, 0.855], icons=icons, background=False,
+        log_roi=[0.0, 0.0, 0.335, 0.855], icons=icons, background=False, **extra,
     )
+
+
+class Clock:
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
 
 
 def test_friend_is_recognized_by_reading_the_name_tag_once():
@@ -354,3 +365,95 @@ def test_tracker_without_cross_keeps_classes_apart():
     a = t.update([Detection("player", Rect(0, 0, 50, 100), 0.9)], 0.0)[0]
     b = t.update([Detection("player_unlit", Rect(0, 0, 50, 100), 0.9)], 0.1)[0]
     assert a.id != b.id
+
+
+# ---- 画面被挡时暂停计时（一期 §4） ----
+def test_hold_stacks_and_nests():
+    w = watcher(FakeDetector())
+    w.release("x")  # 没 hold 过：忽略
+    assert not w.paused
+    w.hold("a")
+    w.hold("b")
+    w.hold("a")  # 同一原因嵌套
+    w.release("a")
+    w.release("b")
+    assert w.paused
+    w.release("a")
+    assert not w.paused
+
+
+def test_held_releases_on_error():
+    w = watcher(FakeDetector())
+    with pytest.raises(RuntimeError):
+        with w.held("camera"):
+            assert w.paused
+            raise RuntimeError
+    assert not w.paused
+
+
+def test_hold_freezes_nearby_and_shifts_last_seen():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), clock=clock, keep=5.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    clock.t = 1.0
+    w.hold("blackout")
+    clock.t = 21.0
+    assert w.nearby(21.0) == ["懒洋洋大王"]  # 暂停期间照常返回暂停前的结果
+    w.release("blackout")
+    assert w.last_seen["懒洋洋大王"] <= 21.0
+    assert w.nearby(25.0) == ["懒洋洋大王"]
+    assert w.nearby(27.0) == []
+
+
+def test_hold_freezes_strangers():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[Detection("player_unlit", Rect(1000, 400, 90, 220), 0.9)]]
+    w = watcher(det, clock=clock, keep=5.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    clock.t = 1.0
+    w.hold("camera")
+    assert w.strangers(30.0) == 1 and w.unlit(30.0) == 1
+    clock.t = 30.0
+    w.release("camera")
+    assert w.strangers(33.0) == 1
+
+
+def test_hold_skips_detection():
+    clock = Clock()
+    det = FakeDetector()
+    w = watcher(det, clock=clock)
+    w.hold("camera")
+    w.observe(frame(), 0.0, panel_visible=False)
+    assert det.calls == 0
+    w.release("camera")
+    w.observe(frame(), 1.0, panel_visible=False)
+    assert det.calls == 1
+
+
+def test_hold_keeps_tracks_no_reocr():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    ocr = FakeOcr({110: "懒洋洋大王"})
+    w = watcher(det, ocr, clock=clock, ocr_votes=1, track_buffer=1.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    clock.t = 0.5
+    w.hold("friend_tree")
+    clock.t = 20.5
+    w.release("friend_tree")
+    w.process(frame(), 21.0, panel_visible=False)
+    assert ocr.calls == 1 and w.nearby(21.0) == ["懒洋洋大王"]
+
+
+def test_hold_max_auto_releases(caplog):
+    clock = Clock()
+    w = watcher(FakeDetector(), clock=clock, hold_max=60.0)
+    w.hold("camera")
+    clock.t = 61.0
+    with caplog.at_level("WARNING"):
+        w.observe(frame(), 61.0, panel_visible=False)
+    assert not w.paused
+    assert any("暂停" in r.message for r in caplog.records)
