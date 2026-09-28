@@ -269,6 +269,10 @@ class PerceptionConfig:
     audit_interval: float = 30.0  # 每隔多久在后台做一次整图 OCR 核对 YOLO 认出的好友（约 1 s CPU）；0 = 不核对
     hardcase_max: int = 200  # 每次运行最多存几张
     low_conf: float = 0.25  # 检测器按这个出框；conf 以下的框不进追踪，只给难例收集看
+    # 二期：远近（人物框高 ÷ 团子框高；阈值待真机标定）
+    near: float = 0.8  # 比值 ≥ 这个算"近"
+    far: float = 0.4  # 比值 < 这个算"远"，中间是"中"
+    self_height: float = 0.2  # 没有团子框时，假定团子框高占屏高的这么多（待标定）
 
 
 @dataclass

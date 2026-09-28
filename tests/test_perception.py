@@ -571,3 +571,74 @@ def test_no_occlusion_right_after_a_camera_hold():
         clock.t = 2.0
     w.process(frame(), 2.1, panel_visible=False)
     assert not w.paused
+
+
+# ---- 二期：环绕扫描 ----
+from skydango.config import SpinConfig  # noqa: E402
+from skydango.vision.sweep import UNKNOWN_WHO, UNLIT_WHO  # noqa: E402
+
+
+def spin_frames(n=20):  # t = i * 0.1；seconds_per_turn = 2.0、hfov = 90 → 每帧转 18°
+    return [(i * 0.1, frame()) for i in range(n)]
+
+
+def me():
+    return player(900, 500)  # 团子：每帧都在中间不动
+
+
+def test_sweep_reports_friend_direction_and_strangers():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    det.frames[5] = [me(), player(1155, 400), tag(1145, 110)]  # t=0.5 → 90° + 画面偏右 11° → 右
+    det.frames[10] = [me(), Detection("player_unlit", Rect(1155, 400, 90, 220), 0.9)]  # t=1.0 → 191° → 后
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    r = w.sweep(spin_frames(), SpinConfig())
+    assert {(e.who, e.direction) for e in r.entries} == {("懒洋洋大王", "右"), (UNLIT_WHO, "后")}
+    assert r.self_box == Rect(900, 500, 90, 220) and w.self_box == r.self_box
+    assert r.frames == 20 and r.seconds == pytest.approx(1.9)
+    assert "右边：懒洋洋大王" in r.text()
+
+
+def test_sweep_does_not_touch_runtime_state():
+    det = FakeDetector()
+    det.frames = [[me(), player(1155, 400), tag(1145, 110)] for _ in range(20)]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.sweep(spin_frames(), SpinConfig())
+    assert w.last_seen == {} and w.tracker.tracks == {} and w.requests == {} and w.labels == {}
+
+
+def test_holding_partner_is_reported_beside():
+    det = FakeDetector()
+    det.frames = [[me(), player(980, 500), tag(965, 120, y=430)] for _ in range(20)]
+    w = watcher(det, FakeOcr({120: "番茄炒蛋盖饭"}))
+    r = w.sweep(spin_frames(), SpinConfig())
+    assert [(e.who, e.direction) for e in r.entries] == [("番茄炒蛋盖饭", "身边")]
+    assert r.self_box is None and w.self_box is None
+
+
+def test_unknown_tag_is_not_a_stranger():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    det.frames[3] = [me(), player(1155, 400), tag(1145, 130)]
+    w = watcher(det, FakeOcr({130: "路人甲"}))
+    r = w.sweep(spin_frames(), SpinConfig())
+    assert [e.who for e in r.entries] == [UNKNOWN_WHO]
+
+
+def test_small_untagged_player_is_skipped():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    det.frames[3] = [me(), player(1500, h=40)]
+    r = watcher(det).sweep(spin_frames(), SpinConfig())
+    assert r.entries == []
+
+
+def test_self_box_from_sweep_excludes_self_at_runtime():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    w = watcher(det)
+    w.sweep(spin_frames(), SpinConfig())
+    det.frames = [[me()]]
+    for t in (0.0, 1.0, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    assert w.strangers(2.0) == 0
