@@ -57,7 +57,7 @@ def test_opens_panel_and_closes_with_esc():
 
 def test_falls_back_to_back_key():
     dev = PanelDevice(close_with=("key", 4))
-    result = checker(dev).check(1500, 600)
+    result = checker(dev, close=["esc", "back"]).check(1500, 600)
     assert result.closed_by == "back"
     assert [c[0] for c in dev.calls] == ["tap", "hw_key", "key"]
 

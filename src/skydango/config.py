@@ -267,13 +267,14 @@ class PerceptionConfig:
 class FriendCheckConfig:
     """大脑的 check_friend 工具：点一下人物打开右侧的好友树面板，截图给大脑看是不是好友，再关掉。
 
-    面板样子、关面板的办法都**没在真机验证**：先用 `python -m skydango friend-check X Y` 手动试，确认后再打开 enabled。
+    关面板用 ESC（用户确认）；面板样子、好友和陌生人的面板怎么区分还没核对：先用 `python -m skydango friend-check X Y` 试，确认后再打开 enabled。
     """
 
     enabled: bool = False
     open_delay: float = 1.2  # 点完等多久再截图（面板弹出动画）
     close_delay: float = 0.8  # 每试一种关法后等多久再看
-    close: list[str] = field(default_factory=lambda: ["esc", "back"])  # 依次试：esc 实体键盘 ESC、back 安卓返回键、tap 点 close_tap
+    # 关面板的办法，依次试：esc 实体键盘 ESC（用户确认能关）、back 安卓返回键、tap 点 close_tap
+    close: list[str] = field(default_factory=lambda: ["esc"])
     close_tap: list[float] = field(default_factory=list)  # [x, y] 归一化；close 里有 "tap" 时点这里
     panel_left: float = 0.55  # 面板在画面右边：比较这条线右边的变化
     changed: float = 0.06  # 右侧缩略图平均差异超过这个算面板打开了（0~1）

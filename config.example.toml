@@ -99,9 +99,9 @@ owner_window = 30.0            # 收到卡洛一条 # 开头的命令后，放�
 
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉
-# 面板样子、关面板的办法都没在真机验证：先用 python -m skydango friend-check X Y 试，确认后再打开
+# 关面板用 ESC（用户确认）；面板样子还没核对：先用 python -m skydango friend-check X Y 试，确认后再打开
 enabled = false
-close = ["esc", "back"]         # 关面板的办法，依次试；"tap" 表示点 close_tap（归一化坐标）
+close = ["esc"]                 # 关面板的办法，依次试：esc / back（安卓返回键）/ tap（点 close_tap，归一化坐标）
 close_tap = []
 min_interval = 30.0             # 两次确认至少隔几秒
 
