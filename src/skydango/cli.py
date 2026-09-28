@@ -1137,6 +1137,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     from .brain.prompt import brain_prompt
     from .brain.session import BrainSession
     from .brain.tools import ToolBox
+    from .brain.trace import BrainTrace
     from .chat.llm import make_llm
     from .chat.responder import Responder
     from .chat.sender import ChatSender
@@ -1187,14 +1188,18 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says)
     server = SkyServer(toolbox)
     server.start()
+    trace = BrainTrace() if viewer is not None else None  # 网页上的大脑时间线
     session = BrainSession(
         base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep")),
-        cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout, on_message=log_brain_message,
+        cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
+        on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
     )
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
-        eyes=eyes, run=run, store=live_store,
+        eyes=eyes, run=run, store=live_store, trace=trace,
     )
+    if viewer is not None:
+        viewer.brain = trace
     stop = threading.Event()
     brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
