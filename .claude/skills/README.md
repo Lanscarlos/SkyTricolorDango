@@ -4,9 +4,19 @@
 云端容器每次都是从仓库重新克隆的，**skill 只有提交进仓库才在云端存在**，装在本地 `~/.claude/`
 或者用 `/plugin` 装的插件，云端都看不到。这就是这些文件在仓库里的原因。
 
+## 从 HyperCraft 拷来的 `frontend-design`
+
+`frontend-design/` 是 [Lanscarlos/HyperCraft](https://github.com/Lanscarlos/HyperCraft) 自己写的 skill，逐字拷来，没改。
+**内容是 HyperCraft 面板（React + Vite，`web/src/styles.css`、`Page.tsx`、`App.tsx`）的规则**，这个仓库没有那套前端，
+里面提到的文件、令牌名、断点、`npm --prefix web run build` 在这里都不存在。
+
+这里唯一的网页是识别可视化（`src/skydango/vision/viewer.py` 里内嵌的 HTML）。改它的布局时可以用这个 skill，
+但只借鉴通用原则：`min-width: 0`、栅格优先 `auto-fill` 不加断点、颜色写成变量不写裸 hex、动效时长按动作性质选、
+焦点环和 `aria-label`、窄屏不横向溢出；HyperCraft 特有的文件和约定跳过。
+
 ## Superpowers（外部引入）
 
-14 个目录全部来自 [obra/superpowers](https://github.com/obra/superpowers)，MIT 许可，
+下面 14 个目录来自 [obra/superpowers](https://github.com/obra/superpowers)，MIT 许可，
 是一套通用的工作方法 skill（TDD、系统化排错、方案先行、代码评审、子 agent 编排等）：
 
 `brainstorming` `dispatching-parallel-agents` `executing-plans`
@@ -16,8 +26,7 @@
 `writing-plans` `writing-skills`
 
 - 从 [Lanscarlos/HyperCraft](https://github.com/Lanscarlos/HyperCraft) 的 `.claude/skills/` 原样拷过来
-  （HyperCraft 提交 `a6285f11be98359584f9c64797f66a7ef2410d69`）；HyperCraft 自己的 `frontend-design`
-  是它的 Web 面板专用规则，这里没有前端，没拷
+  （HyperCraft 提交 `a6285f11be98359584f9c64797f66a7ef2410d69`，`frontend-design` 也是这次拷的）
 - 上游版本：`v6.3.0`，上游提交 `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`
 - 版权：Copyright (c) 2025 Jesse Vincent，MIT License（全文见上游仓库 `LICENSE`）
 

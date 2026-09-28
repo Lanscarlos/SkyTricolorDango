@@ -19,6 +19,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 
 | Skill | 什么时候用 |
 | --- | --- |
+| `frontend-design` | 改识别可视化网页（`vision/viewer.py` 里的 HTML）的布局、间距、响应式、配色、动效。**内容是 HyperCraft 面板的规则**，只借鉴通用原则，里面的文件和命令这里没有（见 skill 目录的 README） |
 | `brainstorming` | 要做新功能／改行为，需求和设计还没定死 |
 | `writing-plans` | 需求清楚了，多步骤改动，写代码之前先出方案 |
 | `executing-plans` / `subagent-driven-development` | 按方案逐条实现（默认用前者，见下） |
@@ -32,7 +33,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `writing-skills` | 新增或修改 skill 本身 |
 | `using-superpowers` | 上面这套规矩的总纲 |
 
-全部来自 [obra/superpowers](https://github.com/obra/superpowers)（MIT），经 [HyperCraft](https://github.com/Lanscarlos/HyperCraft) 引入。来源、版本和同步方法见 `.claude/skills/README.md`。
+都从 [HyperCraft](https://github.com/Lanscarlos/HyperCraft) 拷来：`frontend-design` 是 HyperCraft 自己写的，其余来自 [obra/superpowers](https://github.com/obra/superpowers)（MIT）。来源、版本和同步方法见 `.claude/skills/README.md`。
 
 - **执行方案默认 Inline Execution**：`writing-plans` 收尾时会让人在「Subagent-Driven」和「Inline Execution」之间二选一，**本仓库不要问这一句**，直接宣告「用 executing-plans skill 执行这份方案」，在当前会话里逐条实现。只有用户明确要求用子 agent、或方案里有两件以上互不依赖的大块时才改用 `subagent-driven-development`，换的时候说一句理由。
 - **skill 管不到真机**：TDD、验证类 skill 说的「跑测试」在这里指 `python -m pytest -q`（合成画面 + 假设备）；往游戏里发输入的改动仍然要按下面「工作约定」先在真机上截图验证，单元测试通过不等于游戏里能用。
