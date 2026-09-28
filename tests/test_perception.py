@@ -6,7 +6,7 @@ from skydango.game.social import IDLE
 from skydango.vision.bubbles import Rect
 from skydango.vision.detect import Detection, _parse_names, decode, letterbox
 from skydango.vision.ocr import OcrLine, RapidOcrEngine
-from skydango.vision.perception import STRANGER, PerceptionWatcher
+from skydango.vision.perception import STRANGER, PerceptionWatcher, detector_conf
 from skydango.vision.track import Tracker, iou
 from skydango.vision.weaklabel import data_yaml, split_of, weak_labels, yolo_line
 
@@ -520,3 +520,18 @@ def test_occlusion_gives_up_after_limit():
     clock.t = 31.2
     w.process(frame(), 31.2, panel_visible=False)
     assert not w.paused
+
+
+# ---- 出框阈值和判定阈值分开（一期 §5.1 low_conf） ----
+def test_low_confidence_boxes_are_not_tracked_but_kept():
+    det = FakeDetector()
+    det.frames = [[player(1000), Detection("player", Rect(1500, 400, 90, 220), 0.3)]]
+    w = watcher(det, conf=0.35)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert [t.cls for t in w.last_tracks] == ["player"]
+    assert [d.box.x for d in w.last_low] == [1500]
+
+
+def test_detector_conf():
+    assert detector_conf(PerceptionConfig(conf=0.35, low_conf=0.25)) == 0.25
+    assert detector_conf(PerceptionConfig(conf=0.35, hardcases=False)) == 0.35

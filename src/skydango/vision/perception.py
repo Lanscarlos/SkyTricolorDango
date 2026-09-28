@@ -44,6 +44,11 @@ ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签�
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
 
 
+def detector_conf(cfg: PerceptionConfig) -> float:
+    """检测器的出框阈值：收集难例时要看到 low_conf ~ conf 之间的框，判定仍按 conf。"""
+    return min(cfg.low_conf, cfg.conf) if cfg.hardcases else cfg.conf
+
+
 def _center(r: Rect) -> tuple[float, float]:
     return r.x + r.w / 2, r.y + r.h / 2
 
@@ -66,6 +71,7 @@ class PerceptionWatcher:
         capture: Callable[[], np.ndarray] | None = None,  # capture = "own" 时感知线程自己截图用
         clock: Callable[[], float] = time.monotonic,
         scene_change: float = 0.25,  # 集体消失时，画面差异超过这个才算开了全屏界面（同 brain.scene_change）
+        hardcases=None,  # vision.hardcases.HardCaseCollector：可能认错的画面存下来
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -78,6 +84,7 @@ class PerceptionWatcher:
         self.capture = capture
         self.clock = clock
         self.scene_change = scene_change
+        self.hardcases = hardcases
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou)
         self.requests: dict = {}  # 名字 → game.social.Request
@@ -88,6 +95,7 @@ class PerceptionWatcher:
         self.place_at = float("-inf")
         self.last_dets: list[Detection] = []  # 最近一帧的检测（调试画框用）
         self.last_tracks: list[Track] = []
+        self.last_low: list[Detection] = []  # 最近一帧置信度在 conf 以下的框（不进追踪，给难例收集看）
         self.timings: deque[tuple[float, float]] = deque(maxlen=300)  # (检测 ms, 整帧 ms)
         self._strangers: deque[tuple[float, int]] = deque()  # (时间, 这一帧有几个陌生人)
         self._panel_visible = False
@@ -258,6 +266,8 @@ class PerceptionWatcher:
         height, width = frame.shape[:2]
         dets = self._filter(self.detector.detect(frame), width, height, panel_visible)
         detected = time.perf_counter()
+        low = [d for d in dets if d.score < self.cfg.conf]
+        dets = [d for d in dets if d.score >= self.cfg.conf]
         if self._occlusion(frame, dets):
             return
         tracks = self.tracker.update(dets, now)
@@ -337,7 +347,12 @@ class PerceptionWatcher:
             while self._strangers and now - self._strangers[0][0] > self.cfg.keep:
                 self._strangers.popleft()
 
-        self.last_dets, self.last_tracks = dets, tracks
+        self.last_dets, self.last_tracks, self.last_low = dets, tracks, low
+        if self.hardcases is not None and not self.paused:
+            try:
+                self.hardcases.check(frame, now, tracks, low, set(seen), panel_visible)
+            except Exception:
+                log.exception("收集难例出错")
         self.timings.append(((detected - started) * 1000, (time.perf_counter() - started) * 1000))
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))

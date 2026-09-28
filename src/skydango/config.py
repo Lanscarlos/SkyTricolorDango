@@ -264,6 +264,11 @@ class PerceptionConfig:
     # 画面被挡时暂停计时（黑屏、转镜头、开好友树、换轮盘……见一期设计 §4）
     hold_max: float = 60.0  # 暂停超过这么久自动恢复（防止哪里忘了恢复，永远不报"走开了"）
     occlusion_hold: float = 30.0  # 多人同时消失 + 画面大变（玩家自己开了全屏界面）时最多暂停这么久
+    # 难例收集（一期设计 §5）：可能认错的画面存到 runs/<这次>/hard/，下一轮只补标这些
+    hardcases: bool = True
+    audit_interval: float = 30.0  # 每隔多久在后台做一次整图 OCR 核对 YOLO 认出的好友（约 1 s CPU）；0 = 不核对
+    hardcase_max: int = 200  # 每次运行最多存几张
+    low_conf: float = 0.25  # 检测器按这个出框；conf 以下的框不进追踪，只给难例收集看
 
 
 @dataclass

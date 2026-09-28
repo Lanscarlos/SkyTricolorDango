@@ -281,10 +281,10 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True):
         return _env_watcher(cfg, background=background, icons=icons)
     from .vision.detect import make_detector
     from .vision.ocr import make_ocr
-    from .vision.perception import PerceptionWatcher
+    from .vision.perception import PerceptionWatcher, detector_conf
 
     p = cfg.perception
-    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
     log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
     return PerceptionWatcher(
@@ -434,13 +434,13 @@ def _images(path: str) -> list[Path]:
 def _perception(cfg: Config, args, dev=None):
     from .vision.detect import make_detector
     from .vision.ocr import make_ocr
-    from .vision.perception import PerceptionWatcher
+    from .vision.perception import PerceptionWatcher, detector_conf
 
     p = cfg.perception
     for key in ("model", "device", "imgsz"):
         if getattr(args, key, None):
             setattr(p, key, getattr(args, key))
-    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
     icons = _icon_classifier(cfg)
     watcher = PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
