@@ -37,6 +37,7 @@ class FakeEnv:
         self.requests = {}
         self.circles = {}
         self.labels = {}
+        self.people_list = []
         self.holds = []  # ("hold" / "release", 原因)
 
     def observe(self, frame, now, panel_visible):
@@ -58,6 +59,9 @@ class FakeEnv:
 
     def nearby(self, now):
         return list(self.near)
+
+    def people(self, now):
+        return list(self.people_list)
 
 
 class FakeSocial:
@@ -1000,3 +1004,14 @@ def test_holding_partner_gesture_is_dropped(clock):
     b.holding = "卡洛"
     b.step()
     assert not [e for e in events.drain() if e.kind == "gesture"]
+
+
+def test_status_lists_people_on_screen_with_side_and_distance(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    b, _, _, _ = body(clock, env=env)
+    assert "画面里" not in b.status()
+    env.people_list = [Person(1, "friend", "小明", Rect(100, 300, 90, 300), "左边", "近"),
+                       Person(2, "stranger", None, Rect(1100, 400, 40, 90), "右边", "远")]
+    assert "画面里：小明（左边·近）、陌生人（右边·远）" in b.status()

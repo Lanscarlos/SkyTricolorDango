@@ -24,6 +24,7 @@ from ..config import Config
 from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
 from ..vision.bubbles import roi_rect
+from ..vision.people import describe_people
 from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 
@@ -440,6 +441,9 @@ class Body:
         closest = self.env.nearest(now) if hasattr(self.env, "nearest") else None
         if closest:
             parts.append(f"离你最近的：{closest[0]}（{closest[1]}）")
+        people = describe_people(self.env.people(now)) if hasattr(self.env, "people") else ""
+        if people:
+            parts.append("画面里：" + people)
         if self.holding:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:

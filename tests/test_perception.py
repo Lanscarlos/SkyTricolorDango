@@ -1258,3 +1258,25 @@ def test_one_name_tag_names_only_one_player():
     named = [t.box for t in w.last_tracks if t.cls == "player" and t.data.get("name") == "懒洋洋大王"]
     assert named == [friend.box]
     assert w.strangers(2.0) == 1  # 另一个没挂上名字，过了 stranger_after 算陌生人
+
+
+def test_people_lists_side_and_distance_left_to_right():
+    from skydango.vision.people import describe_people
+
+    det = FakeDetector()
+    det.frames = [[player(300, y=300, h=300), tag(290, 110, y=230), player(1500, y=450, h=87),
+                   Detection("self", Rect(900, 420, 90, 220), 0.9)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), stranger_after=1.0)
+    for t in (0.0, 1.0):
+        w.process(frame(), t, panel_visible=False)
+    people = w.people(1.0)
+    assert [(p.kind, p.name, p.side) for p in people] == [("friend", "懒洋洋大王", "左边"), ("stranger", None, "右边")]
+    assert describe_people(people) == "懒洋洋大王（左边·近）、陌生人（右边·远）"
+    assert watcher(FakeDetector()).people(0.0) == []
+
+
+def test_describe_people_names_unlit_strangers():
+    from skydango.vision.people import Person, describe_people
+
+    assert describe_people([Person(3, "unlit", None, Rect(900, 400, 90, 220), "前面", "中")]) == "没点火的陌生人（前面·中）"
+    assert describe_people([]) == ""
