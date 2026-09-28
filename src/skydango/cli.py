@@ -481,6 +481,20 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_detect(cfg, args)
     elif args.action == "label":
         _perception_label(cfg, args)
+    elif args.action == "augment":
+        _perception_augment(args)
+
+
+def _perception_augment(args) -> None:
+    """训练集加运动模糊 / 压暗的样本（只动 images/train，标注原样复制）。"""
+    from .vision.augment import augment_dataset
+
+    try:
+        counts = augment_dataset(Path(args.dataset), seed=args.seed, blur=args.blur, dark=args.dark)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from None
+    print(f"新生成：运动模糊 {counts['blur']} 张、压暗 {counts['dark']} 张（已经有的跳过 {counts['skipped']} 张）→ {args.dataset}/images/train")
+    print("验证集没动（保持真实分布）。训练前在 X-AnyLabeling 里抽查几张，框应该还对得上")
 
 
 def _perception_bench(cfg: Config, args) -> None:
@@ -1025,6 +1039,11 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--all-text", action="store_true", help="画面里读到的字都当名字标签候选（不只好友名单里的），要人工删错的")
     q.add_argument("--min-score", type=float, default=0.9)
     q.add_argument("--preview", action="store_true", help="另存一份画了框的图到 <output>/_preview/，快速检查")
+    q = psub.add_parser("augment", help="训练集加运动模糊（转视角）/ 压暗（暗场景）的样本，标注原样复制")
+    q.add_argument("dataset", help="数据集目录（perception label 的输出，比如 datasets/sky）")
+    q.add_argument("--seed", type=int, default=0)
+    q.add_argument("--blur", type=float, default=0.3, help="抽多少比例的图做运动模糊")
+    q.add_argument("--dark", type=float, default=0.2, help="抽多少比例的图压暗")
     p.set_defaults(func=cmd_perception)
 
     p = sub.add_parser("view", help="只看不动：实时截图 → 认人 / 读聊天 → 网页上画识别框（不操作游戏）")
