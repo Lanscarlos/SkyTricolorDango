@@ -27,6 +27,7 @@ from contextlib import contextmanager
 
 import numpy as np
 
+from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
 from ..config import EnvConfig, PerceptionConfig
 from ..game.social import IDLE, KIND_NAMES, Request
@@ -40,6 +41,7 @@ log = logging.getLogger(__name__)
 UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
+OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
 
 
 def _center(r: Rect) -> tuple[float, float]:
@@ -63,6 +65,7 @@ class PerceptionWatcher:
         background: bool = True,
         capture: Callable[[], np.ndarray] | None = None,  # capture = "own" 时感知线程自己截图用
         clock: Callable[[], float] = time.monotonic,
+        scene_change: float = 0.25,  # 集体消失时，画面差异超过这个才算开了全屏界面（同 brain.scene_change）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -74,6 +77,7 @@ class PerceptionWatcher:
         self.background = background
         self.capture = capture
         self.clock = clock
+        self.scene_change = scene_change
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou)
         self.requests: dict = {}  # 名字 → game.social.Request
@@ -89,6 +93,9 @@ class PerceptionWatcher:
         self._panel_visible = False
         self._holds: Counter = Counter()  # 暂停的原因 → 次数（可以嵌套）
         self._held_since: float | None = None
+        self._occluded_at = 0.0
+        self._prev_count = 0  # 上一帧看到几个人物 + 名字标签
+        self._prev_thumb: np.ndarray | None = None
         self._last_run = float("-inf")
         self._busy = False
         self._lock = threading.Lock()
@@ -160,6 +167,31 @@ class PerceptionWatcher:
             log.warning("感知暂停超过 %.0f 秒（%s），自动恢复", self.cfg.hold_max, "、".join(self._holds) or "?")
             self._release_all("hold_max")
 
+    def _blocked(self) -> bool:
+        """暂停且要跳过检测（只因为集体消失而暂停时检测照跑，等人重新出现）。"""
+        return self.paused and set(self._holds) != {OCCLUSION}
+
+    def _occlusion(self, frame: np.ndarray, dets: list[Detection]) -> bool:
+        """集体消失规则。返回 True = 这一帧什么都看不到、正在暂停，不更新状态。"""
+        count = sum(d.cls in ("player", UNLIT, "name_tag") for d in dets)
+        small = thumb(frame)
+        prev_count, prev_thumb = self._prev_count, self._prev_thumb
+        self._prev_count, self._prev_thumb = count, small
+        if self._holds.get(OCCLUSION):
+            if count:
+                self.release(OCCLUSION)
+                return False
+            if self.clock() - self._occluded_at > self.cfg.occlusion_hold:
+                log.info("人还是都看不到（%.0f 秒），不再等了，照常计时", self.cfg.occlusion_hold)
+                self.release(OCCLUSION)
+            return True
+        if prev_count >= 2 and count == 0 and prev_thumb is not None and difference(prev_thumb, small) > self.scene_change:
+            log.info("%d 个人同时不见了、画面大变（可能开了全屏界面），暂停计时", prev_count)
+            self._occluded_at = self.clock()
+            self.hold(OCCLUSION)
+            return True
+        return False
+
     def _frozen(self, now: float) -> float:
         """暂停期间按暂停开始那一刻算：给身体的结果停在暂停前。"""
         since = self._held_since
@@ -170,7 +202,7 @@ class PerceptionWatcher:
         """身体主循环每圈调一次。capture = "own" 时只记下面板开没开，帧由感知线程自己截。"""
         self._panel_visible = panel_visible
         self._check_hold_max()
-        if self.paused:
+        if self._blocked():
             return
         if self.cfg.capture == "own" and self.capture is not None:
             self._ensure_thread()
@@ -207,7 +239,7 @@ class PerceptionWatcher:
         while not self._stop.is_set():
             started = self.clock()
             self._check_hold_max()
-            if self.paused:
+            if self._blocked():
                 self._stop.wait(period)
                 continue
             try:
@@ -226,6 +258,8 @@ class PerceptionWatcher:
         height, width = frame.shape[:2]
         dets = self._filter(self.detector.detect(frame), width, height, panel_visible)
         detected = time.perf_counter()
+        if self._occlusion(frame, dets):
+            return
         tracks = self.tracker.update(dets, now)
         selfs = [t for t in tracks if t.cls == "self"]
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs)]

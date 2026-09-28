@@ -457,3 +457,66 @@ def test_hold_max_auto_releases(caplog):
         w.observe(frame(), 61.0, panel_visible=False)
     assert not w.paused
     assert any("暂停" in r.message for r in caplog.records)
+
+
+# ---- 集体消失：玩家自己开了全屏界面（一期 §4） ----
+def bright():
+    return np.full((1080, 1920, 3), 200, np.uint8)
+
+
+def test_two_people_vanish_with_big_change_holds():
+    det = FakeDetector()
+    det.frames = [[player(1000), player(1400)], []]
+    w = watcher(det, clock=Clock())
+    w.process(bright(), 0.0, panel_visible=False)
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.paused
+
+
+def test_one_person_vanishing_does_not_hold():
+    det = FakeDetector()
+    det.frames = [[player(1000)], []]
+    w = watcher(det, clock=Clock())
+    w.process(bright(), 0.0, panel_visible=False)
+    w.process(frame(), 0.1, panel_visible=False)
+    assert not w.paused
+
+
+def test_small_change_does_not_hold():
+    det = FakeDetector()
+    det.frames = [[player(1000), player(1400)], []]
+    w = watcher(det, clock=Clock())
+    w.process(bright(), 0.0, panel_visible=False)
+    w.process(bright(), 0.1, panel_visible=False)
+    assert not w.paused
+
+
+def test_occlusion_released_when_someone_is_back():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[tag(990, 110), tag(1390, 120)], [], [], [tag(990, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王", 120: "番茄炒蛋盖饭"}), clock=clock, keep=5.0)
+    w.process(bright(), 0.0, panel_visible=False)
+    clock.t = 0.1
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.paused
+    w.observe(frame(), 0.2, panel_visible=False)  # occlusion 暂停期间检测照跑
+    assert det.calls == 3
+    clock.t = 20.0
+    w.process(bright(), 20.0, panel_visible=False)
+    assert not w.paused
+    assert w.nearby(20.0) == FRIENDS  # 地图开了 20 s，谁都没走
+
+
+def test_occlusion_gives_up_after_limit():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[player(1000), player(1400)], []]
+    w = watcher(det, clock=clock, occlusion_hold=30.0)
+    w.process(bright(), 0.0, panel_visible=False)
+    clock.t = 0.1
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.paused
+    clock.t = 31.2
+    w.process(frame(), 31.2, panel_visible=False)
+    assert not w.paused
