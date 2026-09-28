@@ -1015,3 +1015,46 @@ def test_status_lists_people_on_screen_with_side_and_distance(clock):
     env.people_list = [Person(1, "friend", "小明", Rect(100, 300, 90, 300), "左边", "近"),
                        Person(2, "stranger", None, Rect(1100, 400, 40, 90), "右边", "远")]
     assert "画面里：小明（左边·近）、陌生人（右边·远）" in b.status()
+
+
+def test_look_person_uses_perception_box(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "friend", "小明", Rect(400, 200, 120, 300), "前面", "近")]
+    b, _, _, _ = body(clock, env=env)
+    img, note = b.look_person("小明")
+    assert img["type"] == "image" and "这是 小明" in note["text"] and "估的" not in note["text"]
+    assert b.find_person("小明", clock()) == Rect(400, 200, 120, 300)
+
+
+def test_look_person_falls_back_to_name_tag(clock):  # 没开感知层：从名字标签往下估一块
+    env = FakeEnv()
+    env.labels = {"小明": (560, 200, 160, 44, clock())}
+    b, _, _, _ = body(clock, env=env)
+    box = b.find_person("小明", clock())
+    assert box.y == 244 and box.h == 264 and box.x + box.w / 2 == 640  # 标签下方、6 倍标签高、居中
+    _, note = b.look_person("小明")
+    assert "按名字标签估的位置" in note["text"]
+
+
+def test_find_person_ignores_stale_name_tag(clock):
+    env = FakeEnv()
+    env.labels = {"小明": (560, 200, 160, 44, clock() - 60)}
+    b, _, _, _ = body(clock, env=env)
+    assert b.find_person("小明", clock()) is None
+
+
+def test_look_person_not_found_suggests_look_around(clock):
+    b, _, _, _ = body(clock, env=FakeEnv())
+    with pytest.raises(ToolError, match="look_around"):
+        b.look_person("小明")
+
+
+def test_look_person_shares_look_rate_limit(clock):
+    env = FakeEnv()
+    env.labels = {"小明": (560, 200, 160, 44, clock())}
+    b, _, _, _ = body(clock, env=env)
+    b.look()
+    with pytest.raises(ToolError, match="刚看过"):
+        b.look_person("小明")

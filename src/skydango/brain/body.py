@@ -23,7 +23,7 @@ from ..chat.responder import clean_reply, format_incoming
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
-from ..vision.bubbles import roi_rect
+from ..vision.bubbles import Rect, roi_rect
 from ..vision.people import describe_people
 from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
@@ -386,6 +386,50 @@ class Body:
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         text = f"原图 {frame.shape[1]}×{frame.shape[0]} 上的 ({ax}, {ay}) 起 {aw}×{ah}"
+        return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
+
+    def _locate(self, name: str, now: float) -> tuple[Rect, bool] | None:
+        """(整张截图上的人物框, 是不是按名字标签估的)；感知层框出的人优先。"""
+        if self.env is None:
+            return None
+        if hasattr(self.env, "people"):
+            for p in self.env.people(now):
+                if p.name == name:
+                    return p.box, False
+        label = dict(self.env.labels).get(name)  # env 后台线程会改这个 dict：先拍快照
+        if label is None or now - label[4] > self.cfg.env.interval * 2 + 1:
+            return None
+        x, y, w, h = label[:4]
+        # 人在名字标签正下方：宽 3 倍标签宽、高 6 倍标签高（估计值，没在真机核对）
+        fh, fw = self.last_frame.shape[:2] if self.last_frame is not None else (1080, 1920)
+        x1, y1 = max(0, round(x + w / 2 - 1.5 * w)), min(fh, y + h)
+        x2, y2 = min(fw, round(x + w / 2 + 1.5 * w)), min(fh, y + h + 6 * h)
+        return Rect(x1, y1, x2 - x1, y2 - y1), True
+
+    def find_person(self, name: str, now: float) -> Rect | None:
+        found = self._locate(name, now)
+        return found[0] if found else None
+
+    def look_person(self, name: str) -> list[dict]:
+        """按名字找到这个人，把他裁出来给大脑看（和 look 共用频率限制）。"""
+        now = self.clock()
+        brain = self.cfg.brain
+        if now - self.last_look < brain.look_min_interval:
+            raise ToolError(f"{brain.look_min_interval:.0f} 秒内刚看过，等一下再看")
+        found = self._locate(name, now)
+        if found is None or found[0].w < 8 or found[0].h < 8:
+            raise ToolError(f"画面里没找到 {name}，可以先 look_around 看看在哪个方向")
+        box, guessed = found
+        bx, by, bw, bh = box.x, box.y, box.w, box.h
+        frame = self.device.screenshot()
+        self.last_frame, self.last_look = frame, now
+        fh, fw = frame.shape[:2]
+        mx, my = round(bw * 0.2), round(bh * 0.2)  # 四周各放宽 20%：人会动、框也不一定贴身
+        x1, y1, x2, y2 = max(0, bx - mx), max(0, by - my), min(fw, bx + bw + mx), min(fh, by + bh + my)
+        crop = fit(frame[y1:y2, x1:x2], tuple(brain.image_size))
+        text = f"这是 {name}（原图 ({x1}, {y1}) 起 {x2 - x1}×{y2 - y1}）"
+        if guessed:
+            text += "；按名字标签估的位置，可能没框全"
         return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
 
     def fresh_frame(self):
