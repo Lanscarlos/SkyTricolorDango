@@ -585,19 +585,32 @@ def _perception_label(cfg: Config, args) -> None:
 
     from .vision.bubbles import roi_rect
     from .vision.ocr import make_ocr
-    from .vision.weaklabel import data_yaml, split_of, weak_labels, yolo_line
+    from .vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, yolo_line
 
     classes = cfg.perception.classes
     index = {c: i for i, c in enumerate(classes)}
-    files = _images(args.source)
+    root = Path(args.source)
+    if args.from_runs:  # runs/*/hard/*.jpg：运行时收集的难例，文件名前加运行目录名
+        items = hard_images(root)
+    else:
+        items = []
+        for path in _images(args.source):
+            rel = path.relative_to(root) if root.is_dir() else Path(path.name)
+            items.append((path, "_".join(rel.with_suffix("").parts)))
+    detector = None
+    if args.model:  # 用当前模型预标注：人工只需要修正，不用从零画
+        from .vision.detect import make_detector
+
+        p = cfg.perception
+        detector = make_detector(args.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
     out = Path(args.output)
     ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
     icons = _icon_classifier(cfg)
     names = _friend_names(cfg)()
     counts = {c: 0 for c in classes}
-    root = Path(args.source)
-    print(f"{len(files)} 张图 → {out}；好友名单：{'、'.join(names) or '（空，只能配 --all-text）'}")
-    for n, path in enumerate(files, 1):
+    print(f"{len(items)} 张图 → {out}；好友名单：{'、'.join(names) or '（空，只能配 --all-text）'}"
+          + (f"；模型预标注：{args.model}" if detector is not None else ""))
+    for n, (path, stem) in enumerate(items, 1):
         frame = imread(path)
         height, width = frame.shape[:2]
         skip = [roi_rect(cfg.vision.log_roi, width, height)] if _panel_open(cfg, frame) else []
@@ -605,8 +618,9 @@ def _perception_label(cfg: Config, args) -> None:
             frame, ocr.recognize(frame), names, icons, cfg.social.icon_offset, skip=skip,
             keep=roi_rect(cfg.env.roi, width, height), all_text=args.all_text, min_score=args.min_score,
         )
-        rel = path.relative_to(root) if root.is_dir() else Path(path.name)
-        stem = "_".join(rel.with_suffix("").parts)
+        weak = len(boxes)
+        if detector is not None:
+            boxes = merge_labels(boxes, detector.detect(frame))
         split = split_of(stem, args.val)
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
@@ -617,12 +631,13 @@ def _perception_label(cfg: Config, args) -> None:
             counts[c] = counts.get(c, 0) + 1
         if args.preview:
             view = frame.copy()
-            for c, b in boxes:
-                cv2.rectangle(view, (b.x, b.y), (b.x2, b.y2), (0, 200, 255) if c == "name_tag" else (255, 120, 0), 2)
+            for i, (c, b) in enumerate(boxes):
+                color = ((0, 200, 255) if c == "name_tag" else (255, 120, 0)) if i < weak else (180, 0, 255)  # 紫 = 模型预标注
+                cv2.rectangle(view, (b.x, b.y), (b.x2, b.y2), color, 2)
             (out / "_preview").mkdir(parents=True, exist_ok=True)
             imwrite(out / "_preview" / f"{stem}.jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if n % 20 == 0:
-            print(f"  {n}/{len(files)}")
+            print(f"  {n}/{len(items)}")
     (out / "data.yaml").write_text(data_yaml(out, classes), encoding="utf-8")
     print("自动标出：" + "、".join(f"{c}×{v}" for c, v in counts.items()))
     print(f"数据集配置：{out / 'data.yaml'}")
@@ -1033,8 +1048,10 @@ def main(argv: list[str] | None = None) -> None:
             q.add_argument("image", nargs="?", help="图片路径；不填则实时截屏")
             q.add_argument("-o", "--output", default="tmp/perception.png")
     q = psub.add_parser("label", help="用现有识别器给录下来的画面自动标名字标签和圆圈，写成 YOLO 数据集")
-    q.add_argument("source", help="图片目录（比如 record 录的 tmp/record/<时间>）")
+    q.add_argument("source", help="图片目录（比如 record 录的 tmp/record/<时间>）；配 --from-runs 时是 runs/")
     q.add_argument("-o", "--output", default="datasets/sky")
+    q.add_argument("--model", help="再用这个模型的预测（置信度 ≥ perception.low_conf）当初始标注，和弱标注重叠的留弱标注")
+    q.add_argument("--from-runs", action="store_true", help="source 是 runs/：收集每次运行存下的难例（hard/*.jpg）")
     q.add_argument("--val", type=float, default=0.15, help="验证集比例")
     q.add_argument("--all-text", action="store_true", help="画面里读到的字都当名字标签候选（不只好友名单里的），要人工删错的")
     q.add_argument("--min-score", type=float, default=0.9)

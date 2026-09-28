@@ -8,7 +8,7 @@ from skydango.vision.detect import Detection, _parse_names, decode, letterbox
 from skydango.vision.ocr import OcrLine, RapidOcrEngine
 from skydango.vision.perception import STRANGER, PerceptionWatcher, detector_conf
 from skydango.vision.track import Tracker, iou
-from skydango.vision.weaklabel import data_yaml, split_of, weak_labels, yolo_line
+from skydango.vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, yolo_line
 
 FRIENDS = ["懒洋洋大王", "番茄炒蛋盖饭"]
 
@@ -535,3 +535,26 @@ def test_low_confidence_boxes_are_not_tracked_but_kept():
 def test_detector_conf():
     assert detector_conf(PerceptionConfig(conf=0.35, low_conf=0.25)) == 0.25
     assert detector_conf(PerceptionConfig(conf=0.35, hardcases=False)) == 0.35
+
+
+# ---- label --model / --from-runs（一期 §5.2） ----
+def test_merge_labels_prefers_weak_boxes():
+    weak = [("name_tag", Rect(990, 330, 110, 44))]
+    predicted = [
+        Detection("name_tag", Rect(992, 331, 108, 44), 0.8),  # 和弱标注重叠：丢掉，OCR 的名字框更准
+        Detection("player", Rect(1000, 400, 90, 220), 0.6),
+        Detection("name_tag", Rect(300, 330, 110, 44), 0.5),  # 没重叠：保留
+    ]
+    out = merge_labels(weak, predicted)
+    assert out == [("name_tag", Rect(990, 330, 110, 44)), ("player", Rect(1000, 400, 90, 220)),
+                   ("name_tag", Rect(300, 330, 110, 44))]
+
+
+def test_hard_images_collects_from_runs(tmp_path):
+    for run, name in (("20260928-100000-dry", "101010_low_conf.jpg"), ("20260928-110000-live", "111111_flicker.jpg")):
+        (tmp_path / run / "hard").mkdir(parents=True)
+        (tmp_path / run / "hard" / name).write_bytes(b"x")
+    (tmp_path / "20260928-120000-dry").mkdir()
+    out = hard_images(tmp_path)
+    assert [stem for _, stem in out] == ["20260928-100000-dry_101010_low_conf", "20260928-110000-live_111111_flicker"]
+    assert out[0][0] == tmp_path / "20260928-100000-dry" / "hard" / "101010_low_conf.jpg"
