@@ -30,3 +30,52 @@ def test_camera_spin_turns_clamped(tmp_path, monkeypatch):
     out = tmp_path / "s"
     cli.main(["camera", "spin", "--turns", "5", "--seconds", "0.1", "-o", str(out)])
     assert json.loads((out / "summary.json").read_text(encoding="utf-8"))["turns"] == 2
+
+
+# ---- perception label --spin ----
+import pytest  # noqa: E402
+
+from skydango.imageio import imwrite  # noqa: E402
+from skydango.vision.bubbles import Rect  # noqa: E402
+from skydango.vision.detect import Detection  # noqa: E402
+from skydango.vision.weaklabel import with_self  # noqa: E402
+
+
+def test_with_self_replaces_overlapping_player():
+    boxes = [("player", Rect(900, 500, 90, 220)), ("player", Rect(100, 500, 90, 220)), ("name_tag", Rect(900, 440, 90, 40))]
+    out = with_self(boxes, Rect(902, 502, 90, 220))
+    assert ("self", Rect(902, 502, 90, 220)) in out and ("player", Rect(900, 500, 90, 220)) not in out and len(out) == 3
+
+
+def test_label_spin_requires_model(tmp_path):
+    with pytest.raises(SystemExit, match="--model"):
+        cli.main(["perception", "label", str(tmp_path), "--spin", "-o", str(tmp_path / "ds")])
+
+
+def test_label_spin_adds_self_boxes(tmp_path, monkeypatch):
+    import numpy as np
+
+    src = tmp_path / "spin"
+    src.mkdir()
+    img = np.zeros((1080, 1920, 3), np.uint8)
+    for name in ["before", "after"] + [f"{i:03d}_{i * 0.07:.2f}s" for i in range(8)]:
+        imwrite(src / f"{name}.jpg", img)
+
+    class Det:
+        def detect(self, frame):  # 团子每帧都在中间；另一个人只在一帧里
+            return [Detection("player", Rect(900, 500, 90, 220), 0.9)]
+
+    class Ocr:
+        def recognize(self, frame):
+            return []
+
+    monkeypatch.setattr("skydango.vision.detect.make_detector", lambda *a, **k: Det())
+    monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda *a, **k: Ocr())
+    monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: None)
+    out = tmp_path / "ds"
+    cli.main(["perception", "label", str(src), "--spin", "--model", "m.onnx", "-o", str(out), "--val", "0"])
+    labels = sorted((out / "labels" / "train").glob("*.txt"))
+    assert len(labels) == 8  # before / after 不要
+    for f in labels:
+        [line] = f.read_text(encoding="utf-8").splitlines()
+        assert line.startswith("3 ")  # self 的类别号

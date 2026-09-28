@@ -625,14 +625,18 @@ def _perception_label(cfg: Config, args) -> None:
     """用现有识别器给录下来的画面出弱标注（名字标签 + 圆圈），写成 YOLO 数据集。"""
     import cv2
 
-    from .vision.bubbles import roi_rect
+    from .vision.bubbles import Rect, roi_rect
     from .vision.ocr import make_ocr
-    from .vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, yolo_line
+    from .vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, with_self, yolo_line
 
     classes = cfg.perception.classes
     index = {c: i for i, c in enumerate(classes)}
     root = Path(args.source)
-    if args.from_runs:  # runs/*/hard/*.jpg：运行时收集的难例，文件名前加运行目录名
+    if args.spin and not args.model:
+        raise SystemExit("--spin 要配 --model：认团子要先用模型框出人")
+    if args.spin:  # camera spin / #spin 录的目录：只要转动中的帧（NNN_*.jpg），按文件名排就是时间顺序
+        items = [(p, f"{root.name}_{p.stem}") for p in sorted(root.glob("[0-9][0-9][0-9]_*.jpg"))]
+    elif args.from_runs:  # runs/*/hard/*.jpg：运行时收集的难例，文件名前加运行目录名
         items = hard_images(root)
     else:
         items = []
@@ -645,6 +649,23 @@ def _perception_label(cfg: Config, args) -> None:
 
         p = cfg.perception
         detector = make_detector(args.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
+    predicted: dict[str, list] = {}  # 文件名 → 模型预测（--spin 先全部跑一遍认团子，后面合并预标注时复用）
+    selves: dict[str, Rect] = {}
+    if args.spin:
+        from .vision.sweep import find_self
+
+        people = []
+        for path, stem in items:
+            predicted[stem] = detector.detect(imread(path))
+            people.append([d.box for d in predicted[stem] if d.cls in ("player", "self") and d.score >= cfg.perception.conf])
+        frame0 = imread(items[0][0]) if items else None
+        found = find_self(people, frame0.shape[1] if frame0 is not None else 1920, cfg.spin.self_motion)
+        if found.box is None:
+            print("认不出团子（转圈录像里没有一直在中间不动的人，或者牵着手分不开），不补 self")
+        else:
+            selves = {items[i][1]: box for i, box in found.per_frame.items()}
+            b = found.box
+            print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}，{len(selves)} 张补 self 框")
     out = Path(args.output)
     ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
     icons = _icon_classifier(cfg)
@@ -662,7 +683,9 @@ def _perception_label(cfg: Config, args) -> None:
         )
         weak = len(boxes)
         if detector is not None:
-            boxes = merge_labels(boxes, detector.detect(frame))
+            boxes = merge_labels(boxes, predicted[stem] if stem in predicted else detector.detect(frame))
+        if stem in selves:
+            boxes = with_self(boxes, selves[stem])
         split = split_of(stem, args.val)
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
@@ -1135,6 +1158,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("-o", "--output", default="datasets/sky")
     q.add_argument("--model", help="再用这个模型的预测（置信度 ≥ perception.low_conf）当初始标注，和弱标注重叠的留弱标注")
     q.add_argument("--from-runs", action="store_true", help="source 是 runs/：收集每次运行存下的难例（hard/*.jpg）")
+    q.add_argument("--spin", action="store_true", help="source 是 camera spin / #spin 录的目录：转圈认出团子，每帧补 self 框（要配 --model）")
     q.add_argument("--val", type=float, default=0.15, help="验证集比例")
     q.add_argument("--all-text", action="store_true", help="画面里读到的字都当名字标签候选（不只好友名单里的），要人工删错的")
     q.add_argument("--min-score", type=float, default=0.9)
