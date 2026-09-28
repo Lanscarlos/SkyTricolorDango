@@ -29,5 +29,9 @@ memory/
 datasets/
 models/
 
+# YOLO 训练环境（torch 等）和各种缓存，放仓库里不占 C 盘（见 src/skydango/cachedirs.py）
+.pydeps/
+.cache/
+
 # 认地图的参考截图（可能有好友）
 places/
