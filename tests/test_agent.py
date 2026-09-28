@@ -544,3 +544,19 @@ def test_spin_saves_to_run_dir(clock, tmp_path):
     agent.step()
     [folder] = list((run.path / "spin").iterdir())
     assert (folder / "summary.json").exists()
+
+
+class SweepHoldEnv(HoldEnv):
+    def sweep(self, frames, spin):
+        from skydango.vision.sweep import SweepEntry, SweepResult
+
+        self.holds.append(("sweep", len(frames)))
+        return SweepResult([SweepEntry("前", 0, "懒洋洋大王", 3, None)], None, len(frames), 1.9)
+
+
+def test_spin_reply_includes_sweep_text(clock, tmp_path):
+    agent, _, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")]], tmp_path, camera=FakeCamera())
+    agent.env = SweepHoldEnv()
+    agent.step()
+    assert agent.sent == ["【AI】转完了，1.9 秒 28 张；正前方：懒洋洋大王"]
+    assert agent.env.holds == [("hold", "camera"), ("sweep", 29), ("release", "camera")]

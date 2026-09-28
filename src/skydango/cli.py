@@ -882,6 +882,14 @@ def cmd_camera(cfg: Config, args) -> None:
     print(f"转了 {s['seconds']} 秒 {s['frames']} 张（实际 {s['fps']} fps），面板重开：{'是' if s['panel_reopened'] else '否'}，"
           f"转前转后差异 {s['drift']}{'，中途画面黑了' if s['blackout'] else ''}")
     print(f"截图和 summary.json 在 {out}")
+    if cfg.perception.enabled:  # 顺便看 YOLO 汇总得对不对、多久
+        env = _scene_watcher(cfg, dev=dev, background=False)
+        started = time.perf_counter()
+        swept = env.sweep([(0.0, result.before), *result.frames], spin)
+        print(f"扫描（{time.perf_counter() - started:.1f} 秒）：{swept.text()}")
+        if swept.self_box is not None:
+            b = swept.self_box
+            print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}")
 
 
 def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
@@ -962,7 +970,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     server = SkyServer(toolbox)
     server.start()
     session = BrainSession(
-        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store),
+        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep")),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout, on_message=log_brain_message,
     )
     brain = Brain(

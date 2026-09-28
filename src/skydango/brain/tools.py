@@ -37,6 +37,14 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "只在名字标签认不出、又确实需要知道时用（点过火的陌生人和好友长得一样）；点屏幕会暂时关掉聊天记录面板，别常用。"
     ),
 }
+SWEEP_AROUND = "环顾四周：原地连续转一圈，身体认出每个方向有谁（好友名字、几个陌生人），返回文字，最后回到原来的朝向。几秒就好。"
+
+
+def descriptions(sweep: bool) -> dict[str, str]:
+    """工具说明；打开感知层（sweep=True）时 look_around 换成 YOLO 环绕扫描的说法。"""
+    return {**DESCRIPTIONS, "look_around": SWEEP_AROUND} if sweep else dict(DESCRIPTIONS)
+
+
 TOOL_NAMES = list(DESCRIPTIONS)
 ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend"}  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
@@ -126,6 +134,8 @@ class ToolBox:
                 return self.eyes.summary(now)
             return self.eyes.describe_frame(b.call(b.fresh_frame), now)
         if name == "look_around":
+            if hasattr(getattr(b, "env", None), "sweep"):  # 打开了感知层：转一圈交给 YOLO，不叫眼睛
+                return b.call(b.sweep_around, timeout=AROUND_TIMEOUT)
             if self.eyes is None:
                 raise ToolError("没开眼睛，看不了四周")
             frames = b.call(b.capture_around, timeout=AROUND_TIMEOUT)

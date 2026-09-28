@@ -91,6 +91,11 @@ def memory_prompt(reply: ReplyConfig, store: MemoryStore | None) -> str:
     return "\n\n".join(identity_sections(reply, store.profile(), store.friends(), notes))
 
 
-def brain_prompt(reply: ReplyConfig, store: MemoryStore | None) -> str:
-    """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。"""
-    return memory_prompt(reply, store) + "\n\n" + static_prompt(reply)
+def brain_prompt(reply: ReplyConfig, store: MemoryStore | None, quick_around: bool = False) -> str:
+    """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
+
+    quick_around：打开了感知层，look_around 是 YOLO 连续转一圈（几秒），不是眼睛看四张图（十几秒）。"""
+    rules = static_prompt(reply)
+    if quick_around:
+        rules = rules.replace("（要十几秒，别常用）", "（几秒就好）")
+    return memory_prompt(reply, store) + "\n\n" + rules

@@ -391,6 +391,25 @@ class Body:
         self.last_frame = frames[0]
         return frames
 
+    def sweep_around(self) -> str:
+        """打开感知层时的环顾：连续转一圈，YOLO 汇总每个方向有谁（dry-run 不转，只看当前画面）。"""
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在看不了")
+        spin = self.cfg.spin
+        if self.camera is None or self.cfg.reply.dry_run:
+            result = self.env.sweep([(0.0, self.fresh_frame())], spin)
+            return "dry-run：没真的转，只看了前面。" + result.text()
+        try:
+            with self._held("camera"):
+                shot = self.camera.spin(self.device.screenshot, 1, spin.seconds_per_turn, spin.fps)
+                result = self.env.sweep([(0.0, shot.before), *shot.frames], spin)
+        finally:
+            self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        self.last_frame = shot.after
+        if not shot.panel_reopened:
+            self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
+        return result.text()
+
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]

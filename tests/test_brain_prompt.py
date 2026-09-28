@@ -28,3 +28,9 @@ def test_brain_prompt_is_persona_then_rules():
 
 def test_summary_request_asks_for_summary_without_tools():
     assert "经过" in SUMMARY_REQUEST and "不要调用工具" in SUMMARY_REQUEST
+
+
+def test_brain_prompt_quick_around():
+    assert "要十几秒" in brain_prompt(ReplyConfig(), None)
+    quick = brain_prompt(ReplyConfig(), None, quick_around=True)
+    assert "要十几秒" not in quick and "几秒就好" in quick

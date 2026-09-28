@@ -680,3 +680,52 @@ def test_social_is_wrapped_in_held(clock):
     env.requests = {"懒洋洋大王": Request("懒洋洋大王", "hand", (0, 0), 100.0)}
     b.step()
     assert ("hold", "social") in env.holds and env.holds[-1] == ("release", "social")
+
+
+# ---- 二期：look_around 走环绕扫描 ----
+class SpinCamera(FakeCamera):
+    def __init__(self):
+        super().__init__()
+        self.spins = 0
+
+    def spin(self, capture, turns=1, seconds_per_turn=2.0, fps=15.0):
+        from skydango.brain.camera import SpinResult
+
+        self.spins += 1
+        f = capture()
+        return SpinResult(f, [(0.1, f), (0.2, f)], f, 0.2, True, False)
+
+
+class SweepEnv(FakeEnv):
+    def __init__(self):
+        super().__init__()
+        self.swept = []
+
+    def sweep(self, frames, spin):
+        from skydango.vision.sweep import SweepEntry, SweepResult
+
+        self.swept.append([t for t, _ in frames])
+        return SweepResult([SweepEntry("前", 0, "懒洋洋大王", 3, None)], None, len(frames), 0.2)
+
+
+def test_sweep_around_spins_and_sweeps(clock):
+    env, cam = SweepEnv(), SpinCamera()
+    b, _, _, _ = body(clock, live=True, env=env, camera=cam)
+    assert b.sweep_around() == "正前方：懒洋洋大王"
+    assert cam.spins == 1 and env.swept == [[0.0, 0.1, 0.2]]  # 转前那张算 0 秒
+    assert env.holds == [("hold", "camera"), ("release", "camera")]
+
+
+def test_sweep_around_in_dry_run_does_not_turn(clock):
+    env, cam = SweepEnv(), SpinCamera()
+    b, _, _, _ = body(clock, env=env, camera=cam)
+    text = b.sweep_around()
+    assert text.startswith("dry-run") and "正前方：懒洋洋大王" in text
+    assert cam.spins == 0 and env.swept == [[0.0]]
+
+
+def test_sweep_around_refused_in_blackout(clock):
+    b, _, _, _ = body(clock, live=True, env=SweepEnv(), camera=SpinCamera())
+    b.blackout = True
+    with pytest.raises(ToolError, match="黑"):
+        b.sweep_around()

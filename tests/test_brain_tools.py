@@ -1,5 +1,7 @@
 import threading
 
+import pytest
+
 from skydango.brain.body import ToolError
 from skydango.brain.tools import ACTIONS, TOOL_NAMES, ToolBox
 from skydango.config import Config
@@ -165,3 +167,26 @@ def test_crash_in_body_does_not_escape():
     body.status = lambda: 1 / 0
     content, err = ToolBox(body).run("status", {})
     assert err and content.startswith("出错了")
+
+
+class SweepEnv:
+    def sweep(self, frames, spin):
+        return None
+
+
+def test_look_around_uses_sweep_when_perception_is_on():
+    body = FakeBody()
+    body.env = SweepEnv()
+    body.sweep_around = lambda: "正前方：懒洋洋大王"
+    eyes = FakeEyes()
+    eyes.describe_around = lambda frames, now: pytest.fail("不该叫眼睛")
+    assert ToolBox(body, eyes).run("look_around", {}) == ("正前方：懒洋洋大王", False)
+    assert body.timeouts[-1] == 30
+    assert ToolBox(body).run("look_around", {}) == ("正前方：懒洋洋大王", False)  # 没开眼睛也能扫
+
+
+def test_look_around_description_switches():
+    from skydango.brain.tools import DESCRIPTIONS, descriptions
+
+    assert "几秒就好" in descriptions(True)["look_around"] and "十几秒" in descriptions(False)["look_around"]
+    assert DESCRIPTIONS == descriptions(False) and list(descriptions(True)) == TOOL_NAMES

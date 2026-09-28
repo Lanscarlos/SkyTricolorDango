@@ -15,7 +15,7 @@ import uvicorn
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import CallToolResult, TextContent
 
-from .tools import DESCRIPTIONS, ToolBox
+from .tools import ToolBox, descriptions
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +35,8 @@ def to_mcp(out) -> list:
 
 def build_server(toolbox: ToolBox) -> MCPServer:
     srv = MCPServer("sky", instructions="光遇里的身体：看画面、说话、做动作、转视角。")
+
+    DESCRIPTIONS = descriptions(hasattr(getattr(toolbox.body, "env", None), "sweep"))
 
     def call(tool: str, **args):
         out, err = toolbox.run(tool, args)

@@ -238,8 +238,11 @@ class Agent:
             if is_black(self.device.screenshot()):
                 return "画面黑着，转不了"
             self._last_spin = now
+            swept = None
             with self._held("camera"):
                 result = self.camera.spin(self.device.screenshot, turns, spin.seconds_per_turn, spin.fps)
+                if hasattr(self.env, "sweep"):  # 打开了感知层：顺便汇总一圈里哪个方向有谁
+                    swept = self.env.sweep([(0.0, result.before), *result.frames], spin)
         except Exception as exc:
             log.exception("#spin 没转成")
             return "没转成：" + (str(exc).splitlines() or [type(exc).__name__])[0]
@@ -254,6 +257,8 @@ class Agent:
             text += "（中途画面黑了）"
         if not result.panel_reopened:
             text += "（聊天面板没打开，要手动按 C）"
+        if swept is not None:
+            text += "；" + swept.text()
         return text[: self.cfg.reply.max_chars]
 
     def _set_paused(self, paused: bool) -> None:
