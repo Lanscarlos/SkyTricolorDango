@@ -80,7 +80,7 @@ trace.since(after: int, timeout) -> dict  # 等到版本号 > after（最多 tim
 `since` 返回：
 
 ```json
-{"version": 128, "state": {...}, "turns": [ /* updated > after 的轮次，按 id 升序 */ ]}
+{"boot": "3f9a1c2e", "version": 128, "oldest": 79, "state": {...}, "turns": [ /* updated > after 的轮次，按 id 升序 */ ]}
 ```
 
 - `after` 比当前版本号大（程序重启过）：当 `after = 0` 处理，返回全部。
@@ -158,7 +158,7 @@ trace.since(after: int, timeout) -> dict  # 等到版本号 > after（最多 tim
 | 工具返回是图片（`look(image=true)`） | 记 `[图片]` |
 | 超长文本 | 截断到 2 万字并注明 |
 | 超过 50 轮 | 丢最早的；返回里带 `oldest`，浏览器删掉更早的 |
-| 程序重启、浏览器没刷新 | `after` 比当前版本号大 → 当 0 处理，返回全部；浏览器发现版本号变小就清空重来 |
+| 程序重启、浏览器没刷新 | 返回里的 `boot`（每个进程随机）变了，或版本号变小 → 浏览器清空、从 0 重新拉，这次的响应丢掉（新进程的版本号可能已经超过浏览器记的旧值，只看版本号发现不了——实现时核对页面发现的）；`after` 比当前版本号大 → 当 0 处理 |
 | 多个浏览器同时看 | 各自长轮询，`since` 只读，互不影响 |
 | trace 自身出错 | 只记 DEBUG 日志，不影响大脑 |
 

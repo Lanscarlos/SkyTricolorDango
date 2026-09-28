@@ -396,3 +396,25 @@ def test_page_has_typing_colour_and_legend():
     from skydango.vision.viewer import PAGE
 
     assert 'typing:"#e879f9"' in PAGE and 'typing:"正在输入"' in PAGE
+
+
+def test_page_has_brain_section():
+    from skydango.vision.viewer import PAGE
+
+    for part in ('id="brain"', 'id="brain-state"', 'id="brain-turns"', 'id="brain-acted"', "/brain?after="):
+        assert part in PAGE
+
+
+def test_page_never_uses_innerhtml_for_brain_data():
+    from skydango.vision.viewer import PAGE
+
+    assert "// ---- brain ----" in PAGE
+    script = PAGE.split("// ---- brain ----", 1)[1]
+    assert "innerHTML" not in script
+
+
+def test_page_restarts_brain_list_when_program_restarts():
+    from skydango.vision.viewer import PAGE
+
+    script = PAGE.split("// ---- brain ----", 1)[1]
+    assert "d.boot" in script  # 换了进程（boot 变了）就清空、从头拉

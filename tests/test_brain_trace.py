@@ -210,3 +210,9 @@ def test_feed_from_another_thread_while_polling():
     th.join()
     assert errors == []
     assert len(turns(t)[0]["steps"]) == 200
+
+
+def test_boot_marks_each_instance():
+    a, b = BrainTrace(), BrainTrace()
+    assert a.since(0, 0.0)["boot"] == a.since(0, 0.0)["boot"]
+    assert a.since(0, 0.0)["boot"] != b.since(0, 0.0)["boot"]  # 程序重启过：网页据此清空重来

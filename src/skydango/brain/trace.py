@@ -12,6 +12,7 @@ import copy
 import logging
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 
@@ -102,6 +103,7 @@ class BrainTrace:
         self._next_id = 1
         self._version = 0
         self._oldest: int | None = None
+        self.boot = uuid.uuid4().hex[:8]  # 每个进程不同：网页发现变了就清空重来（新进程的版本号可能已经超过网页记的）
 
     # ---- 大脑这边 ----
     def begin(self, reason: str, prompt: str) -> None:
@@ -183,7 +185,7 @@ class BrainTrace:
             except Exception:
                 log.debug("大脑状态读不到", exc_info=True)
         state["turns"] = count
-        return {"version": version, "oldest": oldest, "state": state, "turns": turns}
+        return {"boot": self.boot, "version": version, "oldest": oldest, "state": state, "turns": turns}
 
     # ---- 内部（都在锁里调） ----
     def _new(self, turn_id: int, reason: str, prompt: str) -> dict:

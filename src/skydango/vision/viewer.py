@@ -249,10 +249,27 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 .legend{display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 #status{margin-left:auto}#status.off{color:#f87171}
+#brain{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}#brain[hidden]{display:none}
+.bhead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:6px;font-size:13px}
+.bhead label{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer}
+#brain-state.warn{color:#facc15}#brain-state.bad{color:#f87171}
+.turn{border-top:1px solid var(--line)}.turn[hidden]{display:none}
+.turn>summary{cursor:pointer;padding:5px 0;display:flex;gap:6px 12px;flex-wrap:wrap;font-size:13px;list-style:none}
+.turn>summary::-webkit-details-marker{display:none}.turn>summary::before{content:"▶";color:var(--muted);font-size:10px;line-height:20px}
+.turn[open]>summary::before{content:"▼"}.turn>summary .t{color:var(--muted);font-variant-numeric:tabular-nums}
+.turn>summary .n{color:var(--muted)}.turn.err>summary{color:#f87171}.turn.live>summary{color:#60a5fa}
+.tbody{padding:2px 0 10px 16px}.step{margin:6px 0;border-left:3px solid var(--line);padding-left:8px}
+.step h4{margin:0;font-size:12px;font-weight:600;color:var(--muted)}
+.step pre{margin:2px 0 0;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,Consolas,monospace}
+.k-thinking{border-color:#a78bfa}.k-text{border-color:#3ddc84}.k-tool{border-color:#60a5fa}.k-result{border-color:#6b7280}
+.k-result.error{border-color:#facc15}.k-result.error pre{color:#facc15}.k-end{border-color:#8b93a7}.k-end.error pre{color:#f87171}
+.step button{margin-top:4px;font-size:12px;padding:1px 8px}
 @media (max-width:900px){main{flex-direction:column}aside{width:100%}}
 </style></head><body><main>
 <div id="stage"><div class="bar"><button id="pause">暂停</button><button id="boxes">隐藏框</button><button id="save">存图</button>
-<span id="status">连接中…</span></div><canvas id="c"></canvas></div>
+<span id="status">连接中…</span></div><canvas id="c"></canvas>
+<section id="brain" hidden><div class="bhead"><b>大脑</b><span id="brain-state">连接中…</span>
+<label><input type="checkbox" id="brain-acted">只看做了事的轮次</label></div><div id="brain-turns"></div></section></div>
 <aside><h1>团子看到的</h1><dl id="info"></dl><div class="legend" id="legend"></div></aside>
 </main><script>
 const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",
@@ -295,5 +312,74 @@ async function loop(){
   running=false;
 }
 loop();
+// ---- brain ----
+const B={turns:new Map(),els:new Map(),version:0,boot:null,want:new Map(),acted:false};
+const REASONS={events:"新消息 / 事件",heartbeat:"心跳",farewell:"退出前总结",outside:"轮外"};
+const ICONS={thinking:"💭 思考",text:"💬 说",tool:"🔧 调用",result:"↩ 返回"};
+const FOLD=10;
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+function kilo(n){return n==null?"—":n>=1000?(n/1000).toFixed(1)+"k":String(n)}
+function hms(t){return t?new Date(t*1000).toTimeString().slice(0,8):"--:--:--"}
+function acted(t){return t.end===null||!!t.error||t.steps.some(s=>s.kind==="tool"||s.kind==="text")}
+function toolCounts(t){const c={};for(const n of t.tools)c[n]=(c[n]||0)+1;
+  const s=Object.entries(c).map(([n,k])=>`${n}×${k}`).join(" ");return s||(t.steps.some(x=>x.kind==="text")?"（只说了话）":"（什么都没做）")}
+function tokens(r){if(!r)return "";const k=r.tokens||{};return `in ${kilo(k.input)} · out ${kilo(k.output)}`+(k.thinking?` · 思考 ${kilo(k.thinking)}`:"")}
+function stepTitle(s){return s.kind==="tool"?`${ICONS.tool} ${s.name}`:ICONS[s.kind]+(s.kind==="result"&&s.error?"（出错 / 被拒绝）":"")}
+function stepText(s){return s.kind==="tool"?JSON.stringify(s.input,null,2):(s.text||"")}
+function endText(t){const r=t.result,k=(r&&r.tokens)||{},parts=[];
+  if(r)parts.push(`${r.subtype??"—"} · ${r.num_turns??"—"} 步`);
+  if(t.seconds!=null)parts.push(`${t.seconds.toFixed(1)}s`);
+  if(r)parts.push(`输入 ${kilo(k.input)} · 输出 ${kilo(k.output)} · 缓存读 ${kilo(k.cache_read)} · 缓存写 ${kilo(k.cache_write)} · 思考 ${kilo(k.thinking)}`);
+  if(r&&r.cost!=null)parts.push(`参考 $${r.cost.toFixed(4)}`);
+  return (t.error?`失败：${t.error}\\n`:"")+parts.join(" · ")}
+function copyText(t){const lines=[`[${hms(t.start)}] ${REASONS[t.reason]||t.reason}`,"== 收到 ==",t.prompt];
+  for(const s of t.steps)lines.push(`== ${stepTitle(s)} ==`,stepText(s));
+  if(t.end!==null)lines.push("== 结果 ==",endText(t));return lines.join("\\n")}
+async function copy(t,btn){const text=copyText(t);
+  try{await navigator.clipboard.writeText(text)}catch(e){const a=el("textarea");a.value=text;document.body.append(a);a.select();document.execCommand("copy");a.remove()}
+  btn.textContent="已复制";setTimeout(()=>btn.textContent="复制这一轮",1200)}
+function block(kind,title,text,error){const d=el("div",`step k-${kind}${error?" error":""}`);d.append(el("h4","",title));
+  const lines=text.split("\\n"),pre=el("pre");d.append(pre);
+  if(lines.length<=FOLD){pre.textContent=text;return d}
+  let full=false;const btn=el("button","");
+  const show=()=>{pre.textContent=full?text:lines.slice(0,FOLD).join("\\n")+"\\n…";btn.textContent=full?"收起":`展开全部（${lines.length} 行）`};
+  btn.onclick=()=>{full=!full;show()};show();d.append(btn);return d}
+function turnEl(t){const live=t.end===null,d=el("details",`turn${t.error?" err":""}${live?" live":""}`);
+  const want=B.want.get(t.id);d.open=want===undefined?live:want;
+  const sm=el("summary");sm.append(el("span","t",hms(t.start)),el("span","",REASONS[t.reason]||t.reason));
+  if(t.error)sm.append(el("span","",`失败：${t.error}`));
+  else if(live)sm.append(el("span","",`进行中…${t.tools.length?" "+toolCounts(t):""}`));
+  else sm.append(el("span","",toolCounts(t)),el("span","n",t.seconds!=null?`${t.seconds.toFixed(1)}s`:""),el("span","n",tokens(t.result)));
+  sm.onclick=()=>B.want.set(t.id,!d.open);d.append(sm);
+  const body=el("div","tbody");
+  if(t.reason!=="outside")body.append(block("prompt","收到",t.prompt||""));
+  for(const s of t.steps)body.append(block(s.kind,stepTitle(s),stepText(s),s.kind==="result"&&s.error));
+  if(!live)body.append(block("end","结果",endText(t),!!t.error));
+  const btn=el("button","","复制这一轮");btn.onclick=()=>copy(t,btn);body.append(btn);
+  d.append(body);d.hidden=B.acted&&!acted(t);return d}
+function brainState(st){const e=$("brain-state");let text=`${st.model??"?"} / ${st.effort??"?"} · 已醒 ${st.turns??0} 轮 · `,cls="";
+  if(st.offline){text+="已转备用回复（DeepSeek）";cls="bad"}
+  else if(st.retry_in!=null){text+=`连续失败 ${st.failures} 次，${Math.ceil(st.retry_in)} 秒后重试`;cls="warn"}
+  else text+="在线";e.textContent=text;e.className=cls}
+function brainRender(changed){const box=$("brain-turns");
+  for(const t of changed){const old=B.els.get(t.id),neu=turnEl(t);if(old)old.replaceWith(neu);B.els.set(t.id,neu)}
+  const ids=[...B.turns.keys()].sort((a,b)=>(a===0)-(b===0)||b-a);
+  ids.forEach((id,i)=>{const e=B.els.get(id);if(box.children[i]!==e)box.insertBefore(e,box.children[i]||null)})}
+function brainMerge(d){
+  if((B.boot&&d.boot!==B.boot)||d.version<B.version){  // 程序重启过：这次的增量不可信，清空后从头拉
+    B.turns.clear();for(const e of B.els.values())e.remove();B.els.clear();B.want.clear();B.boot=d.boot;B.version=0;return}
+  B.boot=d.boot;B.version=d.version;for(const t of d.turns)B.turns.set(t.id,t);
+  if(d.oldest!=null)for(const id of [...B.turns.keys()])if(id!==0&&id<d.oldest){B.turns.delete(id);B.els.get(id)?.remove();B.els.delete(id)}
+  brainState(d.state||{});brainRender(d.turns.filter(t=>B.turns.has(t.id)))}
+$("brain-acted").onchange=e=>{B.acted=e.target.checked;for(const [id,x] of B.els)x.hidden=B.acted&&!acted(B.turns.get(id))};
+async function brainLoop(){let seen=false;
+  while(true){
+    try{const r=await fetch(`/brain?after=${B.version}`,{cache:"no-store"});
+      if(r.status===404&&!seen)return;if(!r.ok)throw new Error(r.status);
+      const d=await r.json();seen=true;$("brain").hidden=false;brainMerge(d);
+    }catch(e){if(seen){const s=$("brain-state");s.textContent="连不上（程序停了？）";s.className="bad"}await new Promise(r=>setTimeout(r,1000))}
+  }
+}
+brainLoop();
 </script></body></html>
 """
