@@ -98,3 +98,21 @@ def test_find_self_ignores_moving_box():
 
 def test_distance_bands():
     assert [distance(h, 200, 0.8, 0.4) for h in (160, 159, 80, 79)] == ["近", "中", "中", "远"]
+
+
+# ---- 评审修正 ----
+def test_beside_unknown_sightings_stay_beside():
+    s = [Sighting(i * 14.0, "卡洛", i, 300, beside=True) for i in range(26)]
+    s += [Sighting(i * 90.0, UNKNOWN_WHO, 26 + i, 300, beside=True) for i in range(4)]
+    assert [(e.who, e.direction) for e in merge(s, 30, 200, 0.8, 0.4)] == [("卡洛", "身边")]
+    only_unknown = [Sighting(i * 45.0, UNKNOWN_WHO, i, 300, beside=True) for i in range(8)]
+    assert [(e.who, e.direction) for e in merge(only_unknown, 30, 200, 0.8, 0.4)] == [(UNKNOWN_WHO, "身边")]
+
+
+def test_generic_clusters_next_to_a_friend_are_the_friend_flickering():
+    s = [Sighting(95, "懒洋洋大王", i, 200) for i in range(4)]
+    s += [Sighting(100, STRANGER_WHO, 4), Sighting(90, UNKNOWN_WHO, 5), Sighting(180, STRANGER_WHO, 6)]
+    got = sorted((e.who, e.direction) for e in merge(s, 30, 200, 0.8, 0.4))
+    assert got == sorted([("懒洋洋大王", "右"), (STRANGER_WHO, "后")])
+    unlit_next_to = merge([Sighting(95, "懒洋洋大王", 0), Sighting(100, UNLIT_WHO, 1)], 30, 200, 0.8, 0.4)
+    assert len(unlit_next_to) == 2  # 黑影一定不是好友

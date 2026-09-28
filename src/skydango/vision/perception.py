@@ -69,6 +69,12 @@ def approaching(hist: list[tuple[float, float, float]], width: int, grow: float)
     return c1 <= c0 or c1 < 0.15 * width
 
 
+def people_boxes(dets: list[Detection]) -> list[Detection]:
+    """一帧里的人（player / player_unlit / self）。模型可能在团子身上同时出 self 和 player 框：player 那个不算另一个人。"""
+    selfs = [d for d in dets if d.cls == "self"]
+    return selfs + [d for d in dets if d.cls in ("player", UNLIT) and not any(iou(d.box, s.box) >= 0.5 for s in selfs)]
+
+
 def _center(r: Rect) -> tuple[float, float]:
     return r.x + r.w / 2, r.y + r.h / 2
 
@@ -400,18 +406,26 @@ class PerceptionWatcher:
     ) -> list[Detection]:
         area = roi_rect(self.env_cfg.roi, width, height)  # 底部输入栏不要
         panel = roi_rect(self.log_roi, width, height) if panel_visible else None  # 面板里的"- 名字"不是名字标签
-        mine = None
-        if drop_self:  # 转圈认出的团子优先，没有才用固定的 self_roi
-            mine = self.self_box or (roi_rect(self.cfg.self_roi, width, height) if self.cfg.self_roi else None)
+        mine = self._self_areas(width, height) if drop_self else []
         out = []
         for det in dets:
             c = _center(det.box)
             if not _inside(c, area) or (panel is not None and _inside(c, panel)):
                 continue
-            if mine is not None and det.cls in ("player", UNLIT) and _inside(c, mine):
+            if det.cls in ("player", UNLIT) and any(_inside(c, r) for r in mine):
                 continue
             out.append(det)
         return out
+
+    def _self_areas(self, width: int, height: int) -> list[Rect]:
+        """团子所在的区域：转圈认出的团子框（四周各放宽 25%，镜头跟随会有点晃）+ 配置的 self_roi。"""
+        areas = []
+        if self.self_box is not None:
+            b = self.self_box
+            areas.append(Rect(round(b.x - b.w / 4), round(b.y - b.h / 4), round(b.w * 1.5), round(b.h * 1.5)))
+        if self.cfg.self_roi:
+            areas.append(roi_rect(self.cfg.self_roi, width, height))
+        return areas
 
     @staticmethod
     def _is_self(player: Track, selfs: list[Track]) -> bool:
@@ -466,9 +480,10 @@ class PerceptionWatcher:
         for _, img in frames:
             height, width = img.shape[:2]
             dets = [d for d in self._filter(self._detect(img), width, height, False, drop_self=False) if d.score >= self.cfg.conf]
-            people.append([d for d in dets if d.cls in ("player", UNLIT, "self")])
+            people.append(people_boxes(dets))
             tags.append([d for d in dets if d.cls == "name_tag"])
         found = find_self([[d.box for d in frame] for frame in people], width, spin.self_motion)
+        mine = self._self_areas(width, height)  # 帧太少认不出团子时，靠之前认出的团子框 / self_roi 排除
         sightings: list[Sighting] = []
         for fi, (t, img) in enumerate(frames):
             where = lambda box: bearing(t, box.x + box.w / 2, width, spin.seconds_per_turn, spin.hfov)  # noqa: E731
@@ -490,7 +505,7 @@ class PerceptionWatcher:
                 ))
             tagged = {bi for bi, _ in under.values()}
             for bi, d in frame_people:
-                if bi in tagged or (fi, bi) in found.static:
+                if bi in tagged or (fi, bi) in found.static or any(_inside(_center(d.box), r) for r in mine):
                     continue
                 if d.cls == UNLIT:
                     sightings.append(Sighting(where(d.box), UNLIT_WHO, fi, float(d.box.h)))

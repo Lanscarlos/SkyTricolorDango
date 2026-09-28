@@ -102,3 +102,28 @@ def test_look_describes_given_image(tmp_path, monkeypatch, capsys):
     cli.main(["look", str(img)])
     out = capsys.readouterr().out
     assert "图里没认出好友的名字" in out and "描述" in out and len(got) == 1
+
+
+def test_label_spin_handles_self_and_player_on_the_same_body(tmp_path, monkeypatch):
+    import numpy as np
+
+    src = tmp_path / "spin"
+    src.mkdir()
+    for i in range(8):
+        imwrite(src / f"{i:03d}_{i * 0.07:.2f}s.jpg", np.zeros((1080, 1920, 3), np.uint8))
+
+    class Det:
+        def detect(self, frame):
+            return [Detection("player", Rect(900, 500, 90, 220), 0.9), Detection("self", Rect(902, 502, 90, 218), 0.9)]
+
+    class Ocr:
+        def recognize(self, frame):
+            return []
+
+    monkeypatch.setattr("skydango.vision.detect.make_detector", lambda *a, **k: Det())
+    monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda *a, **k: Ocr())
+    monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: None)
+    out = tmp_path / "ds"
+    cli.main(["perception", "label", str(src), "--spin", "--model", "m.onnx", "-o", str(out), "--val", "0"])
+    for f in (out / "labels" / "train").glob("*.txt"):
+        assert [l.split()[0] for l in f.read_text(encoding="utf-8").splitlines()] == ["3"]  # 只剩一个 self 框

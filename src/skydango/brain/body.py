@@ -418,7 +418,7 @@ class Body:
         self.last_frame = shot.after
         if not shot.panel_reopened:
             self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
-        return result.text()
+        return result.text() + ("（中途画面黑了，可能在切场景，这一圈不准）" if shot.blackout else "")
 
     def status(self) -> str:
         now = self.clock()
@@ -601,6 +601,7 @@ class Body:
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        self._forget_self()
         return "镜头现在：" + result
 
     def camera_reset(self) -> str:
@@ -611,7 +612,13 @@ class Body:
         with self._held("camera"):
             result = self.camera.reset()
         self._ref_thumb = None
+        self._forget_self()
         return result
+
+    def _forget_self(self) -> None:
+        """镜头拉近拉远、俯仰变了：转圈认出的团子框（位置、大小）不准了，下次转圈再认。"""
+        if hasattr(self.env, "self_box"):
+            self.env.self_box = None
 
     # ---- 大脑离线时的备用回复 ----
     def _fallback(self, now: float) -> None:

@@ -652,12 +652,13 @@ def _perception_label(cfg: Config, args) -> None:
     predicted: dict[str, list] = {}  # 文件名 → 模型预测（--spin 先全部跑一遍认团子，后面合并预标注时复用）
     selves: dict[str, Rect] = {}
     if args.spin:
+        from .vision.perception import people_boxes
         from .vision.sweep import find_self
 
         people = []
         for path, stem in items:
             predicted[stem] = detector.detect(imread(path))
-            people.append([d.box for d in predicted[stem] if d.cls in ("player", "self") and d.score >= cfg.perception.conf])
+            people.append([d.box for d in people_boxes([d for d in predicted[stem] if d.score >= cfg.perception.conf])])
         frame0 = imread(items[0][0]) if items else None
         found = find_self(people, frame0.shape[1] if frame0 is not None else 1920, cfg.spin.self_motion)
         if found.box is None:

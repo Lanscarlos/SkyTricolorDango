@@ -116,19 +116,33 @@ def _cluster(sightings: list[Sighting], merge_deg: float) -> list[list[Sighting]
 def merge(sightings: list[Sighting], merge_deg: float, ref_h: float, near: float, far: float) -> list[SweepEntry]:
     """同一个人在多帧里出现合成一条：好友按名字，陌生人 / 黑影按方位聚类（取出现帧数最多的类别），没认出名字的单独聚类。"""
     out: list[SweepEntry] = []
-    friends: dict[tuple[str, bool], list[Sighting]] = {}
-    for s in sightings:
+    # 紧挨团子、转圈时几乎不动的人（牵着手）：方位没意义，不管认没认出名字都只报"身边"
+    beside = [s for s in sightings if s.beside]
+    beside_named: dict[str, list[Sighting]] = {}
+    for s in beside:
         if s.who not in GENERIC:
-            friends.setdefault((s.who, s.beside), []).append(s)
-    beside_names = {name for name, beside in friends if beside}
-    for (name, beside), group in friends.items():
-        if not beside and name in beside_names:  # 牵着手的人：只报"身边"
-            continue
-        out.append(_entry(group, name, ref_h, near, far, beside))
+            beside_named.setdefault(s.who, []).append(s)
+    for name, group in beside_named.items():
+        out.append(_entry(group, name, ref_h, near, far, beside=True))
+    if beside and not beside_named:  # 名字一帧都没读出来（不在好友名单里 / 一直糊）
+        out.append(_entry(beside, UNKNOWN_WHO, ref_h, near, far, beside=True))
+
+    rest = [s for s in sightings if not s.beside]
+    friends: dict[str, list[Sighting]] = {}
+    for s in rest:
+        if s.who not in GENERIC and s.who not in beside_named:
+            friends.setdefault(s.who, []).append(s)
+    named = [_entry(group, name, ref_h, near, far) for name, group in friends.items()]
+    out += named
     for kinds in ((STRANGER_WHO, UNLIT_WHO), (UNKNOWN_WHO,)):
-        for group in _cluster([s for s in sightings if s.who in kinds], merge_deg):
+        for group in _cluster([s for s in rest if s.who in kinds], merge_deg):
             counts = {k: len({s.frame for s in group if s.who == k}) for k in kinds}
-            out.append(_entry(group, max(kinds, key=lambda k: counts[k]), ref_h, near, far))
+            who = max(kinds, key=lambda k: counts[k])
+            entry = _entry(group, who, ref_h, near, far)
+            # 好友旁边的"陌生人 / 没认出名字的人"多半是同一个好友某几帧标签没检测到或没读出来（转圈时画面糊）
+            if who != UNLIT_WHO and any(_gap(entry.degrees, f.degrees) < merge_deg for f in named):
+                continue
+            out.append(entry)
     return sorted(out, key=lambda e: e.degrees)
 
 

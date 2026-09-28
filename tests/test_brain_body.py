@@ -811,3 +811,25 @@ def test_status_shows_nearest(clock):
     assert "离你最近的：懒洋洋大王（近）" in b.status()
     b2, _, _, _ = body(clock, env=ApproachEnv())
     assert "离你最近的" not in b2.status()
+
+
+def test_camera_move_forgets_self_box(clock):
+    env = SweepEnv()
+    env.self_box = "框"
+    b, _, _, _ = body(clock, live=True, env=env, camera=SpinCamera())
+    b.camera_move("zoom_in", 1)
+    assert env.self_box is None
+    env.self_box = "框"
+    b.camera_reset()
+    assert env.self_box is None
+
+
+def test_sweep_around_mentions_blackout(clock):
+    class DarkCamera(SpinCamera):
+        def spin(self, capture, turns=1, seconds_per_turn=2.0, fps=15.0):
+            from dataclasses import replace
+
+            return replace(super().spin(capture, turns, seconds_per_turn, fps), blackout=True)
+
+    b, _, _, _ = body(clock, live=True, env=SweepEnv(), camera=DarkCamera())
+    assert "中途画面黑了" in b.sweep_around()

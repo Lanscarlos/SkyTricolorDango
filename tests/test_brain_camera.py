@@ -116,7 +116,7 @@ def test_spin_holds_right_and_captures_at_fps():
     assert c.describe() == "原位"  # 整圈不改偏移
 
 
-def test_spin_releases_key_and_reopens_panel_on_error():
+def test_spin_skips_failed_captures_and_finishes_the_turn():
     c, dev, state = spin_cam()
     n = {"i": 0}
 
@@ -126,7 +126,22 @@ def test_spin_releases_key_and_reopens_panel_on_error():
             raise RuntimeError("截图失败")
         return scene()
 
-    with pytest.raises(RuntimeError):
+    r = c.spin(capture, seconds_per_turn=1.0, fps=10)
+    assert len(r.frames) == 9 and r.seconds == pytest.approx(1.0)  # 少一张，但照样转满一圈
+    assert dev.calls.count(("hw_up", 106)) == 1 and state["panel"] is True
+
+
+def test_spin_releases_key_and_reopens_panel_on_interrupt():
+    c, dev, state = spin_cam()
+    n = {"i": 0}
+
+    def capture():
+        n["i"] += 1
+        if n["i"] == 3:
+            raise KeyboardInterrupt
+        return scene()
+
+    with pytest.raises(KeyboardInterrupt):
         c.spin(capture, seconds_per_turn=1.0, fps=10)
     assert ("hw_up", 106) in dev.calls and state["panel"] is True
 

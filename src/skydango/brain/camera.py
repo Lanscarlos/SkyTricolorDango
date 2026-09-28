@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -18,6 +19,8 @@ import numpy as np
 
 from ..device.base import KEYCODE_BACK
 from .images import is_black
+
+log = logging.getLogger(__name__)
 
 KEYS = {"left": 105, "right": 106, "up": 103, "down": 108, "zoom_in": 12, "zoom_out": 13}  # Linux 键码
 AXIS = {
@@ -104,7 +107,10 @@ class Camera:
             start = self.clock()
             try:
                 while (t := self.clock() - start) < total - 1e-6:
-                    frames.append((t, capture()))
+                    try:
+                        frames.append((t, capture()))
+                    except Exception as exc:  # 截图偶尔失败：少一张，照样转满一圈（半路停下镜头就歪了）
+                        log.warning("转圈时截图失败，跳过这张：%s", exc)
                     self.sleep(max(0.0, period - (self.clock() - start - t)))
                 seconds = self.clock() - start
             finally:

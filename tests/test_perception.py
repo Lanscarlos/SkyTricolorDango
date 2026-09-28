@@ -775,3 +775,48 @@ def test_nearest_picks_the_tallest_known_person():
     w.process(frame(), 0.0, panel_visible=False)
     assert w.nearest(0.0) == ("懒洋洋大王", "近")  # 300 ÷ 220（团子框）≈ 1.36
     assert watcher(FakeDetector()).nearest(0.0) is None
+
+
+# ---- 评审修正 ----
+def test_sweep_finds_self_when_model_boxes_it_twice():
+    det = FakeDetector()
+    det.frames = [[me(), Detection("self", Rect(902, 502, 90, 218), 0.9)] for _ in range(20)]
+    r = watcher(det).sweep(spin_frames(), SpinConfig())
+    assert r.self_box is not None and r.entries == []
+
+
+def test_sweep_merges_flickering_friend():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    det.frames[5] = [me(), player(1155, 400), tag(1145, 110)]
+    det.frames[6] = [me(), player(1070, 400)]  # 标签这一帧没检测到
+    det.frames[7] = [me(), player(990, 400), tag(980, 140)]  # 标签糊了读不出
+    r = watcher(det, FakeOcr({110: "懒洋洋大王"})).sweep(spin_frames(), SpinConfig())
+    assert [e.who for e in r.entries] == ["懒洋洋大王"]
+
+
+def test_single_frame_sweep_excludes_known_self():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    w = watcher(det)
+    w.sweep(spin_frames(), SpinConfig())  # 认出团子
+    det.frames = [[player(905, 500)]]
+    assert w.sweep([(0.0, frame())], SpinConfig()).entries == []
+
+
+def test_single_frame_sweep_excludes_self_roi():
+    det = FakeDetector()
+    det.frames = [[player(905, 500)]]
+    w = watcher(det, self_roi=[0.4, 0.4, 0.6, 0.8])
+    assert w.sweep([(0.0, frame())], SpinConfig()).entries == []
+
+
+def test_self_box_is_padded_and_self_roi_still_applies():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    w = watcher(det, self_roi=[0.0, 0.0, 0.1, 0.5])
+    w.sweep(spin_frames(), SpinConfig())
+    det.frames = [[player(960, 540), player(20, 100)]]  # 团子挪出了原框一点；self_roi 里另有一个
+    for t in (0.0, 1.0, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    assert w.strangers(2.0) == 0
