@@ -705,3 +705,73 @@ def test_overlay_marks_typing():
 def test_default_classes_end_with_typing():
     assert PerceptionConfig().classes == ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"]
     assert PerceptionConfig().typing_window == 8.0
+
+
+# ---- 二期：距离和走向 ----
+from skydango.vision.perception import approaching  # noqa: E402
+
+
+def test_approaching_rules():
+    grow = [(i * 0.1, 100 + i * 5, 1400 - i * 20) for i in range(15)]
+    assert approaching(grow, 1920, 0.25)
+    jitter = [(i * 0.1, 100 * (1.1 if i % 2 else 0.9), 960) for i in range(15)]
+    assert not approaching(jitter, 1920, 0.25)
+    outward = [(i * 0.1, 100 + i * 5, 1300 + i * 30) for i in range(15)]
+    assert not approaching(outward, 1920, 0.25)
+    assert not approaching(grow[:2], 1920, 0.25)
+
+
+def walk_up(w, det, t0, tagged=True, cls="player"):
+    for i in range(15):
+        h = 150 + 8 * i
+        body = Detection(cls, Rect(1000, 620 - h, 90, h), 0.9)
+        det.frames = [[body, tag(990, 110, y=620 - h - 70)] if tagged else [body]]
+        w.process(frame(), t0 + i * 0.1, panel_visible=False)
+
+
+def test_friend_walking_up_is_reported_once_per_cooldown():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    walk_up(w, det, 0.0)
+    assert w.pop_approaches() == ["懒洋洋大王"]
+    assert w.pop_approaches() == []  # 取走就清空
+    walk_up(w, det, 2.0)  # 60 秒内又走过来一次
+    assert w.pop_approaches() == []
+
+
+def test_stranger_approach_follows_switch():
+    det = FakeDetector()
+    w = watcher(det)
+    walk_up(w, det, 0.0, tagged=False)
+    assert w.pop_approaches() == [STRANGER]
+    det2 = FakeDetector()
+    quiet = watcher(det2, approach_strangers=False)
+    walk_up(quiet, det2, 0.0, tagged=False)
+    assert quiet.pop_approaches() == []
+
+
+def test_no_approach_across_a_pause():
+    det = FakeDetector()
+    clock = Clock()
+    w = watcher(det, clock=clock)
+    for i in range(5):
+        det.frames = [[unlit(1000, y=400, h=100)]]
+        w.process(frame(), i * 0.1, panel_visible=False)
+    clock.t = 0.45
+    w.hold("camera")
+    clock.t = 0.6
+    w.release("camera")
+    for i in range(5):
+        det.frames = [[unlit(1000, y=360, h=140)]]
+        w.process(frame(), 0.6 + i * 0.1, panel_visible=False)
+    assert w.pop_approaches() == []
+
+
+def test_nearest_picks_the_tallest_known_person():
+    det = FakeDetector()
+    det.frames = [[player(1000, y=300, h=300), tag(990, 110, y=230), unlit(1500, h=150),
+                   Detection("self", Rect(900, 420, 90, 220), 0.9)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.nearest(0.0) == ("懒洋洋大王", "近")  # 300 ÷ 220（团子框）≈ 1.36
+    assert watcher(FakeDetector()).nearest(0.0) is None

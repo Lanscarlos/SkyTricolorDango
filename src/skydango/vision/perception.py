@@ -15,6 +15,7 @@
 
 二期（docs/superpowers/specs/2026-09-28-perception-phase2-design.md）：
 - `sweep()`：转一圈截下的帧单独汇总成"哪个方向有谁"（vision/sweep.py 算方位、合并），顺带认出团子（self_box，之后代替 self_roi）
+- 远近：人物框高 ÷ 团子框高；框持续变大、往画面中间走 → 朝团子走过来（`pop_approaches`，身体发 approach 事件）
 - `typing`（头顶"正在输入"气泡）：挂到正下方的人身上；陌生人的消息靠它猜是画面上哪个人说的（`speaker_hint`）
 
 以上规则和阈值都还**没在真机验证**（模型还没训练），见 docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md。
@@ -52,6 +53,20 @@ OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开�
 def detector_conf(cfg: PerceptionConfig) -> float:
     """检测器的出框阈值：收集难例时要看到 low_conf ~ conf 之间的框，判定仍按 conf。"""
     return min(cfg.low_conf, cfg.conf) if cfg.hardcases else cfg.conf
+
+
+def approaching(hist: list[tuple[float, float, float]], width: int, grow: float) -> bool:
+    """(时间, 框高, 框中心 x) 的序列：前 1/3 和后 1/3 比，框高变大 ≥ grow，且往画面中间走（或一直在中间）。"""
+    if len(hist) < 3:
+        return False
+    k = max(1, len(hist) // 3)
+    h0 = sum(h for _, h, _ in hist[:k]) / k
+    h1 = sum(h for _, h, _ in hist[-k:]) / k
+    if h0 <= 0 or h1 < h0 * (1 + grow):
+        return False
+    c0 = sum(abs(x - width / 2) for _, _, x in hist[:k]) / k
+    c1 = sum(abs(x - width / 2) for _, _, x in hist[-k:]) / k
+    return c1 <= c0 or c1 < 0.15 * width
 
 
 def _center(r: Rect) -> tuple[float, float]:
@@ -104,6 +119,8 @@ class PerceptionWatcher:
         self.timings: deque[tuple[float, float]] = deque(maxlen=300)  # (检测 ms, 整帧 ms)
         self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
+        self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
+        self._approach_at: dict[str, float] = {}
         self._typing: deque[tuple] = deque()  # (时间, 轨迹 id, 是好友, 没点火, 框中心 x, 框高, 画面宽, 画面高)
         self._strangers: deque[tuple[float, int]] = deque()  # (时间, 这一帧有几个陌生人)
         self._panel_visible = False
@@ -167,6 +184,8 @@ class PerceptionWatcher:
         d = now - since
         log.debug("感知恢复（%s），暂停了 %.1f 秒", why, d)
         self._prev_count, self._prev_thumb = 0, None  # 暂停前那一帧不能拿来判"集体消失"（镜头可能已经转走了）
+        for track in list(self.tracker.tracks.values()):  # 暂停前后的框高不能连起来判"走过来"（镜头可能动过）
+            track.data.pop("hist", None)
         if d <= 0:
             return
         for name, t in list(self.last_seen.items()):
@@ -355,6 +374,8 @@ class PerceptionWatcher:
             player.data["stranger"] = is_stranger
             strangers += is_stranger
         self._watch_typing(bubbles, players, selfs, now, width, height)
+        if not self.paused:
+            self._watch_approach(players, now, width)
         with self._lock:  # 身体线程会同时读（strangers()）
             self._strangers.append((now, strangers, unlit))
             while self._strangers and now - self._strangers[0][0] > self.cfg.keep:
@@ -546,6 +567,41 @@ class PerceptionWatcher:
                                  width, height))
         while self._typing and now - self._typing[0][0] > self.cfg.typing_window:
             self._typing.popleft()
+
+    def _watch_approach(self, players: list[Track], now: float, width: int) -> None:
+        for p in players:
+            hist: deque = p.data.setdefault("hist", deque())
+            hist.append((now, float(p.box.h), p.box.x + p.box.w / 2))
+            while hist and now - hist[0][0] > self.cfg.approach_window:
+                hist.popleft()
+            who = p.data.get("name") or (STRANGER if p.data.get("stranger") else None)
+            if who is None or (who == STRANGER and not self.cfg.approach_strangers):
+                continue
+            if now - self._approach_at.get(who, float("-inf")) < self.cfg.approach_cooldown:
+                continue
+            if approaching(list(hist), width, self.cfg.approach_grow):
+                self._approach_at[who] = now
+                log.info("%s 朝团子走过来了", who)
+                with self._lock:
+                    self._approaches.append(who)
+
+    def pop_approaches(self) -> list[str]:
+        """取走"朝团子走过来"的人（好友名 / 陌生人），身体变成 approach 事件。"""
+        with self._lock:
+            out, self._approaches = self._approaches, []
+        return out
+
+    def nearest(self, now: float) -> tuple[str, str] | None:
+        """最近一帧里离团子最近（框最高）、认得出是谁的人：(好友名 / "陌生人", 近 / 中 / 远)。"""
+        known = [
+            (t.box.h, t.data.get("name") or STRANGER)
+            for t in list(self.last_tracks)
+            if t.cls in ("player", UNLIT) and (t.data.get("name") or t.data.get("stranger"))
+        ]
+        if not known:
+            return None
+        h, who = max(known)
+        return who, distance(h, self._ref_height(self._frame_h), self.cfg.near, self.cfg.far)
 
     def speaker_hint(self, now: float) -> str | None:
         """陌生人的消息是谁说的：最近 typing_window 秒内头顶冒过气泡、又不是好友的人恰好一个 → 说出他在画面哪儿。"""

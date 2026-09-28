@@ -273,6 +273,10 @@ class PerceptionConfig:
     near: float = 0.8  # 比值 ≥ 这个算"近"
     far: float = 0.4  # 比值 < 这个算"远"，中间是"中"
     self_height: float = 0.2  # 没有团子框时，假定团子框高占屏高的这么多（待标定）
+    approach_window: float = 1.5  # 走过来：看最近这么久的框高变化
+    approach_grow: float = 0.25  # 框高增大超过这个比例（且往画面中间走）算朝团子走过来（待标定）
+    approach_cooldown: float = 60.0  # 同一个人这么久内只报一次（陌生人整体算一个）
+    approach_strangers: bool = True  # 陌生人走过来也报（陌生人多的地方嫌吵就关掉）
     typing_window: float = 8.0  # 陌生人的消息：这么久内头顶冒过"正在输入"气泡的人才算可能的说话人（待标定）
 
 
