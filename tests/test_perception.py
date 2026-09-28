@@ -8,7 +8,7 @@ from skydango.vision.detect import Detection, _parse_names, decode, letterbox
 from skydango.vision.ocr import OcrLine, RapidOcrEngine
 from skydango.vision.perception import STRANGER, PerceptionWatcher, detector_conf
 from skydango.vision.track import Tracker, iou
-from skydango.vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, yolo_line
+from skydango.vision.weaklabel import data_yaml, hard_images, merge_labels, ring_labels, split_of, weak_labels, yolo_line
 
 FRIENDS = ["懒洋洋大王", "番茄炒蛋盖饭"]
 
@@ -1218,3 +1218,30 @@ def test_status_icons_are_not_requests():
         w.process(frame(), 0.0, panel_visible=False)
         assert w.requests == {}, kind
         assert w.circles["懒洋洋大王"][0] == kind
+
+
+def _scene_with_icon(kind, center):
+    import cv2
+
+    img = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+    icon = cv2.imread(f"assets/social/{kind}.png")
+    img[center[1] - 40 : center[1] + 40, center[0] - 40 : center[0] + 40] = icon
+    return img
+
+
+def test_ring_labels_find_icons_above_people():
+    """陌生人头顶的圆圈：弱标注只看好友名字下方，这里按人物框在头顶附近用图标模板找（2026-09-28 摸底 164 帧新找到 65 个）。"""
+    from skydango.game.social import IconClassifier, load_icons
+
+    icons = IconClassifier(load_icons("assets/social"))
+    person = ("player", Rect(950, 400, 100, 220))  # 头顶 y=400，圆圈中心在头顶上方约 60 px
+    img = _scene_with_icon("candle", (1000, 340))
+    def near(rings, cx=1000, cy=340):
+        return len(rings) == 1 and rings[0].w == rings[0].h == 100 and             abs(rings[0].x + 50 - cx) <= 4 and abs(rings[0].y + 50 - cy) <= 4
+
+    assert near(ring_labels(img, [person], icons))
+    assert near(ring_labels(img, [("player_unlit", person[1])], icons))
+    assert ring_labels(img, [person, ("social_ring", Rect(955, 295, 100, 100))], icons) == []  # 已经有了不重复标
+    assert ring_labels(img, [("self", person[1])], icons) == []  # 团子头顶不标
+    assert ring_labels(img, [("player", Rect(300, 400, 100, 220))], icons) == []  # 图标不在这个人头顶
+    assert ring_labels(np.full((1080, 1920, 3), (60, 90, 40), np.uint8), [person], icons) == []  # 只有背景

@@ -103,3 +103,37 @@ def hard_images(runs: Path) -> list[tuple[Path, str]]:
     for path in sorted(Path(runs).glob("*/hard/*.jpg")):
         out.append((path, f"{path.parent.parent.name}_{path.stem}"))
     return out
+
+
+def ring_labels(frame: np.ndarray, boxes: list[tuple[str, Rect]], icons, min_score: float = 0.75) -> list[Rect]:
+    """人物头顶的互动圆圈（陌生人的也要）：weak_labels 只看好友名字下方，这里按人物框在头顶附近用图标模板找。
+
+    boxes：这一帧已有的标注（类别, 框），从里面取人物（团子除外，它头顶没有圆圈）和已有的圆圈（不重复标）。
+    icons：game.social.IconClassifier；认不出的图标（比如彩虹心形）不标，宁可漏标不错标。
+    """
+    from ..game.social import SCALES, cream
+    from .icons import best_match
+
+    height, width = frame.shape[:2]
+    k = height / 1080
+    r = round(50 * k)
+    rings = [b for c, b in boxes if c == "social_ring"]
+    out: list[Rect] = []
+    for cls, p in boxes:
+        if cls not in ("player", "player_unlit"):
+            continue
+        cx = p.x + p.w // 2
+        area = _clip(cx - round(110 * k), p.y - round(170 * k), cx + round(110 * k), p.y + min(p.h, round(120 * k)), width, height)
+        if area is None or area.w < 2 * r or area.h < 2 * r:
+            continue
+        mask = cream(frame[area.y : area.y2, area.x : area.x2])
+        best = max((best_match(mask, m, SCALES) for m in icons.icons.values()), key=lambda m: m.score)
+        if best.score < min_score:
+            continue
+        rx, ry = area.x + best.x, area.y + best.y
+        if any(abs(rx - (b.x + b.w / 2)) <= 40 * k and abs(ry - (b.y + b.h / 2)) <= 40 * k for b in rings + out):
+            continue
+        ring = _clip(rx - r, ry - r, rx + r, ry + r, width, height)
+        if ring is not None:
+            out.append(ring)
+    return out
