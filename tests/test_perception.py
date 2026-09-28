@@ -1124,3 +1124,35 @@ def test_no_gestures_without_classifier():
     det.frames = [[player(900), tag(890, 110)]]
     w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
     assert feed(w, 3.0) == []
+
+
+def test_far_tag_track_survives_between_crops_with_uneven_frame_times():
+    det = CropDetector([small(1000)], [Detection("name_tag", Rect(10, 20, 50, 14), 0.9)])
+    unknown = RecordingUnknown()
+    ocr = FakeOcr({50: "星星小铺"})
+    w = PerceptionWatcher(det, ocr, PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+                          log_roi=[0.0, 0.0, 0.335, 0.855], background=False, unknown=unknown)
+    ids = set()
+    for i in range(58):  # 0.07 s 一帧，4 s
+        w.process(frame(), round(i * 0.07, 2), panel_visible=False)
+        ids |= {t.id for t in w.last_tracks if t.cls == "name_tag"}
+    assert len(ids) == 1  # 同一条标签轨迹接得上：投票和"只记一次"才有用
+    assert [a[0] for a in unknown.added] == ["星星小铺"]
+
+
+def test_place_is_cleared_when_scene_changed_and_nothing_matches():
+    places = FakePlaces(["云野", None])
+    w = place_watcher(FakeDetector(), places)
+    w.process(frame(), 0.0, panel_visible=False)
+    w.process(white(), 5.0, panel_visible=False)  # 画面大变后认不出：可能到了图库里没有的地方
+    assert len(places.calls) == 2 and w.place == "" and "看起来在" not in w.describe(5.0)
+
+
+def test_place_is_cleared_after_two_misses_in_a_row():
+    places = FakePlaces(["云野", None])
+    w = place_watcher(FakeDetector(), places)
+    w.process(frame(), 0.0, panel_visible=False)
+    w.process(frame(), 30.0, panel_visible=False)
+    assert w.place == "云野"  # 偶尔一次认不出：先留着
+    w.process(frame(), 60.0, panel_visible=False)
+    assert w.place == ""

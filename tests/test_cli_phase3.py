@@ -154,3 +154,12 @@ def test_perception_gesture_eval_prints_verdict(tmp_path, monkeypatch, capsys):
     cli.main(["perception", "gesture-eval", str(tmp_path / "data"), "--model", "x.onnx"])
     out = capsys.readouterr().out
     assert "wave" in out and "100%" in out and "达标" in out
+
+
+def test_places_add_works_before_any_feature_model(tmp_path, monkeypatch, capsys):
+    from skydango.imageio import imwrite
+
+    monkeypatch.chdir(tmp_path)
+    imwrite(tmp_path / "a.jpg", _scene((40, 200, 60), 0))
+    cli.main(["places", "add", "云野", "--image", str(tmp_path / "a.jpg")])  # 默认 models/places.onnx 不存在
+    assert len(list((tmp_path / "places" / "云野").glob("*.jpg"))) == 1

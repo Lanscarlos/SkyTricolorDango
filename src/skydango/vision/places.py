@@ -93,7 +93,8 @@ class OnnxEmbedder:
         shape = self.input.shape
         self.size = shape[-1] if isinstance(shape[-1], int) and shape[-1] > 0 else size
         self.mean, self.std = (np.array(v, np.float32) for v in NORMS[norm])
-        self.key = f"{Path(path).name}:{self.size}:{norm}"
+        st = Path(path).stat()  # 缓存键带上完整路径和文件大小 / 修改时间：同名的另一个模型、覆盖过的模型都不能用旧向量
+        self.key = f"{Path(path).resolve().as_posix()}:{st.st_size}:{st.st_mtime_ns}:{self.size}:{norm}"
 
     def embed(self, img: np.ndarray) -> np.ndarray:
         rgb = cv2.cvtColor(cv2.resize(img, (self.size, self.size), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
@@ -130,7 +131,8 @@ def decide(scores: list[tuple[str, float]], place_min: float, place_margin: floa
 
 
 class PlaceLibrary:
-    def __init__(self, root: Path, embedder, wall: Callable[[], float] = time.time) -> None:
+    def __init__(self, root: Path, embedder=None, wall: Callable[[], float] = time.time) -> None:
+        """embedder 为 None 时只能 add（存图不用算特征：还没选好特征模型也能先攒图库）。"""
         self.root = Path(root)
         self.embedder = embedder
         self.wall = wall
@@ -189,7 +191,7 @@ class PlaceLibrary:
         return sorted(out, key=lambda x: -x[1])
 
     def add(self, name: str, img: np.ndarray) -> Path:
-        """存一张（已经遮好的）截图到 <root>/<地名>/<时间>.jpg，重新读图库。"""
+        """存一张（已经遮好的）截图到 <root>/<地名>/<时间>.jpg，重新读图库（有特征模型时顺便算好缓存）。"""
         folder = self.root / name
         folder.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.wall()))
@@ -199,7 +201,10 @@ class PlaceLibrary:
             path = folder / f"{stamp}-{i}.jpg"
             i += 1
         imwrite(path, img)
-        self.load()
+        if self.embedder is None:
+            self.entries = self._files()
+        else:
+            self.load()
         return path
 
 

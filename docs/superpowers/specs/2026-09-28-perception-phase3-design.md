@@ -45,7 +45,7 @@ imgsz 960 时，远处的名字标签只有十几像素高，YOLO 框不到、OC
 
 - `PerceptionWatcher._far_tags`：候选 = `player`（黑影不用）、框高 < `far_height`、这一帧没挂上名字标签、离上次挂上标签和上次裁剪都 ≥ 1 s；
   每帧按"最久没裁过"取前 `far_crops` 个。裁剪（`far_region`，夹到画面内，太小不裁）直接交给检测器，它自己 letterbox 放大到 `imgsz`；
-  找到的框映射回整图、和原图已有的同类框重叠（IoU ≥ 0.3）的丢掉，其余接进追踪器，走平时的名字 OCR / 圆圈流程
+  找到的框映射回整图、和原图已有的同类框重叠（IoU ≥ 0.3）的丢掉，其余接进追踪器，走平时的名字 OCR / 圆圈流程；重裁的间隔比 `track_buffer` 短，标签轨迹接得上，名字投票照常
 - 没做"几个裁剪拼成一批跑"：先测单张的耗时再说
 - `perception compare` 报告多了"远处的人"一节（远处 player 认出好友名的比例）；`compare` / `bench` 加 `--far-crops N` 开关对比，`bench` 打印二次检测次数
 
@@ -75,8 +75,9 @@ imgsz 960 时，远处的名字标签只有十几像素高，YOLO 框不到、OC
 
 - `vision/places.py`：`mask_scene`（遮挡）、`ThumbEmbedder`（内置基线，`model = "thumb"`）/ `OnnxEmbedder`（输入按 `size`、`norm` = imagenet / clip / none，
   输出取二维的那个，否则取 CLS token）、`PlaceLibrary`（图库 + 缓存）、`decide`（判定）、`PlaceRecognizer`
-- `PerceptionWatcher` 每 `place_interval` 秒、或画面比上次认地图时大变（隔 ≥ 3 s）认一次；认不出不改原来的，`env.place_keep` 秒内写进提示词
-- 命令：`places add <地名> [--image 图] [--model]`、`places test [目录]`、`places bench --model A --model B`（留一法，打印认对 / 认错 / 不说和耗时）
+- `PerceptionWatcher` 每 `place_interval` 秒、或画面比上次认地图时大变（隔 ≥ 3 s）认一次；偶尔一次认不出先留着原来的，画面大变后认不出或连着两次认不出就清掉（宁可不说），`env.place_keep` 秒内写进提示词
+- 图库缓存的键带模型文件的完整路径、大小、修改时间：同名的另一个模型、覆盖过的模型都会重算
+- 命令：`places add <地名> [--image 图]`（只存图，不需要特征模型）、`places test [目录]`、`places bench --model A --model B`（留一法，打印认对 / 认错 / 不说和耗时）
 - `[places] enabled` 要配合 `[perception] enabled`；图库是空的时记警告、不认地图
 
 ### 验收

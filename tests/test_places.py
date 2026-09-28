@@ -178,7 +178,7 @@ def test_onnx_embedder_preprocesses_rgb_and_normalizes(tmp_path):
     pytest.importorskip("onnxruntime")
     _pool_model(tmp_path / "m.onnx", size=64)
     emb = make_embedder(PlacesConfig(model=str(tmp_path / "m.onnx"), norm="none"))
-    assert emb.size == 64 and emb.key == "m.onnx:64:none"
+    assert emb.size == 64 and "m.onnx" in emb.key and emb.key.endswith(":64:none")
     img = np.zeros((90, 160, 3), np.uint8)
     img[..., 0] = 255  # BGR 的蓝色
     v = emb.embed(img)
@@ -191,3 +191,22 @@ def test_onnx_embedder_takes_cls_token_from_3d_output(tmp_path):
     emb = make_embedder(PlacesConfig(model=str(tmp_path / "t.onnx"), size=32))
     assert emb.size == 32
     assert emb.embed(np.full((90, 160, 3), 128, np.uint8)).shape == (3,)
+
+
+def test_same_model_filename_in_another_folder_does_not_reuse_cache(tmp_path):
+    pytest.importorskip("onnxruntime")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _pool_model(tmp_path / "a" / "model.onnx", size=32)
+    _pool_model(tmp_path / "b" / "model.onnx", three_d=True)  # 同名、不同的模型
+    lib_root = tmp_path / "places"
+    gallery(lib_root)
+    a = make_embedder(PlacesConfig(model=str(tmp_path / "a" / "model.onnx"), size=32, norm="none"))
+    b = make_embedder(PlacesConfig(model=str(tmp_path / "b" / "model.onnx"), size=32, norm="none"))
+    assert a.key != b.key
+
+
+def test_add_does_not_need_an_embedder(tmp_path):
+    lib = PlaceLibrary(tmp_path, None, wall=lambda: 0.0)
+    path = lib.add("云野", gradient((40, 200, 60)))
+    assert path.exists() and lib.places() == ["云野"]

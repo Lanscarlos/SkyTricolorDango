@@ -355,14 +355,14 @@ def _scene_boxes(cfg: Config, img) -> list:
 
 def cmd_places(cfg: Config, args) -> None:
     """认地图的图库：add 截当前画面（遮掉人和 UI）存进 places/<地名>/；test 逐张认；bench 留一法比较特征模型。"""
-    from .vision.places import PlaceLibrary, PlaceRecognizer, make_embedder
+    from .vision.places import PlaceLibrary, PlaceRecognizer
 
     if getattr(args, "model", None) and args.action != "bench":
         cfg.places.model = args.model[0] if isinstance(args.model, list) else args.model
     if args.action == "add":
         img = imread(args.image) if args.image else _device(cfg).screenshot()
         boxes = _scene_boxes(cfg, img)
-        library = PlaceLibrary(Path(cfg.places.dir), make_embedder(cfg.places))
+        library = PlaceLibrary(Path(cfg.places.dir))  # 只存图，不算特征：还没选好特征模型也能先攒图库
         recognizer = PlaceRecognizer(library, cfg.places, cfg.env.roi, [cfg.vision.log_roi])
         path = library.add(args.name, recognizer.mask(img, boxes))
         note = f"遮掉了 {len(boxes)} 个人物 / 标签" if boxes else "只遮了底部按钮栏和聊天面板（没有 YOLO 模型，画面里的人没遮）"

@@ -49,7 +49,7 @@ UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
 PLACE_GAP = 3.0  # 画面大变后认地图：离上次至少隔这么久（转镜头时画面一直在变）
-FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹隔这么久才再裁一次；挂上名字标签后这么久内也不裁
+FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹最多隔这么久裁一次（还要比 track_buffer 短）；挂上名字标签后这么久内也不裁
 FAR_DUP_IOU = 0.3  # 二次检测找到的框和原图里已有的同类框重叠这么多就算同一个
 UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
@@ -136,6 +136,7 @@ class PerceptionWatcher:
         self.place_interval = place_interval
         self._place_run = float("-inf")
         self._place_thumb: np.ndarray | None = None
+        self._place_misses = 0  # 连着几次认不出
         self.gestures = gestures
         self.gesture_cfg = gesture_cfg or GestureConfig()
         self._gestures: list[tuple[str, str]] = []  # (好友名, 动作)，身体取走
@@ -446,11 +447,14 @@ class PerceptionWatcher:
         if self.cfg.far_crops <= 0:
             return []
         limit = self.cfg.far_height * height
+        # 远处的标签只在裁剪那一帧出现：下次裁剪要赶在标签轨迹被追踪器删掉（track_buffer）之前，
+        # 不然每次都是新轨迹，名字投票、"同一条标签轨迹只记一次"都不起作用
+        retry = min(FAR_RETRY, 0.8 * self.cfg.track_buffer)
         todo = [
             p for p in players
             if p.cls == "player" and p.box.h < limit and self._tag_over(p, tags) is None
-            and now - p.data.get("tag_at", float("-inf")) >= FAR_RETRY
-            and now - p.data.get("far_at", float("-inf")) >= FAR_RETRY
+            and now - p.data.get("tag_at", float("-inf")) >= retry
+            and now - p.data.get("far_at", float("-inf")) >= retry
         ]
         todo.sort(key=lambda p: p.data.get("far_at", float("-inf")))
         found: list[Detection] = []
@@ -481,7 +485,8 @@ class PerceptionWatcher:
         return self.tracker.update(fresh, now) if fresh else []
 
     def _watch_place(self, frame: np.ndarray, dets: list[Detection], now: float) -> None:
-        """三期 §2：每 place_interval 秒、或画面比上次认地图时大变（隔 ≥ PLACE_GAP 秒）认一次；认不出就留着原来的。"""
+        """三期 §2：每 place_interval 秒、或画面比上次认地图时大变（隔 ≥ PLACE_GAP 秒）认一次。
+        偶尔一次认不出先留着原来的；画面大变后认不出、或连着两次认不出就清掉。"""
         small = thumb(frame)
         since = now - self._place_run
         changed = self._place_thumb is not None and difference(self._place_thumb, small) > self.scene_change
@@ -495,7 +500,13 @@ class PerceptionWatcher:
             return
         if match.name is None:
             log.debug("认不出在哪（最像 %s %.2f，第二像 %.2f）", match.best, match.score, match.second)
+            self._place_misses += 1
+            # 宁可不说也不说错：画面大变后认不出（可能到了图库里没有的地方）、或连着两次认不出，就不再说原来的地名
+            if self.place and (changed or self._place_misses >= 2):
+                log.info("认不出在哪了，不再说在%s", self.place)
+                self.place, self.place_at = "", float("-inf")
             return
+        self._place_misses = 0
         if match.name != self.place:
             log.info("看起来到了：%s（相似度 %.2f）", match.name, match.score)
         self.place, self.place_at = match.name, now
