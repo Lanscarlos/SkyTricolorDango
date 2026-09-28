@@ -28,7 +28,7 @@ import numpy as np
 
 from ..chat.tracker import normalize, similar
 from ..config import EnvConfig, PerceptionConfig
-from ..game.social import IDLE, Request
+from ..game.social import IDLE, KIND_NAMES, Request
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
 from .ocr import OcrEngine, join_lines
@@ -176,6 +176,8 @@ class PerceptionWatcher:
             seen.append(name)
             ring = owner.get(tag.id)
             kind = self._classify(frame, ring) if ring is not None else None  # 牵着手时圆圈会消失 → None
+            if ring is not None:
+                ring.data["kind"] = kind
             self.circles[name] = (kind, now)
             if kind and kind != IDLE:
                 if name not in self.requests or self.requests[name].kind != kind:
@@ -186,7 +188,7 @@ class PerceptionWatcher:
 
         stranger_req = None
         for ring in orphans:
-            kind = self._classify(frame, ring)
+            kind = ring.data["kind"] = self._classify(frame, ring)
             if kind and kind != IDLE:
                 stranger_req = Request(STRANGER, kind, self._ring_center(ring), now)
                 break
@@ -204,7 +206,10 @@ class PerceptionWatcher:
                 strangers += 1
                 unlit += 1
                 continue
-            if self._tag_over(player, tags) is not None:
+            tag = self._tag_over(player, tags)
+            if tag is not None:
+                if tag.data.get("name"):
+                    player.data["name"] = tag.data["name"]
                 player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
             is_stranger = (
                 not player.data.get("tagged")
@@ -310,6 +315,32 @@ class PerceptionWatcher:
         r = round(56 * frame.shape[0] / 1080)
         region = frame[max(0, cy - r) : cy + r, max(0, cx - r) : cx + r]
         return self.icons.classify(region)[0]
+
+    # ---- 可视化（vision/viewer.py） ----
+    def overlay(self, now: float) -> list[dict]:
+        """最近一帧认出了什么：每个框一条 {x, y, w, h, kind, label}（整张截图坐标）。"""
+        out = []
+        for t in list(self.last_tracks):
+            d = t.data
+            if t.cls == "player":
+                kind = "stranger" if d.get("stranger") else ("friend" if d.get("name") else "player")
+                label = d.get("name") or ("陌生人" if d.get("stranger") else "")
+            elif t.cls == UNLIT:
+                kind, label = "unlit", "陌生人（没点火）"
+            elif t.cls == "self":
+                kind, label = "self", "团子"
+            elif t.cls == "name_tag":
+                kind = "name" if d.get("name") else "tag"
+                label = d.get("name") or (f"?{d['text']}" if d.get("text") else "?")
+            elif t.cls == "social_ring":
+                ring = d.get("kind")
+                kind = "request" if ring and ring != IDLE else "ring"
+                label = KIND_NAMES.get(ring, "✦" if ring == IDLE else "?")
+            else:
+                kind, label = t.cls, t.cls
+            b = t.box
+            out.append({"x": b.x, "y": b.y, "w": b.w, "h": b.h, "kind": kind, "label": label, "score": round(t.score, 2)})
+        return out
 
     # ---- 给身体 / 提示词用的（和 EnvWatcher 一样） ----
     def nearby(self, now: float) -> list[str]:
