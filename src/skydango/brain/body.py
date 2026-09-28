@@ -27,6 +27,7 @@ from ..vision.bubbles import Rect, roi_rect
 from ..vision.people import describe_people
 from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
+from .skills import SkillRunner
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ class Body:
         self._fallback_pending: list[Message] = []
         self._fallback_last_new = 0.0
         self.stopped = False  # shutdown 之后不再接大脑的命令
+        self.skills = SkillRunner(events, clock)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
 
     # ---- 主循环 ----
     def _held(self, reason: str) -> AbstractContextManager:
@@ -139,6 +141,10 @@ class Body:
             except Exception:
                 log.exception("感知出错，这一圈跳过")
                 self.events.put("error", "身体感知出错了（详见日志）")
+            try:
+                self.skills.tick(self, frame, now)
+            except Exception:
+                log.exception("技能这一圈出错")
             self._heard(fresh, frame, now)
             if self.viewer is not None:
                 self._show(frame, now, fresh)
@@ -185,6 +191,10 @@ class Body:
     def shutdown(self) -> None:
         """退出时（不等大脑）：不再接命令、排队的命令全部失败、镜头转回原位、轮盘换回去。"""
         self.stopped = True
+        try:  # 先停技能（松开按着的键），再复原镜头
+            self.skills.cancel(self, "身体停了")
+        except Exception:
+            log.exception("停技能出错")
         while True:
             try:
                 _, fut = self._commands.get_nowait()
@@ -501,6 +511,7 @@ class Body:
             parts.append("互动规则：" + self.social.describe_policy())
         if self.said:
             parts.append("刚说过：" + " | ".join(self.said[-3:]))
+        parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
             parts.append("dry-run（说话、动作、转视角都不会真的执行）")
         return " / ".join(parts)

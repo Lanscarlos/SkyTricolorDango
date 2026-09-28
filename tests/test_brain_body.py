@@ -1058,3 +1058,29 @@ def test_look_person_shares_look_rate_limit(clock):
     b.look()
     with pytest.raises(ToolError, match="刚看过"):
         b.look_person("小明")
+
+
+def test_step_ticks_running_skill_and_status_shows_it(clock):
+    from test_brain_skills import FakeSkill
+
+    b, _, _, _ = body(clock)
+    assert "没有在做的事" in b.status()
+    skill = FakeSkill()
+    b.skills.start(b, skill)
+    b.step()
+    assert skill.ticks == 1
+    assert "正在做：盯着小明" in b.status()
+
+
+def test_shutdown_cancels_skill_before_resetting_camera(clock):
+    from test_brain_skills import FakeSkill
+
+    order = []
+    camera = FakeCamera()
+    camera.reset = lambda: order.append("reset") or "复原了"
+    b, _, _, _ = body(clock, camera=camera)
+    skill = FakeSkill()
+    skill.stop = lambda body, reason: order.append("stop")
+    b.skills.start(b, skill)
+    b.shutdown()
+    assert order == ["stop", "reset"] and b.skills.active is None
