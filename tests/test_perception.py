@@ -1196,3 +1196,14 @@ def test_far_crop_skipped_when_a_tag_already_sits_in_the_crop_area():
     w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}))
     w.process(frame(), 0.0, panel_visible=False)
     assert w.far_runs == 0 and det.crops == []
+
+
+def test_only_one_self_per_frame_rest_become_players():
+    """实测（2026-09-28 view）：模型把躺在地上的橙衣玩家也认成了团子（0.71，真团子 0.97）。一帧只有一个团子。"""
+    det = FakeDetector()
+    det.frames = [[Detection("self", Rect(900, 400, 90, 220), 0.97), Detection("self", Rect(300, 700, 200, 120), 0.71)]]
+    w = watcher(det)
+    for t in (0.0, 1.0, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    assert [t.box for t in w.last_tracks if t.cls == "self"] == [Rect(900, 400, 90, 220)]
+    assert w.strangers(2.0) == 1  # 另一个是没挂名字的人
