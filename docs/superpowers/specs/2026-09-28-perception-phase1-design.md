@@ -1,6 +1,6 @@
 # 感知层 · 一期：替换现有识别，上线可用 — 设计
 
-日期：2026-09-28　状态：**设计已确认，待实现**
+日期：2026-09-28　状态：**代码部分已完成（§3~§5 的工具和逻辑，见实施方案 `docs/superpowers/plans/2026-09-28-perception-phase1.md`），M0 / M1 / M3 待 GPU 机器和真机**
 总纲：`2026-09-28-perception-yolo-architecture-v0.2.md`（下称"总纲"）　后续：二期 `…-phase2-design.md`、三期 `…-phase3-design.md`
 
 > **给实现这一期的 agent**：先读总纲 §2~§6（前提、分层、类别、世界状态、接法）和 `docs/game-ops.md` §5~§6。
@@ -204,7 +204,7 @@ def held(self, reason: str): ...                # with env.held("camera"): ...
 限额：每次运行最多 `hardcase_max`（200）张；两次保存至少隔 5 s；和上一张存下的图缩略图差异 < 0.03 就不存（去重）。
 暂停（§4）期间不收集。
 
-存放：`runs/<这次>/hard/<时:分:秒>_<原因>.jpg` + `runs/<这次>/hard.jsonl`（每行：文件名、原因、细节、这一帧的检测框）。
+存放：`runs/<这次>/hard/<时分秒>_<原因>.jpg`（Windows 文件名不能带冒号） + `runs/<这次>/hard.jsonl`（每行：文件名、原因、细节、这一帧的检测框）。
 
 `runs/` 只保留最近 `run.keep` 次，**要用的难例要及时收进数据集**（见 5.2）。
 
@@ -272,7 +272,15 @@ python -m skydango perception label <目录> [--model M] [--from-runs]
 - 换轮盘编辑界面挡住多少画面、持续多久
 - 接互动请求后团子走过去的这几秒，名字标签是否一直可见（决定 `"social"` 暂停是否必要）
 
-## 10. 待确认
+## 10. 已确认（用户，2026-09-28）
 
-1. 难例收集在打开感知层时默认开（`hardcases = true`），会往 `runs/` 写图 —— 可以吗？
-2. 旁路核对每 30 s 做一次整图 OCR（约 1 s CPU，后台线程），会稍微占 CPU —— 可以吗？
+1. 难例收集在打开感知层时默认开（`hardcases = true`），会往 `runs/` 写图 —— **可以**
+2. 旁路核对每 30 s 做一次整图 OCR（约 1 s CPU，后台线程）—— **可以，30 秒一次**
+
+## 11. 实现备注（代码部分完成后补）
+
+- 集体消失（`occlusion`）暂停期间检测照跑，等人重新出现；其他原因的暂停不跑检测
+- 暂停期间 `nearby()` / `strangers()` 按暂停开始那一刻算；恢复时所有时间补上暂停时长，但不超过恢复时刻
+- 追踪器始终开 `player` ↔ `player_unlit` 跨类别关联（IoU ≥ 0.5），同一个人换类别仍是同一条轨迹
+- 难例的 `low_conf`、`unlit_vs_player` 每条轨迹只存一次；同一帧有多个原因时文件名用第一个，`hard.jsonl` 的 detail 里都写
+- `perception compare` 只认 `record` 录的文件名（带时间）；一张都没有时报错退出

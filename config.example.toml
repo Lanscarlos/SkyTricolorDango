@@ -83,6 +83,12 @@ device = "cuda"
 imgsz = 960                     # 要和训练时一致
 fps = 15.0
 capture = "body"                # "own"：感知线程自己截图，才能到 15 fps
+hold_max = 60.0                 # 黑屏、转镜头、开好友树、换轮盘时暂停计时（不误报"走开了"）；超过这么久自动恢复
+occlusion_hold = 30.0           # 多人同时不见 + 画面大变（自己开了地图 / 商店）时最多暂停这么久
+hardcases = true                # 可能认错的画面存到 runs/<这次>/hard/（每次最多 hardcase_max 张），下一轮只补标这些
+audit_interval = 30.0           # 难例的旁路核对：每隔这么久后台整图 OCR 一次（约 1 s CPU）；0 = 不核对
+hardcase_max = 200
+low_conf = 0.25                 # 检测器出框阈值；conf 以下的框只给难例收集看
 
 [viewer]
 # 识别可视化网页：python -m skydango view（只看不动）或 run --view，浏览器里实时看画面 + 识别框
