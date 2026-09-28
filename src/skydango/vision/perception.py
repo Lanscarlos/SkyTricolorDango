@@ -47,6 +47,7 @@ log = logging.getLogger(__name__)
 UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
+UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
 
 
@@ -98,6 +99,7 @@ class PerceptionWatcher:
         clock: Callable[[], float] = time.monotonic,
         scene_change: float = 0.25,  # 集体消失时，画面差异超过这个才算开了全屏界面（同 brain.scene_change）
         hardcases=None,  # vision.hardcases.HardCaseCollector：可能认错的画面存下来
+        unknown=None,  # vision.unknownnames.UnknownNames：读得清楚但不在好友名单里的名字（三期 §5）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -111,6 +113,7 @@ class PerceptionWatcher:
         self.clock = clock
         self.scene_change = scene_change
         self.hardcases = hardcases
+        self.unknown = unknown
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
         self.requests: dict = {}  # 名字 → game.social.Request
@@ -440,7 +443,8 @@ class PerceptionWatcher:
         if tries >= self.cfg.ocr_votes and votes:
             return
         tag.data["tries"], tag.data["ocr_at"] = tries + 1, now
-        text = self._ocr(tag.box.pad(4, frame.shape[1], frame.shape[0]).crop(frame))
+        crop = tag.box.pad(4, frame.shape[1], frame.shape[0]).crop(frame)
+        text, score = self._ocr(crop)
         if len(normalize(text)) < 2:
             return
         tag.data["text"] = text
@@ -448,18 +452,26 @@ class PerceptionWatcher:
         if name:
             votes[name] += 1
             tag.data["name"] = votes.most_common(1)[0][0]
+        elif self.unknown is not None and score >= UNKNOWN_MIN_SCORE and not tag.data.get("unknown_logged"):
+            tag.data["unknown_logged"] = True  # 同一条标签轨迹只记一次
+            try:
+                self.unknown.add(text, crop)
+            except Exception:
+                log.exception("记没认出的名字出错")
 
     @staticmethod
     def _match_name(text: str, friends: list[str]) -> str | None:
         return next((n for n in friends if similar(text, n, 0.75)), None)
 
-    def _ocr(self, crop: np.ndarray) -> str:
+    def _ocr(self, crop: np.ndarray) -> tuple[str, float]:
+        """名字标签的字和置信度（整块识别时取各段里最低的）。"""
         with self._infer:
             read_line = getattr(self.ocr, "read_line", None)
             if read_line is not None:
                 line = read_line(crop)
-                return line.text if line is not None else ""
-            return join_lines(self.ocr.recognize(crop))
+                return (line.text, line.score) if line is not None else ("", 0.0)
+            lines = self.ocr.recognize(crop)
+            return join_lines(lines), min((l.score for l in lines), default=0.0)
 
     def _ref_height(self, frame_h: int) -> float:
         """算远近的参照：团子的框高（转圈认出的 → 最近一帧的 self 框 → 按 self_height 估）。"""
@@ -496,7 +508,7 @@ class PerceptionWatcher:
                     if ti not in under or abs(tag.box.y2 - d.box.y) < abs(tag.box.y2 - under[ti][1].box.y):
                         under[ti] = (bi, d)
             for ti, tag in enumerate(tags[fi]):
-                text = self._ocr(tag.box.pad(4, width, height).crop(img))
+                text, _ = self._ocr(tag.box.pad(4, width, height).crop(img))
                 name = self._match_name(text, friends) if len(normalize(text)) >= 2 else None
                 bi, body = under.get(ti, (None, None))
                 sightings.append(Sighting(

@@ -820,3 +820,57 @@ def test_self_box_is_padded_and_self_roi_still_applies():
     for t in (0.0, 1.0, 2.0):
         w.process(frame(), t, panel_visible=False)
     assert w.strangers(2.0) == 0
+
+
+# ---- 三期 §5：没认出的名字 ----
+class RecordingUnknown:
+    def __init__(self):
+        self.added = []
+
+    def add(self, text, crop):
+        self.added.append((text, crop.shape))
+
+
+def test_clear_but_unknown_name_is_recorded_once_per_track():
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    ocr = FakeOcr({110: "星星小铺"})
+    unknown = RecordingUnknown()
+    w = PerceptionWatcher(
+        det, ocr, PerceptionConfig(ocr_retry=1.0, ocr_votes=3), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, unknown=unknown,
+    )
+    for i in range(8):  # 同一条轨迹（间隔 < track_buffer），隔 ocr_retry 重读
+        w.process(frame(), i * 0.5, panel_visible=False)
+    assert ocr.calls >= 3 and w.nearby(3.5) == []
+    assert [a[0] for a in unknown.added] == ["星星小铺"]
+
+
+class LowScoreOcr(FakeOcr):
+    def read_line(self, img):
+        line = super().read_line(img)
+        return OcrLine(line.text, 0.8, line.box) if line else None
+
+
+def test_low_confidence_unknown_text_is_not_recorded():
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    unknown = RecordingUnknown()
+    w = PerceptionWatcher(
+        det, LowScoreOcr({110: "星星小铺"}), PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, unknown=unknown,
+    )
+    w.process(frame(), 0.0, panel_visible=False)
+    assert unknown.added == []
+
+
+def test_friend_names_are_not_recorded_as_unknown():
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    unknown = RecordingUnknown()
+    w = PerceptionWatcher(
+        det, FakeOcr({110: "懒洋洋大王"}), PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, unknown=unknown,
+    )
+    w.process(frame(), 0.0, panel_visible=False)
+    assert unknown.added == [] and w.nearby(0.0) == ["懒洋洋大王"]

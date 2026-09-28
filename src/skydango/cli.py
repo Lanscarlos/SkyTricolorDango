@@ -296,10 +296,15 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
 
         audit = make_ocr(cfg.ocr.engine, cfg.env.threads) if p.audit_interval > 0 else None
         hardcases = HardCaseCollector(run.hard, p, cfg.env, cfg.vision.log_roi, _friend_names(cfg), ocr=audit)
+    unknown = None
+    if run is not None:
+        from .vision.unknownnames import UnknownNames
+
+        unknown = UnknownNames(run.path / "unknown_names", _friend_names(cfg))
     return PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
-        scene_change=cfg.brain.scene_change, hardcases=hardcases,
+        scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
     )
 
 
@@ -310,6 +315,9 @@ def _stop_scene(env) -> None:
     hard = getattr(env, "hardcases", None)
     if hard is not None and hard.saved:
         print(f"难例：存了 {hard.saved} 张 → {hard.folder}（收进数据集：perception label runs --from-runs）")
+    unknown = getattr(env, "unknown", None)
+    if unknown is not None and unknown.entries:
+        print(f"没认出的名字：{len(unknown.entries)} 个 → {unknown.folder}（汇总：perception unknown-names）")
 
 
 def _viewer(cfg: Config, open_browser: bool = True):
@@ -485,6 +493,22 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_augment(args)
     elif args.action == "compare":
         _perception_compare(cfg, args)
+    elif args.action == "unknown-names":
+        _perception_unknown_names(cfg, args)
+
+
+def _perception_unknown_names(cfg: Config, args) -> None:
+    """最近几次运行里读得清楚、但不在好友名单里的名字。只列出来，要加好友自己改 friends.md（或游戏里 #friend）。"""
+    from .vision.unknownnames import collect
+
+    rows = collect(Path(args.runs), args.last, _friend_names(cfg)())
+    if not rows:
+        print(f"最近 {args.last} 次运行里没有没认出的名字")
+        return
+    print(f"最近 {args.last} 次运行里读到、但不在好友名单里的名字（按出现次数）：")
+    for r in rows:
+        print(f"{r['count']:>4} 次  {r['name']}  最后 {r['last']}  {r['image']}")
+    print("是好友的话手动加进 memory/friends.md（## 昵称），或者在游戏里发 #friend 昵称 备注；OCR 读错的不用管")
 
 
 def _perception_compare(cfg: Config, args) -> None:
@@ -1186,6 +1210,9 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--imgsz", type=int)
     q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/compare/<时间>）")
+    q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")
+    q.add_argument("--runs", default="runs", help="运行目录的上级（默认 runs/）")
+    q.add_argument("--last", type=int, default=5, help="看最近几次运行")
     q = psub.add_parser("augment", help="训练集加运动模糊（转视角）/ 压暗（暗场景）的样本，标注原样复制")
     q.add_argument("dataset", help="数据集目录（perception label 的输出，比如 datasets/sky）")
     q.add_argument("--seed", type=int, default=0)
