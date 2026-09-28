@@ -341,17 +341,18 @@ def test_emote_with_type_ahead_closes_our_input_box_first(clock):
 # ---- 主人命令（# 开头） ----
 
 
-def owner_agent(clock, batches, tmp_path):
+def owner_agent(clock, batches, tmp_path, camera=None, run=None, frames=None):
     cfg = live_config()
     cfg.reply.owner_name = "懒洋洋大王"
     cfg.chat.debounce = 999  # 正常聊天要等很久才凑够 debounce 才回复，命令不受影响
-    device = FakeDevice([scene()])
+    device = FakeDevice(frames or [scene()])
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, cfg.reply.disclosure_prefix)
     reader = ScriptedReader(batches)
     responder = Responder(EchoClient(), cfg.reply)
     sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
     store = MemoryStore(tmp_path)
-    agent = Agent(cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None, store=store)
+    agent = Agent(cfg, device, reader, responder, sender, self_filter, clock=clock, sleep=lambda s: None, store=store,
+                  camera=camera, run=run)
     return agent, device, store
 
 
@@ -459,3 +460,87 @@ def test_agent_emote_wrapped_in_held(clock):
     agent.env = HoldEnv()
     run_one_turn(agent, clock)
     assert agent.env.holds == [("hold", "wheel"), ("release", "wheel")]
+
+
+# ---- #spin ----
+class FakeCamera:
+    def __init__(self, error=None):
+        self.calls = []
+        self.error = error
+
+    def spin(self, capture, turns=1, seconds_per_turn=2.0, fps=15.0):
+        from skydango.brain.camera import SpinResult
+
+        self.calls.append((turns, seconds_per_turn, fps))
+        if self.error:
+            raise self.error
+        f = capture()
+        return SpinResult(f, [(i / 15, f) for i in range(28)], f, 1.9, True, False)
+
+
+def test_owner_spin_turns_camera_and_confirms(clock, tmp_path):
+    cam = FakeCamera()
+    agent, device, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")]], tmp_path, camera=cam)
+    agent.step()
+    assert cam.calls == [(1, 2.0, 15.0)]
+    assert agent.sent == ["【AI】转完了，1.9 秒 28 张"]
+    assert agent.pending == [] and agent.limiter.remaining(clock()) == agent.limiter.max_per_minute
+
+
+def test_second_spin_within_min_interval_is_refused(clock, tmp_path):
+    cam = FakeCamera()
+    agent, _, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")], [msg("#spin 2", "懒洋洋大王")]], tmp_path, camera=cam)
+    agent.step()
+    agent.step()
+    assert len(cam.calls) == 1 and agent.sent[-1] == "【AI】刚转过，等 10 秒"
+
+
+def test_spin_in_dry_run_still_turns_but_does_not_send(clock, tmp_path):
+    cam = FakeCamera()
+    agent, device, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")]], tmp_path, camera=cam)
+    agent.cfg.reply.dry_run = True
+    agent.step()
+    assert len(cam.calls) == 1 and agent.sent == ["【AI】转完了，1.9 秒 28 张"]
+    assert not any(c[0] == "text" for c in device.calls)
+
+
+def test_spin_refused_on_black_screen(clock, tmp_path):
+    import numpy as np
+
+    cam = FakeCamera()
+    agent, _, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")]], tmp_path, camera=cam,
+                              frames=[np.zeros((720, 1280, 3), np.uint8)])
+    agent.step()
+    assert cam.calls == [] and agent.sent == ["【AI】画面黑着，转不了"]
+
+
+def test_spin_error_is_reported(clock, tmp_path):
+    cam = FakeCamera(RuntimeError("截图失败\n详细"))
+    agent, _, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")]], tmp_path, camera=cam)
+    agent.step()
+    assert agent.sent == ["【AI】没转成：截图失败"]
+
+
+def test_spin_without_camera_says_so(clock, tmp_path):
+    agent, _, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")]], tmp_path)
+    agent.step()
+    assert agent.sent == ["【AI】这次没开视角控制"]
+
+
+def test_spin_wrapped_in_camera_hold(clock, tmp_path):
+    agent, _, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")]], tmp_path, camera=FakeCamera())
+    agent.env = HoldEnv()
+    agent.step()
+    assert agent.env.holds == [("hold", "camera"), ("release", "camera")]
+
+
+def test_spin_saves_to_run_dir(clock, tmp_path):
+    from skydango.runlog import RunDir
+
+    cfg = Config()
+    cfg.run.dir = str(tmp_path / "runs")
+    run = RunDir.create(cfg, "live", now=0)
+    agent, _, _ = owner_agent(clock, [[msg("#spin", "懒洋洋大王")]], tmp_path, camera=FakeCamera(), run=run)
+    agent.step()
+    [folder] = list((run.path / "spin").iterdir())
+    assert (folder / "summary.json").exists()

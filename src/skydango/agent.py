@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections import deque
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from .chat.sender import ChatSender
 from .chat.tracker import SelfFilter
 from .config import Config
 from .device.base import Device
+from .brain.images import is_black
 from .game.emotes import EmotePlayer
 from .runlog import RunDir
 
@@ -63,6 +65,7 @@ class Agent:
         emotes: EmotePlayer | None = None,
         store: MemoryStore | None = None,  # 主人命令（#friend/#remember）用；跟 dry_run 无关，配了就写
         viewer=None,  # vision.viewer.Viewer：网页上实时显示识别框（run --view）
+        camera=None,  # brain.camera.Camera：主人的 #spin 用
     ) -> None:
         self.cfg = cfg
         self.env = env
@@ -83,7 +86,12 @@ class Agent:
         self.viewer = viewer
         self.emoted: list[str] = []  # 做过（含 dry-run）的动作，方便测试和日志
         self.paused = False  # #pause/#resume 切换：暂停时忽略别人的消息，不进 pending
-        self.commands = CommandRouter(store, on_pause=self._set_paused, status=self._status_line)
+        self.camera = camera
+        self._last_spin = float("-inf")
+        self.commands = CommandRouter(
+            store, on_pause=self._set_paused, status=self._status_line,
+            spin=self._spin if camera is not None else None, max_turns=cfg.spin.max_turns,
+        )
         # sleep 包一层：测试会在构造之后替换 agent.sleep
         self.panel = PanelKeeper(cfg.vision, device, reader, lambda s: self.sleep(s))
 
@@ -219,6 +227,34 @@ class Agent:
             self.self_filter.remember(text, self.clock())
         if self.run_dir:
             self.run_dir.record_reply([m], text, sent=not dry)
+
+    def _spin(self, turns: int) -> str:
+        """#spin：转 turns 圈、边转边截图存进运行目录（dry-run 也转：镜头只在自己屏幕上转），回一句转了几秒几张。"""
+        spin = self.cfg.spin
+        now = self.clock()
+        if now - self._last_spin < spin.min_interval:
+            return f"刚转过，等 {math.ceil(spin.min_interval - (now - self._last_spin))} 秒"
+        try:
+            if is_black(self.device.screenshot()):
+                return "画面黑着，转不了"
+            self._last_spin = now
+            with self._held("camera"):
+                result = self.camera.spin(self.device.screenshot, turns, spin.seconds_per_turn, spin.fps)
+        except Exception as exc:
+            log.exception("#spin 没转成")
+            return "没转成：" + (str(exc).splitlines() or [type(exc).__name__])[0]
+        if self.run_dir is not None:
+            try:
+                folder = self.run_dir.save_spin(result, turns, time.strftime("%H%M%S"))
+                log.info("转圈截图存在 %s", folder)
+            except OSError:
+                log.exception("转圈截图没存成")
+        text = f"转完了，{result.seconds:.1f} 秒 {len(result.frames)} 张"
+        if result.blackout:
+            text += "（中途画面黑了）"
+        if not result.panel_reopened:
+            text += "（聊天面板没打开，要手动按 C）"
+        return text[: self.cfg.reply.max_chars]
 
     def _set_paused(self, paused: bool) -> None:
         self.paused = paused

@@ -102,3 +102,24 @@ def test_unknown_command():
     cmd, _ = router(None)
     assert cmd.handle("#跳舞") == "没这个命令"
     assert cmd.handle("#") == "没这个命令"
+
+
+# ---- #spin ----
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("text,turns", [("#spin", 1), ("#spin 2", 2), ("#spin 5", 2), ("#spin 0", 1)])
+def test_spin_turns_are_clamped(text, turns):
+    got = []
+    r = CommandRouter(None, lambda p: None, lambda: "", spin=lambda n: got.append(n) or "转完了", max_turns=2)
+    assert r.handle(text) == "转完了" and got == [turns]
+
+
+def test_spin_bad_number():
+    r = CommandRouter(None, lambda p: None, lambda: "", spin=lambda n: "转完了")
+    assert r.handle("#spin abc") == "格式不对，是 #spin 或 #spin 2"
+
+
+def test_spin_without_camera():
+    r = CommandRouter(None, lambda p: None, lambda: "")
+    assert r.handle("#spin") == "这次没开视角控制"
