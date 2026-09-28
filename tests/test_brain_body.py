@@ -380,13 +380,28 @@ def test_look_at_crops_region(clock):
 class FakeCamera:
     def __init__(self):
         self.moves = []
+        self.resets = 0
+        self.arounds = 0
+        self.spins = 0
 
     def move(self, action, steps):
         self.moves.append((action, steps))
         return "左转了 1 步"
 
     def reset(self):
+        self.resets += 1
         return "镜头转回原位了"
+
+    def around(self, capture):
+        self.arounds += 1
+        return [capture() for _ in range(4)]
+
+    def spin(self, capture, turns, seconds, fps):
+        from types import SimpleNamespace
+
+        self.spins += 1
+        frame = capture()
+        return SimpleNamespace(before=frame, frames=[(1.0, frame)], after=frame, panel_reopened=True, blackout=False)
 
     def describe(self):
         return "原位"
@@ -401,6 +416,62 @@ def test_camera_refused_in_blackout_and_dry_run(clock):
         b.camera_move("left", 1)
     dry, _, _, _ = body(clock, camera=FakeCamera())
     assert dry.camera_move("left", 1).startswith("dry-run")
+
+
+# ---- 手动控制：live=True 时 dry-run 下也真执行，护栏照旧 ----
+def test_live_say_in_dry_run_sends_and_remembers(clock):
+    b, device, _, _ = body(clock)  # dry-run
+    assert b.say("晚安", live=True) == "已发送：晚安"
+    assert ("text", "晚安") in device.calls
+    assert b.self_filter.is_self("晚安", clock())  # 读聊天不会把团子自己这句当成别人说的
+
+
+def test_live_say_still_filtered_and_rate_limited(clock):
+    b, _, _, _ = body(clock)
+    with pytest.raises(ToolError, match="真人"):
+        b.say("我是真人啊", live=True)
+    b.say("你好", live=True)
+    with pytest.raises(ToolError, match="太快"):
+        b.say("再说一句", live=True)
+
+
+def test_live_emote_and_camera_in_dry_run(clock):
+    emotes, cam = FakeEmotes(), FakeCamera()
+    b, _, _, _ = body(clock, emotes=emotes, camera=cam)
+    assert b.emote("鞠躬", live=True) == "做了「鞠躬」" and emotes.done == ["鞠躬"]
+    b.holding = "懒洋洋大王"
+    with pytest.raises(ToolError, match="force=true"):
+        b.emote("鞠躬", live=True)
+    assert b.camera_move("left", 2, live=True) == "镜头现在：左转了 1 步" and cam.moves == [("left", 2)]
+    assert not b.camera_reset(live=True).startswith("dry-run") and cam.resets == 1
+    b.blackout = True
+    with pytest.raises(ToolError, match="黑"):
+        b.camera_move("left", 1, live=True)
+
+
+def test_shutdown_resets_camera_moved_by_hand_in_dry_run(clock):
+    cam = FakeCamera()
+    b, _, _, _ = body(clock, camera=cam)  # dry-run
+    b.camera_move("left", 1, live=True)
+    b.shutdown()
+    assert cam.resets == 1
+
+
+def test_capture_and_sweep_around_live_in_dry_run(clock):
+    from types import SimpleNamespace
+
+    cam = FakeCamera()
+    b, _, _, _ = body(clock, camera=cam)
+    assert len(b.capture_around()) == 1 and cam.arounds == 0  # 大脑在 dry-run 下只截当前一张
+    assert len(b.capture_around(live=True)) == 4 and cam.arounds == 1
+
+    class SweepEnv(FakeEnv):
+        def sweep(self, frames, spin):
+            return SimpleNamespace(text=lambda: f"看了 {len(frames)} 张")
+
+    b, _, _, _ = body(clock, camera=cam, env=SweepEnv())
+    assert b.sweep_around().startswith("dry-run") and cam.spins == 0
+    assert b.sweep_around(live=True) == "看了 2 张" and cam.spins == 1
 
 
 def test_policy_and_status(clock):
@@ -628,6 +699,22 @@ def test_check_friend_refuses_panel_area_bottom_bar_and_holding(clock):
     b.holding = "懒洋洋大王"
     with pytest.raises(ToolError, match="牵着"):
         b.check_friend(800, 300)
+    assert checker.calls == []
+
+
+def test_check_friend_at_uses_frame_pixels(clock):
+    b, checker, reader, _ = friend_body(clock, live=False)
+    out = b.check_friend_at(1200, 450, live=True)  # 不用先 look：坐标就是原图像素
+    assert checker.calls == [(1200, 450)] and "已经关上" in out[-1]["text"]
+    b, checker, reader, _ = friend_body(clock, live=False)
+    with pytest.raises(ToolError, match="按钮栏"):
+        b.check_friend_at(100, 1050, live=True)
+    b.holding = "懒洋洋大王"
+    with pytest.raises(ToolError, match="牵着"):
+        b.check_friend_at(1200, 450, live=True)
+    b.cfg.friend_check.enabled = False
+    with pytest.raises(ToolError, match="没开"):
+        b.check_friend_at(1200, 450, live=True)
     assert checker.calls == []
 
 

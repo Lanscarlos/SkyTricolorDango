@@ -191,7 +191,7 @@ class Body:
                 break
             if fut.set_running_or_notify_cancel():
                 fut.set_exception(ToolError("身体已经停了"))
-        if self.camera is not None and not self.cfg.reply.dry_run:
+        if self.camera is not None:  # dry-run 下手动（live）也可能转过：总是复原，没动过就什么都不做
             try:
                 log.info(self.camera.reset())
             except Exception:
@@ -393,11 +393,11 @@ class Body:
         self.last_frame = frame
         return frame
 
-    def capture_around(self) -> list:
-        """环顾四周：转一圈，每 90° 截一张（dry-run 不转，只截当前画面）。"""
+    def capture_around(self, live: bool = False) -> list:
+        """环顾四周：转一圈，每 90° 截一张（dry-run 不转，只截当前画面；live = 手动控制，dry-run 下也真转）。"""
         if self.blackout:
             raise ToolError("画面黑着（在切场景），现在看不了")
-        if self.camera is None or self.cfg.reply.dry_run:
+        if self.camera is None or self._dry(live):
             return [self.fresh_frame()]
         try:
             with self._held("camera"):
@@ -407,12 +407,12 @@ class Body:
         self.last_frame = frames[0]
         return frames
 
-    def sweep_around(self) -> str:
-        """打开感知层时的环顾：连续转一圈，YOLO 汇总每个方向有谁（dry-run 不转，只看当前画面）。"""
+    def sweep_around(self, live: bool = False) -> str:
+        """打开感知层时的环顾：连续转一圈，YOLO 汇总每个方向有谁（dry-run 不转，只看当前画面；live 见 capture_around）。"""
         if self.blackout:
             raise ToolError("画面黑着（在切场景），现在看不了")
         spin = self.cfg.spin
-        if self.camera is None or self.cfg.reply.dry_run:
+        if self.camera is None or self._dry(live):
             result = self.env.sweep([(0.0, self.fresh_frame())], spin)
             return "dry-run：没真的转，只看了前面。" + result.text()
         try:
@@ -465,7 +465,8 @@ class Body:
             f"{time.strftime('%H:%M:%S', time.localtime(t))} {who or '（看不出是谁）'}：{text}" for t, who, text in rows
         )
 
-    def say(self, text: str) -> str:
+    def say(self, text: str, live: bool = False) -> str:
+        """live = 手动控制：dry-run 下也真的发（护栏照旧）。"""
         now = self.clock()
         body = clean_reply(text, self.cfg.reply.max_chars)  # 含“不能声称自己是真人”的硬过滤
         if body is None:
@@ -477,7 +478,7 @@ class Body:
         self.said.append(full)
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
-        if self.cfg.reply.dry_run:
+        if self._dry(live):
             log.info("[dry-run] 将会发送: %s", full)
             self._remember(body, full, sent=False)
             return f"dry-run：没真的发，“{full}”"
@@ -501,7 +502,7 @@ class Body:
         if self.notes is not None:
             self.notes.turn_added(Turn(now, user, body))
 
-    def emote(self, name: str, force: bool = False) -> str:
+    def emote(self, name: str, force: bool = False, live: bool = False) -> str:
         if self.emotes is None:
             raise ToolError("这次没开动作（--no-emotes 或者图标库是空的）")
         available = self.emotes.available()
@@ -511,7 +512,7 @@ class Body:
             raise ToolError(f"正牵着 {self.holding} 的手，做动作会松手；确定要松手再做就传 force=true")
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长
-        if self.cfg.reply.dry_run:
+        if self._dry(live):
             self.emotes.pretend(name)
             return f"dry-run：没真的做「{name}」"
         try:
@@ -544,20 +545,38 @@ class Body:
         now = self.clock()
         if self.look_frame is None or now - self.last_look > fc.max_look_age:
             raise ToolError(f"先 look(image=true) 看一眼现在的画面（{fc.max_look_age:.0f} 秒内），坐标按那张图给；人会走动，旧图对不上")
-        if now - self._last_friend_check < fc.min_interval:
-            raise ToolError(f"刚确认过，{fc.min_interval - (now - self._last_friend_check):.0f} 秒后再点")
         fh, fw = self.look_frame.shape[:2]
         scale = fw / self.cfg.brain.image_size[0]
         sx, sy = round(x * scale), round(y * scale)
         if not (0 <= sx < fw and 0 <= sy < fh):
             raise ToolError("坐标在画面外（按 look(image=true) 那张 1280×720 的图给）")
+        return self.check_friend_at(sx, sy)
+
+    def check_friend_at(self, sx: int, sy: int, live: bool = False) -> list[dict] | str:
+        """点原图 (sx, sy) 上的人打开好友树面板、截图、关掉（check_friend 换算好坐标后调；手动控制直接给原图坐标）。"""
+        fc = self.cfg.friend_check
+        if self.friend_checker is None or not fc.enabled:
+            raise ToolError("这次没开好友树确认（[friend_check] enabled = false：面板还没在真机上核对过）")
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在点不了")
+        if self.holding:
+            raise ToolError(f"正牵着 {self.holding} 的手，先别点人")
+        now = self.clock()
+        if now - self._last_friend_check < fc.min_interval:
+            raise ToolError(f"刚确认过，{fc.min_interval - (now - self._last_friend_check):.0f} 秒后再点")
+        frame = self.look_frame if self.look_frame is not None else self.last_frame
+        if frame is None:
+            frame = self.fresh_frame()
+        fh, fw = frame.shape[:2]
+        if not (0 <= sx < fw and 0 <= sy < fh):
+            raise ToolError("坐标在画面外")
         area = roi_rect(self.cfg.env.roi, fw, fh)
         if not (area.x <= sx < area.x2 and area.y <= sy < area.y2):
             raise ToolError("那里是底部的按钮栏，不是人")
         panel = roi_rect(self.cfg.vision.log_roi, fw, fh)
         if self.reader.panel_closed_since is None and panel.x <= sx < panel.x2 and panel.y <= sy < panel.y2:
             raise ToolError("那里被聊天记录面板挡着，点不到人")
-        if self.cfg.reply.dry_run:
+        if self._dry(live):
             return f"dry-run：没真的点（会点原图上的 ({sx}, {sy})，打开好友树看完再关掉）"
         self._last_friend_check = now
         try:
@@ -594,12 +613,12 @@ class Body:
             {"type": "text", "text": note},
         ]
 
-    def camera_move(self, action: str, steps: int = 1) -> str:
+    def camera_move(self, action: str, steps: int = 1, live: bool = False) -> str:
         if self.camera is None:
             raise ToolError("没有视角控制")
         if self.blackout:
             raise ToolError("画面黑着（在切场景），现在转不了")
-        if self.cfg.reply.dry_run:
+        if self._dry(live):
             return f"dry-run：没真的转（{action} ×{steps}）"
         try:
             with self._held("camera"):
@@ -610,16 +629,20 @@ class Body:
         self._forget_self()
         return "镜头现在：" + result
 
-    def camera_reset(self) -> str:
+    def camera_reset(self, live: bool = False) -> str:
         if self.camera is None:
             raise ToolError("没有视角控制")
-        if self.cfg.reply.dry_run:
+        if self._dry(live):
             return "dry-run：没真的转"
         with self._held("camera"):
             result = self.camera.reset()
         self._ref_thumb = None
         self._forget_self()
         return result
+
+    def _dry(self, live: bool) -> bool:
+        """只打印不执行：dry-run 且不是手动控制（live）。"""
+        return self.cfg.reply.dry_run and not live
 
     def _forget_self(self) -> None:
         """镜头拉近拉远、俯仰变了：转圈认出的团子框（位置、大小）不准了，下次转圈再认。"""
