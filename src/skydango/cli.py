@@ -842,7 +842,7 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
     from .brain.images import thumb
     from .vision import assist
     from .vision.ocr import make_ocr
-    from .vision.weaklabel import data_yaml, split_of, yolo_line
+    from .vision.weaklabel import data_yaml, ring_labels, split_of, yolo_line
 
     base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错，别白跑检测
     a = cfg.assist
@@ -887,6 +887,8 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
             review = reviews.get(f.stem)
             results.append((f.stem, review))
             boxes = weak[f.stem] + (assist.apply_review(f.candidates, review) if review else [])
+            if icons is not None:  # 陌生人头顶的圆圈：弱标注只看好友名字下方
+                boxes += [("social_ring", r) for r in ring_labels(f.image, boxes, icons)]
             split = split_of(f.stem, args.val)
             (out / "images" / split).mkdir(parents=True, exist_ok=True)
             (out / "labels" / split).mkdir(parents=True, exist_ok=True)
@@ -917,7 +919,7 @@ def _perception_label(cfg: Config, args) -> None:
 
     from .vision.bubbles import Rect, roi_rect
     from .vision.ocr import make_ocr
-    from .vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, with_self, yolo_line
+    from .vision.weaklabel import data_yaml, hard_images, merge_labels, ring_labels, split_of, weak_labels, with_self, yolo_line
 
     classes = cfg.perception.classes
     index = {c: i for i, c in enumerate(classes)}
@@ -977,6 +979,8 @@ def _perception_label(cfg: Config, args) -> None:
             boxes = merge_labels(boxes, predicted[stem] if stem in predicted else detector.detect(frame))
         if stem in selves:
             boxes = with_self(boxes, selves[stem])
+        if detector is not None and icons is not None:  # 模型预标注出了人：顺带补他们头顶的圆圈
+            boxes += [("social_ring", r) for r in ring_labels(frame, boxes, icons)]
         split = split_of(stem, args.val)
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)

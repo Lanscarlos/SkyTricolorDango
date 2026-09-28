@@ -1,6 +1,7 @@
 """Claude 辅助标注（vision/assist.py）：挑帧、候选框图、提示词、解析、合并、Reviewer。不连 Claude、不要 GPU。"""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -313,3 +314,54 @@ def test_assist_processes_in_chunks(tmp_path, monkeypatch):
     assert sent == [["0000", "0001"], ["0002"]]
     assert len(list((out / "labels" / "train").glob("*.txt"))) == 3
     assert "0002" in (out / "_assist" / "review.md").read_text(encoding="utf-8")
+
+
+def test_assist_adds_rings_above_reviewed_people(tmp_path, monkeypatch):
+    """Claude 认可的人头顶有图标（陌生人的也算）：补 social_ring 标注。"""
+    import cv2
+
+    from skydango import cli
+    from skydango.game.social import IconClassifier, load_icons
+    from skydango.imageio import imwrite
+
+    src, out, _ = _cli_env(tmp_path, monkeypatch, n=1, reply={"boxes": {"1": {"cls": "player"}}, "missing": [], "unsure": ""})
+    img = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+    img[400 - 40 : 400 + 40, 140 - 40 : 140 + 40] = cv2.imread(str(Path(__file__).parents[1] / "assets/social/candle.png"))
+    imwrite(src / "0000.jpg", img)
+
+    class Coco:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, frame):
+            return [Detection("player", Rect(100, 460, 80, 200), 0.5)]
+
+    monkeypatch.setattr("skydango.vision.assist.CocoPeople", Coco)
+    monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: IconClassifier(load_icons(Path(__file__).parents[1] / "assets/social")))
+    cli.main(["perception", "label", str(src), "--assist", "-o", str(out), "--val", "0"])
+    classes = [l.split()[0] for l in (out / "labels" / "train" / "0000.txt").read_text(encoding="utf-8").splitlines()]
+    assert sorted(classes) == ["0", "2"]
+
+
+def test_model_prelabel_also_adds_rings(tmp_path, monkeypatch):
+    """不加 --assist、用 --model 预标注时：模型框出的人头顶有图标，也补 social_ring。"""
+    import cv2
+
+    from skydango import cli
+    from skydango.game.social import IconClassifier, load_icons
+    from skydango.imageio import imwrite
+
+    src, out, _ = _cli_env(tmp_path, monkeypatch, n=1)
+    img = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+    img[400 - 40 : 400 + 40, 140 - 40 : 140 + 40] = cv2.imread(str(Path(__file__).parents[1] / "assets/social/eye.png"))
+    imwrite(src / "0000.jpg", img)
+
+    class Det:
+        def detect(self, frame):
+            return [Detection("player_unlit", Rect(100, 460, 80, 200), 0.9)]
+
+    monkeypatch.setattr("skydango.vision.detect.make_detector", lambda *a, **k: Det())
+    monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: IconClassifier(load_icons(Path(__file__).parents[1] / "assets/social")))
+    cli.main(["perception", "label", str(src), "--model", "m.onnx", "-o", str(out), "--val", "0"])
+    classes = [l.split()[0] for l in (out / "labels" / "train" / "0000.txt").read_text(encoding="utf-8").splitlines()]
+    assert sorted(classes) == ["2", "4"]
