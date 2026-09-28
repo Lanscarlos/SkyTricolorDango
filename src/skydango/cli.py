@@ -868,7 +868,7 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
         if n % 20 == 0:
             print(f"  候选框 {n}/{len(items)}")
     cmd = assist.assist_command(base, a)
-    work = Path("tmp") / "assist-claude"
+    work = assist.assist_workdir()
     reviewer = assist.Reviewer(
         lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), out / "_assist", a, source
     )

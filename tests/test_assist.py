@@ -12,6 +12,7 @@ from skydango.vision.assist import (
     FrameInput,
     Reviewer,
     assist_command,
+    assist_workdir,
     PROMPT_VERSION,
     FrameReview,
     Verdict,
@@ -291,3 +292,12 @@ def test_parse_survives_stray_braces_around_json():
     good = '{"a": {"boxes": {"1": {"cls": "player"}}, "missing": [], "unsure": ""}}'
     for text in (good + " 注：3 号是宠物}", "帧 {a} 的结果：\n" + good, "```json\n" + good + "\n```\n```json\n{}\n```"):
         assert parse_review(text, {"a": 1}, 1920, 1080)["a"].verdicts[1].cls == "player", text
+
+
+def test_assist_workdir_is_outside_repo():
+    """claude -p 会从工作目录往上找 CLAUDE.md：放在仓库里会把项目说明（约 1 万 token）塞进每一批。"""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    work = assist_workdir().resolve()
+    assert repo not in work.parents and work != repo

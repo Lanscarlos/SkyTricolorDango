@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -259,6 +260,12 @@ def assist_command(base: list[str], cfg: AssistConfig) -> list[str]:
         "--model", cfg.model, "--tools", "", "--strict-mcp-config",
         "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", ASSIST_SYSTEM,
     ]
+
+
+def assist_workdir() -> Path:
+    """claude -p 的工作目录：放在仓库外面的空目录。Claude Code 会从工作目录往上找 CLAUDE.md，
+    放在仓库里会把项目说明（约 1 万 token）塞进每一批，还会诱导它先写说明文字（2026-09-28 实测）。"""
+    return Path(tempfile.gettempdir()) / "skydango-assist-claude"
 
 
 @dataclass
