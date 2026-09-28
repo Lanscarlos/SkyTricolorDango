@@ -25,7 +25,7 @@ from ..game.social import IDLE, KIND_NAMES
 from ..imageio import imwrite
 from ..vision.bubbles import roi_rect
 from .events import EventQueue
-from .images import crop_view, difference, fit, image_block, is_black, label_note, thumb
+from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 
 log = logging.getLogger(__name__)
 
@@ -352,10 +352,14 @@ class Body:
         frame = self.device.screenshot()
         self.last_frame, self.last_look, self.look_frame = frame, now, frame
         view = fit(frame, tuple(brain.image_size))
-        recent = {}
-        if self.env is not None:  # 最近两次扫描内看到的名字才算在画面里；先拍快照，env 后台线程会改这个 dict
+        scale = view.shape[1] / frame.shape[1]
+        if hasattr(self.env, "strangers"):  # YOLO 感知层：好友、陌生人、团子的位置都给
+            note = scene_note(self.env, now, scale)
+        elif self.env is not None:  # 最近两次扫描内看到的名字才算在画面里；先拍快照，env 后台线程会改这个 dict
             recent = {n: v for n, v in dict(self.env.labels).items() if now - v[4] <= self.cfg.env.interval * 2 + 1}
-        note = label_note(recent, view.shape[1] / frame.shape[1]) if self.env is not None else "（没开环境识别，认不出名字）"
+            note = label_note(recent, scale)
+        else:
+            note = "（没开环境识别，认不出名字）"
         if self.blackout:
             note += "\n画面现在是黑的（可能在切场景）"
         return [image_block(view, brain.jpeg_quality), {"type": "text", "text": note}]

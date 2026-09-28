@@ -48,3 +48,36 @@ def test_label_note_maps_names_into_thumbnail():
     note = label_note({"懒洋洋大王": (1320, 300, 160, 44, 5.0)}, scale=1280 / 1920)
     assert "懒洋洋大王：名字在 (933, 200)" in note
     assert label_note({}, 1.0).startswith("图里没认出好友的名字")
+
+
+class OverlayEnv:
+    def __init__(self, boxes):
+        self.boxes = boxes
+
+    def overlay(self, now):
+        return list(self.boxes)
+
+
+def test_scene_note_lists_people_by_kind_and_scales():
+    from skydango.brain.images import scene_note
+
+    env = OverlayEnv([
+        {"x": 1580, "y": 560, "w": 100, "h": 140, "kind": "unlit", "label": "陌生人（没点火）"},
+        {"x": 1170, "y": 440, "w": 96, "h": 140, "kind": "friend", "label": "懒洋洋大王"},
+        {"x": 900, "y": 640, "w": 120, "h": 130, "kind": "self", "label": "团子"},
+        {"x": 400, "y": 520, "w": 100, "h": 130, "kind": "stranger", "label": "陌生人"},
+        {"x": 1170, "y": 380, "w": 96, "h": 40, "kind": "name", "label": "懒洋洋大王"},
+        {"x": 10, "y": 10, "w": 50, "h": 50, "kind": "typing", "label": "正在输入"},
+        {"x": 10, "y": 10, "w": 50, "h": 50, "kind": "player", "label": ""},
+    ])
+    assert scene_note(env, 0.0, 2 / 3).splitlines() == [
+        "画面里认出的人（坐标按这张图）：", "- 懒洋洋大王：(812, 340) 附近", "- 陌生人（没点火，黑影）：(1087, 420) 附近",
+        "- 陌生人：(300, 390) 附近", "- 团子（就是“你”自己）：(640, 470) 附近", "没列出的人都叫“陌生人”。"]
+
+
+def test_scene_note_name_only_and_empty():
+    from skydango.brain.images import scene_note
+
+    env = OverlayEnv([{"x": 300, "y": 90, "w": 120, "h": 45, "kind": "name", "label": "番茄炒蛋盖饭"}])
+    assert "- 番茄炒蛋盖饭：头顶名字在 (360, 90)，人在名字下方" in scene_note(env, 0.0, 1.0)
+    assert scene_note(OverlayEnv([]), 0.0, 1.0) == "画面里没认出人（可能被挡住、离得远，或者没人）\n没列出的人都叫“陌生人”。"

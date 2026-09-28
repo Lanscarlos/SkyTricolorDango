@@ -22,12 +22,12 @@ AUTO_LOOK_KINDS = {"arrive", "leave", "stranger", "scene_change"}  # 这些事�
 
 EYES_SYSTEM = """你是一个《光遇》玩家的眼睛：看游戏截图，写成简短的中文文字，给另一个 AI 看。
 - 只写看到的，不猜；看不清就说看不清。
-- 人名只用给出的“名字位置”里的名字；没给名字的人都叫“陌生人”。
+- 人名只用给出的名字；给出的陌生人、团子位置照用；没列出的人都叫“陌生人”。
 - 不客套，不给建议，不提问。"""
 
 LOOK_REQUEST = """按这四项写，每项一两句：
 地点和环境：像哪张图 / 什么地方、建筑、天气、白天还是晚上
-好友：上面列出的每个人穿什么（斗篷、发型、面具、颜色）、在干什么；没有就写“没看到”
+好友：上面列出的每个人穿什么（斗篷、发型、面具、颜色）、在干什么；没有就写“没看到”；团子自己不用描述
 陌生人：大概几个、在干什么
 画面状态：有没有弹窗、黑屏、看不懂的图标；正常就写“正常”"""
 
@@ -53,6 +53,7 @@ class Eyes:
         blackout: Callable[[], bool],
         label_keep: float = 7.0,  # 名字多久内看到过才算在这张图里
         clock: Callable[[], float] = time.monotonic,
+        note: Callable[[float, float], str] | None = None,  # (now, 缩放) → 位置说明；YOLO 感知层时用 scene_note，代替 labels
     ) -> None:
         self.cfg = cfg
         self.describe = describe
@@ -61,6 +62,7 @@ class Eyes:
         self.blackout = blackout
         self.label_keep = label_keep
         self.clock = clock
+        self.note = note
         self.latest: tuple[str, float] | None = None
         self.last_look = float("-inf")
         self.look_request = LOOK_REQUEST
@@ -100,8 +102,12 @@ class Eyes:
 
     def describe_frame(self, frame: np.ndarray, now: float) -> str:
         view = fit(frame, tuple(self.cfg.image_size))
-        recent = {n: v for n, v in self.labels().items() if now - v[4] <= self.label_keep}
-        note = label_note(recent, view.shape[1] / frame.shape[1])
+        scale = view.shape[1] / frame.shape[1]
+        if self.note is not None:
+            note = self.note(now, scale)
+        else:
+            recent = {n: v for n, v in self.labels().items() if now - v[4] <= self.label_keep}
+            note = label_note(recent, scale)
         content = [image_block(view, self.cfg.jpeg_quality), {"type": "text", "text": note + "\n\n" + self.look_request}]
         with self._lock:
             text = self.describe(content).strip()

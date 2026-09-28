@@ -79,3 +79,26 @@ def test_label_spin_adds_self_boxes(tmp_path, monkeypatch):
     for f in labels:
         [line] = f.read_text(encoding="utf-8").splitlines()
         assert line.startswith("3 ")  # self 的类别号
+
+
+def test_look_describes_given_image(tmp_path, monkeypatch, capsys):
+    import numpy as np
+
+    img = tmp_path / "a.jpg"
+    imwrite(img, np.full((1080, 1920, 3), 80, np.uint8))
+
+    class Env:
+        labels = {}
+
+        def observe(self, frame, now, panel_visible):
+            pass
+
+    got = []
+    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (["claude"], {}))
+    monkeypatch.setattr(cli, "_device", lambda cfg: pytest.fail("给了图片就不截屏"))
+    monkeypatch.setattr(cli, "_scene_watcher", lambda cfg, **kw: Env())
+    monkeypatch.setattr("skydango.brain.claude.one_shot", lambda *a: got.append(a) or "描述")
+    monkeypatch.chdir(tmp_path)
+    cli.main(["look", str(img)])
+    out = capsys.readouterr().out
+    assert "图里没认出好友的名字" in out and "描述" in out and len(got) == 1

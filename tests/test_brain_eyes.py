@@ -89,3 +89,19 @@ def test_eyes_command_is_locked_down():
     assert cmd[cmd.index("--model") + 1] == "haiku" and cmd[cmd.index("--tools") + 1] == ""
     for flag in ("--strict-mcp-config", "--disable-slash-commands", "--system-prompt", "--verbose"):
         assert flag in cmd
+
+
+def test_eyes_use_scene_note_when_given(clock):
+    d = Describer()
+    seen = []
+    e = Eyes(BrainConfig(), d, frame, lambda: {}, lambda: False, clock=clock, note=lambda now, s: seen.append(s) or "NOTE")
+    e.describe_frame(frame(), clock())
+    assert d.calls[0][1]["text"].startswith("NOTE") and seen == [1280 / 1920]
+
+
+def test_eyes_prompts_mention_listed_people_and_skip_self():
+    from skydango.brain.eyes import EYES_SYSTEM, LOOK_REQUEST
+
+    assert "没列出的人都叫“陌生人”" in EYES_SYSTEM and "团子、陌生人位置" not in EYES_SYSTEM
+    assert "给出的陌生人、团子位置照用" in EYES_SYSTEM
+    assert "团子自己不用描述" in LOOK_REQUEST

@@ -729,3 +729,17 @@ def test_sweep_around_refused_in_blackout(clock):
     b.blackout = True
     with pytest.raises(ToolError, match="黑"):
         b.sweep_around()
+
+
+class SceneEnv(FakeEnv):
+    def strangers(self, now):
+        return 0
+
+    def overlay(self, now):
+        return [{"x": 500, "y": 300, "w": 100, "h": 200, "kind": "friend", "label": "懒洋洋大王"}]
+
+
+def test_body_look_uses_scene_note_with_perception(clock):
+    b, _, _, _ = body(clock, env=SceneEnv())
+    _, note = b.look()
+    assert "- 懒洋洋大王：(550, 400) 附近" in note["text"] and "没列出的人都叫" in note["text"]

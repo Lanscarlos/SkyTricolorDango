@@ -938,6 +938,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     from .brain.claude import one_shot
     from .brain.events import EventQueue
     from .brain.eyes import Eyes, eyes_command
+    from .brain.images import scene_note
     from .brain.loop import Brain, log_brain_message
     from .brain.mcp_server import SkyServer
     from .brain.prompt import brain_prompt
@@ -987,6 +988,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         labels=lambda: dict(env.labels) if env else {},
         blackout=lambda: body.blackout,
         label_keep=cfg.env.interval * 2 + 1,
+        note=(lambda now, s: scene_note(env, now, s)) if hasattr(env, "strangers") else None,
     )
     events.subscribe(eyes.notice)
     toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says)
@@ -1031,16 +1033,27 @@ def cmd_look(cfg: Config, args) -> None:
     from .vision.bubbles import roi_rect
     from .vision.chatlog import find_input_top
 
+    from .brain.images import label_note, scene_note
+
     base, claude_vars = _brain_env(cfg)
-    dev = _device(cfg)
-    frame = dev.screenshot()
+    frame = imread(args.image) if args.image else _device(cfg).screenshot()
     height, width = frame.shape[:2]
     area = roi_rect(cfg.vision.log_roi, width, height)
     panel = find_input_top(frame[:, area.x : area.x2]) is not None
-    env = _env_watcher(cfg, background=False)
-    env.observe(frame, 0.0, panel_visible=panel)
+    env = _scene_watcher(cfg, background=False)
+    yolo = hasattr(env, "strangers")
+    if yolo:  # 同一帧跑两次：隔 stranger_after 秒，点过火的陌生人才判得出来
+        env.process(frame, 0.0, panel)
+        env.process(frame, cfg.perception.stranger_after, panel)
+    else:
+        env.observe(frame, 0.0, panel_visible=panel)
     Path("tmp").mkdir(exist_ok=True)
-    imwrite("tmp/look.jpg", frame)
+    if not args.image:
+        imwrite("tmp/look.jpg", frame)
+    now = cfg.perception.stranger_after if yolo else 0.0
+    note = (lambda t, s: scene_note(env, t, s)) if yolo else None
+    scale = min(cfg.brain.image_size[0] / width, cfg.brain.image_size[1] / height, 1.0)
+    print("交给眼睛的位置说明：\n" + (scene_note(env, now, scale) if yolo else label_note(dict(env.labels), scale)) + "\n")
     eyes = Eyes(
         cfg.brain,
         describe=lambda content: one_shot(
@@ -1049,14 +1062,15 @@ def cmd_look(cfg: Config, args) -> None:
         frame=lambda: frame,
         labels=lambda: dict(env.labels),
         blackout=lambda: False,
-        clock=lambda: 0.0,
+        clock=lambda: now,
+        note=note,
     )
     if args.prompt:
         eyes.look_request = Path(args.prompt).read_text(encoding="utf-8")
     started = time.perf_counter()
-    text = eyes.describe_frame(frame, 0.0)
+    text = eyes.describe_frame(frame, now)
     print(text)
-    print(f"\n{cfg.brain.eyes_model}：{time.perf_counter() - started:.1f} 秒；截图存在 tmp/look.jpg")
+    print(f"\n{cfg.brain.eyes_model}：{time.perf_counter() - started:.1f} 秒" + ("" if args.image else "；截图存在 tmp/look.jpg"))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1117,6 +1131,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("env", help="对当前画面识别一次环境（身边有谁、在哪张图），用来验证").set_defaults(func=cmd_env)
 
     p = sub.add_parser("look", help="截一张图让眼睛（Claude Haiku）描述一遍（调眼睛的提示词，看它认得准不准）")
+    p.add_argument("image", nargs="?", help="描述这张图（不截屏）；不填就截当前画面")
     p.add_argument("--prompt", help="换一个问题：文本文件路径")
     p.set_defaults(func=lambda cfg, args: cmd_look(cfg, args))
 
