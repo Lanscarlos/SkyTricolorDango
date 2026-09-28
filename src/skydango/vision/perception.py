@@ -407,13 +407,14 @@ class PerceptionWatcher:
             self.requests.pop(STRANGER, None)
 
         strangers = unlit = 0
+        tagged = self._assign_tags([p for p in players if p.cls != UNLIT], tags)
         for player in players:
             if player.cls == UNLIT:  # 没点火的黑影：一定是陌生人，远近都算
                 player.data["stranger"] = True
                 strangers += 1
                 unlit += 1
                 continue
-            tag = self._tag_over(player, tags)
+            tag = tagged.get(player.id)
             if tag is not None:
                 player.data["tag_at"] = now
                 if tag.data.get("name"):
@@ -677,21 +678,36 @@ class PerceptionWatcher:
         return best
 
     @staticmethod
-    def _tag_over(player: Track, tags: list[Track]) -> Track | None:
-        """人物头顶的名字标签：水平上差不多对齐，标签在人物上沿附近（上方一个半身高到身体上半截之间）。"""
+    def _tag_err(player, tag) -> float | None:
+        """名字标签在不在这个人头顶：水平上差不多对齐，标签在人物上沿附近（上方一个半身高到身体上半截之间）。
+        在的话返回对不齐的程度（越小越正），不在返回 None。"""
         p = player.box
-        px = p.x + p.w / 2
-        best, best_err = None, float("inf")
-        for tag in tags:
-            tx = tag.box.x + tag.box.w / 2
-            if not p.x - p.w * 0.25 <= tx <= p.x2 + p.w * 0.25:
-                continue
-            if not p.y - 1.5 * p.h <= tag.box.y2 <= p.y + 0.5 * p.h:
-                continue
-            err = abs(tx - px) + abs(tag.box.y2 - p.y)
-            if err < best_err:
-                best, best_err = tag, err
-        return best
+        tx = tag.box.x + tag.box.w / 2
+        if not p.x - p.w * 0.25 <= tx <= p.x2 + p.w * 0.25:
+            return None
+        if not p.y - 1.5 * p.h <= tag.box.y2 <= p.y + 0.5 * p.h:
+            return None
+        return abs(tx - (p.x + p.w / 2)) + abs(tag.box.y2 - p.y)
+
+    @classmethod
+    def _tag_over(cls, player, tags: list) -> object | None:
+        """这个人头顶对得最正的名字标签（不管有没有分给别人；远处重裁、转圈扫描用）。"""
+        scored = [(err, i) for i, t in enumerate(tags) if (err := cls._tag_err(player, t)) is not None]
+        return tags[min(scored)[1]] if scored else None
+
+    def _assign_tags(self, players: list[Track], tags: list[Track]) -> dict[int, Track]:
+        """人物轨迹 id → 头顶的名字标签。一个标签只给对得最正的那个人（实测团子和好友挤在一起时两个人都挂上了好友的名字）。"""
+        pairs = sorted(
+            (err, i, j) for i, p in enumerate(players) for j, t in enumerate(tags)
+            if (err := self._tag_err(p, t)) is not None
+        )
+        out: dict[int, Track] = {}
+        used: set[int] = set()
+        for _, i, j in pairs:
+            if players[i].id not in out and j not in used:
+                out[players[i].id] = tags[j]
+                used.add(j)
+        return out
 
     @staticmethod
     def _person_below(bubble: Rect, people: list):

@@ -1245,3 +1245,16 @@ def test_ring_labels_find_icons_above_people():
     assert ring_labels(img, [("self", person[1])], icons) == []  # 团子头顶不标
     assert ring_labels(img, [("player", Rect(300, 400, 100, 220))], icons) == []  # 图标不在这个人头顶
     assert ring_labels(np.full((1080, 1920, 3), (60, 90, 40), np.uint8), [person], icons) == []  # 只有背景
+
+
+def test_one_name_tag_names_only_one_player():
+    """实测（2026-09-28 view，新地图）：团子被认成 player、和好友挤在一起，两个人都挂上了"懒洋洋大王"。一个标签只给对得最正的那个人。"""
+    det = FakeDetector()
+    friend, me = player(990, y=400), player(1040, y=440)  # 好友在标签正下方；团子偏右、靠下，框有重叠
+    det.frames = [[tag(975, 110), friend, me]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    for t in (0.0, 1.0, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    named = [t.box for t in w.last_tracks if t.cls == "player" and t.data.get("name") == "懒洋洋大王"]
+    assert named == [friend.box]
+    assert w.strangers(2.0) == 1  # 另一个没挂上名字，过了 stranger_after 算陌生人
