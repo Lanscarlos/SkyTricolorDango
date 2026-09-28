@@ -96,6 +96,8 @@ approach_grow = 0.25            # 走过来：1.5 秒内框高增大这么多、
 approach_cooldown = 60.0        # 同一个人这么久内只报一次
 approach_strangers = true       # 陌生人走过来也报；陌生人多的地方嫌吵就关掉
 typing_window = 8.0             # 陌生人发消息前这么久内头顶冒过气泡的人，才算可能的说话人（待真机确认）
+far_height = 0.08               # 远处的人（框高 < 屏高 × 这个）没挂上名字标签时，头顶裁一块再检测一次
+far_crops = 3                   # 每帧最多裁几块；0 = 关（perception compare --far-crops 0 对比开关效果）
 
 [spin]
 # 转一圈：主人发 #spin（普通模式）、命令行 camera spin、打开感知层时大脑的 look_around

@@ -47,6 +47,8 @@ log = logging.getLogger(__name__)
 UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
+FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹隔这么久才再裁一次；挂上名字标签后这么久内也不裁
+FAR_DUP_IOU = 0.3  # 二次检测找到的框和原图里已有的同类框重叠这么多就算同一个
 UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
 
@@ -68,6 +70,16 @@ def approaching(hist: list[tuple[float, float, float]], width: int, grow: float)
     c0 = sum(abs(x - width / 2) for _, _, x in hist[:k]) / k
     c1 = sum(abs(x - width / 2) for _, _, x in hist[-k:]) / k
     return c1 <= c0 or c1 < 0.15 * width
+
+
+def far_region(p: Rect, width: int, height: int) -> Rect | None:
+    """远处小人头顶要再检测一次的区域：宽 3 倍框宽、高 2.5 倍框高（上方 2 个身高到身体上半截），水平居中，夹到画面内。"""
+    x1, y1 = round(p.x + p.w / 2 - 1.5 * p.w), round(p.y - 2 * p.h)
+    x2, y2 = x1 + 3 * p.w, y1 + round(2.5 * p.h)
+    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(width, x2), min(height, y2)
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return None
+    return Rect(x1, y1, x2 - x1, y2 - y1)
 
 
 def people_boxes(dets: list[Detection]) -> list[Detection]:
@@ -126,6 +138,7 @@ class PerceptionWatcher:
         self.last_tracks: list[Track] = []
         self.last_low: list[Detection] = []  # 最近一帧置信度在 conf 以下的框（不进追踪，给难例收集看）
         self.timings: deque[tuple[float, float]] = deque(maxlen=300)  # (检测 ms, 整帧 ms)
+        self.far_runs = 0  # 远处二次检测跑了几次（测速 / compare 用）
         self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
@@ -315,6 +328,11 @@ class PerceptionWatcher:
         tags = [t for t in tracks if t.cls == "name_tag"]
         rings = [t for t in tracks if t.cls == "social_ring"]
         bubbles = [t for t in tracks if t.cls == "typing"]
+        extra = self._far_tags(frame, players, tags, now, width, height, panel_visible)
+        if extra:
+            tags += [t for t in extra if t.cls == "name_tag"]
+            rings += [t for t in extra if t.cls == "social_ring"]
+            tracks = tracks + extra
 
         friends = self.names()
         for tag in tags:
@@ -372,6 +390,7 @@ class PerceptionWatcher:
                 continue
             tag = self._tag_over(player, tags)
             if tag is not None:
+                player.data["tag_at"] = now
                 if tag.data.get("name"):
                     player.data["name"] = tag.data["name"]
                 player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
@@ -399,6 +418,48 @@ class PerceptionWatcher:
         self.timings.append(((detected - started) * 1000, (time.perf_counter() - started) * 1000))
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))
+
+    def _far_tags(self, frame: np.ndarray, players: list[Track], tags: list[Track], now: float,
+                  width: int, height: int, panel_visible: bool) -> list[Track]:
+        """三期 §1：远处的小人没挂上名字标签 → 在它头顶裁一块再检测一次（只要 name_tag / social_ring），返回新接上的轨迹。
+
+        裁剪直接交给检测器，它自己 letterbox 放大到 imgsz，等于"放大再检测"。"""
+        if self.cfg.far_crops <= 0:
+            return []
+        limit = self.cfg.far_height * height
+        todo = [
+            p for p in players
+            if p.cls == "player" and p.box.h < limit and self._tag_over(p, tags) is None
+            and now - p.data.get("tag_at", float("-inf")) >= FAR_RETRY
+            and now - p.data.get("far_at", float("-inf")) >= FAR_RETRY
+        ]
+        todo.sort(key=lambda p: p.data.get("far_at", float("-inf")))
+        found: list[Detection] = []
+        for p in todo[: self.cfg.far_crops]:
+            p.data["far_at"] = now
+            area = far_region(p.box, width, height)
+            if area is None:
+                continue
+            self.far_runs += 1
+            for d in self._detect(area.crop(frame)):
+                if d.cls not in ("name_tag", "social_ring") or d.score < self.cfg.conf:
+                    continue
+                box = Rect(d.box.x + area.x, d.box.y + area.y, d.box.w, d.box.h)
+                found.append(Detection(d.cls, box, d.score))
+        found = self._filter(found, width, height, panel_visible, drop_self=False)
+        seen = {  # 这一帧原图里已经有的框：二次检测又找到一遍的不要（不能多出一条轨迹、多读一次 OCR）
+            cls: [t.box for t in self.tracker.tracks.values() if t.cls == cls and t.last == now]
+            for cls in ("name_tag", "social_ring")
+        }
+        fresh: list[Detection] = []
+        for d in found:
+            same = seen[d.cls]
+            if any(iou(d.box, b) >= FAR_DUP_IOU for b in same) or any(
+                f.cls == d.cls and iou(d.box, f.box) >= FAR_DUP_IOU for f in fresh
+            ):
+                continue
+            fresh.append(d)
+        return self.tracker.update(fresh, now) if fresh else []
 
     def _detect(self, frame: np.ndarray) -> list[Detection]:
         with self._infer:

@@ -56,3 +56,12 @@ def test_spin_section(tmp_path):
     s = cfg.spin
     assert s.hfov == 75.0
     assert (s.seconds_per_turn, s.fps, s.max_turns, s.min_interval, s.merge_deg, s.self_motion) == (2.0, 15.0, 2, 10.0, 30.0, 0.03)
+
+
+def test_perception_far_crop_defaults(tmp_path):
+    cfg = load_config(None)
+    assert cfg.perception.far_height == 0.08 and cfg.perception.far_crops == 3
+    p = tmp_path / "c.toml"
+    p.write_text("[perception]\nfar_crops = 0\n", encoding="utf-8")
+    assert load_config(p).perception.far_crops == 0
+    assert load_config(ROOT / "config.example.toml").perception.far_crops == 3

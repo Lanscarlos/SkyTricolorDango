@@ -874,3 +874,88 @@ def test_friend_names_are_not_recorded_as_unknown():
     )
     w.process(frame(), 0.0, panel_visible=False)
     assert unknown.added == [] and w.nearby(0.0) == ["懒洋洋大王"]
+
+
+# ---- 三期 §1：远处小目标二次检测 ----
+from skydango.vision.perception import far_region  # noqa: E402
+
+
+class CropDetector:
+    """整张截图（1080×1920）返回 full；裁剪图返回 crop（裁剪图坐标），记下每次裁剪的尺寸。"""
+
+    def __init__(self, full, crop=()):
+        self.full = list(full)
+        self.crop = list(crop)
+        self.crops = []
+
+    def detect(self, img):
+        if img.shape[:2] == (1080, 1920):
+            return list(self.full)
+        self.crops.append(img.shape[:2])
+        return list(self.crop)
+
+
+def small(x, y=500, w=24, h=60, cls="player"):
+    return Detection(cls, Rect(x, y, w, h), 0.9)
+
+
+def far_watcher(det, ocr=None, **cfg):
+    return PerceptionWatcher(
+        det, ocr or FakeOcr({}), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False,
+    )
+
+
+def test_far_region_is_above_the_head_and_clamped():
+    assert far_region(Rect(1000, 500, 24, 60), 1920, 1080) == Rect(976, 380, 72, 150)
+    assert far_region(Rect(0, 10, 20, 60), 1920, 1080) == Rect(0, 0, 40, 40)  # 左上越界夹回
+    assert far_region(Rect(5, 0, 2, 4), 1920, 1080) is None  # 太小
+
+
+def test_far_player_gets_a_second_look_above_its_head():
+    det = CropDetector([small(1000)], [Detection("name_tag", Rect(10, 20, 50, 14), 0.9)])
+    w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert det.crops == [(150, 72)] and w.far_runs == 1
+    assert w.nearby(0.0) == ["懒洋洋大王"]
+    assert w.labels["懒洋洋大王"][:4] == (986, 400, 50, 14)  # 映射回整图坐标
+    assert any(t.cls == "player" and t.data.get("name") == "懒洋洋大王" for t in w.last_tracks)
+
+
+def test_far_crop_is_rate_limited_per_track_and_per_frame():
+    det = CropDetector([small(200 + 300 * i) for i in range(5)])
+    w = far_watcher(det, far_crops=3)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.far_runs == 3
+    w.process(frame(), 0.5, panel_visible=False)
+    assert w.far_runs == 5  # 剩下两个轮到了；前三个还没到 1 s
+    w.process(frame(), 1.0, panel_visible=False)
+    assert w.far_runs == 8
+
+
+def test_far_crop_skips_tagged_big_and_unlit_players():
+    det = CropDetector([
+        small(1000), Detection("name_tag", Rect(990, 440, 50, 14), 0.9),  # 已经挂上了标签
+        player(1400),  # 离得近（框大）
+        small(300, cls="player_unlit"),  # 黑影不用认名字
+    ])
+    w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.far_runs == 0 and det.crops == []
+
+
+def test_far_crop_drops_tags_already_seen_in_the_full_frame():
+    seen = Detection("name_tag", Rect(986, 385, 50, 14), 0.9)  # 原图也框到了，只是位置没挂上人
+    det = CropDetector([small(1000), seen], [Detection("name_tag", Rect(10, 5, 50, 14), 0.9)])
+    ocr = FakeOcr({50: "懒洋洋大王"})
+    w = far_watcher(det, ocr)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.far_runs == 1
+    assert sum(t.cls == "name_tag" for t in w.last_tracks) == 1 and ocr.calls == 1
+
+
+def test_far_crops_zero_turns_it_off():
+    det = CropDetector([small(1000)], [Detection("name_tag", Rect(10, 20, 50, 14), 0.9)])
+    w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}), far_crops=0)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert det.crops == [] and w.nearby(0.0) == []
