@@ -959,3 +959,88 @@ def test_far_crops_zero_turns_it_off():
     w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}), far_crops=0)
     w.process(frame(), 0.0, panel_visible=False)
     assert det.crops == [] and w.nearby(0.0) == []
+
+
+# ---- 三期 §2：认地图 ----
+from skydango.vision.places import PlaceMatch  # noqa: E402
+
+
+class FakePlaces:
+    def __init__(self, answers):
+        self.answers = list(answers)  # 依次返回的地名（None = 认不出）
+        self.calls = []
+
+    def recognize(self, img, boxes):
+        self.calls.append(list(boxes))
+        name = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        return PlaceMatch(name, 0.9 if name else 0.5, name or "云野", 0.5)
+
+
+def place_watcher(det, places, **cfg):
+    return PerceptionWatcher(
+        det, FakeOcr({}), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, places=places, place_interval=30.0,
+    )
+
+
+def white():
+    return np.full((1080, 1920, 3), 255, np.uint8)
+
+
+def test_place_is_recognized_on_interval_and_after_scene_change():
+    places = FakePlaces(["云野"])
+    w = place_watcher(FakeDetector(), places)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert len(places.calls) == 1 and w.place == "云野" and w.place_at == 0.0
+    assert "看起来在：云野" in w.describe(0.0)
+    w.process(frame(), 10.0, panel_visible=False)  # 画面没变、没到间隔
+    assert len(places.calls) == 1
+    w.process(white(), 12.0, panel_visible=False)  # 画面大变
+    assert len(places.calls) == 2
+    w.process(frame(), 13.0, panel_visible=False)  # 又大变，但离上次不到 3 s
+    assert len(places.calls) == 2
+    w.process(frame(), 16.0, panel_visible=False)  # 和上次认地图时比还是大变，隔够了
+    assert len(places.calls) == 3
+    w.process(frame(), 40.0, panel_visible=False)
+    assert len(places.calls) == 3
+    w.process(frame(), 46.0, panel_visible=False)  # 到 place_interval
+    assert len(places.calls) == 4
+
+
+def test_place_is_not_checked_while_paused():
+    places = FakePlaces(["云野"])
+    w = place_watcher(FakeDetector(), places)
+    w.hold("camera")
+    w.process(frame(), 0.0, panel_visible=False)
+    assert places.calls == [] and w.place == ""
+
+
+def test_unrecognized_place_keeps_the_old_one_until_place_keep():
+    places = FakePlaces(["云野", None])
+    w = place_watcher(FakeDetector(), places)
+    w.process(frame(), 0.0, panel_visible=False)
+    w.process(frame(), 30.0, panel_visible=False)
+    assert len(places.calls) == 2 and w.place == "云野" and w.place_at == 0.0
+    assert "云野" in w.describe(30.0) and "云野" not in w.describe(601.0)
+
+
+def test_place_recognizer_gets_this_frames_boxes_to_mask():
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110)]]
+    places = FakePlaces(["云野"])
+    w = place_watcher(det, places)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert places.calls == [[Rect(1000, 400, 90, 220), Rect(990, 330, 110, 44)]]
+
+
+def test_place_recognizer_error_does_not_break_the_frame():
+    class Broken:
+        def recognize(self, img, boxes):
+            raise RuntimeError("模型坏了")
+
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    w = PerceptionWatcher(det, FakeOcr({110: "懒洋洋大王"}), PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+                          log_roi=[0.0, 0.0, 0.335, 0.855], background=False, places=Broken())
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.nearby(0.0) == ["懒洋洋大王"] and w.place == ""

@@ -47,6 +47,7 @@ log = logging.getLogger(__name__)
 UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
+PLACE_GAP = 3.0  # 画面大变后认地图：离上次至少隔这么久（转镜头时画面一直在变）
 FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹隔这么久才再裁一次；挂上名字标签后这么久内也不裁
 FAR_DUP_IOU = 0.3  # 二次检测找到的框和原图里已有的同类框重叠这么多就算同一个
 UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
@@ -112,6 +113,8 @@ class PerceptionWatcher:
         scene_change: float = 0.25,  # 集体消失时，画面差异超过这个才算开了全屏界面（同 brain.scene_change）
         hardcases=None,  # vision.hardcases.HardCaseCollector：可能认错的画面存下来
         unknown=None,  # vision.unknownnames.UnknownNames：读得清楚但不在好友名单里的名字（三期 §5）
+        places=None,  # vision.places.PlaceRecognizer：认地图（三期 §2）
+        place_interval: float = 30.0,  # 每隔这么久认一次地图（画面大变后也认一次）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -126,13 +129,17 @@ class PerceptionWatcher:
         self.scene_change = scene_change
         self.hardcases = hardcases
         self.unknown = unknown
+        self.places = places
+        self.place_interval = place_interval
+        self._place_run = float("-inf")
+        self._place_thumb: np.ndarray | None = None
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
         self.requests: dict = {}  # 名字 → game.social.Request
         self.labels: dict[str, tuple[int, int, int, int, float]] = {}
         self.circles: dict[str, tuple[str | None, float]] = {}
         self.last_seen: dict[str, float] = {}
-        self.place = ""  # YOLO 不认地名；留着和 EnvWatcher 接口一致
+        self.place = ""  # 认地图认出的地方（三期 §2，没挂 places 时一直空）；和 EnvWatcher 同名
         self.place_at = float("-inf")
         self.last_dets: list[Detection] = []  # 最近一帧的检测（调试画框用）
         self.last_tracks: list[Track] = []
@@ -410,6 +417,8 @@ class PerceptionWatcher:
                 self._strangers.popleft()
 
         self.last_dets, self.last_tracks, self.last_low = dets, tracks, low
+        if self.places is not None and not self.paused:
+            self._watch_place(frame, dets, now)
         if self.hardcases is not None and not self.paused:
             try:
                 self.hardcases.check(frame, now, tracks, low, set(seen), panel_visible)
@@ -460,6 +469,26 @@ class PerceptionWatcher:
                 continue
             fresh.append(d)
         return self.tracker.update(fresh, now) if fresh else []
+
+    def _watch_place(self, frame: np.ndarray, dets: list[Detection], now: float) -> None:
+        """三期 §2：每 place_interval 秒、或画面比上次认地图时大变（隔 ≥ PLACE_GAP 秒）认一次；认不出就留着原来的。"""
+        small = thumb(frame)
+        since = now - self._place_run
+        changed = self._place_thumb is not None and difference(self._place_thumb, small) > self.scene_change
+        if since < self.place_interval and not (changed and since >= PLACE_GAP):
+            return
+        self._place_run, self._place_thumb = now, small
+        try:
+            match = self.places.recognize(frame, [d.box for d in dets])
+        except Exception:
+            log.exception("认地图出错")
+            return
+        if match.name is None:
+            log.debug("认不出在哪（最像 %s %.2f，第二像 %.2f）", match.best, match.score, match.second)
+            return
+        if match.name != self.place:
+            log.info("看起来到了：%s（相似度 %.2f）", match.name, match.score)
+        self.place, self.place_at = match.name, now
 
     def _detect(self, frame: np.ndarray) -> list[Detection]:
         with self._infer:
@@ -764,6 +793,8 @@ class PerceptionWatcher:
 
     def describe(self, now: float) -> str:
         parts = []
+        if self.place and self._frozen(now) - self.place_at <= self.env_cfg.place_keep:
+            parts.append(f"- 看起来在：{self.place}（按画面认的，可能不准）")
         people = self.nearby(now)
         if people:
             parts.append(f"- 你身边现在有：{'、'.join(people)}（画面上能看到他们头顶的名字）")

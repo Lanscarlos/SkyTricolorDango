@@ -58,3 +58,46 @@ def test_perception_bench_far_crops_switch(tmp_path, monkeypatch, capsys):
     assert "远处二次检测 " in capsys.readouterr().out
     cli.main(["perception", "bench", "--images", str(tmp_path), "-n", "3", "--far-crops", "0"])
     assert "远处二次检测 0 次" in capsys.readouterr().out
+
+
+def _scene(color, seed):
+    import numpy as np
+
+    ramp = np.linspace(0.3, 1.0, 1080)[:, None, None]
+    img = (ramp * np.array(color, float)[None, None, :]).repeat(1920, axis=1)
+    img = img + np.random.default_rng(seed).normal(0, 6, img.shape)
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def test_places_add_test_and_bench(tmp_path, monkeypatch, capsys):
+    from skydango.imageio import imwrite
+
+    monkeypatch.chdir(tmp_path)
+    shots = tmp_path / "shots"
+    shots.mkdir()
+    for i in range(3):
+        imwrite(shots / f"yun{i}.jpg", _scene((40, 200, 60), i))
+        imwrite(shots / f"yu{i}.jpg", _scene((200, 80, 40), i))
+    for i in range(2):
+        cli.main(["places", "add", "云野", "--image", str(shots / f"yun{i}.jpg"), "--model", "thumb"])
+        cli.main(["places", "add", "雨林", "--image", str(shots / f"yu{i}.jpg"), "--model", "thumb"])
+    out = capsys.readouterr().out
+    assert "云野" in out and len(list((tmp_path / "places" / "云野").glob("*.jpg"))) == 2
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    imwrite(probe / "a.jpg", _scene((40, 200, 60), 7))
+    cli.main(["places", "test", str(probe), "--model", "thumb"])
+    out = capsys.readouterr().out
+    assert "a.jpg" in out and "云野" in out
+    cli.main(["places", "bench", "--model", "thumb"])
+    out = capsys.readouterr().out
+    assert "thumb" in out and "认对 4/4" in out
+
+
+def test_places_test_with_empty_library_explains(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "p").mkdir()
+    with pytest.raises(SystemExit):
+        cli.main(["places", "test", str(tmp_path / "p"), "--model", "thumb"])
