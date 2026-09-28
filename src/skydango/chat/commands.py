@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from .memory import MemoryStore
 
-_KNOWN = {"friend", "remember", "pause", "resume", "status"}
+_KNOWN = {"friend", "remember", "pause", "resume", "status", "spin"}
 
 
 def is_command(text: str) -> bool:
@@ -25,10 +25,14 @@ class CommandRouter:
         store: MemoryStore | None,
         on_pause: Callable[[bool], None],
         status: Callable[[], str],
+        spin: Callable[[int], str] | None = None,  # #spin：转几圈 → 回复；没有视角控制时不传
+        max_turns: int = 2,
     ) -> None:
         self.store = store
         self.on_pause = on_pause
         self.status = status
+        self.spin = spin
+        self.max_turns = max_turns
 
     def handle(self, text: str) -> str:
         body = text.strip().lstrip("#＃").strip()
@@ -46,7 +50,20 @@ class CommandRouter:
             return "好，继续陪聊"
         if word == "status":
             return self.status()
+        if word == "spin":
+            return self._spin(rest)
         return "没这个命令"
+
+    def _spin(self, rest: str) -> str:
+        if self.spin is None:
+            return "这次没开视角控制"
+        turns = 1
+        if rest:
+            try:
+                turns = int(rest.split()[0])
+            except ValueError:
+                return "格式不对，是 #spin 或 #spin 2"
+        return self.spin(max(1, min(turns, self.max_turns)))
 
     def _friend(self, rest: str) -> str:
         name, _, note = rest.partition(" ")

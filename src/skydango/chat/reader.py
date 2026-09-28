@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import time
@@ -18,6 +19,8 @@ from .tracker import SeenTracker, SelfFilter, similar
 
 log = logging.getLogger(__name__)
 
+UNKNOWN_SPEAKERS = ("", "陌生人")  # 聊天记录面板里读不出说话人 / 陌生人的消息只显示"陌生人"
+
 
 @dataclass(frozen=True)
 class Message:
@@ -33,6 +36,18 @@ class Detection:
 
     text: str
     box: Rect
+
+
+
+def with_speaker_hint(env, messages: list[Message], now: float) -> list[Message]:
+    """陌生人（或看不出是谁）的消息后面加注"说话的可能是画面上哪个人"（YOLO 感知层的 typing 气泡，二期 §3）。"""
+    hint_of = getattr(env, "speaker_hint", None)
+    if hint_of is None or not any(m.speaker in UNKNOWN_SPEAKERS for m in messages):
+        return messages
+    hint = hint_of(now)
+    if not hint:
+        return messages
+    return [dataclasses.replace(m, text=m.text + hint) if m.speaker in UNKNOWN_SPEAKERS else m for m in messages]
 
 
 class ChatReader:

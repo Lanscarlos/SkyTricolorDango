@@ -13,6 +13,11 @@
    只能靠头顶有没有名字标签分 —— 一直没有名字标签、离得不太远 → 陌生人
    （还有个办法是点一下人物，右边会打开好友树面板，看得出是不是好友；要点屏幕，没做）
 
+二期（docs/superpowers/specs/2026-09-28-perception-phase2-design.md）：
+- `sweep()`：转一圈截下的帧单独汇总成"哪个方向有谁"（vision/sweep.py 算方位、合并），顺带认出团子（self_box，之后代替 self_roi）
+- 远近：人物框高 ÷ 团子框高；框持续变大、往画面中间走 → 朝团子走过来（`pop_approaches`，身体发 approach 事件）
+- `typing`（头顶"正在输入"气泡）：挂到正下方的人身上；陌生人的消息靠它猜是画面上哪个人说的（`speaker_hint`）
+
 以上规则和阈值都还**没在真机验证**（模型还没训练），见 docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md。
 """
 
@@ -29,11 +34,12 @@ import numpy as np
 
 from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
-from ..config import EnvConfig, PerceptionConfig
+from ..config import EnvConfig, PerceptionConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, Request
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
 from .ocr import OcrEngine, join_lines
+from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import Track, Tracker, iou
 
 log = logging.getLogger(__name__)
@@ -47,6 +53,26 @@ OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开�
 def detector_conf(cfg: PerceptionConfig) -> float:
     """检测器的出框阈值：收集难例时要看到 low_conf ~ conf 之间的框，判定仍按 conf。"""
     return min(cfg.low_conf, cfg.conf) if cfg.hardcases else cfg.conf
+
+
+def approaching(hist: list[tuple[float, float, float]], width: int, grow: float) -> bool:
+    """(时间, 框高, 框中心 x) 的序列：前 1/3 和后 1/3 比，框高变大 ≥ grow，且往画面中间走（或一直在中间）。"""
+    if len(hist) < 3:
+        return False
+    k = max(1, len(hist) // 3)
+    h0 = sum(h for _, h, _ in hist[:k]) / k
+    h1 = sum(h for _, h, _ in hist[-k:]) / k
+    if h0 <= 0 or h1 < h0 * (1 + grow):
+        return False
+    c0 = sum(abs(x - width / 2) for _, _, x in hist[:k]) / k
+    c1 = sum(abs(x - width / 2) for _, _, x in hist[-k:]) / k
+    return c1 <= c0 or c1 < 0.15 * width
+
+
+def people_boxes(dets: list[Detection]) -> list[Detection]:
+    """一帧里的人（player / player_unlit / self）。模型可能在团子身上同时出 self 和 player 框：player 那个不算另一个人。"""
+    selfs = [d for d in dets if d.cls == "self"]
+    return selfs + [d for d in dets if d.cls in ("player", UNLIT) and not any(iou(d.box, s.box) >= 0.5 for s in selfs)]
 
 
 def _center(r: Rect) -> tuple[float, float]:
@@ -97,6 +123,11 @@ class PerceptionWatcher:
         self.last_tracks: list[Track] = []
         self.last_low: list[Detection] = []  # 最近一帧置信度在 conf 以下的框（不进追踪，给难例收集看）
         self.timings: deque[tuple[float, float]] = deque(maxlen=300)  # (检测 ms, 整帧 ms)
+        self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
+        self._frame_h = 1080  # 最近一帧的高度（算远近用）
+        self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
+        self._approach_at: dict[str, float] = {}
+        self._typing: deque[tuple] = deque()  # (时间, 轨迹 id, 是好友, 没点火, 框中心 x, 框高, 画面宽, 画面高)
         self._strangers: deque[tuple[float, int]] = deque()  # (时间, 这一帧有几个陌生人)
         self._panel_visible = False
         self._holds: Counter = Counter()  # 暂停的原因 → 次数（可以嵌套）
@@ -107,6 +138,7 @@ class PerceptionWatcher:
         self._last_run = float("-inf")
         self._busy = False
         self._lock = threading.Lock()
+        self._infer = threading.Lock()  # 检测器 / OCR：sweep（身体线程）和后台感知线程可能同时用
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -158,6 +190,8 @@ class PerceptionWatcher:
         d = now - since
         log.debug("感知恢复（%s），暂停了 %.1f 秒", why, d)
         self._prev_count, self._prev_thumb = 0, None  # 暂停前那一帧不能拿来判"集体消失"（镜头可能已经转走了）
+        for track in list(self.tracker.tracks.values()):  # 暂停前后的框高不能连起来判"走过来"（镜头可能动过）
+            track.data.pop("hist", None)
         if d <= 0:
             return
         for name, t in list(self.last_seen.items()):
@@ -265,7 +299,8 @@ class PerceptionWatcher:
     def process(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
         started = time.perf_counter()
         height, width = frame.shape[:2]
-        dets = self._filter(self.detector.detect(frame), width, height, panel_visible)
+        self._frame_h = height
+        dets = self._filter(self._detect(frame), width, height, panel_visible)
         detected = time.perf_counter()
         low = [d for d in dets if d.score < self.cfg.conf]
         dets = [d for d in dets if d.score >= self.cfg.conf]
@@ -276,6 +311,7 @@ class PerceptionWatcher:
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs)]
         tags = [t for t in tracks if t.cls == "name_tag"]
         rings = [t for t in tracks if t.cls == "social_ring"]
+        bubbles = [t for t in tracks if t.cls == "typing"]
 
         friends = self.names()
         for tag in tags:
@@ -343,6 +379,9 @@ class PerceptionWatcher:
             )
             player.data["stranger"] = is_stranger
             strangers += is_stranger
+        self._watch_typing(bubbles, players, selfs, now, width, height)
+        if not self.paused:
+            self._watch_approach(players, now, width)
         with self._lock:  # 身体线程会同时读（strangers()）
             self._strangers.append((now, strangers, unlit))
             while self._strangers and now - self._strangers[0][0] > self.cfg.keep:
@@ -358,19 +397,35 @@ class PerceptionWatcher:
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))
 
-    def _filter(self, dets: list[Detection], width: int, height: int, panel_visible: bool) -> list[Detection]:
+    def _detect(self, frame: np.ndarray) -> list[Detection]:
+        with self._infer:
+            return self.detector.detect(frame)
+
+    def _filter(
+        self, dets: list[Detection], width: int, height: int, panel_visible: bool, drop_self: bool = True
+    ) -> list[Detection]:
         area = roi_rect(self.env_cfg.roi, width, height)  # 底部输入栏不要
         panel = roi_rect(self.log_roi, width, height) if panel_visible else None  # 面板里的"- 名字"不是名字标签
-        mine = roi_rect(self.cfg.self_roi, width, height) if self.cfg.self_roi else None
+        mine = self._self_areas(width, height) if drop_self else []
         out = []
         for det in dets:
             c = _center(det.box)
             if not _inside(c, area) or (panel is not None and _inside(c, panel)):
                 continue
-            if mine is not None and det.cls in ("player", UNLIT) and _inside(c, mine):
+            if det.cls in ("player", UNLIT) and any(_inside(c, r) for r in mine):
                 continue
             out.append(det)
         return out
+
+    def _self_areas(self, width: int, height: int) -> list[Rect]:
+        """团子所在的区域：转圈认出的团子框（四周各放宽 25%，镜头跟随会有点晃）+ 配置的 self_roi。"""
+        areas = []
+        if self.self_box is not None:
+            b = self.self_box
+            areas.append(Rect(round(b.x - b.w / 4), round(b.y - b.h / 4), round(b.w * 1.5), round(b.h * 1.5)))
+        if self.cfg.self_roi:
+            areas.append(roi_rect(self.cfg.self_roi, width, height))
+        return areas
 
     @staticmethod
     def _is_self(player: Track, selfs: list[Track]) -> bool:
@@ -389,17 +444,79 @@ class PerceptionWatcher:
         if len(normalize(text)) < 2:
             return
         tag.data["text"] = text
-        name = next((n for n in friends if similar(text, n, 0.75)), None)
+        name = self._match_name(text, friends)
         if name:
             votes[name] += 1
             tag.data["name"] = votes.most_common(1)[0][0]
 
+    @staticmethod
+    def _match_name(text: str, friends: list[str]) -> str | None:
+        return next((n for n in friends if similar(text, n, 0.75)), None)
+
     def _ocr(self, crop: np.ndarray) -> str:
-        read_line = getattr(self.ocr, "read_line", None)
-        if read_line is not None:
-            line = read_line(crop)
-            return line.text if line is not None else ""
-        return join_lines(self.ocr.recognize(crop))
+        with self._infer:
+            read_line = getattr(self.ocr, "read_line", None)
+            if read_line is not None:
+                line = read_line(crop)
+                return line.text if line is not None else ""
+            return join_lines(self.ocr.recognize(crop))
+
+    def _ref_height(self, frame_h: int) -> float:
+        """算远近的参照：团子的框高（转圈认出的 → 最近一帧的 self 框 → 按 self_height 估）。"""
+        if self.self_box is not None:
+            return float(self.self_box.h)
+        selfs = [t.box.h for t in list(self.last_tracks) if t.cls == "self"]
+        if selfs:
+            return float(max(selfs))
+        return self.cfg.self_height * frame_h
+
+    # ---- 二期：环绕扫描（设计 §1） ----
+    def sweep(self, frames: list[tuple[float, np.ndarray]], spin: SpinConfig) -> SweepResult:
+        """转一圈截下的帧 [(按住后第几秒, 图)] → 每个方向有谁。独立的一次观察：不碰追踪器、last_seen、请求。"""
+        friends = self.names()
+        people: list[list[Detection]] = []
+        tags: list[list[Detection]] = []
+        width = height = 0
+        for _, img in frames:
+            height, width = img.shape[:2]
+            dets = [d for d in self._filter(self._detect(img), width, height, False, drop_self=False) if d.score >= self.cfg.conf]
+            people.append(people_boxes(dets))
+            tags.append([d for d in dets if d.cls == "name_tag"])
+        found = find_self([[d.box for d in frame] for frame in people], width, spin.self_motion)
+        mine = self._self_areas(width, height)  # 帧太少认不出团子时，靠之前认出的团子框 / self_roi 排除
+        sightings: list[Sighting] = []
+        for fi, (t, img) in enumerate(frames):
+            where = lambda box: bearing(t, box.x + box.w / 2, width, spin.seconds_per_turn, spin.hfov)  # noqa: E731
+            frame_people = [(bi, d) for bi, d in enumerate(people[fi]) if d.cls != "self"]
+            under: dict[int, tuple[int, Detection]] = {}  # 标签序号 → 它下面的人
+            for bi, d in frame_people:
+                tag = self._tag_over(d, tags[fi])
+                if tag is not None:
+                    ti = tags[fi].index(tag)
+                    if ti not in under or abs(tag.box.y2 - d.box.y) < abs(tag.box.y2 - under[ti][1].box.y):
+                        under[ti] = (bi, d)
+            for ti, tag in enumerate(tags[fi]):
+                text = self._ocr(tag.box.pad(4, width, height).crop(img))
+                name = self._match_name(text, friends) if len(normalize(text)) >= 2 else None
+                bi, body = under.get(ti, (None, None))
+                sightings.append(Sighting(
+                    where(tag.box), name or UNKNOWN_WHO, fi, float(body.box.h) if body is not None else None,
+                    beside=bi is not None and (fi, bi) in found.static,
+                ))
+            tagged = {bi for bi, _ in under.values()}
+            for bi, d in frame_people:
+                if bi in tagged or (fi, bi) in found.static or any(_inside(_center(d.box), r) for r in mine):
+                    continue
+                if d.cls == UNLIT:
+                    sightings.append(Sighting(where(d.box), UNLIT_WHO, fi, float(d.box.h)))
+                elif d.box.h >= self.cfg.stranger_min_height * height:
+                    sightings.append(Sighting(where(d.box), STRANGER_WHO, fi, float(d.box.h)))
+        if found.box is not None:
+            self.self_box = found.box
+            log.info("转圈认出了团子：%s", found.box)
+        ref = self._ref_height(height or self._frame_h)
+        entries = merge(sightings, spin.merge_deg, ref, self.cfg.near, self.cfg.far)
+        return SweepResult(entries, found.box, len(frames), frames[-1][0] if frames else 0.0)
 
     @staticmethod
     def _tag_above(ring: Track, tags: list[Track]) -> Track | None:
@@ -434,6 +551,85 @@ class PerceptionWatcher:
         return best
 
     @staticmethod
+    def _person_below(bubble: Rect, people: list):
+        """气泡正下方的人：气泡水平中心落在人物框（左右各放宽 25%）内，气泡下沿在人物上沿往上 2.5 个身高到身体上部之间。"""
+        bx = bubble.x + bubble.w / 2
+        best, best_gap = None, float("inf")
+        for person in people:
+            p = person.box
+            if not p.x - p.w * 0.25 <= bx <= p.x2 + p.w * 0.25:
+                continue
+            if not p.y - 2.5 * p.h <= bubble.y2 <= p.y + 0.3 * p.h:
+                continue
+            gap = abs(p.y - bubble.y2)
+            if gap < best_gap:
+                best, best_gap = person, gap
+        return best
+
+    def _watch_typing(self, bubbles: list[Track], players: list[Track], selfs: list[Track], now: float,
+                      width: int, height: int) -> None:
+        """头顶的"正在输入"气泡挂到下面的人身上（团子自己的不算），记下来给 speaker_hint 用。"""
+        me = [s.box for s in selfs] + ([self.self_box] if self.self_box is not None else [])
+        for b in bubbles:
+            if self._person_below(b.box, [Track(0, "self", r, 1.0, now, now) for r in me]) is not None:
+                continue  # 团子自己在打字（输入框开着时头顶也有气泡）
+            owner = self._person_below(b.box, players)
+            if owner is None:
+                continue
+            owner.data["typing_at"] = now
+            friend = bool(owner.data.get("name") or owner.data.get("tagged"))
+            self._typing.append((now, owner.id, friend, owner.cls == UNLIT, owner.box.x + owner.box.w / 2, owner.box.h,
+                                 width, height))
+        while self._typing and now - self._typing[0][0] > self.cfg.typing_window:
+            self._typing.popleft()
+
+    def _watch_approach(self, players: list[Track], now: float, width: int) -> None:
+        for p in players:
+            hist: deque = p.data.setdefault("hist", deque())
+            hist.append((now, float(p.box.h), p.box.x + p.box.w / 2))
+            while hist and now - hist[0][0] > self.cfg.approach_window:
+                hist.popleft()
+            who = p.data.get("name") or (STRANGER if p.data.get("stranger") else None)
+            if who is None or (who == STRANGER and not self.cfg.approach_strangers):
+                continue
+            if now - self._approach_at.get(who, float("-inf")) < self.cfg.approach_cooldown:
+                continue
+            if approaching(list(hist), width, self.cfg.approach_grow):
+                self._approach_at[who] = now
+                log.info("%s 朝团子走过来了", who)
+                with self._lock:
+                    self._approaches.append(who)
+
+    def pop_approaches(self) -> list[str]:
+        """取走"朝团子走过来"的人（好友名 / 陌生人），身体变成 approach 事件。"""
+        with self._lock:
+            out, self._approaches = self._approaches, []
+        return out
+
+    def nearest(self, now: float) -> tuple[str, str] | None:
+        """最近一帧里离团子最近（框最高）、认得出是谁的人：(好友名 / "陌生人", 近 / 中 / 远)。"""
+        known = [
+            (t.box.h, t.data.get("name") or STRANGER)
+            for t in list(self.last_tracks)
+            if t.cls in ("player", UNLIT) and (t.data.get("name") or t.data.get("stranger"))
+        ]
+        if not known:
+            return None
+        h, who = max(known)
+        return who, distance(h, self._ref_height(self._frame_h), self.cfg.near, self.cfg.far)
+
+    def speaker_hint(self, now: float) -> str | None:
+        """陌生人的消息是谁说的：最近 typing_window 秒内头顶冒过气泡、又不是好友的人恰好一个 → 说出他在画面哪儿。"""
+        recent = [r for r in list(self._typing) if now - r[0] <= self.cfg.typing_window and not r[2]]
+        if len({r[1] for r in recent}) != 1:
+            return None
+        _, _, _, dark, cx, h, width, height = recent[-1]
+        side = "左边" if cx < width / 3 else ("右边" if cx > width * 2 / 3 else "前面")
+        far = distance(h, self._ref_height(height), self.cfg.near, self.cfg.far) == "远"
+        who = "没点火的陌生人" if dark else "陌生人"
+        return f"（说话的可能是{side}{'远处' if far else '近处'}那个{who}）"
+
+    @staticmethod
     def _ring_center(ring: Track) -> tuple[int, int]:
         cx, cy = _center(ring.box)
         return int(cx), int(cy)
@@ -459,6 +655,8 @@ class PerceptionWatcher:
                 kind, label = "unlit", "陌生人（没点火）"
             elif t.cls == "self":
                 kind, label = "self", "团子"
+            elif t.cls == "typing":
+                kind, label = "typing", "正在输入"
             elif t.cls == "name_tag":
                 kind = "name" if d.get("name") else "tag"
                 label = d.get("name") or (f"?{d['text']}" if d.get("text") else "?")

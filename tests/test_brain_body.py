@@ -680,3 +680,156 @@ def test_social_is_wrapped_in_held(clock):
     env.requests = {"懒洋洋大王": Request("懒洋洋大王", "hand", (0, 0), 100.0)}
     b.step()
     assert ("hold", "social") in env.holds and env.holds[-1] == ("release", "social")
+
+
+# ---- 二期：look_around 走环绕扫描 ----
+class SpinCamera(FakeCamera):
+    def __init__(self):
+        super().__init__()
+        self.spins = 0
+
+    def spin(self, capture, turns=1, seconds_per_turn=2.0, fps=15.0):
+        from skydango.brain.camera import SpinResult
+
+        self.spins += 1
+        f = capture()
+        return SpinResult(f, [(0.1, f), (0.2, f)], f, 0.2, True, False)
+
+
+class SweepEnv(FakeEnv):
+    def __init__(self):
+        super().__init__()
+        self.swept = []
+
+    def sweep(self, frames, spin):
+        from skydango.vision.sweep import SweepEntry, SweepResult
+
+        self.swept.append([t for t, _ in frames])
+        return SweepResult([SweepEntry("前", 0, "懒洋洋大王", 3, None)], None, len(frames), 0.2)
+
+
+def test_sweep_around_spins_and_sweeps(clock):
+    env, cam = SweepEnv(), SpinCamera()
+    b, _, _, _ = body(clock, live=True, env=env, camera=cam)
+    assert b.sweep_around() == "正前方：懒洋洋大王"
+    assert cam.spins == 1 and env.swept == [[0.0, 0.1, 0.2]]  # 转前那张算 0 秒
+    assert env.holds == [("hold", "camera"), ("release", "camera")]
+
+
+def test_sweep_around_in_dry_run_does_not_turn(clock):
+    env, cam = SweepEnv(), SpinCamera()
+    b, _, _, _ = body(clock, env=env, camera=cam)
+    text = b.sweep_around()
+    assert text.startswith("dry-run") and "正前方：懒洋洋大王" in text
+    assert cam.spins == 0 and env.swept == [[0.0]]
+
+
+def test_sweep_around_refused_in_blackout(clock):
+    b, _, _, _ = body(clock, live=True, env=SweepEnv(), camera=SpinCamera())
+    b.blackout = True
+    with pytest.raises(ToolError, match="黑"):
+        b.sweep_around()
+
+
+class SceneEnv(FakeEnv):
+    def strangers(self, now):
+        return 0
+
+    def overlay(self, now):
+        return [{"x": 500, "y": 300, "w": 100, "h": 200, "kind": "friend", "label": "懒洋洋大王"}]
+
+
+def test_body_look_uses_scene_note_with_perception(clock):
+    b, _, _, _ = body(clock, env=SceneEnv())
+    _, note = b.look()
+    assert "- 懒洋洋大王：(550, 400) 附近" in note["text"] and "没列出的人都叫" in note["text"]
+
+
+# ---- 二期：陌生人的消息加注说话人 ----
+class HintEnv(FakeEnv):
+    def speaker_hint(self, now):
+        return "（说话的可能是左边近处那个陌生人）"
+
+
+def test_stranger_message_gets_speaker_hint_in_event(clock):
+    b, _, reader, events = body(clock, env=HintEnv())
+    reader.batches = [[msg("你好", "陌生人"), msg("在吗", "")]]
+    b.step()
+    texts = [e.text for e in events.drain()]
+    assert "聊天  陌生人：「你好（说话的可能是左边近处那个陌生人）」" in texts
+    assert "聊天  （看不出是谁）：「在吗（说话的可能是左边近处那个陌生人）」" in texts
+
+
+def test_friend_message_gets_no_hint(clock):
+    b, _, reader, events = body(clock, env=HintEnv())
+    reader.batches = [[msg("你好", "懒洋洋大王")]]
+    b.step()
+    assert [e.text for e in events.drain()] == ["聊天  懒洋洋大王：「你好」"]
+
+
+def test_no_hint_without_perception(clock):
+    b, _, reader, events = body(clock, env=FakeEnv())
+    reader.batches = [[msg("你好", "陌生人")]]
+    b.step()
+    assert [e.text for e in events.drain()] == ["聊天  陌生人：「你好」"]
+
+
+# ---- 二期：有人走过来、最近的人 ----
+class ApproachEnv(FakeEnv):
+    def __init__(self, who=(), nearest=None):
+        super().__init__()
+        self.who = list(who)
+        self.near_one = nearest
+
+    def strangers(self, now):
+        return 0
+
+    def pop_approaches(self):
+        out, self.who = self.who, []
+        return out
+
+    def nearest(self, now):
+        return self.near_one
+
+
+def test_approach_events(clock):
+    b, _, _, events = body(clock, env=ApproachEnv(["懒洋洋大王", "陌生人"]))
+    b.step()
+    got = [(e.kind, e.text) for e in events.drain() if e.kind == "approach"]
+    assert got == [("approach", "懒洋洋大王 朝你走过来了"), ("approach", "有个陌生人朝你走过来了")]
+
+
+def test_holding_partner_approach_is_dropped(clock):
+    b, _, _, events = body(clock, env=ApproachEnv(["卡洛"]))
+    b.holding = "卡洛"
+    b.step()
+    assert not [e for e in events.drain() if e.kind == "approach"]
+
+
+def test_status_shows_nearest(clock):
+    b, _, _, _ = body(clock, env=ApproachEnv(nearest=("懒洋洋大王", "近")))
+    assert "离你最近的：懒洋洋大王（近）" in b.status()
+    b2, _, _, _ = body(clock, env=ApproachEnv())
+    assert "离你最近的" not in b2.status()
+
+
+def test_camera_move_forgets_self_box(clock):
+    env = SweepEnv()
+    env.self_box = "框"
+    b, _, _, _ = body(clock, live=True, env=env, camera=SpinCamera())
+    b.camera_move("zoom_in", 1)
+    assert env.self_box is None
+    env.self_box = "框"
+    b.camera_reset()
+    assert env.self_box is None
+
+
+def test_sweep_around_mentions_blackout(clock):
+    class DarkCamera(SpinCamera):
+        def spin(self, capture, turns=1, seconds_per_turn=2.0, fps=15.0):
+            from dataclasses import replace
+
+            return replace(super().spin(capture, turns, seconds_per_turn, fps), blackout=True)
+
+    b, _, _, _ = body(clock, live=True, env=SweepEnv(), camera=DarkCamera())
+    assert "中途画面黑了" in b.sweep_around()

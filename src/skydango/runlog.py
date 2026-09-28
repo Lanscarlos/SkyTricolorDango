@@ -8,6 +8,7 @@
       config.json     本次实际生效的配置（含命令行覆盖）
       brain.jsonl     大脑每次调用：停在哪、用量、估算花费、调了哪些工具、它想了什么（--brain）
       hard/*.jpg      YOLO 感知层可能认错的画面（难例，[perception] hardcases），hard.jsonl 记原因和检测框
+      spin/<时间>/    #spin 转一圈的截图（转前、转完、每帧带按住后的秒数）和 summary.json
 """
 
 from __future__ import annotations
@@ -44,6 +45,29 @@ def prune(root: Path, keep: int) -> list[Path]:
     return old
 
 
+def write_spin(folder: Path, result, turns: int) -> dict:
+    """存一次转圈（brain.camera.SpinResult）：转前 / 转完 / 每帧（文件名带按住后第几秒）+ summary.json，返回 summary。"""
+    from .brain.images import difference, thumb
+
+    folder.mkdir(parents=True, exist_ok=True)
+    imwrite(folder / "before.jpg", result.before)
+    imwrite(folder / "after.jpg", result.after)
+    for i, (t, frame) in enumerate(result.frames):
+        imwrite(folder / f"{i:03d}_{t:.2f}s.jpg", frame)
+    n = len(result.frames)
+    summary = {
+        "turns": turns,
+        "seconds": round(result.seconds, 2),
+        "frames": n,
+        "fps": round(n / result.seconds, 1) if result.seconds > 0 else 0,
+        "panel_reopened": result.panel_reopened,
+        "blackout": result.blackout,
+        "drift": round(difference(thumb(result.before), thumb(result.after)), 3),  # 转前转后差多少（0~1，越小越接近原位）
+    }
+    (folder / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return summary
+
+
 class RunDir:
     def __init__(self, path: Path, cfg: Config) -> None:
         self.path = path
@@ -74,6 +98,12 @@ class RunDir:
             json.dumps(dataclasses.asdict(cfg), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         return run
+
+    def save_spin(self, result, turns: int, stamp: str) -> Path:
+        """#spin 的结果存到 spin/<stamp>/（stamp 用 HHMMSS：Windows 文件名不能带冒号）。"""
+        folder = self.path / "spin" / stamp
+        write_spin(folder, result, turns)
+        return folder
 
     def attach_log(self) -> None:
         """skydango 的日志全量（DEBUG）写进 agent.log；终端的输出级别不变。"""

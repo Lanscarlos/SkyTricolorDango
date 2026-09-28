@@ -571,3 +571,252 @@ def test_no_occlusion_right_after_a_camera_hold():
         clock.t = 2.0
     w.process(frame(), 2.1, panel_visible=False)
     assert not w.paused
+
+
+# ---- 二期：环绕扫描 ----
+from skydango.config import SpinConfig  # noqa: E402
+from skydango.vision.sweep import UNKNOWN_WHO, UNLIT_WHO  # noqa: E402
+
+
+def spin_frames(n=20):  # t = i * 0.1；seconds_per_turn = 2.0、hfov = 90 → 每帧转 18°
+    return [(i * 0.1, frame()) for i in range(n)]
+
+
+def me():
+    return player(900, 500)  # 团子：每帧都在中间不动
+
+
+def test_sweep_reports_friend_direction_and_strangers():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    det.frames[5] = [me(), player(1155, 400), tag(1145, 110)]  # t=0.5 → 90° + 画面偏右 11° → 右
+    det.frames[10] = [me(), Detection("player_unlit", Rect(1155, 400, 90, 220), 0.9)]  # t=1.0 → 191° → 后
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    r = w.sweep(spin_frames(), SpinConfig())
+    assert {(e.who, e.direction) for e in r.entries} == {("懒洋洋大王", "右"), (UNLIT_WHO, "后")}
+    assert r.self_box == Rect(900, 500, 90, 220) and w.self_box == r.self_box
+    assert r.frames == 20 and r.seconds == pytest.approx(1.9)
+    assert "右边：懒洋洋大王" in r.text()
+
+
+def test_sweep_does_not_touch_runtime_state():
+    det = FakeDetector()
+    det.frames = [[me(), player(1155, 400), tag(1145, 110)] for _ in range(20)]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.sweep(spin_frames(), SpinConfig())
+    assert w.last_seen == {} and w.tracker.tracks == {} and w.requests == {} and w.labels == {}
+
+
+def test_holding_partner_is_reported_beside():
+    det = FakeDetector()
+    det.frames = [[me(), player(980, 500), tag(965, 120, y=430)] for _ in range(20)]
+    w = watcher(det, FakeOcr({120: "番茄炒蛋盖饭"}))
+    r = w.sweep(spin_frames(), SpinConfig())
+    assert [(e.who, e.direction) for e in r.entries] == [("番茄炒蛋盖饭", "身边")]
+    assert r.self_box is None and w.self_box is None
+
+
+def test_unknown_tag_is_not_a_stranger():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    det.frames[3] = [me(), player(1155, 400), tag(1145, 130)]
+    w = watcher(det, FakeOcr({130: "路人甲"}))
+    r = w.sweep(spin_frames(), SpinConfig())
+    assert [e.who for e in r.entries] == [UNKNOWN_WHO]
+
+
+def test_small_untagged_player_is_skipped():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    det.frames[3] = [me(), player(1500, h=40)]
+    r = watcher(det).sweep(spin_frames(), SpinConfig())
+    assert r.entries == []
+
+
+def test_self_box_from_sweep_excludes_self_at_runtime():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    w = watcher(det)
+    w.sweep(spin_frames(), SpinConfig())
+    det.frames = [[me()]]
+    for t in (0.0, 1.0, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    assert w.strangers(2.0) == 0
+
+
+# ---- 二期：认说话人（typing 气泡） ----
+def bubble(x, y=180, w=80, h=60):
+    return Detection("typing", Rect(x, y, w, h), 0.9)
+
+
+def unlit(x, y=400, w=90, h=220):
+    return Detection("player_unlit", Rect(x, y, w, h), 0.9)
+
+
+def test_bubble_over_unlit_stranger_gives_hint():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(12.0) == "（说话的可能是右边近处那个没点火的陌生人）"  # 220 ÷ (0.2 × 1080) ≈ 1.02 → 近
+    assert w.speaker_hint(19.0) is None  # 过了 typing_window（8 秒）
+
+
+def test_far_stranger_on_the_left():
+    det = FakeDetector()
+    det.frames = [[player(200, y=500, w=40, h=80), bubble(190, y=420, w=60, h=40)]]  # 80 ÷ 216 ≈ 0.37 → 远
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(10.0) == "（说话的可能是左边远处那个陌生人）"
+
+
+def test_bubble_over_friend_gives_no_hint():
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110), bubble(1005, y=260)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(10.0) is None
+
+
+def test_bubble_over_self_is_ignored():
+    det = FakeDetector()
+    det.frames = [[Detection("self", Rect(900, 400, 90, 220), 0.9), player(905), bubble(905)]]  # 团子框和人物框叠在一起
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(10.0) is None
+
+
+def test_two_strangers_typing_gives_no_hint():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505), unlit(300), bubble(305)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.speaker_hint(10.0) is None
+
+
+def test_overlay_marks_typing():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert {"kind": "typing", "label": "正在输入"}.items() <= next(b for b in w.overlay(10.0) if b["kind"] == "typing").items()
+
+
+def test_default_classes_end_with_typing():
+    assert PerceptionConfig().classes == ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"]
+    assert PerceptionConfig().typing_window == 8.0
+
+
+# ---- 二期：距离和走向 ----
+from skydango.vision.perception import approaching  # noqa: E402
+
+
+def test_approaching_rules():
+    grow = [(i * 0.1, 100 + i * 5, 1400 - i * 20) for i in range(15)]
+    assert approaching(grow, 1920, 0.25)
+    jitter = [(i * 0.1, 100 * (1.1 if i % 2 else 0.9), 960) for i in range(15)]
+    assert not approaching(jitter, 1920, 0.25)
+    outward = [(i * 0.1, 100 + i * 5, 1300 + i * 30) for i in range(15)]
+    assert not approaching(outward, 1920, 0.25)
+    assert not approaching(grow[:2], 1920, 0.25)
+
+
+def walk_up(w, det, t0, tagged=True, cls="player"):
+    for i in range(15):
+        h = 150 + 8 * i
+        body = Detection(cls, Rect(1000, 620 - h, 90, h), 0.9)
+        det.frames = [[body, tag(990, 110, y=620 - h - 70)] if tagged else [body]]
+        w.process(frame(), t0 + i * 0.1, panel_visible=False)
+
+
+def test_friend_walking_up_is_reported_once_per_cooldown():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    walk_up(w, det, 0.0)
+    assert w.pop_approaches() == ["懒洋洋大王"]
+    assert w.pop_approaches() == []  # 取走就清空
+    walk_up(w, det, 2.0)  # 60 秒内又走过来一次
+    assert w.pop_approaches() == []
+
+
+def test_stranger_approach_follows_switch():
+    det = FakeDetector()
+    w = watcher(det)
+    walk_up(w, det, 0.0, tagged=False)
+    assert w.pop_approaches() == [STRANGER]
+    det2 = FakeDetector()
+    quiet = watcher(det2, approach_strangers=False)
+    walk_up(quiet, det2, 0.0, tagged=False)
+    assert quiet.pop_approaches() == []
+
+
+def test_no_approach_across_a_pause():
+    det = FakeDetector()
+    clock = Clock()
+    w = watcher(det, clock=clock)
+    for i in range(5):
+        det.frames = [[unlit(1000, y=400, h=100)]]
+        w.process(frame(), i * 0.1, panel_visible=False)
+    clock.t = 0.45
+    w.hold("camera")
+    clock.t = 0.6
+    w.release("camera")
+    for i in range(5):
+        det.frames = [[unlit(1000, y=360, h=140)]]
+        w.process(frame(), 0.6 + i * 0.1, panel_visible=False)
+    assert w.pop_approaches() == []
+
+
+def test_nearest_picks_the_tallest_known_person():
+    det = FakeDetector()
+    det.frames = [[player(1000, y=300, h=300), tag(990, 110, y=230), unlit(1500, h=150),
+                   Detection("self", Rect(900, 420, 90, 220), 0.9)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.nearest(0.0) == ("懒洋洋大王", "近")  # 300 ÷ 220（团子框）≈ 1.36
+    assert watcher(FakeDetector()).nearest(0.0) is None
+
+
+# ---- 评审修正 ----
+def test_sweep_finds_self_when_model_boxes_it_twice():
+    det = FakeDetector()
+    det.frames = [[me(), Detection("self", Rect(902, 502, 90, 218), 0.9)] for _ in range(20)]
+    r = watcher(det).sweep(spin_frames(), SpinConfig())
+    assert r.self_box is not None and r.entries == []
+
+
+def test_sweep_merges_flickering_friend():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    det.frames[5] = [me(), player(1155, 400), tag(1145, 110)]
+    det.frames[6] = [me(), player(1070, 400)]  # 标签这一帧没检测到
+    det.frames[7] = [me(), player(990, 400), tag(980, 140)]  # 标签糊了读不出
+    r = watcher(det, FakeOcr({110: "懒洋洋大王"})).sweep(spin_frames(), SpinConfig())
+    assert [e.who for e in r.entries] == ["懒洋洋大王"]
+
+
+def test_single_frame_sweep_excludes_known_self():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    w = watcher(det)
+    w.sweep(spin_frames(), SpinConfig())  # 认出团子
+    det.frames = [[player(905, 500)]]
+    assert w.sweep([(0.0, frame())], SpinConfig()).entries == []
+
+
+def test_single_frame_sweep_excludes_self_roi():
+    det = FakeDetector()
+    det.frames = [[player(905, 500)]]
+    w = watcher(det, self_roi=[0.4, 0.4, 0.6, 0.8])
+    assert w.sweep([(0.0, frame())], SpinConfig()).entries == []
+
+
+def test_self_box_is_padded_and_self_roi_still_applies():
+    det = FakeDetector()
+    det.frames = [[me()] for _ in range(20)]
+    w = watcher(det, self_roi=[0.0, 0.0, 0.1, 0.5])
+    w.sweep(spin_frames(), SpinConfig())
+    det.frames = [[player(960, 540), player(20, 100)]]  # 团子挪出了原框一点；self_roi 里另有一个
+    for t in (0.0, 1.0, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    assert w.strangers(2.0) == 0

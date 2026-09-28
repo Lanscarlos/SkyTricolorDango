@@ -244,7 +244,7 @@ class PerceptionConfig:
     model: str = "models/sky-yolo.onnx"  # .onnx 用 onnxruntime；.pt / .engine 用 ultralytics
     device: str = "cuda"  # cuda / cpu；要 cuda 但装的是 CPU 版 onnxruntime 时会退回 CPU 并警告
     # 模型里读不到类别名时用。player_unlit = 没点火的陌生人（黑色剪影）；点过火的陌生人外观和好友一样，标 player
-    classes: list[str] = field(default_factory=lambda: ["player", "name_tag", "social_ring", "self", "player_unlit"])
+    classes: list[str] = field(default_factory=lambda: ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"])
     imgsz: int = 960  # 推理尺寸，要和训练时一致；名字标签只有 40~50 px 高，640 时缩到 15 px 左右，偏小
     conf: float = 0.35
     iou: float = 0.5  # NMS 阈值（端到端模型不用）
@@ -269,6 +269,15 @@ class PerceptionConfig:
     audit_interval: float = 30.0  # 每隔多久在后台做一次整图 OCR 核对 YOLO 认出的好友（约 1 s CPU）；0 = 不核对
     hardcase_max: int = 200  # 每次运行最多存几张
     low_conf: float = 0.25  # 检测器按这个出框；conf 以下的框不进追踪，只给难例收集看
+    # 二期：远近（人物框高 ÷ 团子框高；阈值待真机标定）
+    near: float = 0.8  # 比值 ≥ 这个算"近"
+    far: float = 0.4  # 比值 < 这个算"远"，中间是"中"
+    self_height: float = 0.2  # 没有团子框时，假定团子框高占屏高的这么多（待标定）
+    approach_window: float = 1.5  # 走过来：看最近这么久的框高变化
+    approach_grow: float = 0.25  # 框高增大超过这个比例（且往画面中间走）算朝团子走过来（待标定）
+    approach_cooldown: float = 60.0  # 同一个人这么久内只报一次（陌生人整体算一个）
+    approach_strangers: bool = True  # 陌生人走过来也报（陌生人多的地方嫌吵就关掉）
+    typing_window: float = 8.0  # 陌生人的消息：这么久内头顶冒过"正在输入"气泡的人才算可能的说话人（待标定）
 
 
 @dataclass
@@ -299,6 +308,19 @@ class ViewerConfig:
     fps: float = 10.0  # 最多每秒更新几帧
     width: int = 1280  # 发给浏览器的图缩到这么宽
     quality: int = 70  # JPEG 质量
+
+
+@dataclass
+class SpinConfig:
+    """转一圈（`#spin` / `camera spin` / 打开感知层时的 look_around），见感知层二期设计 §0、§1。"""
+
+    seconds_per_turn: float = 2.0  # 按住方向键转一圈要几秒（按 0.5 s ≈ 90° 估的，待 camera spin 标定）
+    fps: float = 15.0  # 转的时候每秒截几张
+    max_turns: int = 2  # #spin 最多转几圈
+    min_interval: float = 10.0  # 两次 #spin 至少隔几秒
+    hfov: float = 90.0  # 画面水平视野角（度），算方位用（待 camera spin 标定）
+    merge_deg: float = 30.0  # 陌生人方位相差不到这么多度算同一个
+    self_motion: float = 0.03  # 转一圈时框中心平均移动不到画面宽的这么多，才可能是团子
 
 
 @dataclass
@@ -354,6 +376,7 @@ class Config:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
+    spin: SpinConfig = field(default_factory=SpinConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
 
 

@@ -625,14 +625,18 @@ def _perception_label(cfg: Config, args) -> None:
     """用现有识别器给录下来的画面出弱标注（名字标签 + 圆圈），写成 YOLO 数据集。"""
     import cv2
 
-    from .vision.bubbles import roi_rect
+    from .vision.bubbles import Rect, roi_rect
     from .vision.ocr import make_ocr
-    from .vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, yolo_line
+    from .vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, with_self, yolo_line
 
     classes = cfg.perception.classes
     index = {c: i for i, c in enumerate(classes)}
     root = Path(args.source)
-    if args.from_runs:  # runs/*/hard/*.jpg：运行时收集的难例，文件名前加运行目录名
+    if args.spin and not args.model:
+        raise SystemExit("--spin 要配 --model：认团子要先用模型框出人")
+    if args.spin:  # camera spin / #spin 录的目录：只要转动中的帧（NNN_*.jpg），按文件名排就是时间顺序
+        items = [(p, f"{root.name}_{p.stem}") for p in sorted(root.glob("[0-9][0-9][0-9]_*.jpg"))]
+    elif args.from_runs:  # runs/*/hard/*.jpg：运行时收集的难例，文件名前加运行目录名
         items = hard_images(root)
     else:
         items = []
@@ -645,6 +649,24 @@ def _perception_label(cfg: Config, args) -> None:
 
         p = cfg.perception
         detector = make_detector(args.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
+    predicted: dict[str, list] = {}  # 文件名 → 模型预测（--spin 先全部跑一遍认团子，后面合并预标注时复用）
+    selves: dict[str, Rect] = {}
+    if args.spin:
+        from .vision.perception import people_boxes
+        from .vision.sweep import find_self
+
+        people = []
+        for path, stem in items:
+            predicted[stem] = detector.detect(imread(path))
+            people.append([d.box for d in people_boxes([d for d in predicted[stem] if d.score >= cfg.perception.conf])])
+        frame0 = imread(items[0][0]) if items else None
+        found = find_self(people, frame0.shape[1] if frame0 is not None else 1920, cfg.spin.self_motion)
+        if found.box is None:
+            print("认不出团子（转圈录像里没有一直在中间不动的人，或者牵着手分不开），不补 self")
+        else:
+            selves = {items[i][1]: box for i, box in found.per_frame.items()}
+            b = found.box
+            print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}，{len(selves)} 张补 self 框")
     out = Path(args.output)
     ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
     icons = _icon_classifier(cfg)
@@ -662,7 +684,9 @@ def _perception_label(cfg: Config, args) -> None:
         )
         weak = len(boxes)
         if detector is not None:
-            boxes = merge_labels(boxes, detector.detect(frame))
+            boxes = merge_labels(boxes, predicted[stem] if stem in predicted else detector.detect(frame))
+        if stem in selves:
+            boxes = with_self(boxes, selves[stem])
         split = split_of(stem, args.val)
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
@@ -839,7 +863,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
     agent = Agent(
         cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store,
-        viewer=viewer,
+        viewer=viewer, camera=_camera(cfg, dev, reader),
     )
     try:
         agent.run(duration)
@@ -852,6 +876,44 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
                 emotes.restore()
             except Exception:
                 log.exception("恢复轮盘失败，请用 emotes wheel 检查")
+
+
+def _camera(cfg: Config, dev, reader):
+    """视角控制：转之前关聊天记录面板（log 模式），转完再打开。普通模式（#spin）和大脑模式共用。"""
+    from .brain.camera import Camera
+
+    if cfg.vision.mode == "log":
+        panel_visible, panel_key = (lambda: reader.panel_visible(dev.screenshot())), cfg.vision.log_open_key
+    else:
+        panel_visible, panel_key = (lambda: False), 0
+    return Camera(dev, cfg.brain.camera_step, panel_visible, panel_key)
+
+
+def cmd_camera(cfg: Config, args) -> None:
+    """camera spin：在电脑前直接转一圈、存每帧截图，标定一圈几秒、视野角、画面多模糊（感知层二期 §0）。"""
+    from .runlog import write_spin
+
+    dev = _device(cfg)
+    reader, _ = _build_reader(cfg)
+    camera = _camera(cfg, dev, reader)
+    spin = cfg.spin
+    turns = max(1, min(args.turns, spin.max_turns))
+    seconds = args.seconds if args.seconds is not None else spin.seconds_per_turn
+    out = Path(args.output) if args.output else Path("tmp/spin") / time.strftime("%H%M%S")
+    print(f"转 {turns} 圈（一圈按住 {seconds:.2f} 秒，{spin.fps:.0f} fps）…")
+    result = camera.spin(dev.screenshot, turns, seconds, spin.fps)
+    s = write_spin(out, result, turns)
+    print(f"转了 {s['seconds']} 秒 {s['frames']} 张（实际 {s['fps']} fps），面板重开：{'是' if s['panel_reopened'] else '否'}，"
+          f"转前转后差异 {s['drift']}{'，中途画面黑了' if s['blackout'] else ''}")
+    print(f"截图和 summary.json 在 {out}")
+    if cfg.perception.enabled:  # 顺便看 YOLO 汇总得对不对、多久
+        env = _scene_watcher(cfg, dev=dev, background=False)
+        started = time.perf_counter()
+        swept = env.sweep([(0.0, result.before), *result.frames], spin)
+        print(f"扫描（{time.perf_counter() - started:.1f} 秒）：{swept.text()}")
+        if swept.self_box is not None:
+            b = swept.self_box
+            print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}")
 
 
 def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
@@ -874,10 +936,10 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     import threading
 
     from .brain.body import Body
-    from .brain.camera import Camera
     from .brain.claude import one_shot
     from .brain.events import EventQueue
     from .brain.eyes import Eyes, eyes_command
+    from .brain.images import scene_note
     from .brain.loop import Brain, log_brain_message
     from .brain.mcp_server import SkyServer
     from .brain.prompt import brain_prompt
@@ -909,11 +971,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel_visible=reader.panel_visible
         )
     emotes = _build_emotes(cfg, dev, reader, no_emotes)
-    if cfg.vision.mode == "log":
-        panel_visible, panel_key = (lambda: reader.panel_visible(dev.screenshot())), cfg.vision.log_open_key
-    else:
-        panel_visible, panel_key = (lambda: False), 0
-    camera = Camera(dev, cfg.brain.camera_step, panel_visible, panel_key)
+    camera = _camera(cfg, dev, reader)
     friend_checker = _friend_checker(cfg, dev, reader) if cfg.friend_check.enabled else None
     events = EventQueue()
     # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
@@ -931,13 +989,14 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         labels=lambda: dict(env.labels) if env else {},
         blackout=lambda: body.blackout,
         label_keep=cfg.env.interval * 2 + 1,
+        note=(lambda now, s: scene_note(env, now, s)) if hasattr(env, "strangers") else None,
     )
     events.subscribe(eyes.notice)
     toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says)
     server = SkyServer(toolbox)
     server.start()
     session = BrainSession(
-        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store),
+        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep")),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout, on_message=log_brain_message,
     )
     brain = Brain(
@@ -975,16 +1034,27 @@ def cmd_look(cfg: Config, args) -> None:
     from .vision.bubbles import roi_rect
     from .vision.chatlog import find_input_top
 
+    from .brain.images import label_note, scene_note
+
     base, claude_vars = _brain_env(cfg)
-    dev = _device(cfg)
-    frame = dev.screenshot()
+    frame = imread(args.image) if args.image else _device(cfg).screenshot()
     height, width = frame.shape[:2]
     area = roi_rect(cfg.vision.log_roi, width, height)
     panel = find_input_top(frame[:, area.x : area.x2]) is not None
-    env = _env_watcher(cfg, background=False)
-    env.observe(frame, 0.0, panel_visible=panel)
+    env = _scene_watcher(cfg, background=False)
+    yolo = hasattr(env, "strangers")
+    if yolo:  # 同一帧跑两次：隔 stranger_after 秒，点过火的陌生人才判得出来
+        env.process(frame, 0.0, panel)
+        env.process(frame, cfg.perception.stranger_after, panel)
+    else:
+        env.observe(frame, 0.0, panel_visible=panel)
     Path("tmp").mkdir(exist_ok=True)
-    imwrite("tmp/look.jpg", frame)
+    if not args.image:
+        imwrite("tmp/look.jpg", frame)
+    now = cfg.perception.stranger_after if yolo else 0.0
+    note = (lambda t, s: scene_note(env, t, s)) if yolo else None
+    scale = min(cfg.brain.image_size[0] / width, cfg.brain.image_size[1] / height, 1.0)
+    print("交给眼睛的位置说明：\n" + (scene_note(env, now, scale) if yolo else label_note(dict(env.labels), scale)) + "\n")
     eyes = Eyes(
         cfg.brain,
         describe=lambda content: one_shot(
@@ -993,14 +1063,15 @@ def cmd_look(cfg: Config, args) -> None:
         frame=lambda: frame,
         labels=lambda: dict(env.labels),
         blackout=lambda: False,
-        clock=lambda: 0.0,
+        clock=lambda: now,
+        note=note,
     )
     if args.prompt:
         eyes.look_request = Path(args.prompt).read_text(encoding="utf-8")
     started = time.perf_counter()
-    text = eyes.describe_frame(frame, 0.0)
+    text = eyes.describe_frame(frame, now)
     print(text)
-    print(f"\n{cfg.brain.eyes_model}：{time.perf_counter() - started:.1f} 秒；截图存在 tmp/look.jpg")
+    print(f"\n{cfg.brain.eyes_model}：{time.perf_counter() - started:.1f} 秒" + ("" if args.image else "；截图存在 tmp/look.jpg"))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1061,6 +1132,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("env", help="对当前画面识别一次环境（身边有谁、在哪张图），用来验证").set_defaults(func=cmd_env)
 
     p = sub.add_parser("look", help="截一张图让眼睛（Claude Haiku）描述一遍（调眼睛的提示词，看它认得准不准）")
+    p.add_argument("image", nargs="?", help="描述这张图（不截屏）；不填就截当前画面")
     p.add_argument("--prompt", help="换一个问题：文本文件路径")
     p.set_defaults(func=lambda cfg, args: cmd_look(cfg, args))
 
@@ -1069,6 +1141,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("y", type=int)
     p.add_argument("-o", "--output", default="tmp/friend-check")
     p.set_defaults(func=cmd_friend_check)
+
+    p = sub.add_parser("camera", help="视角：spin 转一圈、边转边截图（标定一圈几秒、视野角，存到 tmp/spin/<时间>）")
+    csub = p.add_subparsers(dest="action", required=True)
+    q = csub.add_parser("spin", help="按住方向键转一圈，按 spin.fps 截图，存转前 / 转完 / 每帧和 summary.json")
+    q.add_argument("--turns", type=int, default=1, help="转几圈（最多 spin.max_turns）")
+    q.add_argument("--seconds", type=float, help="一圈按住几秒（临时覆盖 spin.seconds_per_turn，标定用）")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/spin/<时间>）")
+    p.set_defaults(func=cmd_camera)
 
     p = sub.add_parser("record", help="连续截图存到 tmp/record/，用来观察界面变化")
     p.add_argument("--seconds", type=float, default=60.0)
@@ -1094,6 +1174,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("-o", "--output", default="datasets/sky")
     q.add_argument("--model", help="再用这个模型的预测（置信度 ≥ perception.low_conf）当初始标注，和弱标注重叠的留弱标注")
     q.add_argument("--from-runs", action="store_true", help="source 是 runs/：收集每次运行存下的难例（hard/*.jpg）")
+    q.add_argument("--spin", action="store_true", help="source 是 camera spin / #spin 录的目录：转圈认出团子，每帧补 self 框（要配 --model）")
     q.add_argument("--val", type=float, default=0.15, help="验证集比例")
     q.add_argument("--all-text", action="store_true", help="画面里读到的字都当名字标签候选（不只好友名单里的），要人工删错的")
     q.add_argument("--min-score", type=float, default=0.9)

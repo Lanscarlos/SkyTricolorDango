@@ -91,6 +91,12 @@ def merge_labels(weak: list[tuple[str, Rect]], predicted: list[Detection], min_i
     return out
 
 
+def with_self(boxes: list[tuple[str, Rect]], me: Rect, min_iou: float = 0.5) -> list[tuple[str, Rect]]:
+    """转圈认出的团子（感知层二期 §1.3）：和它重叠的 player / self 框换成一个 self 框。"""
+    out = [(c, b) for c, b in boxes if not (c in ("player", "self") and iou(b, me) >= min_iou)]
+    return out + [("self", me)]
+
+
 def hard_images(runs: Path) -> list[tuple[Path, str]]:
     """runs/*/hard/*.jpg（运行时收集的难例）→ (路径, "<运行目录名>_<文件名>")：不同次运行的文件名可能重复。"""
     out = []

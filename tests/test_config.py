@@ -47,3 +47,12 @@ def test_brain_section(tmp_path):
     assert cfg.brain.image_size == [1280, 720] and cfg.brain.max_steps == 6
     assert cfg.brain.move_step == 0.3 and cfg.brain.move_min_interval == 3.0
     assert cfg.brain.owner_name == "" and cfg.brain.owner_window == 30.0
+
+
+def test_spin_section(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[spin]\nhfov = 75.0\n", encoding="utf-8")
+    cfg = load_config(p)
+    s = cfg.spin
+    assert s.hfov == 75.0
+    assert (s.seconds_per_turn, s.fps, s.max_turns, s.min_interval, s.merge_deg, s.self_motion) == (2.0, 15.0, 2, 10.0, 30.0, 0.03)

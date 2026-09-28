@@ -18,14 +18,14 @@ from typing import Any
 from ..agent import RateLimiter
 from ..chat.memory import Turn
 from ..chat.panel import PanelKeeper
-from ..chat.reader import Message
+from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES
 from ..imageio import imwrite
 from ..vision.bubbles import roi_rect
 from .events import EventQueue
-from .images import crop_view, difference, fit, image_block, is_black, label_note, thumb
+from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 
 log = logging.getLogger(__name__)
 
@@ -238,6 +238,7 @@ class Body:
     def _heard(self, fresh: list[Message], frame, now: float) -> None:
         if not fresh:
             return
+        fresh = with_speaker_hint(self.env, fresh, now)
         for m in fresh:
             log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             self.chat.append((self.wall(), m.speaker, m.text))
@@ -306,6 +307,11 @@ class Body:
             elif not n and self._strangers:
                 self.events.put("stranger", "陌生人都走开了")
             self._strangers = n
+        if hasattr(self.env, "pop_approaches"):  # 有人朝团子走过来（眼睛不因此自动看，省额度）
+            for who in self.env.pop_approaches():
+                if who == self.holding:
+                    continue
+                self.events.put("approach", "有个陌生人朝你走过来了" if who == "陌生人" else f"{who} 朝你走过来了")
 
         requests = dict(self.env.requests)
         current = {(r.name, r.kind) for r in requests.values()}
@@ -352,10 +358,14 @@ class Body:
         frame = self.device.screenshot()
         self.last_frame, self.last_look, self.look_frame = frame, now, frame
         view = fit(frame, tuple(brain.image_size))
-        recent = {}
-        if self.env is not None:  # 最近两次扫描内看到的名字才算在画面里；先拍快照，env 后台线程会改这个 dict
+        scale = view.shape[1] / frame.shape[1]
+        if hasattr(self.env, "strangers"):  # YOLO 感知层：好友、陌生人、团子的位置都给
+            note = scene_note(self.env, now, scale)
+        elif self.env is not None:  # 最近两次扫描内看到的名字才算在画面里；先拍快照，env 后台线程会改这个 dict
             recent = {n: v for n, v in dict(self.env.labels).items() if now - v[4] <= self.cfg.env.interval * 2 + 1}
-        note = label_note(recent, view.shape[1] / frame.shape[1]) if self.env is not None else "（没开环境识别，认不出名字）"
+            note = label_note(recent, scale)
+        else:
+            note = "（没开环境识别，认不出名字）"
         if self.blackout:
             note += "\n画面现在是黑的（可能在切场景）"
         return [image_block(view, brain.jpeg_quality), {"type": "text", "text": note}]
@@ -391,6 +401,25 @@ class Body:
         self.last_frame = frames[0]
         return frames
 
+    def sweep_around(self) -> str:
+        """打开感知层时的环顾：连续转一圈，YOLO 汇总每个方向有谁（dry-run 不转，只看当前画面）。"""
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在看不了")
+        spin = self.cfg.spin
+        if self.camera is None or self.cfg.reply.dry_run:
+            result = self.env.sweep([(0.0, self.fresh_frame())], spin)
+            return "dry-run：没真的转，只看了前面。" + result.text()
+        try:
+            with self._held("camera"):
+                shot = self.camera.spin(self.device.screenshot, 1, spin.seconds_per_turn, spin.fps)
+                result = self.env.sweep([(0.0, shot.before), *shot.frames], spin)
+        finally:
+            self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        self.last_frame = shot.after
+        if not shot.panel_reopened:
+            self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
+        return result.text() + ("（中途画面黑了，可能在切场景，这一圈不准）" if shot.blackout else "")
+
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
@@ -402,6 +431,9 @@ class Body:
         parts.append("身边的好友：" + ("、".join(near) if near else "没看到"))
         if hasattr(self.env, "strangers"):
             parts.append(f"身边的陌生人：{self.env.strangers(now)} 个")
+        closest = self.env.nearest(now) if hasattr(self.env, "nearest") else None
+        if closest:
+            parts.append(f"离你最近的：{closest[0]}（{closest[1]}）")
         if self.holding:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:
@@ -569,6 +601,7 @@ class Body:
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        self._forget_self()
         return "镜头现在：" + result
 
     def camera_reset(self) -> str:
@@ -579,7 +612,13 @@ class Body:
         with self._held("camera"):
             result = self.camera.reset()
         self._ref_thumb = None
+        self._forget_self()
         return result
+
+    def _forget_self(self) -> None:
+        """镜头拉近拉远、俯仰变了：转圈认出的团子框（位置、大小）不准了，下次转圈再认。"""
+        if hasattr(self.env, "self_box"):
+            self.env.self_box = None
 
     # ---- 大脑离线时的备用回复 ----
     def _fallback(self, now: float) -> None:

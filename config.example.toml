@@ -89,6 +89,23 @@ hardcases = true                # 可能认错的画面存到 runs/<这次>/hard
 audit_interval = 30.0           # 难例的旁路核对：每隔这么久后台整图 OCR 一次（约 1 s CPU）；0 = 不核对
 hardcase_max = 200
 low_conf = 0.25                 # 检测器出框阈值；conf 以下的框只给难例收集看
+near = 0.8                      # 远近：人物框高 ÷ 团子框高 ≥ 这个算近（待标定）
+far = 0.4                       # < 这个算远，中间算中（待标定）
+self_height = 0.2               # 还没认出团子框时，假定团子框高占屏高的比例（待标定）
+approach_grow = 0.25            # 走过来：1.5 秒内框高增大这么多、且往画面中间走（待标定）
+approach_cooldown = 60.0        # 同一个人这么久内只报一次
+approach_strangers = true       # 陌生人走过来也报；陌生人多的地方嫌吵就关掉
+typing_window = 8.0             # 陌生人发消息前这么久内头顶冒过气泡的人，才算可能的说话人（待真机确认）
+
+[spin]
+# 转一圈：主人发 #spin（普通模式）、命令行 camera spin、打开感知层时大脑的 look_around
+seconds_per_turn = 2.0          # 按住方向键转一圈要几秒（估的，待 camera spin 标定）
+fps = 15.0                      # 转的时候每秒截几张
+max_turns = 2                   # #spin 最多转几圈
+min_interval = 10.0             # 两次 #spin 至少隔几秒
+hfov = 90.0                     # 画面水平视野角（度），算方位用（待 camera spin 标定）
+merge_deg = 30.0                # 陌生人方位相差不到这么多度算同一个
+self_motion = 0.03              # 转一圈时几乎不动（移动 < 画面宽 × 这个）、一直在中间的就是团子
 
 [viewer]
 # 识别可视化网页：python -m skydango view（只看不动）或 run --view，浏览器里实时看画面 + 识别框

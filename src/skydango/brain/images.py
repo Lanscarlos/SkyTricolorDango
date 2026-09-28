@@ -70,3 +70,26 @@ def label_note(labels: dict, scale: float) -> str:
         for name, (x, y, w, h, *_rest) in sorted(labels.items())
     ]
     return "图里认出的好友名字（名字在人头顶）：\n" + "\n".join(rows)
+
+
+_SCENE_KINDS = {"friend": 0, "unlit": 1, "stranger": 2, "self": 3}
+_SCENE_WHO = {"unlit": "陌生人（没点火，黑影）", "stranger": "陌生人", "self": "团子（就是“你”自己）"}
+
+
+def scene_note(env, now: float, scale: float) -> str:
+    """YOLO 感知层认出的人（env.overlay）→ 给眼睛 / 大脑看的"谁在图里哪儿"。scale = 图宽 / 原图宽。"""
+    boxes = env.overlay(now)
+    people = sorted((b for b in boxes if b["kind"] in _SCENE_KINDS), key=lambda b: (_SCENE_KINDS[b["kind"]], b["x"]))
+    rows = [
+        f"- {_SCENE_WHO.get(b['kind'], b['label'])}：({round((b['x'] + b['w'] / 2) * scale)}, {round((b['y'] + b['h'] / 2) * scale)}) 附近"
+        for b in people
+    ]
+    friends = {b["label"] for b in people if b["kind"] == "friend"}
+    rows[len(friends):len(friends)] = [  # 只看到名字标签、人没框出来的好友，排在好友后面
+        f"- {b['label']}：头顶名字在 ({round((b['x'] + b['w'] / 2) * scale)}, {round(b['y'] * scale)})，人在名字下方"
+        for b in sorted((b for b in boxes if b["kind"] == "name" and b["label"] not in friends), key=lambda b: b["x"])
+    ]
+    tail = "没列出的人都叫“陌生人”。"
+    if not rows:
+        return "画面里没认出人（可能被挡住、离得远，或者没人）\n" + tail
+    return "画面里认出的人（坐标按这张图）：\n" + "\n".join(rows) + "\n" + tail

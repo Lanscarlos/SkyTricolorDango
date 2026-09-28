@@ -243,9 +243,9 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 <aside><h1>团子看到的</h1><dl id="info"></dl><div class="legend" id="legend"></div></aside>
 </main><script>
 const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",
-ring:"#22d3ee",request:"#f43f5e",panel:"#6b7280",message:"#f472b6"};
+ring:"#22d3ee",request:"#f43f5e",panel:"#6b7280",message:"#f472b6",typing:"#e879f9"};
 const NAMES={friend:"好友",tag:"没认出的名字",stranger:"陌生人",unlit:"没点火",player:"没判定的人",self:"团子",ring:"互动圆圈",
-request:"互动请求",panel:"聊天面板",message:"新消息"};
+request:"互动请求",panel:"聊天面板",message:"新消息",typing:"正在输入"};
 const $=id=>document.getElementById(id),c=$("c"),ctx=c.getContext("2d"),img=new Image();
 let seq=0,paused=false,running=false,showBoxes=true,last=null,times=[];
 $("legend").innerHTML=Object.entries(NAMES).map(([k,v])=>`<span><i style="background:${COLORS[k]}"></i>${v}</span>`).join("");
