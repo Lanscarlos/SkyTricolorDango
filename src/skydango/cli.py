@@ -275,8 +275,11 @@ def _env_watcher(cfg: Config, background: bool = True, icons=None):
     )
 
 
-def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True):
-    """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。"""
+def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, run: RunDir | None = None):
+    """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。
+
+    有运行目录（run）且 perception.hardcases 打开时，顺带收集难例到 runs/<这次>/hard/。
+    """
     if not cfg.perception.enabled:
         return _env_watcher(cfg, background=background, icons=icons)
     from .vision.detect import make_detector
@@ -287,11 +290,26 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True):
     detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
     log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
+    hardcases = None
+    if p.hardcases and run is not None:
+        from .vision.hardcases import HardCaseCollector
+
+        audit = make_ocr(cfg.ocr.engine, cfg.env.threads) if p.audit_interval > 0 else None
+        hardcases = HardCaseCollector(run.hard, p, cfg.env, cfg.vision.log_roi, _friend_names(cfg), ocr=audit)
     return PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
-        scene_change=cfg.brain.scene_change,
+        scene_change=cfg.brain.scene_change, hardcases=hardcases,
     )
+
+
+def _stop_scene(env) -> None:
+    """退出时停掉感知线程；收集了难例就告诉用户在哪（runs/ 只留最近几次，要用的及时收进数据集）。"""
+    if hasattr(env, "stop"):
+        env.stop()
+    hard = getattr(env, "hardcases", None)
+    if hard is not None and hard.saved:
+        print(f"难例：存了 {hard.saved} 张 → {hard.folder}（收进数据集：perception label runs --from-runs）")
 
 
 def _viewer(cfg: Config, open_browser: bool = True):
@@ -729,7 +747,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
         notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _scene_watcher(cfg, icons, dev) if cfg.env.enabled else None
+    env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
     if env and icons:
         from .game.social import SocialHandler
@@ -757,8 +775,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
-        if hasattr(env, "stop"):
-            env.stop()
+        _stop_scene(env)
         if emotes is not None:
             try:
                 emotes.restore()
@@ -812,7 +829,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             notes = NotesKeeper(make_llm(cfg.llm), store, cfg.reply.persona, cfg.reply.notes_every)
     live_store = None if cfg.reply.dry_run else store
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _scene_watcher(cfg, icons, dev) if cfg.env.enabled else None
+    env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
     if env and icons:
         from .game.social import SocialHandler
@@ -868,8 +885,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         print("\n已停止")
     finally:
         stop.set()
-        if hasattr(env, "stop"):
-            env.stop()
+        _stop_scene(env)
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
         brain_thread.join(timeout=5)
         if live_store is not None and not brain_thread.is_alive():

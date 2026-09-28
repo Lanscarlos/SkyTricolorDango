@@ -86,7 +86,7 @@ class PerceptionWatcher:
         self.scene_change = scene_change
         self.hardcases = hardcases
         self.keep = cfg.keep  # 身体说"走开了"时用
-        self.tracker = Tracker(cfg.track_buffer, cfg.track_iou)
+        self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
         self.requests: dict = {}  # 名字 → game.social.Request
         self.labels: dict[str, tuple[int, int, int, int, float]] = {}
         self.circles: dict[str, tuple[str | None, float]] = {}

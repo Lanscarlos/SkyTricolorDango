@@ -10,17 +10,37 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 
 import numpy as np
 
 from ..chat.tracker import normalize, similar
 from ..config import EnvConfig
-from .bubbles import roi_rect
-from .ocr import OcrEngine
+from .bubbles import Rect, roi_rect
+from .ocr import OcrEngine, OcrLine
 
 log = logging.getLogger(__name__)
+
+
+def match_names(lines: Iterable[OcrLine], names: list[str], min_score: float) -> list[tuple[str, OcrLine]]:
+    """OCR 读到的字里哪些是好友名字（模糊匹配，容得下错一两个字）。"""
+    out = []
+    for line in lines:
+        if line.score < min_score or len(normalize(line.text.strip())) < 2:
+            continue
+        out += [(name, line) for name in names if similar(line.text.strip(), name, 0.75)]
+    return out
+
+
+def scan_area(width: int, height: int, cfg: EnvConfig, log_roi: list[float], panel_visible: bool) -> Rect:
+    """整图 OCR 扫哪块：去掉底部输入栏；聊天面板开着时去掉被它挡住的左边。"""
+    area = roi_rect(cfg.roi, width, height)
+    if panel_visible:
+        left = roi_rect(log_roi, width, height).x2
+        if left > area.x:
+            area = Rect(left, area.y, max(1, area.x2 - left), area.h)
+    return area
 
 
 class EnvWatcher:
@@ -61,11 +81,7 @@ class EnvWatcher:
             self._busy = True
         self._last_scan = now
         height, width = frame.shape[:2]
-        area = roi_rect(self.cfg.roi, width, height)
-        if panel_visible:  # 面板挡住的左边不扫
-            left = roi_rect(self.log_roi, width, height).x2
-            if left > area.x:
-                area = type(area)(left, area.y, max(1, area.x2 - left), area.h)
+        area = scan_area(width, height, self.cfg, self.log_roi, panel_visible)  # 面板挡住的左边不扫
         region = area.crop(frame).copy()
         if self.background:
             threading.Thread(target=self._scan, args=(region, now, (area.x, area.y)), name="env", daemon=True).start()
@@ -75,19 +91,15 @@ class EnvWatcher:
     def _scan(self, region: np.ndarray, now: float, offset: tuple[int, int] = (0, 0)) -> None:
         try:
             lines = [line for line in self.ocr.recognize(region) if line.score >= self.cfg.min_score]
-            names = self.names()
             seen = []
+            for name, line in match_names(lines, self.names(), self.cfg.min_score):
+                self.last_seen[name] = now
+                b = line.box
+                self.labels[name] = (b.x + offset[0], b.y + offset[1], b.w, b.h, now)
+                seen.append(name)
+                self._check_request(region, line.box, name, now, offset)
             for line in lines:
                 text = line.text.strip()
-                if len(normalize(text)) < 2:
-                    continue
-                for name in names:
-                    if similar(text, name, 0.75):
-                        self.last_seen[name] = now
-                        b = line.box
-                        self.labels[name] = (b.x + offset[0], b.y + offset[1], b.w, b.h, now)
-                        seen.append(name)
-                        self._check_request(region, line.box, name, now, offset)
                 place = next((p for p in self.cfg.places if normalize(text) == normalize(p)), "")
                 if place:
                     if place != self.place:

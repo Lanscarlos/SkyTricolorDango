@@ -174,3 +174,14 @@ def test_env_watcher_hold_is_noop():
         assert not w.paused
     w.release("camera")
     assert not w.paused
+
+
+def test_match_names_filters_score_and_fuzzy_matches():
+    from skydango.vision.env import match_names
+
+    lines = [
+        OcrLine("懒洋洋大玉", 0.95, Rect(0, 0, 10, 10)),  # OCR 错一个字也算
+        OcrLine("番茄炒蛋盖饭", 0.5, Rect(0, 0, 10, 10)),  # 置信度太低
+        OcrLine("好", 0.99, Rect(0, 0, 10, 10)),
+    ]
+    assert [n for n, _ in match_names(lines, ["懒洋洋大王", "番茄炒蛋盖饭"], 0.9)] == ["懒洋洋大王"]
