@@ -22,7 +22,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `frontend-design` | 新做或重做网页界面（目前只有识别可视化 `vision/viewer.py`）：视觉方向、字体、排版，避免模板感 |
 | `brainstorming` | 要做新功能／改行为，需求和设计还没定死 |
 | `writing-plans` | 需求清楚了，多步骤改动，写代码之前先出方案 |
-| `executing-plans` / `subagent-driven-development` | 按方案逐条实现（默认用前者，见下） |
+| `executing-plans` / `subagent-driven-development` | 按方案逐条实现（`writing-plans` 收尾时由用户选：Native 用前者，Subagent-driven 用后者） |
 | `test-driven-development` | 实现功能或修 bug，写实现代码之前 |
 | `systematic-debugging` | 遇到 bug、测试挂了、行为不符合预期 |
 | `verification-before-completion` | 要说「做完了／修好了／过了」之前，先跑命令拿证据 |
@@ -31,11 +31,11 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `dispatching-parallel-agents` | 有两件以上互不依赖的事可以并行 |
 | `using-git-worktrees` | 需要跟当前工作区隔离的分支作业 |
 | `writing-skills` | 新增或修改 skill 本身 |
+| `diagnosing-superpowers` | 某次会话里 skill 用得不对（没触发、重复干活、没按方案走、太慢太贵），要查原因或给上游报 bug |
 | `using-superpowers` | 上面这套规矩的总纲 |
 
-`frontend-design` 是 Anthropic 官方原版（[anthropics/skills](https://github.com/anthropics/skills)，Apache 2.0）；其余来自 [obra/superpowers](https://github.com/obra/superpowers)（MIT），经 [HyperCraft](https://github.com/Lanscarlos/HyperCraft) 引入。来源、版本和同步方法见 `.claude/skills/README.md`。
+`frontend-design` 是 Anthropic 官方原版（[anthropics/skills](https://github.com/anthropics/skills)，Apache 2.0）；其余是 [obra/superpowers](https://github.com/obra/superpowers) 官方 v6.4.2（MIT）。来源、版本和同步方法见 `.claude/skills/README.md`。
 
-- **执行方案默认 Inline Execution**：`writing-plans` 收尾时会让人在「Subagent-Driven」和「Inline Execution」之间二选一，**本仓库不要问这一句**，直接宣告「用 executing-plans skill 执行这份方案」，在当前会话里逐条实现。只有用户明确要求用子 agent、或方案里有两件以上互不依赖的大块时才改用 `subagent-driven-development`，换的时候说一句理由。
 - **skill 管不到真机**：TDD、验证类 skill 说的「跑测试」在这里指 `python -m pytest -q`（合成画面 + 假设备）；往游戏里发输入的改动仍然要按下面「工作约定」先在真机上截图验证，单元测试通过不等于游戏里能用。
 - **合并方式以本文件为准**：`finishing-a-development-branch` 会列几种收尾选项，本仓库的规矩是改完合并进 main 并推送（见上）。
 

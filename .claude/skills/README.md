@@ -19,28 +19,29 @@
 
 ## Superpowers（外部引入）
 
-下面 14 个目录来自 [obra/superpowers](https://github.com/obra/superpowers)，MIT 许可，
+下面 15 个目录来自 [obra/superpowers](https://github.com/obra/superpowers)，MIT 许可，
 是一套通用的工作方法 skill（TDD、系统化排错、方案先行、代码评审、子 agent 编排等）：
 
-`brainstorming` `dispatching-parallel-agents` `executing-plans`
+`brainstorming` `diagnosing-superpowers` `dispatching-parallel-agents` `executing-plans`
 `finishing-a-development-branch` `receiving-code-review` `requesting-code-review`
 `subagent-driven-development` `systematic-debugging` `test-driven-development`
 `using-git-worktrees` `using-superpowers` `verification-before-completion`
 `writing-plans` `writing-skills`
 
-- 从 [Lanscarlos/HyperCraft](https://github.com/Lanscarlos/HyperCraft) 的 `.claude/skills/` 原样拷过来
-  （HyperCraft 提交 `a6285f11be98359584f9c64797f66a7ef2410d69`）
-- 上游版本：`v6.3.0`，上游提交 `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`
+- 直接从官方仓库拉：版本 `v6.4.2`，提交 `8ca22dba9a94f28898bbce59f2537ff4d87c747d`
+  （最早经 HyperCraft 引入的是 v6.3.0，核对过和官方一致；后来改为直接从官方同步，不用 HyperCraft 的任何定制）
 - 版权：Copyright (c) 2025 Jesse Vincent，MIT License（全文见上游仓库 `LICENSE`）
 
 ### 相对上游的唯一改动
 
-上游是以插件形式分发的，skill 之间用插件命名空间互相引用（`superpowers:test-driven-development`）。
+上游是以插件形式分发的，skill 之间用插件命名空间互相引用（`test-driven-development`）。
 直接放进 `.claude/skills/` 后 skill 名不带命名空间，那个前缀会让 Skill 工具找不到目标，
-所以**全量去掉了 `superpowers:` 前缀**（`superpowers:X` → `X`），其余内容逐字保留。
+所以**全量去掉了 `` 前缀**（`X` → `X`），其余内容逐字保留。
 
 上游的 SessionStart hook 没有引入——它的作用是每次会话开头把 `using-superpowers` 的正文注入上下文。
 这里改成在 `CLAUDE.md` 里写明「先挑 skill 再动手」，效果一样而且不需要仓库级 hook。
+
+`diagnosing-superpowers` 会读磁盘上的会话记录，并把分析结果写到 `~/.superpowers/diagnosing-superpowers/`（仓库外）。
 
 `brainstorming` / `writing-plans` 默认把设计和方案写到 `docs/superpowers/specs/`、`docs/superpowers/plans/`，
 和本仓库已有的目录一致；`brainstorming` 的可视化伴侣会写 `.superpowers/`，已在 `.gitignore` 里。
@@ -53,11 +54,11 @@
 ### 怎么同步上游
 
 ```bash
-git clone --depth 1 https://github.com/obra/superpowers.git tmp/sp
+git clone --depth 1 --branch <版本标签> https://github.com/obra/superpowers.git tmp/sp
 for d in tmp/sp/skills/*/; do
   name=$(basename "$d"); rm -rf ".claude/skills/$name"; cp -a "$d" ".claude/skills/$name"
 done
-grep -rl 'superpowers:' .claude/skills | xargs sed -i 's/superpowers://g'
+grep -rl '' .claude/skills | xargs sed -i 's///g'
 ```
 
 同步完更新上面的版本号和提交号，然后人工扫一眼 diff——上游可能新增或改名 skill。
