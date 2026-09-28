@@ -1205,6 +1205,13 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     )
     if viewer is not None:
         viewer.brain = trace
+        from .brain.manual import ManualControl
+        from .vision.viewer import LOCAL_HOSTS
+
+        if cfg.viewer.host in LOCAL_HOSTS:  # 手动控制：网页上直接让身体说话 / 做动作 / 转视角，只给本机
+            viewer.control = ManualControl(body, eyes, events)
+        else:
+            log.warning("可视化网页开在局域网（%s）：局域网模式下关掉了手动控制", cfg.viewer.host)
     stop = threading.Event()
     brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)

@@ -8,6 +8,7 @@ from test_brain_body import FakeReader
 
 from skydango import cli
 from skydango.brain.claude import claude_env
+from skydango.brain.manual import ManualControl
 from skydango.brain.trace import BrainTrace
 from skydango.chat.tracker import SelfFilter
 from skydango.config import Config
@@ -34,9 +35,26 @@ def fake_brain_run(tmp_path, monkeypatch):
 
 class FakeViewer:
     brain = None
+    control = None
 
     def update(self, *args, **kwargs):
         return True
+
+
+def test_run_brain_with_viewer_attaches_control(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    v = FakeViewer()
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
+    assert isinstance(v.control, ManualControl)
+
+
+def test_run_brain_on_lan_has_no_control(tmp_path, monkeypatch, caplog):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.viewer.host = "0.0.0.0"
+    v = FakeViewer()
+    with caplog.at_level("WARNING"):
+        cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
+    assert v.control is None and "局域网模式下关掉了手动控制" in caplog.text
 
 
 def test_run_brain_with_viewer_records_turns(tmp_path, monkeypatch):
