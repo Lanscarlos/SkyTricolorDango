@@ -111,6 +111,20 @@ place_min = 0.8                 # 最像的相似度至少这么高（待标定�
 place_margin = 0.05             # 且比第二像的别的地方高这么多
 place_interval = 30.0           # 每隔这么久认一次（画面大变后也认一次）
 
+[assist]
+# Claude 辅助标注：python -m skydango perception label <录像目录> --assist
+# 检测器出人物候选框 → 隔离的 claude -p 核对（令牌、配置目录同 [brain]）→ 和名字标签 / 圆圈弱标注合并写进数据集
+min_change = 30.0               # 挑帧：和上一张留下的帧差这么多才留（--all-frames 不挑）
+max_gap = 20                    # 最多隔这么多帧强制留一张
+proposal_models = ["models/yolo11n.pt", "models/yolo11x.pt"]  # 没给 --model 时的候选框模型（COCO person 类）
+proposal_conf = 0.1
+proposal_imgsz = 1280
+batch = 5                       # 每次 claude -p 核对几帧
+jobs = 3                        # 同时跑几个 claude -p
+timeout = 300.0
+model = "sonnet"
+self_hint = "白色头发、橙色护目镜、橙粉色袍子、背蓝紫色圆背包、头顶没有名字标签"  # 团子长相，换装后改
+
 [gesture]
 # 别人对团子做的动作（感知层三期，研究性质，还没有模型）：好友对着团子挥手、鞠躬时告诉大脑，由它决定回不回礼
 # 数据：record --fps 8 录 → perception clips 切片段 → 人工分到 <动作>/ → 训练导出 ONNX → perception gesture-eval 评估
