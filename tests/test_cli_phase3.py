@@ -25,3 +25,36 @@ def test_perception_unknown_names_empty(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_friend_names", lambda cfg: (lambda: []))
     cli.main(["perception", "unknown-names", "--runs", str(tmp_path)])
     assert "没有" in capsys.readouterr().out
+
+
+class FarDetector:
+    imgsz = 960
+    providers = ["Fake"]
+
+    def detect(self, img):
+        from skydango.vision.bubbles import Rect
+        from skydango.vision.detect import Detection
+
+        if img.shape[:2] == (1080, 1920):
+            return [Detection("player", Rect(1000, 500, 24, 60), 0.9)]
+        return []
+
+
+def fake_models(monkeypatch):
+    from skydango.vision import detect, ocr
+
+    monkeypatch.setattr(detect, "make_detector", lambda *a, **k: FarDetector())
+    monkeypatch.setattr(ocr, "make_ocr", lambda *a, **k: type("O", (), {"read_line": lambda self, img: None})())
+
+
+def test_perception_bench_far_crops_switch(tmp_path, monkeypatch, capsys):
+    import numpy as np
+
+    from skydango.imageio import imwrite
+
+    imwrite(tmp_path / "a.jpg", np.zeros((1080, 1920, 3), np.uint8))
+    fake_models(monkeypatch)
+    cli.main(["perception", "bench", "--images", str(tmp_path), "-n", "3"])
+    assert "远处二次检测 " in capsys.readouterr().out
+    cli.main(["perception", "bench", "--images", str(tmp_path), "-n", "3", "--far-crops", "0"])
+    assert "远处二次检测 0 次" in capsys.readouterr().out

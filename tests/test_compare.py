@@ -100,3 +100,41 @@ def test_timed_files_sorts_by_time_and_rejects_untimed_dirs():
     assert skipped == [Path("shot.png")]
     with pytest.raises(ValueError, match="record"):
         timed_files([Path("a.png"), Path("b.png")])
+
+
+def test_summarize_reports_far_named_rate():
+    results = [fr(0), fr(1)]
+    for r in results:
+        r.far, r.far_named = 2, 1
+    s = summarize(results, 30.0, 5.0)
+    assert s["far"] == {"players": 4, "named": 2, "rate": 0.5}
+    md = report_md(s)
+    assert "远处" in md and "50%" in md and "--far-crops 0" in md
+    assert summarize([fr(0)], 30.0, 5.0)["far"] == {"players": 0, "named": 0, "rate": None}
+
+
+class FarDetector:
+    """远处一个小人；裁剪图里有它的名字标签（裁剪图坐标）。"""
+
+    def detect(self, img):
+        if img.shape[:2] == (1080, 1920):
+            return [Detection("player", Rect(1000, 500, 24, 60), 0.9)]
+        return [Detection("name_tag", Rect(10, 20, 50, 14), 0.9)]
+
+
+class WidthOcr:
+    def read_line(self, img):
+        return OcrLine("懒洋洋大王", 0.99, Rect(0, 0, img.shape[1], img.shape[0])) if img.shape[1] == 58 else None
+
+
+def test_compare_frames_counts_far_players_and_named_ones():
+    log_roi = [0.0, 0.0, 0.335, 0.855]
+    img = np.zeros((1080, 1920, 3), np.uint8)
+    results = []
+    for crops in (3, 0):
+        env = EnvWatcher(SeqOcr([[]]), EnvConfig(interval=3.0), lambda: list(FRIENDS), log_roi, background=False)
+        yolo = PerceptionWatcher(FarDetector(), WidthOcr(), PerceptionConfig(far_crops=crops), EnvConfig(),
+                                 lambda: list(FRIENDS), log_roi, background=False)
+        results.append(compare_frames([(0.0, "0.jpg", img, False)], env, yolo)[0])
+    assert (results[0].far, results[0].far_named) == (1, 1)
+    assert (results[1].far, results[1].far_named) == (1, 0)

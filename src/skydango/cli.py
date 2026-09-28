@@ -466,6 +466,8 @@ def _perception(cfg: Config, args, dev=None):
     for key in ("model", "device", "imgsz"):
         if getattr(args, key, None):
             setattr(p, key, getattr(args, key))
+    if getattr(args, "far_crops", None) is not None:
+        p.far_crops = args.far_crops
     detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
     icons = _icon_classifier(cfg)
     watcher = PerceptionWatcher(
@@ -598,6 +600,7 @@ def _perception_bench(cfg: Config, args) -> None:
         print(f"  截图     {_stats(grab)}")
     print(f"  YOLO 检测 {_stats(det)}")
     print(f"  整个感知 {_stats(total)}（含追踪、名字 OCR、圆圈匹配）")
+    print(f"  远处二次检测 {watcher.far_runs} 次（far_crops = {cfg.perception.far_crops}，--far-crops 0 关掉对比）")
     per_frame = (sum(grab) + sum(total)) / len(total)
     target = 1000 / cfg.perception.fps
     verdict = "够用" if per_frame <= target else "不够，降低 fps / imgsz 或换 GPU 后端"
@@ -1188,6 +1191,7 @@ def main(argv: list[str] | None = None) -> None:
         q.add_argument("--device", choices=["cuda", "cpu"])
         q.add_argument("--imgsz", type=int)
         if name == "bench":
+            q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关）")
             q.add_argument("--images", help="用这个目录 / 这张图测（默认实时截图）")
             q.add_argument("-n", type=int, default=200, help="测多少帧")
         else:
@@ -1209,6 +1213,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--device", choices=["cuda", "cpu"])
     q.add_argument("--imgsz", type=int)
     q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
+    q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关；开关各跑一次对比）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/compare/<时间>）")
     q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")
     q.add_argument("--runs", default="runs", help="运行目录的上级（默认 runs/）")

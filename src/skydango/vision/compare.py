@@ -42,6 +42,8 @@ class FrameResult:
     strangers: int
     env_ms: float | None
     yolo_ms: float
+    far: int = 0  # 这一帧远处（框高 < far_height）的 player 有几个
+    far_named: int = 0  # 其中认出了是哪个好友的
 
 
 def compare_frames(
@@ -63,6 +65,8 @@ def compare_frames(
         started = time.perf_counter()
         yolo.process(frame, t, panel)
         yolo_ms = (time.perf_counter() - started) * 1000
+        far = [t for t in yolo.last_tracks
+               if t.cls == "player" and t.box.h < yolo.cfg.far_height * frame.shape[0]]
         result = FrameResult(
             file=name,
             t=t,
@@ -73,6 +77,8 @@ def compare_frames(
             strangers=yolo.strangers(t),
             env_ms=env_ms if scanned else None,
             yolo_ms=yolo_ms,
+            far=len(far),
+            far_named=sum(bool(tr.data.get("name")) for tr in far),
         )
         results.append(result)
         if on_diff is not None and result.env is not None and result.env != result.yolo:
@@ -122,6 +128,7 @@ def summarize(results: list[FrameResult], keep_env: float, keep_yolo: float) -> 
             strangers.append({"t": r.t, "n": r.strangers, "kind": "arrive" if r.strangers else "leave"})
         prev = r.strangers
     times = [r.t for r in results]
+    far_players, far_named = sum(r.far for r in results), sum(r.far_named for r in results)
     mean = lambda xs: round(sum(xs) / len(xs), 1) if xs else None  # noqa: E731
     return {
         "frames": len(results),
@@ -134,6 +141,8 @@ def summarize(results: list[FrameResult], keep_env: float, keep_yolo: float) -> 
             "env": _leaves([(r.t, r.env) for r in scanned], times, keep_env),
             "yolo": _leaves([(r.t, r.yolo) for r in results], times, keep_yolo),
         },
+        "far": {"players": far_players, "named": far_named,
+                "rate": round(far_named / far_players, 3) if far_players else None},
         "timing": {"env_ms": mean([r.env_ms for r in scanned]), "yolo_ms": mean([r.yolo_ms for r in results])},
     }
 
@@ -165,6 +174,12 @@ def report_md(s: dict) -> str:
     for side, title in (("env", "现有"), ("yolo", "YOLO")):
         events = s["leave_events"][side]
         lines.append(f"- {title}：" + ("、".join(f"{e['name']} @ {e['t']:.2f} s" for e in events) or "（没有）"))
+    far = s.get("far", {"players": 0, "named": 0, "rate": None})
+    rate = "—" if far["rate"] is None else f"{far['rate']:.0%}"
+    lines += ["", "## 远处的人（框高 < perception.far_height）", "",
+              f"远处 player 共 {far['players']} 人次，认出是哪个好友的 {far['named']} 人次（{rate}；分母里也有陌生人，只用来对比）。", "",
+              "对比二次检测：同一批录像跑两次，`--far-crops 0` 和默认各一次，看这里的比例差多少（目标：提升 ≥ 30 个百分点）；",
+              "整帧耗时看 `perception bench --far-crops …` 的 p95（目标 ≤ 66 ms）。"]
     t = s["timing"]
     lines += ["", "## 耗时", "",
               f"- 现有：每次扫描平均 {fmt(t['env_ms'])} ms",
