@@ -53,6 +53,10 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     def look_at(x: int, y: int, w: int, h: int):
         return call("look_at", x=x, y=y, w=w, h=h)
 
+    @srv.tool(name="look_person", description=DESCRIPTIONS["look_person"])
+    def look_person(name: str):
+        return call("look_person", name=name)
+
     @srv.tool(name="look_around", description=DESCRIPTIONS["look_around"])
     def look_around():
         return call("look_around")

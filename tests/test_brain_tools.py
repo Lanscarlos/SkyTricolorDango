@@ -33,6 +33,10 @@ class FakeBody:
         self.calls.append(("look_at", x, y, w, h))
         return "ok"
 
+    def look_person(self, name):
+        self.calls.append(("look_person", name))
+        return "ok"
+
     def status(self):
         return "状态"
 
@@ -78,7 +82,7 @@ class FakeEyes:
 
 def test_tool_names_and_actions():
     assert TOOL_NAMES == [
-        "look", "look_at", "look_around", "status", "chat_log", "say", "emote", "set_request_policy", "camera", "camera_reset",
+        "look", "look_at", "look_person", "look_around", "status", "chat_log", "say", "emote", "set_request_policy", "camera", "camera_reset",
         "check_friend",
     ]
     assert ACTIONS == {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend"}
@@ -145,8 +149,10 @@ def test_run_dispatches_with_defaults():
     tb.run("camera", {"action": "left"})
     tb.run("set_request_policy", {"who": "*", "kind": "hug", "accept": False})
     tb.run("look_at", {"x": 1, "y": 2, "w": 30, "h": 40})
+    tb.run("look_person", {"name": "小明"})
     assert body.calls == [
-        ("chat_log", 20), ("emote", "鞠躬", False), ("camera", "left", 1), ("policy", "*", "hug", False), ("look_at", 1, 2, 30, 40)
+        ("chat_log", 20), ("emote", "鞠躬", False), ("camera", "left", 1), ("policy", "*", "hug", False), ("look_at", 1, 2, 30, 40),
+        ("look_person", "小明"),
     ]
 
 
