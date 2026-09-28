@@ -86,6 +86,13 @@ def far_region(p: Rect, width: int, height: int) -> Rect | None:
     return Rect(x1, y1, x2 - x1, y2 - y1)
 
 
+def one_self(dets: list[Detection]) -> list[Detection]:
+    """一帧只有一个团子：留分数最高的 self，其余改成 player（实测模型会把躺在地上的别人也认成团子）。"""
+    selfs = sorted((d for d in dets if d.cls == "self"), key=lambda d: d.score, reverse=True)
+    extra = {id(d) for d in selfs[1:]}
+    return [Detection("player", d.box, d.score) if id(d) in extra else d for d in dets]
+
+
 def people_boxes(dets: list[Detection]) -> list[Detection]:
     """一帧里的人（player / player_unlit / self）。模型可能在团子身上同时出 self 和 player 框：player 那个不算另一个人。"""
     selfs = [d for d in dets if d.cls == "self"]
@@ -334,7 +341,7 @@ class PerceptionWatcher:
         started = time.perf_counter()
         height, width = frame.shape[:2]
         self._frame_h = height
-        dets = self._filter(self._detect(frame), width, height, panel_visible)
+        dets = one_self(self._filter(self._detect(frame), width, height, panel_visible))
         detected = time.perf_counter()
         low = [d for d in dets if d.score < self.cfg.conf]
         dets = [d for d in dets if d.score >= self.cfg.conf]
