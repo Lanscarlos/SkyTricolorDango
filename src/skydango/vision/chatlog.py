@@ -157,6 +157,16 @@ def find_input_top(panel: np.ndarray) -> int | None:
             continue
         if bright[y + 50 : y + 67].max() > 0.8:  # 胶囊的下沿
             return y
+    # 面板开着一会儿后胶囊会变暗（2026-09-28 实测）：灰色细线（V≈84）外面贴着一圈深色边、里面深色（V≈26），
+    # 往下约 60 px 还有一条；变暗的过程中线是 V≈159、里面 V≈88。亮度不固定，按相对亮度找：
+    # 两条都是比上下紧挨着的行亮 30 以上的细线，中间整段都比线暗 30 以上
+    med = np.median(value, axis=1)
+    thin = lambda y: med[y] - max(med[y - 2], med[y + 2]) >= 30  # noqa: E731
+    for y in range(int(height * 0.6), height - 67):
+        if not thin(y) or med[y + 3 : y + 50].max() > med[y] - 30:
+            continue
+        if any(thin(b) for b in range(y + 55, y + 65)):
+            return y
     return None
 
 

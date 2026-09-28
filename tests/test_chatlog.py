@@ -118,6 +118,35 @@ def test_find_input_top_follows_panel_layout():
     assert find_input_top(np.full((1080, 643, 3), 235, np.uint8)) is None  # 雪地之类的亮背景不算
 
 
+def screen_with_dim_pill(top, bg=65):
+    """面板开着、胶囊变暗的样子（2026-09-28 录像实测）：外圈 2 px 深色边，里面 2 px 灰线（V≈84），
+    内部深色（V≈26），往下 60 px 还有一条灰线。上沿灰线的位置和白色描边时一样。"""
+    img = np.full((1080, 1920, 3), bg, np.uint8)
+    img[top - 2 : top + 64, 12:628] = 25
+    img[top : top + 2, 15:625] = 84
+    img[top + 60 : top + 61, 15:625] = 85
+    img[top + 20 : top + 40, 80:150:9] = 110  # “聊天……”的灰字
+    return img
+
+
+def test_find_input_top_finds_dimmed_pill():
+    """实测：面板开着一会儿后胶囊变成暗灰描边（V≈84，不到白色阈值 170），整段录像都判成“面板没开”，
+    面板里的“内容 - 好友名”被弱标注当成了头顶的名字标签。"""
+    from skydango.vision.chatlog import find_input_top
+
+    assert find_input_top(screen_with_dim_pill(1006)[:, :643]) == 1006
+    assert find_input_top(screen_with_dim_pill(1006, bg=120)[:, :643]) == 1006  # 背后场景亮一些
+    fading = np.full((1080, 643, 3), 104, np.uint8)  # 从白色变暗的过渡帧（实测 V：外面 104、边 95、线 159、内部 88）
+    fading[1004:1070, 12:628] = 95
+    fading[1008:1064, 12:628] = 88
+    fading[1006:1008, 15:625] = 159
+    fading[1066:1067, 15:625] = 159
+    assert find_input_top(fading) in (1006, 1007)
+    no_bottom = screen_with_dim_pill(1006)
+    no_bottom[1066:1067] = 25  # 只有一条灰线、没有下沿：不算（外面的背景也比阈值亮，不能当下沿）
+    assert find_input_top(no_bottom[:, :643]) is None
+
+
 def test_reader_reads_rows_down_to_the_input_box():
     """输入框关着时最新一行在 y≈955，在默认 log_roi（到 0.855）外面，也要读到。"""
     cfg = Config()
