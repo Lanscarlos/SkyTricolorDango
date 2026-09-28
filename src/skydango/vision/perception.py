@@ -55,6 +55,7 @@ FAR_MISSES = 3  # 远处二次检测连着这么多次没找到名字标签…�
 FAR_BACKOFF = 5.0  # ……之后这么久才再裁一次
 FAR_DUP_IOU = 0.3  # 二次检测找到的框和原图里已有的同类框重叠这么多就算同一个
 UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
+PEOPLE_STALE = 1.0  # people()：最近一帧比这更旧（被挡住、没跑检测）就不再报里面的人
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
 
 
@@ -817,11 +818,18 @@ class PerceptionWatcher:
         return who, distance(h, self._ref_height(self._frame_h), self.cfg.near, self.cfg.far)
 
     def people(self, now: float) -> list[Person]:
-        """最近一帧里认得出是谁的人（好友 / 陌生人 / 没点火的黑影），左到右、同一边的近的在前。"""
+        """最近一帧里认得出是谁的人（好友 / 陌生人 / 没点火的黑影），左到右、同一边的近的在前。
+
+        暂停中、或者这一帧已经过时（被挡住 / 没跑检测）返回空：别让技能盯着暂停前的人。
+        """
+        if self.paused:
+            return []
         ref = self._ref_height(self._frame_h)
         out = []
         for t in list(self.last_tracks):
-            if t.cls == UNLIT:
+            if now - t.last > PEOPLE_STALE:
+                continue
+            if t.cls == UNLIT and t.data.get("stranger"):  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
                 kind = "unlit"
             elif t.cls == "player" and t.data.get("name"):
                 kind = "friend"

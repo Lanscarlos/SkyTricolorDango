@@ -20,6 +20,7 @@ from ..chat.memory import Turn
 from ..chat.panel import PanelKeeper
 from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
+from ..chat.tracker import similar
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
@@ -399,22 +400,37 @@ class Body:
         return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
 
     def _locate(self, name: str, now: float) -> tuple[Rect, bool] | None:
-        """(整张截图上的人物框, 是不是按名字标签估的)；感知层框出的人优先。"""
+        """(整张截图上的人物框, 是不是按名字标签估的)；感知层框出的人优先。
+
+        name 常常是聊天面板上 OCR 读出来的，可能差一个字：先找一模一样的，再按相似度找（同感知层认名字）。
+        """
         if self.env is None:
             return None
-        if hasattr(self.env, "people"):
-            for p in self.env.people(now):
-                if p.name == name:
+        people = [p for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        labels = {n: v for n, v in dict(self.env.labels).items()  # env 后台线程会改这个 dict：先拍快照
+                  if now - v[4] <= self.cfg.env.interval * 2 + 1}
+        for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
+            for p in people:
+                if same(p.name):
                     return p.box, False
-        label = dict(self.env.labels).get(name)  # env 后台线程会改这个 dict：先拍快照
-        if label is None or now - label[4] > self.cfg.env.interval * 2 + 1:
-            return None
-        x, y, w, h = label[:4]
-        # 人在名字标签正下方：宽 3 倍标签宽、高 6 倍标签高（估计值，没在真机核对）
+            for n, label in labels.items():
+                if same(n):
+                    return self._below_tag(label[:4]), True
+        return None
+
+    def _below_tag(self, tag: tuple[int, int, int, int]) -> Rect:
+        """人在名字标签正下方：宽 3 倍标签宽、高 6 倍标签高（估计值，没在真机核对）。"""
+        x, y, w, h = tag
         fh, fw = self.last_frame.shape[:2] if self.last_frame is not None else (1080, 1920)
         x1, y1 = max(0, round(x + w / 2 - 1.5 * w)), min(fh, y + h)
         x2, y2 = min(fw, round(x + w / 2 + 1.5 * w)), min(fh, y + h + 6 * h)
-        return Rect(x1, y1, x2 - x1, y2 - y1), True
+        return Rect(x1, y1, x2 - x1, y2 - y1)
+
+    def _recognized(self, now: float) -> list[str]:
+        """现在画面里认得出名字的人（找不到某人时告诉大脑）。"""
+        names = [p.name for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        names += [n for n, v in dict(self.env.labels).items() if now - v[4] <= self.cfg.env.interval * 2 + 1]
+        return list(dict.fromkeys(names))
 
     def find_person(self, name: str, now: float) -> Rect | None:
         found = self._locate(name, now)
@@ -426,9 +442,13 @@ class Body:
         brain = self.cfg.brain
         if now - self.last_look < brain.look_min_interval:
             raise ToolError(f"{brain.look_min_interval:.0f} 秒内刚看过，等一下再看")
+        if self.env is None:
+            raise ToolError("没开环境识别，认不出名字；用 look(image=true) 自己看")
         found = self._locate(name, now)
         if found is None or found[0].w < 8 or found[0].h < 8:
-            raise ToolError(f"画面里没找到 {name}，可以先 look_around 看看在哪个方向")
+            known = self._recognized(now)
+            where = f"画面里现在认得出：{'、'.join(known)}" if known else "画面里现在一个名字都没认出来"
+            raise ToolError(f"没找到 {name}（{where}）；不在画面里的话可以先 look_around 看看在哪个方向")
         box, guessed = found
         bx, by, bw, bh = box.x, box.y, box.w, box.h
         frame = self.device.screenshot()

@@ -1280,3 +1280,23 @@ def test_describe_people_names_unlit_strangers():
 
     assert describe_people([Person(3, "unlit", None, Rect(900, 400, 90, 220), "前面", "中")]) == "没点火的陌生人（前面·中）"
     assert describe_people([]) == ""
+
+
+def test_people_is_empty_while_paused_or_stale():  # 评审：暂停 / 没跑检测时别一直报暂停前那一帧的人
+    det = FakeDetector()
+    det.frames = [[player(300, y=300, h=300), tag(290, 110, y=230)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert [p.name for p in w.people(0.0)] == ["懒洋洋大王"]
+    assert w.people(5.0) == []  # 5 秒没跑检测：这一帧已经过时了
+    w.hold("camera")
+    assert w.people(0.0) == []
+    w.release("camera")
+
+
+def test_people_does_not_count_self_as_unlit_stranger():  # 评审：暗图上团子可能同时出 self 和 player_unlit 两个框
+    det = FakeDetector()
+    det.frames = [[Detection("self", Rect(900, 420, 90, 220), 0.9), unlit(900, y=420)]]
+    w = watcher(det)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.strangers(0.0) == 0 and w.people(0.0) == []

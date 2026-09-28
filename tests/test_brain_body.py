@@ -1094,3 +1094,32 @@ def test_stop_task_cancels_running_skill(clock):
     b.skills.start(b, skill)
     assert b.stop_task() == "停下了：盯着小明"
     assert skill.stops == ["大脑叫停"] and b.stop_task() == "没有在做的事"
+
+
+def test_look_person_matches_ocr_typos_in_chat_names(clock):  # 评审：聊天里的名字是 OCR 读的，可能差一个字
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "friend", "懒洋洋大王", Rect(400, 200, 120, 300), "前面", "近")]
+    b, _, _, _ = body(clock, env=env)
+    assert b.find_person("懒洋洋大玉", clock()) == Rect(400, 200, 120, 300)
+    env.labels = {"小明同学": (560, 200, 160, 44, clock())}
+    env.people_list = []
+    assert b.find_person("小明同学", clock()) is not None
+
+
+def test_look_person_not_found_lists_who_is_recognized(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "friend", "阿白", Rect(400, 200, 120, 300), "前面", "近")]
+    b, _, _, _ = body(clock, env=env)
+    with pytest.raises(ToolError, match="认得出：阿白"):
+        b.look_person("小明")
+
+
+def test_look_person_without_env_suggests_looking_yourself(clock):
+    b, _, _, _ = body(clock)
+    with pytest.raises(ToolError, match="look\\(image=true\\)") as err:
+        b.look_person("小明")
+    assert "look_around" not in str(err.value)
