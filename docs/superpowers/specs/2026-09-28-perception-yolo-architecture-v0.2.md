@@ -217,6 +217,8 @@ MuMu 截图（capture = "body" 用身体主循环的帧；"own" 感知线程自�
 3. **M1 采数据**：`python -m skydango record --seconds 120 --fps 2`，多录几段（见 §8 要覆盖的场景）。
 4. **弱标注**：`python -m skydango perception label tmp/record/<时间> -o datasets/sky --preview`
    （好友名单外的名字也想标就加 `--all-text`，之后人工删错的）。
+   **推荐改用辅助标注**：`perception label tmp/record/<时间> --assist` —— 自动挑帧，检测器出人物候选框、Claude（Sonnet）核对类别 / 去重 / 补漏，写进标注；拿不准的帧列在 `datasets/sky/_assist/review.md`（设计见 `2026-09-28-assist-labeling-design.md`）。
+   人工补标时先按清单看，其余抽查；头顶有圆圈的都是玩家，发蓝光半透明的是其他共享空间里的玩家。
 5. **人工补标**：X-AnyLabeling 打开 `datasets/sky/images/train`（和 val），导入 YOLO 标注，
    **每一张**都补上 `player`、`player_unlit`（没点火的黑影）和 `self`、修正错框。没补全的图会教模型"这里没有人"。
 6. **训练 + 导出**：

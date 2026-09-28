@@ -284,6 +284,24 @@ class PerceptionConfig:
 
 
 @dataclass
+class AssistConfig:
+    """Claude 辅助标注（`perception label --assist`）：检测器出人物候选框，隔离的 claude -p 核对，
+    结果和弱标注合并写成 YOLO 数据集。设计见 docs/superpowers/specs/2026-09-28-assist-labeling-design.md。
+    令牌和配置目录沿用 [brain]。"""
+
+    min_change: float = 30.0  # 挑帧：64×36 灰度缩略图和上一张留下的帧平均差超过这么多才留（2026-09-28 录像：240 张留 74 张）
+    max_gap: int = 20  # 离上一张留下的帧这么多帧也强制留（2 fps 录像 = 10 秒），免得慢慢走近的过程被漏掉
+    proposal_models: list[str] = field(default_factory=lambda: ["models/yolo11n.pt", "models/yolo11x.pt"])  # 没给 --model 时用的 COCO 模型（person 类）
+    proposal_conf: float = 0.1  # 候选框阈值：宁可多给，让 Claude 去掉
+    proposal_imgsz: int = 1280
+    batch: int = 5  # 每次 claude -p 核对几帧
+    jobs: int = 3  # 同时跑几个 claude -p
+    timeout: float = 300.0  # 一批这么久没结果就重试一次
+    model: str = "sonnet"
+    self_hint: str = "白色头发、橙色护目镜、橙粉色袍子、背蓝紫色圆背包、头顶没有名字标签"  # 团子长相，换装后改这里
+
+
+@dataclass
 class PlacesConfig:
     """认地图（感知层三期 §2）：和图库里每个地方的参考截图比特征，最像、又和别的地方拉开差距才算认出。"""
 
@@ -412,6 +430,7 @@ class Config:
     social: SocialConfig = field(default_factory=SocialConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     places: PlacesConfig = field(default_factory=PlacesConfig)
+    assist: AssistConfig = field(default_factory=AssistConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)

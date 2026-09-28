@@ -72,3 +72,10 @@ def test_limit_is_flagged(tmp_path):
 
 def test_one_shot(tmp_path):
     assert one_shot(FAKE, fake_env(tmp_path), tmp_path / "w", [{"type": "text", "text": "描述"}, IMG], 10) == "收到：描述"
+
+
+def test_one_shot_message_returns_full_result(tmp_path):
+    from skydango.brain.claude import one_shot_message
+
+    m = one_shot_message(FAKE, fake_env(tmp_path), tmp_path / "w", [{"type": "text", "text": "描述"}], 10)
+    assert m["result"] == "收到：描述" and m["usage"]["input_tokens"] == 10
