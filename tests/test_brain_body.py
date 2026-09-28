@@ -172,6 +172,24 @@ def test_holding_is_guessed_from_circle(clock):
     assert b.holding is None and events.drain()[-1].kind == "released"
 
 
+def test_release_is_seen_when_friend_shows_a_status_icon(clock):
+    """松手后对方在看留影蜡烛：圆圈里是眼睛不是 ✦，也算松开了。"""
+    env, social = FakeEnv(), FakeSocial()
+    b, _, _, events = body(clock, env=env, social=social)
+    env.requests = {"懒洋洋大王": Request("懒洋洋大王", "hand", (0, 0), 100.0)}
+    social.to_handle = ["懒洋洋大王:hand"]
+    b.step()
+    env.requests = {}
+    clock.advance(3)
+    env.circles["懒洋洋大王"] = (None, clock())
+    b.step()
+    events.drain()
+    clock.advance(5)
+    env.circles["懒洋洋大王"] = ("eye", clock())
+    b.step()
+    assert b.holding is None and events.drain()[-1].kind == "released"
+
+
 def test_black_screen_and_scene_change(clock):
     b, device, _, events = body(clock)
     b.step()

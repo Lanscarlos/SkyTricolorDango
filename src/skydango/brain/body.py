@@ -21,7 +21,7 @@ from ..chat.panel import PanelKeeper
 from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
 from ..config import Config
-from ..game.social import IDLE, KIND_NAMES
+from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
 from ..vision.bubbles import roi_rect
 from .events import EventQueue
@@ -351,7 +351,7 @@ class Body:
                 self._accepted_hand = None
         elif self.holding is not None:
             kind, seen = circles.get(self.holding, (None, float("-inf")))
-            if seen > self._holding_since and kind == IDLE:
+            if seen > self._holding_since and kind in PASSIVE:  # ✦ 或眼睛之类的状态图标又出现了
                 self.events.put("released", f"（推测）和 {self.holding} 松手了")
                 self.holding = None
 
