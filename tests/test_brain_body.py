@@ -37,6 +37,7 @@ class FakeEnv:
         self.requests = {}
         self.circles = {}
         self.labels = {}
+        self.people_list = []
         self.holds = []  # ("hold" / "release", 原因)
 
     def observe(self, frame, now, panel_visible):
@@ -58,6 +59,9 @@ class FakeEnv:
 
     def nearby(self, now):
         return list(self.near)
+
+    def people(self, now):
+        return list(self.people_list)
 
 
 class FakeSocial:
@@ -1000,3 +1004,122 @@ def test_holding_partner_gesture_is_dropped(clock):
     b.holding = "卡洛"
     b.step()
     assert not [e for e in events.drain() if e.kind == "gesture"]
+
+
+def test_status_lists_people_on_screen_with_side_and_distance(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    b, _, _, _ = body(clock, env=env)
+    assert "画面里" not in b.status()
+    env.people_list = [Person(1, "friend", "小明", Rect(100, 300, 90, 300), "左边", "近"),
+                       Person(2, "stranger", None, Rect(1100, 400, 40, 90), "右边", "远")]
+    assert "画面里：小明（左边·近）、陌生人（右边·远）" in b.status()
+
+
+def test_look_person_uses_perception_box(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "friend", "小明", Rect(400, 200, 120, 300), "前面", "近")]
+    b, _, _, _ = body(clock, env=env)
+    img, note = b.look_person("小明")
+    assert img["type"] == "image" and "这是 小明" in note["text"] and "估的" not in note["text"]
+    assert b.find_person("小明", clock()) == Rect(400, 200, 120, 300)
+
+
+def test_look_person_falls_back_to_name_tag(clock):  # 没开感知层：从名字标签往下估一块
+    env = FakeEnv()
+    env.labels = {"小明": (560, 200, 160, 44, clock())}
+    b, _, _, _ = body(clock, env=env)
+    box = b.find_person("小明", clock())
+    assert box.y == 244 and box.h == 264 and box.x + box.w / 2 == 640  # 标签下方、6 倍标签高、居中
+    _, note = b.look_person("小明")
+    assert "按名字标签估的位置" in note["text"]
+
+
+def test_find_person_ignores_stale_name_tag(clock):
+    env = FakeEnv()
+    env.labels = {"小明": (560, 200, 160, 44, clock() - 60)}
+    b, _, _, _ = body(clock, env=env)
+    assert b.find_person("小明", clock()) is None
+
+
+def test_look_person_not_found_suggests_look_around(clock):
+    b, _, _, _ = body(clock, env=FakeEnv())
+    with pytest.raises(ToolError, match="look_around"):
+        b.look_person("小明")
+
+
+def test_look_person_shares_look_rate_limit(clock):
+    env = FakeEnv()
+    env.labels = {"小明": (560, 200, 160, 44, clock())}
+    b, _, _, _ = body(clock, env=env)
+    b.look()
+    with pytest.raises(ToolError, match="刚看过"):
+        b.look_person("小明")
+
+
+def test_step_ticks_running_skill_and_status_shows_it(clock):
+    from test_brain_skills import FakeSkill
+
+    b, _, _, _ = body(clock)
+    assert "没有在做的事" in b.status()
+    skill = FakeSkill()
+    b.skills.start(b, skill)
+    b.step()
+    assert skill.ticks == 1
+    assert "正在做：盯着小明" in b.status()
+
+
+def test_shutdown_cancels_skill_before_resetting_camera(clock):
+    from test_brain_skills import FakeSkill
+
+    order = []
+    camera = FakeCamera()
+    camera.reset = lambda: order.append("reset") or "复原了"
+    b, _, _, _ = body(clock, camera=camera)
+    skill = FakeSkill()
+    skill.stop = lambda body, reason: order.append("stop")
+    b.skills.start(b, skill)
+    b.shutdown()
+    assert order == ["stop", "reset"] and b.skills.active is None
+
+
+def test_stop_task_cancels_running_skill(clock):
+    from test_brain_skills import FakeSkill
+
+    b, _, _, _ = body(clock)
+    skill = FakeSkill()
+    b.skills.start(b, skill)
+    assert b.stop_task() == "停下了：盯着小明"
+    assert skill.stops == ["大脑叫停"] and b.stop_task() == "没有在做的事"
+
+
+def test_look_person_matches_ocr_typos_in_chat_names(clock):  # 评审：聊天里的名字是 OCR 读的，可能差一个字
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "friend", "懒洋洋大王", Rect(400, 200, 120, 300), "前面", "近")]
+    b, _, _, _ = body(clock, env=env)
+    assert b.find_person("懒洋洋大玉", clock()) == Rect(400, 200, 120, 300)
+    env.labels = {"小明同学": (560, 200, 160, 44, clock())}
+    env.people_list = []
+    assert b.find_person("小明同学", clock()) is not None
+
+
+def test_look_person_not_found_lists_who_is_recognized(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "friend", "阿白", Rect(400, 200, 120, 300), "前面", "近")]
+    b, _, _, _ = body(clock, env=env)
+    with pytest.raises(ToolError, match="认得出：阿白"):
+        b.look_person("小明")
+
+
+def test_look_person_without_env_suggests_looking_yourself(clock):
+    b, _, _, _ = body(clock)
+    with pytest.raises(ToolError, match="look\\(image=true\\)") as err:
+        b.look_person("小明")
+    assert "look_around" not in str(err.value)

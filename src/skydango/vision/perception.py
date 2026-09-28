@@ -40,6 +40,7 @@ from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
 from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
+from .people import Person, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import Track, Tracker, iou
 
@@ -54,6 +55,7 @@ FAR_MISSES = 3  # 远处二次检测连着这么多次没找到名字标签…�
 FAR_BACKOFF = 5.0  # ……之后这么久才再裁一次
 FAR_DUP_IOU = 0.3  # 二次检测找到的框和原图里已有的同类框重叠这么多就算同一个
 UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
+PEOPLE_STALE = 1.0  # people()：最近一帧比这更旧（被挡住、没跑检测）就不再报里面的人
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
 
 
@@ -165,6 +167,7 @@ class PerceptionWatcher:
         self.far_runs = 0  # 远处二次检测跑了几次（测速 / compare 用）
         self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
+        self._frame_w = 1920  # 最近一帧的宽度（算在画面哪边用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
         self._approach_at: dict[str, float] = {}
         self._typing: deque[tuple] = deque()  # (时间, 轨迹 id, 是好友, 没点火, 框中心 x, 框高, 画面宽, 画面高)
@@ -340,7 +343,7 @@ class PerceptionWatcher:
     def process(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
         started = time.perf_counter()
         height, width = frame.shape[:2]
-        self._frame_h = height
+        self._frame_h, self._frame_w = height, width
         dets = one_self(self._filter(self._detect(frame), width, height, panel_visible))
         detected = time.perf_counter()
         low = [d for d in dets if d.score < self.cfg.conf]
@@ -814,13 +817,39 @@ class PerceptionWatcher:
         h, who = max(known)
         return who, distance(h, self._ref_height(self._frame_h), self.cfg.near, self.cfg.far)
 
+    def people(self, now: float) -> list[Person]:
+        """最近一帧里认得出是谁的人（好友 / 陌生人 / 没点火的黑影），左到右、同一边的近的在前。
+
+        暂停中、或者这一帧已经过时（被挡住 / 没跑检测）返回空：别让技能盯着暂停前的人。
+        """
+        if self.paused:
+            return []
+        ref = self._ref_height(self._frame_h)
+        out = []
+        for t in list(self.last_tracks):
+            if now - t.last > PEOPLE_STALE:
+                continue
+            if t.cls == UNLIT and t.data.get("stranger"):  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
+                kind = "unlit"
+            elif t.cls == "player" and t.data.get("name"):
+                kind = "friend"
+            elif t.cls == "player" and t.data.get("stranger"):
+                kind = "stranger"
+            else:
+                continue
+            side = side_of(t.box.x + t.box.w / 2, self._frame_w)
+            out.append(Person(t.id, kind, t.data.get("name") if kind == "friend" else None, t.box, side,
+                              distance(t.box.h, ref, self.cfg.near, self.cfg.far)))
+        order = {"左边": 0, "前面": 1, "右边": 2}
+        return sorted(out, key=lambda p: (order[p.side], -p.box.h))
+
     def speaker_hint(self, now: float) -> str | None:
         """陌生人的消息是谁说的：最近 typing_window 秒内头顶冒过气泡、又不是好友的人恰好一个 → 说出他在画面哪儿。"""
         recent = [r for r in list(self._typing) if now - r[0] <= self.cfg.typing_window and not r[2]]
         if len({r[1] for r in recent}) != 1:
             return None
         _, _, _, dark, cx, h, width, height = recent[-1]
-        side = "左边" if cx < width / 3 else ("右边" if cx > width * 2 / 3 else "前面")
+        side = side_of(cx, width)
         far = distance(h, self._ref_height(height), self.cfg.near, self.cfg.far) == "远"
         who = "没点火的陌生人" if dark else "陌生人"
         return f"（说话的可能是{side}{'远处' if far else '近处'}那个{who}）"

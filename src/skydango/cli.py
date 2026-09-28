@@ -1118,6 +1118,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     from .chat.llm import make_llm
     from .chat.responder import Responder
     from .chat.sender import ChatSender
+    from .vision.envdiff import snapshot
 
     dev = _device(cfg)
     reader, self_filter = _build_reader(cfg)
@@ -1153,6 +1154,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     responder = Responder(
         llm, cfg.reply, store=store, notes=notes, env=env_text if env else None,
         available_emotes=emotes.available if emotes else None,
+        env_snapshot=(lambda: snapshot(env, time.monotonic())) if env else None,
     )
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
     agent = Agent(

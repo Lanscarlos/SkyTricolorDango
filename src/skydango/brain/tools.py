@@ -16,6 +16,8 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
     "look": "看现在的画面。默认让眼睛马上看一眼，返回文字描述；image=true 时返回原图（1280×720）和认出的名字位置，"
             "只在文字不够用、要自己看细节时才要原图。",
     "look_at": "放大看局部原图：坐标按 look(image=true) 那张 1280×720 的图给（左上角 x、y，宽 w，高 h），裁的就是那一张。",
+    "look_person": "看清某个人：身体按名字在画面里找到这个人，裁出来给你看原图。有人问你他的衣服、发型、装扮好不好看时先看再答，别编。"
+                   "和 look 共用频率限制；画面里没有这个人时会告诉你，可以先 look_around 找找。",
     "look_around": "环顾四周：原地转一圈（每 90° 看一次），眼睛描述前 / 右 / 后 / 左各有什么，最后转回原来的朝向。要十几秒，别常用。",
     "status": "看身体现在的状态：面板和输入框开没开、身边有谁、是不是牵着手、镜头、能做的动作、互动规则、刚说过的话。",
     "chat_log": "看最近 n 条聊天记录（含你自己说的，标成“我”），n 1~50，默认 20。",
@@ -36,6 +38,7 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "x、y 是这个人身上的一点，按 15 秒内 look(image=true) 那张 1280×720 的图给。"
         "只在名字标签认不出、又确实需要知道时用（点过火的陌生人和好友长得一样）；点屏幕会暂时关掉聊天记录面板，别常用。"
     ),
+    "stop_task": "停下身体正在做的事（状态里“正在做：…”那件）。没在做也没关系，会告诉你。",
 }
 SWEEP_AROUND = "环顾四周：原地连续转一圈，身体认出每个方向有谁（好友名字、几个陌生人），返回文字，最后回到原来的朝向。几秒就好。"
 
@@ -46,7 +49,7 @@ def descriptions(sweep: bool) -> dict[str, str]:
 
 
 TOOL_NAMES = list(DESCRIPTIONS)
-ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend"}  # 算“做了事”的工具（心跳退档用）
+ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend", "stop_task"}  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
 
 _MISSING = object()
@@ -147,6 +150,9 @@ class ToolBox:
         if name == "look_at":
             x, y, w, h = _int(a, "x"), _int(a, "y"), _int(a, "w"), _int(a, "h")
             return lambda: b.look_at(x, y, w, h)
+        if name == "look_person":
+            who = _str(a, "name")
+            return lambda: b.look_person(who)
         if name == "status":
             return b.status
         if name == "chat_log":
@@ -169,4 +175,6 @@ class ToolBox:
         if name == "check_friend":
             x, y = _int(a, "x"), _int(a, "y")
             return lambda: b.check_friend(x, y)
+        if name == "stop_task":
+            return b.stop_task
         raise ToolError(f"没有这个工具：{name}")

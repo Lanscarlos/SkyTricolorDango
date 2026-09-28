@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from ..config import ReplyConfig
 from .llm import ChatMessage, LlmClient
+from ..vision.envdiff import EnvSnapshot, diff_line
 from .memory import GAP_NOTE_AFTER, MemoryStore, NotesKeeper, Turn, format_gap
 from .reader import Message
 
@@ -179,9 +180,12 @@ class Responder:
         clock: Callable[[], float] = time.time,
         env: Callable[[], str] | None = None,  # 现在的环境（身边有谁、在哪），每次回复前现取
         available_emotes: Callable[[], list[str]] | None = None,
+        env_snapshot: Callable[[], EnvSnapshot] | None = None,  # 身边有谁 / 在哪的快照，两轮之间的变化写进用户消息
     ) -> None:
         self.llm = llm
         self.env = env
+        self.env_snapshot = env_snapshot
+        self._last_env: EnvSnapshot | None = None
         self.cfg = cfg
         self.store = store
         self.notes = notes
@@ -246,6 +250,12 @@ class Responder:
             return None
         now = self.clock()
         user_content = format_incoming(incoming)
+        if self.env_snapshot is not None:  # 只写在用户这一侧、进历史；模型的回复里不带，免得它模仿着念环境
+            env = self.env_snapshot()
+            change = diff_line(self._last_env, env)
+            self._last_env = env
+            if change:
+                user_content = change + "\n" + user_content
         if self.last_turn_at is not None and now - self.last_turn_at >= GAP_NOTE_AFTER:
             user_content = f"（距离上次聊天过了 {format_gap(now - self.last_turn_at)}）\n" + user_content
         emotes = self.available_emotes()

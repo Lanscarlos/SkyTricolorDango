@@ -20,12 +20,15 @@ from ..chat.memory import Turn
 from ..chat.panel import PanelKeeper
 from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
+from ..chat.tracker import similar
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
-from ..vision.bubbles import roi_rect
+from ..vision.bubbles import Rect, roi_rect
+from ..vision.people import describe_people
 from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
+from .skills import SkillRunner
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +115,7 @@ class Body:
         self._fallback_pending: list[Message] = []
         self._fallback_last_new = 0.0
         self.stopped = False  # shutdown 之后不再接大脑的命令
+        self.skills = SkillRunner(events, clock)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
 
     # ---- 主循环 ----
     def _held(self, reason: str) -> AbstractContextManager:
@@ -138,6 +142,10 @@ class Body:
             except Exception:
                 log.exception("感知出错，这一圈跳过")
                 self.events.put("error", "身体感知出错了（详见日志）")
+            try:
+                self.skills.tick(self, frame, now)
+            except Exception:
+                log.exception("技能这一圈出错")
             self._heard(fresh, frame, now)
             if self.viewer is not None:
                 self._show(frame, now, fresh)
@@ -184,6 +192,10 @@ class Body:
     def shutdown(self) -> None:
         """退出时（不等大脑）：不再接命令、排队的命令全部失败、镜头转回原位、轮盘换回去。"""
         self.stopped = True
+        try:  # 先停技能（松开按着的键），再复原镜头
+            self.skills.cancel(self, "身体停了")
+        except Exception:
+            log.exception("停技能出错")
         while True:
             try:
                 _, fut = self._commands.get_nowait()
@@ -387,6 +399,69 @@ class Body:
         text = f"原图 {frame.shape[1]}×{frame.shape[0]} 上的 ({ax}, {ay}) 起 {aw}×{ah}"
         return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
 
+    def _locate(self, name: str, now: float) -> tuple[Rect, bool] | None:
+        """(整张截图上的人物框, 是不是按名字标签估的)；感知层框出的人优先。
+
+        name 常常是聊天面板上 OCR 读出来的，可能差一个字：先找一模一样的，再按相似度找（同感知层认名字）。
+        """
+        if self.env is None:
+            return None
+        people = [p for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        labels = {n: v for n, v in dict(self.env.labels).items()  # env 后台线程会改这个 dict：先拍快照
+                  if now - v[4] <= self.cfg.env.interval * 2 + 1}
+        for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
+            for p in people:
+                if same(p.name):
+                    return p.box, False
+            for n, label in labels.items():
+                if same(n):
+                    return self._below_tag(label[:4]), True
+        return None
+
+    def _below_tag(self, tag: tuple[int, int, int, int]) -> Rect:
+        """人在名字标签正下方：宽 3 倍标签宽、高 6 倍标签高（估计值，没在真机核对）。"""
+        x, y, w, h = tag
+        fh, fw = self.last_frame.shape[:2] if self.last_frame is not None else (1080, 1920)
+        x1, y1 = max(0, round(x + w / 2 - 1.5 * w)), min(fh, y + h)
+        x2, y2 = min(fw, round(x + w / 2 + 1.5 * w)), min(fh, y + h + 6 * h)
+        return Rect(x1, y1, x2 - x1, y2 - y1)
+
+    def _recognized(self, now: float) -> list[str]:
+        """现在画面里认得出名字的人（找不到某人时告诉大脑）。"""
+        names = [p.name for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        names += [n for n, v in dict(self.env.labels).items() if now - v[4] <= self.cfg.env.interval * 2 + 1]
+        return list(dict.fromkeys(names))
+
+    def find_person(self, name: str, now: float) -> Rect | None:
+        found = self._locate(name, now)
+        return found[0] if found else None
+
+    def look_person(self, name: str) -> list[dict]:
+        """按名字找到这个人，把他裁出来给大脑看（和 look 共用频率限制）。"""
+        now = self.clock()
+        brain = self.cfg.brain
+        if now - self.last_look < brain.look_min_interval:
+            raise ToolError(f"{brain.look_min_interval:.0f} 秒内刚看过，等一下再看")
+        if self.env is None:
+            raise ToolError("没开环境识别，认不出名字；用 look(image=true) 自己看")
+        found = self._locate(name, now)
+        if found is None or found[0].w < 8 or found[0].h < 8:
+            known = self._recognized(now)
+            where = f"画面里现在认得出：{'、'.join(known)}" if known else "画面里现在一个名字都没认出来"
+            raise ToolError(f"没找到 {name}（{where}）；不在画面里的话可以先 look_around 看看在哪个方向")
+        box, guessed = found
+        bx, by, bw, bh = box.x, box.y, box.w, box.h
+        frame = self.device.screenshot()
+        self.last_frame, self.last_look = frame, now
+        fh, fw = frame.shape[:2]
+        mx, my = round(bw * 0.2), round(bh * 0.2)  # 四周各放宽 20%：人会动、框也不一定贴身
+        x1, y1, x2, y2 = max(0, bx - mx), max(0, by - my), min(fw, bx + bw + mx), min(fh, by + bh + my)
+        crop = fit(frame[y1:y2, x1:x2], tuple(brain.image_size))
+        text = f"这是 {name}（原图 ({x1}, {y1}) 起 {x2 - x1}×{y2 - y1}）"
+        if guessed:
+            text += "；按名字标签估的位置，可能没框全"
+        return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
+
     def fresh_frame(self):
         """眼睛马上要看：在身体线程里截一张新的。"""
         frame = self.device.screenshot()
@@ -440,6 +515,9 @@ class Body:
         closest = self.env.nearest(now) if hasattr(self.env, "nearest") else None
         if closest:
             parts.append(f"离你最近的：{closest[0]}（{closest[1]}）")
+        people = describe_people(self.env.people(now)) if hasattr(self.env, "people") else ""
+        if people:
+            parts.append("画面里：" + people)
         if self.holding:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:
@@ -453,6 +531,7 @@ class Body:
             parts.append("互动规则：" + self.social.describe_policy())
         if self.said:
             parts.append("刚说过：" + " | ".join(self.said[-3:]))
+        parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
             parts.append("dry-run（说话、动作、转视角都不会真的执行）")
         return " / ".join(parts)
@@ -632,6 +711,9 @@ class Body:
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
         self._forget_self()
         return "镜头现在：" + result
+
+    def stop_task(self) -> str:
+        return self.skills.cancel(self, "大脑叫停")
 
     def camera_reset(self, live: bool = False) -> str:
         if self.camera is None:
