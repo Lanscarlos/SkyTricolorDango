@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -30,6 +31,11 @@ log = logging.getLogger(__name__)
 MESSAGE_KEEP = 3.0  # 新消息的框留几秒
 MESSAGE_CHARS = 24  # 新消息的标签最多显示几个字
 WAIT = 2.0  # /snapshot 没有新帧时最多等几秒
+
+
+class _Server(ThreadingHTTPServer):
+    # Windows 上 SO_REUSEADDR 允许两个进程绑同一个端口：第二个 view 不报“端口被占用”，浏览器可能连到旧的那个
+    allow_reuse_address = os.name != "nt"
 
 
 def _box(r: Rect, kind: str, label: str) -> dict:
@@ -169,7 +175,7 @@ class Viewer:
             def log_message(self, *args) -> None:  # 别刷屏
                 pass
 
-        self._server = ThreadingHTTPServer((self.cfg.host, self.cfg.port), Handler)
+        self._server = _Server((self.cfg.host, self.cfg.port), Handler)
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, name="viewer", daemon=True).start()
         return self.url
