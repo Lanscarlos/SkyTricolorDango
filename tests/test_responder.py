@@ -1,6 +1,7 @@
 from skydango.chat.reader import Message
 from skydango.chat.responder import SKIP_TOKEN, Reply, Responder, build_system_prompt, clean_reply, parse_reply
 from skydango.config import ReplyConfig
+from skydango.vision.envdiff import EnvSnapshot
 from skydango.vision.bubbles import Rect
 
 
@@ -128,3 +129,14 @@ def test_claims_human_filter_catches_variants():
         assert clean_reply(bad, 40) is None, bad
     for ok in ("你才是AI吧", "哈哈哈随你怎么想", "我是AI", "在呢"):
         assert clean_reply(ok, 40) == ok, ok
+
+
+def test_env_change_is_prefixed_to_user_turn_and_kept_in_history():
+    snaps = iter([EnvSnapshot(frozenset(), 0, None), EnvSnapshot(frozenset({"小明"}), 0, None)])
+    llm = ScriptedLlm(["嗨", "来啦"])
+    r = Responder(llm, ReplyConfig(), env_snapshot=lambda: next(snaps))
+    r.reply([msg("在吗")])
+    assert "这之间" not in llm.calls[0][1][-1]["content"]  # 第一轮没有"之前"
+    r.reply([msg("我来了")])
+    assert llm.calls[1][1][-1]["content"].startswith("（这之间：小明来了）\n")
+    assert r.history[-2]["content"].startswith("（这之间：小明来了）")
