@@ -944,14 +944,16 @@ def test_far_crop_skips_tagged_big_and_unlit_players():
     assert w.far_runs == 0 and det.crops == []
 
 
-def test_far_crop_drops_tags_already_seen_in_the_full_frame():
-    seen = Detection("name_tag", Rect(986, 385, 50, 14), 0.9)  # 原图也框到了，只是位置没挂上人
-    det = CropDetector([small(1000), seen], [Detection("name_tag", Rect(10, 5, 50, 14), 0.9)])
-    ocr = FakeOcr({50: "懒洋洋大王"})
-    w = far_watcher(det, ocr)
+def test_far_crop_drops_rings_already_seen_in_the_full_frame():
+    seen = Detection("social_ring", Rect(986, 440, 30, 30), 0.9)  # 原图也框到了这个圆圈
+    det = CropDetector([small(1000), seen], [
+        Detection("social_ring", Rect(10, 60, 30, 30), 0.9),  # 裁剪里又找到一遍（映射回去和原图的重合）
+        Detection("name_tag", Rect(10, 20, 50, 14), 0.9),
+    ])
+    w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}))
     w.process(frame(), 0.0, panel_visible=False)
-    assert w.far_runs == 1
-    assert sum(t.cls == "name_tag" for t in w.last_tracks) == 1 and ocr.calls == 1
+    assert w.far_runs == 1 and w.nearby(0.0) == ["懒洋洋大王"]
+    assert sum(t.cls == "social_ring" for t in w.last_tracks) == 1
 
 
 def test_far_crops_zero_turns_it_off():
@@ -1156,3 +1158,41 @@ def test_place_is_cleared_after_two_misses_in_a_row():
     assert w.place == "云野"  # 偶尔一次认不出：先留着
     w.process(frame(), 60.0, panel_visible=False)
     assert w.place == ""
+
+
+# ---- 评审暂缓项 ----
+def test_gesture_clip_is_dropped_when_the_friend_walks_out_of_the_center():
+    det = FakeDetector()
+    g = FakeGesture()
+    w = gesture_watcher(det, g)
+    det.frames = [[player(900), tag(890, 110)]]
+    feed(w, 0.625)  # 中间攒了 6 张
+    det.frames = [[player(1700), tag(1690, 110)]]  # 走到右边（同一条轨迹接不上也没关系）
+    feed(w, 1.5, start=0.75)
+    det.frames = [[player(900), tag(890, 110)]]
+    assert feed(w, 3.0, start=1.625) == [] and g.calls == 0  # 回来后重新攒，1.375 s 还不够 16 张
+
+
+def test_pending_gestures_are_capped_when_nobody_takes_them():
+    w = gesture_watcher(FakeDetector(), FakeGesture())
+    for i in range(200):
+        w._gesture_at.clear()
+        with w._lock:
+            w._gestures.append((f"好友{i}", "wave"))
+    assert len(w.pop_gestures()) <= 50
+
+
+def test_far_crop_backs_off_for_far_strangers_without_a_tag():
+    det = CropDetector([small(1000)])  # 远处的人，裁剪里也从来没有标签（点过火的陌生人）
+    w = far_watcher(det)
+    for i in range(143):  # 0.07 s 一帧，10 s
+        w.process(frame(), round(i * 0.07, 2), panel_visible=False)
+    assert w.far_runs <= 5  # 前几次每 0.8 s 一次，之后每 5 s 一次
+
+
+def test_far_crop_skipped_when_a_tag_already_sits_in_the_crop_area():
+    near_miss = Detection("name_tag", Rect(986, 385, 50, 14), 0.9)  # 原图框到了，只是位置没挂上人
+    det = CropDetector([small(1000), near_miss], [Detection("name_tag", Rect(10, 5, 50, 14), 0.9)])
+    w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.far_runs == 0 and det.crops == []

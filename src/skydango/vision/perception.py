@@ -50,6 +50,8 @@ STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
 PLACE_GAP = 3.0  # 画面大变后认地图：离上次至少隔这么久（转镜头时画面一直在变）
 FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹最多隔这么久裁一次（还要比 track_buffer 短）；挂上名字标签后这么久内也不裁
+FAR_MISSES = 3  # 远处二次检测连着这么多次没找到名字标签……
+FAR_BACKOFF = 5.0  # ……之后这么久才再裁一次
 FAR_DUP_IOU = 0.3  # 二次检测找到的框和原图里已有的同类框重叠这么多就算同一个
 UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
@@ -139,7 +141,7 @@ class PerceptionWatcher:
         self._place_misses = 0  # 连着几次认不出
         self.gestures = gestures
         self.gesture_cfg = gesture_cfg or GestureConfig()
-        self._gestures: list[tuple[str, str]] = []  # (好友名, 动作)，身体取走
+        self._gestures: deque[tuple[str, str]] = deque(maxlen=50)  # (好友名, 动作)，身体取走；没人取（普通 Agent）时只留最近的
         self._gesture_at: dict[tuple[str, str], float] = {}
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
@@ -450,11 +452,19 @@ class PerceptionWatcher:
         # 远处的标签只在裁剪那一帧出现：下次裁剪要赶在标签轨迹被追踪器删掉（track_buffer）之前，
         # 不然每次都是新轨迹，名字投票、"同一条标签轨迹只记一次"都不起作用
         retry = min(FAR_RETRY, 0.8 * self.cfg.track_buffer)
+
+        def due(p: Track) -> bool:
+            # 连着几次都没找到标签（多半是点过火的陌生人）：放慢到 FAR_BACKOFF 秒一次，别一直占推理
+            wait = FAR_BACKOFF if p.data.get("far_miss", 0) >= FAR_MISSES else retry
+            return now - p.data.get("tag_at", float("-inf")) >= retry and now - p.data.get("far_at", float("-inf")) >= wait
+
+        def tag_inside(area: Rect | None) -> bool:  # 原图里已经框到了标签（只是位置没挂上人）：裁了也只会找到它
+            return area is not None and any(_inside(_center(t.box), area) for t in tags)
+
         todo = [
             p for p in players
-            if p.cls == "player" and p.box.h < limit and self._tag_over(p, tags) is None
-            and now - p.data.get("tag_at", float("-inf")) >= retry
-            and now - p.data.get("far_at", float("-inf")) >= retry
+            if p.cls == "player" and p.box.h < limit and self._tag_over(p, tags) is None and due(p)
+            and not tag_inside(far_region(p.box, width, height))
         ]
         todo.sort(key=lambda p: p.data.get("far_at", float("-inf")))
         found: list[Detection] = []
@@ -464,11 +474,14 @@ class PerceptionWatcher:
             if area is None:
                 continue
             self.far_runs += 1
+            hits = 0
             for d in self._detect(area.crop(frame)):
                 if d.cls not in ("name_tag", "social_ring") or d.score < self.cfg.conf:
                     continue
                 box = Rect(d.box.x + area.x, d.box.y + area.y, d.box.w, d.box.h)
                 found.append(Detection(d.cls, box, d.score))
+                hits += d.cls == "name_tag"
+            p.data["far_miss"] = 0 if hits else p.data.get("far_miss", 0) + 1
         found = self._filter(found, width, height, panel_visible, drop_self=False)
         seen = {  # 这一帧原图里已经有的框：二次检测又找到一遍的不要（不能多出一条轨迹、多读一次 OCR）
             cls: [t.box for t in self.tracker.tracks.values() if t.cls == cls and t.last == now]
@@ -730,6 +743,7 @@ class PerceptionWatcher:
         for p in players:
             name = p.data.get("name")
             if p.cls != "player" or not eligible(name, p.box, width, ref, self.cfg.near, self.cfg.far):
+                p.data.pop("clip", None)  # 走开 / 走远了：之前攒的不能和回来后的拼在一起
                 continue
             buf: ClipBuffer = p.data.setdefault("clip", ClipBuffer(cfg.frames, cfg.fps))
             buf.push(now, person_crop(frame, p.box, cfg.size))
@@ -755,7 +769,8 @@ class PerceptionWatcher:
     def pop_gestures(self) -> list[tuple[str, str]]:
         """取走"谁对团子做了什么动作"，身体变成 gesture 事件。"""
         with self._lock:
-            out, self._gestures = self._gestures, []
+            out = list(self._gestures)
+            self._gestures.clear()
         return out
 
     def pop_approaches(self) -> list[str]:

@@ -45,7 +45,7 @@ imgsz 960 时，远处的名字标签只有十几像素高，YOLO 框不到、OC
 
 - `PerceptionWatcher._far_tags`：候选 = `player`（黑影不用）、框高 < `far_height`、这一帧没挂上名字标签、离上次挂上标签和上次裁剪都 ≥ 1 s；
   每帧按"最久没裁过"取前 `far_crops` 个。裁剪（`far_region`，夹到画面内，太小不裁）直接交给检测器，它自己 letterbox 放大到 `imgsz`；
-  找到的框映射回整图、和原图已有的同类框重叠（IoU ≥ 0.3）的丢掉，其余接进追踪器，走平时的名字 OCR / 圆圈流程；重裁的间隔比 `track_buffer` 短，标签轨迹接得上，名字投票照常
+  找到的框映射回整图、和原图已有的同类框重叠（IoU ≥ 0.3）的丢掉，其余接进追踪器，走平时的名字 OCR / 圆圈流程；重裁的间隔比 `track_buffer` 短，标签轨迹接得上，名字投票照常。连着 3 次没找到标签（多半是点过火的陌生人）就放慢到 5 s 一次；原图在裁剪区域里已经框到标签（只是位置没挂上人）时不裁
 - 没做"几个裁剪拼成一批跑"：先测单张的耗时再说
 - `perception compare` 报告多了"远处的人"一节（远处 player 认出好友名的比例）；`compare` / `bench` 加 `--far-crops N` 开关对比，`bench` 打印二次检测次数
 
@@ -77,7 +77,7 @@ imgsz 960 时，远处的名字标签只有十几像素高，YOLO 框不到、OC
   输出取二维的那个，否则取 CLS token）、`PlaceLibrary`（图库 + 缓存）、`decide`（判定）、`PlaceRecognizer`
 - `PerceptionWatcher` 每 `place_interval` 秒、或画面比上次认地图时大变（隔 ≥ 3 s）认一次；偶尔一次认不出先留着原来的，画面大变后认不出或连着两次认不出就清掉（宁可不说），`env.place_keep` 秒内写进提示词
 - 图库缓存的键带模型文件的完整路径、大小、修改时间：同名的另一个模型、覆盖过的模型都会重算
-- 命令：`places add <地名> [--image 图]`（只存图，不需要特征模型）、`places test [目录]`、`places bench --model A --model B`（留一法，打印认对 / 认错 / 不说和耗时）
+- 命令：`places add <地名> [--image 图]`（只存图，不需要特征模型；地名不能以 `_` / `.` 开头，不能带路径符号和 Windows 不允许的字符）、`places test [目录]`、`places bench --model A --model B`（留一法，打印认对 / 认错 / 不说和耗时）
 - `[places] enabled` 要配合 `[perception] enabled`；图库是空的时记警告、不认地图
 
 ### 验收
@@ -116,8 +116,8 @@ imgsz 960 时，远处的名字标签只有十几像素高，YOLO 框不到、OC
 - **模型约定**（训练脚本还没写，GPU 机器上按这个约定训练、导出 ONNX）：输入 `1×16×3×112×112`（RGB，0~1），
   输出 `1×len(labels)` 的分数（logits 或概率都行，推理时统一 softmax），顺序同 `[gesture] labels`（默认 `none, wave, bow`）
 - 评估：`perception gesture-eval datasets/gesture --model …` 打印每个动作的精确率 / 召回率，标出是否达标
-- 运行时：`[gesture] enabled` 时 `PerceptionWatcher` 对认出名字、近 / 中、在画面中间一半的好友攒片段，每 2 s 判一次；
-  概率 ≥ `min_prob`（0.9）才报，同一人同一动作 30 s 一次；身体发 `gesture` 事件（牵着手的那个人不报），提示词说明可以用 `emote` 回礼
+- 运行时：`[gesture] enabled` 时 `PerceptionWatcher` 对认出名字、近 / 中、在画面中间一半的好友攒片段，每 2 s 判一次（片段必须连续：断档超过 3 帧的时间、或人走到边上 / 走远，之前攒的作废）；
+  概率 ≥ `min_prob`（0.9）才报，同一人同一动作 30 s 一次（没人取的事件只留最近 50 条）；模型输出的类别数启动时就和 `labels` 核对；身体发 `gesture` 事件（牵着手的那个人不报），提示词说明可以用 `emote` 回礼
 
 ### 验收
 

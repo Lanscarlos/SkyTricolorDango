@@ -130,6 +130,17 @@ def decide(scores: list[tuple[str, float]], place_min: float, place_margin: floa
     return PlaceMatch(best if ok else None, float(score), best, float(second))
 
 
+_BAD_CHARS = set('\\/:*?"<>|')
+
+
+def check_place_name(name: str) -> None:
+    """地名要能当目录名：不能空、不能以 _ / . 开头（图库会跳过）、不能有路径符号和 Windows 不允许的字符。"""
+    if not name.strip() or name != name.strip():
+        raise ValueError(f"地名不能是空的，前后也别带空格：{name!r}")
+    if name[0] in "_." or any(c in _BAD_CHARS or ord(c) < 32 for c in name):
+        raise ValueError(f"地名不能以 _ 或 . 开头，也不能带 \\ / : * ? \" < > |：{name!r}")
+
+
 class PlaceLibrary:
     def __init__(self, root: Path, embedder=None, wall: Callable[[], float] = time.time) -> None:
         """embedder 为 None 时只能 add（存图不用算特征：还没选好特征模型也能先攒图库）。"""
@@ -192,6 +203,7 @@ class PlaceLibrary:
 
     def add(self, name: str, img: np.ndarray) -> Path:
         """存一张（已经遮好的）截图到 <root>/<地名>/<时间>.jpg，重新读图库（有特征模型时顺便算好缓存）。"""
+        check_place_name(name)
         folder = self.root / name
         folder.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.wall()))

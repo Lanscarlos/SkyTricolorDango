@@ -338,19 +338,27 @@ def _place_recognizer(cfg: Config, required: bool = False):
     return PlaceRecognizer(library, cfg.places, cfg.env.roi, [cfg.vision.log_roi])
 
 
-def _scene_boxes(cfg: Config, img) -> list:
-    """认地图前要遮掉的人物 / 名字标签 / 圆圈：YOLO 模型文件在就跑一次检测，不在就只遮固定 UI。"""
+def _scene_boxes(cfg: Config):
+    """认地图前要遮掉的人物 / 名字标签 / 圆圈：返回 图 → 框 的函数。YOLO 模型文件在就建一次检测器（一批图共用），不在就只遮固定 UI。"""
     if not Path(cfg.perception.model).exists():
-        return []
+        return lambda img: []
     from .vision.detect import make_detector
 
     p = cfg.perception
     try:
         detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
-        return [d.box for d in detector.detect(img)]
     except Exception as exc:
         log.warning("遮人用的 YOLO 跑不了（%s），只遮固定 UI", exc)
-        return []
+        return lambda img: []
+
+    def boxes(img) -> list:
+        try:
+            return [d.box for d in detector.detect(img)]
+        except Exception as exc:
+            log.warning("遮人用的 YOLO 出错（%s），这张只遮固定 UI", exc)
+            return []
+
+    return boxes
 
 
 def cmd_places(cfg: Config, args) -> None:
@@ -361,7 +369,7 @@ def cmd_places(cfg: Config, args) -> None:
         cfg.places.model = args.model[0] if isinstance(args.model, list) else args.model
     if args.action == "add":
         img = imread(args.image) if args.image else _device(cfg).screenshot()
-        boxes = _scene_boxes(cfg, img)
+        boxes = _scene_boxes(cfg)(img)
         library = PlaceLibrary(Path(cfg.places.dir))  # 只存图，不算特征：还没选好特征模型也能先攒图库
         recognizer = PlaceRecognizer(library, cfg.places, cfg.env.roi, [cfg.vision.log_roi])
         path = library.add(args.name, recognizer.mask(img, boxes))
@@ -371,8 +379,9 @@ def cmd_places(cfg: Config, args) -> None:
         recognizer = _place_recognizer(cfg, required=True)
         files = _images(args.source) if args.source else []
         items = [(f.name, imread(f)) for f in files] or [("当前画面", _device(cfg).screenshot())]
+        find_boxes = _scene_boxes(cfg)
         for name, img in items:
-            m = recognizer.recognize(img, _scene_boxes(cfg, img))
+            m = recognizer.recognize(img, find_boxes(img))
             verdict = f"{m.name} {m.score:.2f}" if m.name else f"认不出（最像 {m.best} {m.score:.2f}）"
             print(f"{name}  → {verdict}  第二像的别的地方 {m.second:.2f}")
     elif args.action == "bench":

@@ -140,3 +140,30 @@ def test_onnx_gesture_classifier_softmax_over_labels(tmp_path):
 def test_onnx_gesture_classifier_missing_model(tmp_path):
     with pytest.raises(FileNotFoundError):
         OnnxGestureClassifier(str(tmp_path / "nope.onnx"), ["none", "wave"])
+
+
+# ---- 评审暂缓项：片段不能跨断档拼接、类别数启动时就检查 ----
+def test_clip_buffer_restarts_after_a_gap():
+    buf = ClipBuffer(16, 8.0)
+    for i in range(6):
+        buf.push(i * 0.125, np.full((4, 4, 3), i, np.uint8))
+    for i in range(99, 109):  # 断了十几秒再回来
+        buf.push(i * 0.125, np.full((4, 4, 3), i, np.uint8))
+    assert not buf.ready() and len(buf.clip()) == 10
+    assert int(buf.clip()[0][0, 0, 0]) == 99
+
+
+def test_clip_buffer_tolerates_jittery_body_frames():
+    buf = ClipBuffer(16, 8.0)
+    t = 0.0
+    for i in range(16):  # 身体约 0.15 s 一帧，偶尔 0.3 s
+        buf.push(t, np.zeros((4, 4, 3), np.uint8))
+        t += 0.3 if i % 5 == 4 else 0.15
+    assert buf.ready()
+
+
+def test_onnx_gesture_classifier_checks_label_count_up_front(tmp_path):
+    pytest.importorskip("onnxruntime")
+    _mean_model(tmp_path / "g.onnx")  # 输出 3 类
+    with pytest.raises(ValueError, match="3"):
+        OnnxGestureClassifier(str(tmp_path / "g.onnx"), ["none", "wave"])

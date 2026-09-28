@@ -49,16 +49,20 @@ def person_crop(img: np.ndarray, box: Rect, size: int) -> np.ndarray:
 
 
 class ClipBuffer:
-    """一条轨迹最近的 frames 张裁剪，按 fps 取（比 fps 快的帧丢掉）。"""
+    """一条轨迹最近的 frames 张裁剪，按 fps 取（比 fps 快的帧丢掉）；中间断档太久就从头攒（片段必须是连续的一段）。"""
 
     def __init__(self, frames: int, fps: float) -> None:
-        self.gap = 0.9 / max(fps, 0.1)  # 留一点余量：身体的截图间隔会抖
+        period = 1.0 / max(fps, 0.1)
+        self.gap = 0.9 * period  # 留一点余量：身体的截图间隔会抖
+        self.max_gap = 3 * period  # 超过这么久没新帧（人走开、被挡、感知太慢）：之前攒的作废
         self.items: deque[np.ndarray] = deque(maxlen=frames)
         self.last = float("-inf")
 
     def push(self, t: float, crop: np.ndarray) -> None:
         if t - self.last < self.gap:
             return
+        if t - self.last > self.max_gap:
+            self.items.clear()
         self.last = t
         self.items.append(crop)
 
@@ -92,6 +96,9 @@ class OnnxGestureClassifier:
         self.session = ort.InferenceSession(str(path), providers=providers)
         self.input = self.session.get_inputs()[0].name
         self.labels = labels
+        size = self.session.get_outputs()[0].shape[-1]  # 启动时就对上类别数，别等到运行时每次判都报错
+        if isinstance(size, int) and size > 0 and size != len(labels):
+            raise ValueError(f"动作模型输出 {size} 类，[gesture] labels 有 {len(labels)} 个：{labels}")
 
     def classify(self, clip: list[np.ndarray]) -> tuple[str, float]:
         x = np.stack([cv2.cvtColor(f, cv2.COLOR_BGR2RGB) for f in clip]).astype(np.float32) / 255.0

@@ -210,3 +210,11 @@ def test_add_does_not_need_an_embedder(tmp_path):
     lib = PlaceLibrary(tmp_path, None, wall=lambda: 0.0)
     path = lib.add("云野", gradient((40, 200, 60)))
     assert path.exists() and lib.places() == ["云野"]
+
+
+@pytest.mark.parametrize("name", ["", "  ", "_trash", ".hidden", "云/野", "..", "a\\b", "云:野", "云?野", "a<b"])
+def test_add_rejects_bad_place_names(tmp_path, name):
+    lib = PlaceLibrary(tmp_path / "places", wall=lambda: 0.0)
+    with pytest.raises(ValueError):
+        lib.add(name, gradient((40, 200, 60)))
+    assert not any((tmp_path).rglob("*.jpg"))

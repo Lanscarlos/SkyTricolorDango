@@ -163,3 +163,28 @@ def test_places_add_works_before_any_feature_model(tmp_path, monkeypatch, capsys
     imwrite(tmp_path / "a.jpg", _scene((40, 200, 60), 0))
     cli.main(["places", "add", "云野", "--image", str(tmp_path / "a.jpg")])  # 默认 models/places.onnx 不存在
     assert len(list((tmp_path / "places" / "云野").glob("*.jpg"))) == 1
+
+
+def test_places_test_builds_the_masking_detector_once(tmp_path, monkeypatch, capsys):
+    from skydango.imageio import imwrite
+    from skydango.vision import detect
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "sky-yolo.onnx").write_bytes(b"x")  # 模型文件在：会建检测器遮人
+    built = []
+
+    def make(*a, **k):
+        built.append(1)
+        return FarDetector()
+
+    monkeypatch.setattr(detect, "make_detector", make)
+    shots = tmp_path / "shots"
+    shots.mkdir()
+    imwrite(shots / "a.jpg", _scene((40, 200, 60), 0))
+    cli.main(["places", "add", "云野", "--image", str(shots / "a.jpg")])
+    for i in range(3):
+        imwrite(shots / f"p{i}.jpg", _scene((40, 200, 60), i + 1))
+    built.clear()
+    cli.main(["places", "test", str(shots), "--model", "thumb"])
+    assert len(built) == 1
