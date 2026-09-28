@@ -65,3 +65,18 @@ def test_perception_far_crop_defaults(tmp_path):
     p.write_text("[perception]\nfar_crops = 0\n", encoding="utf-8")
     assert load_config(p).perception.far_crops == 0
     assert load_config(ROOT / "config.example.toml").perception.far_crops == 3
+
+
+def test_places_section(tmp_path):
+    cfg = load_config(None)
+    pl = cfg.places
+    assert (pl.enabled, pl.dir, pl.model, pl.size, pl.norm, pl.device) == (False, "places", "models/places.onnx", 224, "imagenet", "cpu")
+    assert (pl.place_min, pl.place_margin, pl.place_interval) == (0.8, 0.05, 30.0)
+    p = tmp_path / "c.toml"
+    p.write_text("[places]\nmodel = \"thumb\"\n", encoding="utf-8")
+    assert load_config(p).places.model == "thumb"
+    assert load_config(ROOT / "config.example.toml").places.enabled is False
+
+
+def test_places_folder_is_gitignored():
+    assert "places/" in (ROOT / ".gitignore").read_text(encoding="utf-8").split()

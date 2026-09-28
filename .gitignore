@@ -28,3 +28,6 @@ memory/
 # YOLO 数据集和训练出来的模型（本机私有、体积大）
 datasets/
 models/
+
+# 认地图的参考截图（可能有好友）
+places/

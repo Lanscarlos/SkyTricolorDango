@@ -99,6 +99,18 @@ typing_window = 8.0             # 陌生人发消息前这么久内头顶冒过�
 far_height = 0.08               # 远处的人（框高 < 屏高 × 这个）没挂上名字标签时，头顶裁一块再检测一次
 far_crops = 3                   # 每帧最多裁几块；0 = 关（perception compare --far-crops 0 对比开关效果）
 
+[places]
+# 认地图（感知层三期，要先打开 [perception]）：和 places/<地名>/ 里的参考截图比，认出在哪张图
+# 加图：python -m skydango places add 云野；看准不准：places test / places bench
+enabled = false
+dir = "places"                  # 图库（不进 git）
+model = "models/places.onnx"    # 图像特征模型（ONNX）；"thumb" = 内置的缩略图基线（不用下载模型，准确率差）
+size = 224
+norm = "imagenet"               # imagenet / clip / none（MobileCLIP 用 none）
+place_min = 0.8                 # 最像的相似度至少这么高（待标定）
+place_margin = 0.05             # 且比第二像的别的地方高这么多
+place_interval = 30.0           # 每隔这么久认一次（画面大变后也认一次）
+
 [spin]
 # 转一圈：主人发 #spin（普通模式）、命令行 camera spin、打开感知层时大脑的 look_around
 seconds_per_turn = 2.0          # 按住方向键转一圈要几秒（估的，待 camera spin 标定）

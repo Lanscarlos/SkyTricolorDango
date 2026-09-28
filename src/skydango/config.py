@@ -284,6 +284,21 @@ class PerceptionConfig:
 
 
 @dataclass
+class PlacesConfig:
+    """认地图（感知层三期 §2）：和图库里每个地方的参考截图比特征，最像、又和别的地方拉开差距才算认出。"""
+
+    enabled: bool = False
+    dir: str = "places"  # 图库：places/<地名>/*.jpg（不进 git，截图里可能有好友）；places add <地名> 往里加
+    model: str = "models/places.onnx"  # 图像特征模型（ONNX，候选 MobileCLIP-S0 / DINOv2-small，places bench 比了再定）；"thumb" = 内置缩略图基线
+    size: int = 224  # 输入尺寸（模型固定了尺寸时以模型为准）
+    norm: str = "imagenet"  # 输入归一化：imagenet / clip / none（MobileCLIP 用 none）
+    device: str = "cpu"
+    place_min: float = 0.8  # 最像的余弦相似度至少这么高（待标定）
+    place_margin: float = 0.05  # 且比第二像的"别的地方"高这么多（宁可不说，不能说错）
+    place_interval: float = 30.0  # 每隔这么久认一次；画面大变后也认一次
+
+
+@dataclass
 class FriendCheckConfig:
     """大脑的 check_friend 工具：点一下人物打开右侧的好友树面板，截图给大脑看是不是好友，再关掉。
 
@@ -377,6 +392,7 @@ class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     social: SocialConfig = field(default_factory=SocialConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
+    places: PlacesConfig = field(default_factory=PlacesConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     spin: SpinConfig = field(default_factory=SpinConfig)
