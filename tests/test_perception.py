@@ -330,3 +330,27 @@ def test_yolo_label_format_and_split():
 def test_data_yaml(tmp_path):
     text = data_yaml(tmp_path, ["player", "name_tag"])
     assert "train: images/train" in text and "  1: name_tag" in text
+
+
+# ---- 追踪器：补时间、跨类别关联（一期 §4、§5） ----
+def test_tracker_shift_keeps_tracks_alive():
+    t = Tracker(buffer=1.0)
+    first = t.update([Detection("player", Rect(0, 0, 50, 100), 0.9)], 0.0)[0]
+    t.shift(20.0)
+    again = t.update([Detection("player", Rect(2, 0, 50, 100), 0.9)], 20.5)[0]
+    assert again.id == first.id and again.first == 20.0
+
+
+def test_tracker_cross_class_association_counts_flips():
+    t = Tracker(cross=frozenset({"player", "player_unlit"}), cross_iou=0.5)
+    a = t.update([Detection("player", Rect(0, 0, 50, 100), 0.9)], 0.0)[0]
+    b = t.update([Detection("player_unlit", Rect(1, 0, 50, 100), 0.9)], 0.1)[0]
+    c = t.update([Detection("player", Rect(1, 0, 50, 100), 0.9)], 0.2)[0]
+    assert a.id == b.id == c.id and c.cls == "player" and c.flips == 2
+
+
+def test_tracker_without_cross_keeps_classes_apart():
+    t = Tracker()
+    a = t.update([Detection("player", Rect(0, 0, 50, 100), 0.9)], 0.0)[0]
+    b = t.update([Detection("player_unlit", Rect(0, 0, 50, 100), 0.9)], 0.1)[0]
+    assert a.id != b.id

@@ -30,13 +30,17 @@ class Track:
     first: float  # 第一次看到的时间
     last: float  # 最近一次看到的时间
     hits: int = 1
+    flips: int = 0  # 类别在 cross 组里来回变了几次（player ↔ player_unlit，难例收集用）
     data: dict = field(default_factory=dict)  # 上层挂的东西（名字投票、身份……）
 
 
 class Tracker:
-    def __init__(self, buffer: float = 1.0, min_iou: float = 0.3) -> None:
+    def __init__(self, buffer: float = 1.0, min_iou: float = 0.3, cross: frozenset[str] = frozenset(),
+                 cross_iou: float = 0.5) -> None:
         self.buffer = buffer  # 轨迹这么久没匹配上就删
         self.min_iou = min_iou
+        self.cross = cross  # 这几个类别之间也能接上（同一个人一会儿认成 player、一会儿认成 player_unlit）
+        self.cross_iou = cross_iou  # 跨类别要重叠得更多才算同一个
         self.tracks: dict[int, Track] = {}
         self._next = 1
 
@@ -48,9 +52,14 @@ class Tracker:
         for di, det in enumerate(dets):
             for track in self.tracks.values():
                 if track.cls == det.cls:
-                    overlap = iou(track.box, det.box)
-                    if overlap >= self.min_iou:
-                        pairs.append((overlap, di, track.id))
+                    need = self.min_iou
+                elif track.cls in self.cross and det.cls in self.cross:
+                    need = self.cross_iou
+                else:
+                    continue
+                overlap = iou(track.box, det.box)
+                if overlap >= need:
+                    pairs.append((overlap, di, track.id))
         pairs.sort(reverse=True)
         matched: dict[int, Track] = {}
         used: set[int] = set()
@@ -59,6 +68,9 @@ class Tracker:
                 continue
             track = self.tracks[tid]
             det = dets[di]
+            if track.cls != det.cls:
+                track.cls = det.cls
+                track.flips += 1
             track.box, track.score, track.last = det.box, det.score, now
             track.hits += 1
             matched[di] = track
@@ -72,3 +84,9 @@ class Tracker:
                 self._next += 1
             out.append(track)
         return out
+
+    def shift(self, d: float) -> None:
+        """感知暂停了 d 秒：所有轨迹的时间往后挪，恢复后不会因为"太久没看到"而断掉。"""
+        for track in self.tracks.values():
+            track.first += d
+            track.last += d
