@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import base64
+import json
 import threading
 from concurrent.futures import Future
 
@@ -329,6 +330,42 @@ def test_say_writes_memory_when_live(clock, tmp_path):
     b.say("在呢")
     (turn,) = store.history.all()
     assert "懒洋洋大王：「在吗」" in turn.user and turn.reply == "在呢"
+
+
+def test_manual_say_is_marked_and_kept_out_of_memory(clock, tmp_path):
+    # 主人手动说的话不是 AI 的回复：运行记录里标 manual，不写聊天历史 / 长期记忆（模型会模仿 history），也不拿走大脑待回复的消息
+    from skydango.chat.memory import MemoryStore
+
+    class Run:
+        def __init__(self):
+            self.replies = []
+
+        def record_reply(self, messages, reply, sent, manual=False):
+            self.replies.append((list(messages), reply, sent, manual))
+
+        def save_frame(self, frame, boxes):
+            pass
+
+    store, run = MemoryStore(tmp_path), Run()
+    b, _, reader, _ = body(clock, live=True, store=store, run=run)
+    reader.batches = [[msg("在吗")]]
+    b.step()
+    b.say("测试一下", live=True)
+    assert store.history.all() == []
+    assert run.replies == [([], "测试一下", True, True)]
+    assert [m.text for m in b.heard] == ["在吗"]  # 大脑之后回复时还能配上这句
+
+
+def test_run_dir_marks_manual_replies(tmp_path):
+    from skydango.runlog import RunDir
+
+    cfg = Config()
+    cfg.run.dir = str(tmp_path)
+    run = RunDir.create(cfg, "dry")
+    run.record_reply([], "测试一下", sent=True, manual=True)
+    run.record_reply([], "好呀", sent=True)
+    lines = [json.loads(line) for line in (run.path / "replies.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["manual"] is True and "manual" not in lines[1]
 
 
 class FakeEmotes:

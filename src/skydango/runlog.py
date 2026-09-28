@@ -139,14 +139,16 @@ class RunDir:
         imwrite(path, crop, [cv2.IMWRITE_JPEG_QUALITY, self.cfg.run.jpeg_quality])
         return path
 
-    def record_reply(self, messages: Sequence, reply: str | None, sent: bool) -> None:
-        """记一轮回复。reply 为 None：模型选择不回复（或回复被过滤掉了）。"""
+    def record_reply(self, messages: Sequence, reply: str | None, sent: bool, manual: bool = False) -> None:
+        """记一轮回复。reply 为 None：模型选择不回复（或回复被过滤掉了）。manual：主人在网页上手动让团子说的，不是 AI 的回复。"""
         entry = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "messages": [{"speaker": m.speaker, "text": m.text} for m in messages],
             "reply": reply,
             "sent": sent,
         }
+        if manual:
+            entry["manual"] = True
         with (self.path / "replies.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 

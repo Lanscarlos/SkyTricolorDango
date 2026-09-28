@@ -484,10 +484,14 @@ class Body:
             return f"dry-run：没真的发，“{full}”"
         self.sender.send(full)
         self.self_filter.remember(full, self.clock())
-        self._remember(body, full, sent=True)
+        self._remember(body, full, sent=True, manual=live)
         return f"已发送：{full}"
 
-    def _remember(self, body: str, full: str, sent: bool) -> None:
+    def _remember(self, body: str, full: str, sent: bool, manual: bool = False) -> None:
+        if manual:  # 主人手动让团子说的：不是 AI 的回复——运行记录里标出来，不写聊天历史 / 记忆（模型会模仿 history），不拿走待回复的消息
+            if self.run_dir is not None:
+                self.run_dir.record_reply([], full, sent=sent, manual=True)
+            return
         heard, self.heard = self.heard, []
         if self.run_dir is not None:
             self.run_dir.record_reply(heard, full, sent=sent)
