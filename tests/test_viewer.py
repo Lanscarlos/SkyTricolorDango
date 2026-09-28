@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -418,3 +420,35 @@ def test_page_restarts_brain_list_when_program_restarts():
 
     script = PAGE.split("// ---- brain ----", 1)[1]
     assert "d.boot" in script  # 换了进程（boot 变了）就清空、从头拉
+
+
+def test_brain_endpoint_survives_lone_surrogate():
+    # 截断在 emoji 中间的字符串：编码不能炸，否则时间线一直"连不上"
+    v = viewer()
+    v.brain = BrainTrace()
+    v.brain.begin("events", "半个表情\ud83d")
+    url = v.start()
+    try:
+        with urllib.request.urlopen(url + "brain?after=0", timeout=5) as r:
+            assert r.status == 200 and json.loads(r.read())["turns"][0]["prompt"].startswith("半个表情")
+    finally:
+        v.stop()
+
+
+def _node(script: str) -> str:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("没有 node")
+    return subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+
+
+def test_newest_turn_stays_open_until_the_next_one_starts():
+    # 边跑边看：正在看的那一轮收尾时不能自己收起；下一轮开始后，没点过的旧轮次收起；点过的按用户的来
+    from skydango.vision.viewer import PAGE
+
+    [fn] = [line for line in PAGE.splitlines() if line.startswith("function wantOpen(")]
+    out = _node(fn + """
+const live={id:5,end:null},done={id:5,end:1},old={id:4,end:1};
+console.log(JSON.stringify([wantOpen(live,undefined,5),wantOpen(done,undefined,5),wantOpen(old,undefined,5),
+  wantOpen(old,true,5),wantOpen(done,false,5)]));""")
+    assert json.loads(out) == [True, True, False, True, False]

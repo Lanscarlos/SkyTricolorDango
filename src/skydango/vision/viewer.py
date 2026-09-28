@@ -155,7 +155,8 @@ class Viewer:
                     else:
                         self._send(200, "application/json; charset=utf-8", body)
                 elif url.path == "/brain" and viewer.brain is not None:
-                    body = json.dumps(viewer.brain.since(self._after(url), WAIT), ensure_ascii=False).encode()
+                    # errors="replace"：截断在 emoji 中间的半个代理字符不能让整条时间线卡在"连不上"
+                    body = json.dumps(viewer.brain.since(self._after(url), WAIT), ensure_ascii=False).encode(errors="replace")
                     self._send(200, "application/json; charset=utf-8", body)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
@@ -320,6 +321,8 @@ const FOLD=10;
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
 function kilo(n){return n==null?"—":n>=1000?(n/1000).toFixed(1)+"k":String(n)}
 function hms(t){return t?new Date(t*1000).toTimeString().slice(0,8):"--:--:--"}
+// 点过的按用户的来；没点过的：进行中的和最新一轮展开（收尾时不自己收起），下一轮开始后收起
+function wantOpen(t,want,newestId){return want!==undefined?want:(t.end===null||t.id===newestId)}
 function acted(t){return t.end===null||!!t.error||t.steps.some(s=>s.kind==="tool"||s.kind==="text")}
 function toolCounts(t){const c={};for(const n of t.tools)c[n]=(c[n]||0)+1;
   const s=Object.entries(c).map(([n,k])=>`${n}×${k}`).join(" ");return s||(t.steps.some(x=>x.kind==="text")?"（只说了话）":"（什么都没做）")}
@@ -344,8 +347,9 @@ function block(kind,title,text,error){const d=el("div",`step k-${kind}${error?" 
   let full=false;const btn=el("button","");
   const show=()=>{pre.textContent=full?text:lines.slice(0,FOLD).join("\\n")+"\\n…";btn.textContent=full?"收起":`展开全部（${lines.length} 行）`};
   btn.onclick=()=>{full=!full;show()};show();d.append(btn);return d}
+function newest(){return Math.max(0,...B.turns.keys())}
 function turnEl(t){const live=t.end===null,d=el("details",`turn${t.error?" err":""}${live?" live":""}`);
-  const want=B.want.get(t.id);d.open=want===undefined?live:want;
+  d.open=wantOpen(t,B.want.get(t.id),newest());
   const sm=el("summary");sm.append(el("span","t",hms(t.start)),el("span","",REASONS[t.reason]||t.reason));
   if(t.error)sm.append(el("span","",`失败：${t.error}`));
   else if(live)sm.append(el("span","",`进行中…${t.tools.length?" "+toolCounts(t):""}`));
@@ -363,6 +367,7 @@ function brainState(st){const e=$("brain-state");let text=`${st.model??"?"} / ${
   else text+="在线";e.textContent=text;e.className=cls}
 function brainRender(changed){const box=$("brain-turns");
   for(const t of changed){const old=B.els.get(t.id),neu=turnEl(t);if(old)old.replaceWith(neu);B.els.set(t.id,neu)}
+  const top=newest();for(const [id,e] of B.els)if(!B.want.has(id))e.open=wantOpen(B.turns.get(id),undefined,top);
   const ids=[...B.turns.keys()].sort((a,b)=>(a===0)-(b===0)||b-a);
   ids.forEach((id,i)=>{const e=B.els.get(id);if(box.children[i]!==e)box.insertBefore(e,box.children[i]||null)})}
 function brainMerge(d){

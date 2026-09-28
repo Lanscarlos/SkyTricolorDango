@@ -78,3 +78,32 @@ def test_run_and_look_arguments(monkeypatch):
     cli.main(["run", "--brain"])
     cli.main(["look", "--prompt", "q.txt"])
     assert seen == {"brain": True, "prompt": "q.txt"}
+
+
+def test_viewer_serves_brain_before_browser_opens(monkeypatch):
+    # run --brain --view：浏览器一打开就请求 /brain；这时还没挂上 trace 会拿到 404，页面就不再请求
+    import urllib.request
+    import webbrowser
+
+    seen = {}
+
+    def fake_open(url):
+        with urllib.request.urlopen(url + "brain?after=0", timeout=5) as r:
+            seen["status"] = r.status
+
+    monkeypatch.setattr(webbrowser, "open", fake_open)
+    cfg = Config()
+    cfg.viewer.port = 0
+    viewer = cli._viewer(cfg, brain=True)
+    try:
+        assert seen == {"status": 200} and isinstance(viewer.brain, BrainTrace)
+    finally:
+        viewer.stop()
+
+
+def test_run_brain_reuses_the_viewers_trace(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    v = FakeViewer()
+    v.brain = trace = BrainTrace()
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
+    assert v.brain is trace and trace.since(0, 0.0)["turns"]

@@ -436,11 +436,16 @@ def _stop_scene(env) -> None:
         print(f"没认出的名字：{len(unknown.entries)} 个 → {unknown.folder}（汇总：perception unknown-names）")
 
 
-def _viewer(cfg: Config, open_browser: bool = True):
-    """起可视化网页（后台线程），打印地址、打开浏览器。端口被占用时直接退出并提示换一个。"""
+def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False):
+    """起可视化网页（后台线程），打印地址、打开浏览器。端口被占用时直接退出并提示换一个。
+    brain：大脑模式，打开浏览器前先挂上大脑时间线（页面第一次请求 /brain 拿到 404 就不再请求了）。"""
     from .vision.viewer import Viewer
 
     viewer = Viewer(cfg.viewer)
+    if brain:
+        from .brain.trace import BrainTrace
+
+        viewer.brain = BrainTrace()
     try:
         url = viewer.start()
     except OSError as exc:
@@ -974,7 +979,7 @@ def cmd_run(cfg: Config, args) -> None:
     viewer = None
     try:
         if args.view:
-            viewer = _viewer(cfg)
+            viewer = _viewer(cfg, brain=cfg.brain.enabled)
         if cfg.brain.enabled:
             _run_brain(cfg, run, args.no_emotes, args.duration, viewer)
         else:
@@ -1188,7 +1193,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says)
     server = SkyServer(toolbox)
     server.start()
-    trace = BrainTrace() if viewer is not None else None  # 网页上的大脑时间线
+    trace = None if viewer is None else (viewer.brain or BrainTrace())  # 网页上的大脑时间线（一般 _viewer 已经挂好）
     session = BrainSession(
         base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep")),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,

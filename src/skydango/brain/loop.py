@@ -128,6 +128,9 @@ class Brain:
             self._trace("fail", str(exc), self.clock() - start)
             self._failed(self.clock(), exc)
             return
+        except Exception as exc:  # 进程起不来之类：run() 兜住退避；时间线上这一轮也得收尾
+            self._trace("fail", f"{type(exc).__name__}: {exc}", self.clock() - start)
+            raise
         self._trace("finish", result, self.clock() - start)
         self._ok()
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1
@@ -146,6 +149,9 @@ class Brain:
             self._trace("fail", str(exc), self.clock() - start)
             log.warning("退出前写经过失败：%s", exc)
             return False
+        except Exception as exc:
+            self._trace("fail", f"{type(exc).__name__}: {exc}", self.clock() - start)
+            raise
         self._trace("finish", result, self.clock() - start)
         text = " ".join((result.get("result") or "").split())
         if not text:

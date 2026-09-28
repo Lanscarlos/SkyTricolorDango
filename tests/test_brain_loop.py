@@ -2,6 +2,8 @@ import logging
 import threading
 import time
 
+import pytest
+
 from skydango.brain.claude import ClaudeError
 from skydango.brain.events import EventQueue
 from skydango.brain.loop import Brain, log_brain_message
@@ -224,3 +226,16 @@ def test_log_brain_message(caplog):
     log_brain_message({"type": "assistant", "message": {"content": [{"type": "text", "text": "先看看"}]}})
     log_brain_message({"type": "user", "message": {"content": []}})
     assert "大脑想：先看看" in caplog.text
+
+
+def test_unexpected_error_still_closes_the_turn(clock, tmp_path):
+    # 起不来进程之类（不是 ClaudeError）：run() 兜住退避，但时间线上这一轮要标失败、带上错误，不能一直"进行中"
+    trace = FakeTrace()
+    brain, _, _, _ = make(clock, FakeSession(FileNotFoundError("claude 不在")), store=MemoryStore(tmp_path), trace=trace)
+    with pytest.raises(FileNotFoundError):
+        brain.wake(clock(), "heartbeat")
+    assert trace.calls[-1][0] == "fail" and "FileNotFoundError" in trace.calls[-1][1] and "claude 不在" in trace.calls[-1][1]
+    brain.session = FakeSession(OSError("写不了"))
+    with pytest.raises(OSError):
+        brain.farewell()
+    assert trace.calls[-1][0] == "fail" and "写不了" in trace.calls[-1][1]
