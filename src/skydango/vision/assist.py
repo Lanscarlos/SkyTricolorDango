@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -93,3 +95,69 @@ def build_message(frames: list[tuple[str, np.ndarray, list[Rect]]], self_hint: s
         content.append({"type": "text", "text": f"帧 {stem}：候选框 {listed}"})
         content.append(image_block(draw_candidates(frame, boxes), 85))
     return content
+
+
+VERDICTS = ("self", "player", "player_unlit", "not_person", "duplicate")
+PEOPLE = ("player", "player_unlit", "self")
+
+
+@dataclass
+class Verdict:
+    cls: str
+    fixed: Rect | None  # Claude 给的修正框（原图坐标）
+    note: str
+
+
+@dataclass
+class FrameReview:
+    verdicts: dict[int, Verdict]  # 候选编号（从 1 起）→ 判断
+    missing: list[tuple[str, Rect, str]]  # Claude 补的漏框：类别、框、说明
+    unsure: str
+    problems: list[str] = field(default_factory=list)  # 回答里缺编号、类别写错之类，列进待核对清单
+
+
+def _box(value, width: int, height: int) -> Rect | None:
+    """[x1,y1,x2,y2] → 裁到画面内的 Rect；反了就排序，格式不对 / 裁完太小返回 None。"""
+    try:
+        x1, y1, x2, y2 = (float(v) for v in value)
+    except (TypeError, ValueError):
+        return None
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    x1, y1 = max(0, round(x1)), max(0, round(y1))
+    x2, y2 = min(width, round(x2)), min(height, round(y2))
+    return Rect(x1, y1, x2 - x1, y2 - y1) if x2 - x1 >= 2 and y2 - y1 >= 2 else None
+
+
+def parse_review(text: str, frames: dict[str, int], width: int, height: int) -> dict[str, FrameReview]:
+    """Claude 的回答 → 每帧的核对结果。frames：帧名 → 候选框个数。取不出 JSON 返回 {}；回答里缺的帧不在结果里（= 没核对）。"""
+    start, end = text.find("{"), text.rfind("}")
+    try:
+        data = json.loads(text[start : end + 1]) if start >= 0 and end > start else None
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, FrameReview] = {}
+    for stem, count in frames.items():
+        item = data.get(stem)
+        if not isinstance(item, dict):
+            continue
+        boxes = item.get("boxes") if isinstance(item.get("boxes"), dict) else {}
+        verdicts: dict[int, Verdict] = {}
+        problems: list[str] = []
+        for i in range(1, count + 1):
+            v = boxes.get(str(i))
+            cls = v.get("cls") if isinstance(v, dict) else None
+            if cls not in VERDICTS:
+                problems.append(f"{i} 号没判" if cls is None else f"{i} 号类别 {cls!r} 不认识")
+                verdicts[i] = Verdict("not_person", None, "")
+                continue
+            fixed = _box(v.get("fixed_box"), width, height) if v.get("fixed_box") else None
+            verdicts[i] = Verdict(cls, fixed, str(v.get("note") or ""))
+        missing = []
+        for m in item.get("missing") or []:
+            if isinstance(m, dict) and m.get("cls") in PEOPLE and (box := _box(m.get("box"), width, height)):
+                missing.append((m["cls"], box, str(m.get("note") or "")))
+        out[stem] = FrameReview(verdicts, missing, str(item.get("unsure") or ""), problems)
+    return out
