@@ -1,6 +1,6 @@
 # 可视化网页：大脑活动时间线 — 设计
 
-日期：2026-09-28　状态：**设计已和用户确认，待实现**
+日期：2026-09-28　状态：**已实现**（`brain/trace.py`、`vision/viewer.py`，测试 `tests/test_brain_trace.py` 等）；§6 真机验证**还没做**（用户选择跳过，见 §6）
 
 在识别可视化网页（`vision/viewer.py`，设计见 `2026-09-28-viewer-design.md`）上加一栏「大脑」：
 `run --brain --view` 时实时显示统管大脑（常驻 Claude Code）每一轮的来龙去脉。
@@ -172,6 +172,10 @@ trace.since(after: int, timeout) -> dict  # 等到版本号 > after（最多 tim
 - `tests/test_viewer.py`（已有文件里加）：0 号端口起服务测 `/brain`（没有 trace → 404，有 → 200 JSON，超时 → 200 空 `turns`）；页面里有大脑这一栏的元素
 
 ## 6. 真机验证
+
+> **状态（2026-09-28）**：没在真机上跑。实现时用了：单元测试、假 claude 进程（`tests/fake_claude.py`）端到端跑 `_run_brain`、
+> 假数据演示页面在浏览器里逐项核对（内容、展开状态保持、过滤、失败态、复制、`<script>` 不执行、手机宽度、暂停不影响、程序重启检测）。
+> 下次 `run --brain --view` 时顺便核对下面这件事：真实 stream-json 里有没有 `user` / `tool_result` 消息（时间线里有没有「↩ 返回」）、有没有思考原文。
 
 `python -m skydango run --brain --view --duration 300`（dry-run，`say` 不会真的发出去）：
 在浏览器里确认轮次、原因、收到的消息、工具调用和返回、结果都显示出来，进行中的一轮实时更新；截图存 `tmp/`。
