@@ -190,3 +190,94 @@ def test_people_candidates_filters_classes():
     dets = [Detection("player", Rect(0, 0, 1, 1), 0.9), Detection("name_tag", Rect(0, 0, 1, 1), 0.9),
             Detection("self", Rect(1, 1, 1, 1), 0.9)]
     assert people_candidates(dets) == [Rect(0, 0, 1, 1), Rect(1, 1, 1, 1)]
+
+
+def _cli_env(tmp_path, monkeypatch, n=2, runs=False, reply=None, limit=False):
+    """perception label --assist 的假环境：n 张合成图、假 OCR / 检测器 / Claude。返回 (源目录, 输出目录, 每次发给 Claude 的帧名)。"""
+    from skydango import cli
+    from skydango.imageio import imwrite
+
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / ("runs" if runs else "rec")
+    for i in range(n):
+        d = src / f"run{i}" / "hard" if runs else src
+        d.mkdir(parents=True, exist_ok=True)
+        imwrite(d / f"{i:04d}.jpg", np.full((1080, 1920, 3), 40 * i, np.uint8))
+
+    class Ocr:
+        def recognize(self, frame):
+            return []
+
+    class Coco:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, frame):
+            return [Detection("player", Rect(100, 100, 80, 200), 0.5)]
+
+    sent = []
+
+    def run(cmd, env, cwd, content, timeout):
+        stems = [b["text"].split()[1].split("：")[0] for b in content if b["type"] == "text" and b["text"].startswith("帧 ")]
+        sent.append(stems)
+        if limit:
+            raise ClaudeError("额度", limit=True)
+        body = reply or {"boxes": {"1": {"cls": "player"}}, "missing": [{"cls": "player_unlit", "box": [500, 500, 560, 700]}], "unsure": ""}
+        return {"result": json.dumps({s: body for s in stems}), "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+    monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda *a, **k: Ocr())
+    monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: None)
+    monkeypatch.setattr(cli, "_friend_names", lambda cfg: (lambda: []))
+    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (["claude"], {}))
+    monkeypatch.setattr("skydango.vision.assist.CocoPeople", Coco)
+    monkeypatch.setattr("skydango.brain.claude.one_shot_message", run)
+    return src, tmp_path / "ds", sent
+
+
+def test_assist_rejects_spin(tmp_path, monkeypatch):
+    from skydango import cli
+
+    src, out, _ = _cli_env(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        cli.main(["perception", "label", str(src), "--assist", "--spin", "--model", "m.onnx", "-o", str(out)])
+
+
+def test_assist_writes_labels_preview_and_report(tmp_path, monkeypatch):
+    from skydango import cli
+
+    src, out, sent = _cli_env(tmp_path, monkeypatch)
+    cli.main(["perception", "label", str(src), "--assist", "-o", str(out), "--val", "0"])
+    labels = sorted((out / "labels" / "train").glob("*.txt"))
+    assert [p.stem for p in labels] == ["0000", "0001"] and sent == [["0000", "0001"]]
+    assert [l.split()[0] for l in labels[0].read_text(encoding="utf-8").splitlines()] == ["0", "4"]
+    assert (out / "_preview" / "0000.jpg").exists() and "0000" in (out / "_assist" / "review.md").read_text(encoding="utf-8")
+
+
+def test_assist_picks_frames_unless_all_frames(tmp_path, monkeypatch):
+    from skydango import cli
+    from skydango.imageio import imwrite
+
+    src, out, sent = _cli_env(tmp_path, monkeypatch, n=1)
+    for i in range(1, 4):  # 和第 0 张一样的帧：挑帧时去掉
+        imwrite(src / f"{i:04d}.jpg", np.zeros((1080, 1920, 3), np.uint8))
+    cli.main(["perception", "label", str(src), "--assist", "-o", str(out)])
+    assert sent == [["0000"]]
+    cli.main(["perception", "label", str(src), "--assist", "--all-frames", "-o", str(tmp_path / "ds2")])
+    assert sent[1] == ["0000", "0001", "0002", "0003"]
+
+
+def test_assist_skips_picking_for_from_runs(tmp_path, monkeypatch):
+    from skydango import cli
+
+    src, out, sent = _cli_env(tmp_path, monkeypatch, n=3, runs=True)
+    cli.main(["perception", "label", str(src), "--from-runs", "--assist", "-o", str(out)])
+    assert sum(map(len, sent)) == 3
+
+
+def test_assist_limit_exits_without_writing_dataset(tmp_path, monkeypatch):
+    from skydango import cli
+
+    src, out, _ = _cli_env(tmp_path, monkeypatch, limit=True)
+    with pytest.raises(SystemExit):
+        cli.main(["perception", "label", str(src), "--assist", "-o", str(out)])
+    assert not (out / "labels").exists()

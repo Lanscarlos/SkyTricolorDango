@@ -818,6 +818,94 @@ def _perception_detect(cfg: Config, args) -> None:
         print(f"互动请求：{req.name} → {req.kind}（圆圈在 {req.pos}）")
 
 
+def _weak_boxes(cfg: Config, args, frame, ocr, icons, names: list[str]) -> list:
+    """一帧的弱标注：整图 OCR 读好友名字标签 + 圆圈模板；面板开着时跳过面板区域。"""
+    from .vision.bubbles import roi_rect
+    from .vision.weaklabel import weak_labels
+
+    height, width = frame.shape[:2]
+    skip = [roi_rect(cfg.vision.log_roi, width, height)] if _panel_open(cfg, frame) else []
+    return weak_labels(
+        frame, ocr.recognize(frame), names, icons, cfg.social.icon_offset, skip=skip,
+        keep=roi_rect(cfg.env.roi, width, height), all_text=args.all_text, min_score=args.min_score,
+    )
+
+
+def _perception_label_assist(cfg: Config, args, items: list) -> None:
+    """--assist：挑帧 → 人物候选框 → claude -p 核对 → 和弱标注合并写成数据集 + 预览 + 待核对清单。"""
+    import cv2
+
+    from .brain import claude
+    from .brain.images import thumb
+    from .vision import assist
+    from .vision.ocr import make_ocr
+    from .vision.weaklabel import data_yaml, split_of, yolo_line
+
+    base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错，别白跑检测
+    a = cfg.assist
+    if not (args.from_runs or args.all_frames) and items:  # 难例不是连续录像，不挑
+        picked = assist.pick_frames([thumb(imread(p)) for p, _ in items], a.min_change, a.max_gap)
+        print(f"挑了 {len(picked)} / {len(items)} 帧（和上一张差不多的去掉；--all-frames 不挑）")
+        items = [items[i] for i in picked]
+    if args.model:
+        from .vision.detect import make_detector
+
+        p = cfg.perception
+        detector = make_detector(args.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
+        propose, source = (lambda f: assist.people_candidates(detector.detect(f))), args.model
+    else:
+        coco = assist.CocoPeople(a.proposal_models, a.proposal_conf, a.proposal_imgsz)
+        propose, source = (lambda f: [d.box for d in coco.detect(f)]), ",".join(a.proposal_models)
+    ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
+    icons = _icon_classifier(cfg)
+    names = _friend_names(cfg)()
+    out = Path(args.output)
+    frames, weak = [], {}
+    for n, (path, stem) in enumerate(items, 1):
+        frame = imread(path)
+        weak[stem] = _weak_boxes(cfg, args, frame, ocr, icons, names)
+        frames.append(assist.FrameInput(stem, frame, propose(frame)))
+        if n % 20 == 0:
+            print(f"  候选框 {n}/{len(items)}")
+    cmd = assist.assist_command(base, a)
+    work = Path("tmp") / "assist-claude"
+    reviewer = assist.Reviewer(
+        lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), out / "_assist", a, source
+    )
+    print(f"{len(frames)} 帧交给 Claude（{a.model}）核对：每批 {a.batch} 帧、{a.jobs} 路并发")
+    try:
+        reviews = reviewer.review(frames)
+    except assist.AssistLimit:
+        raise SystemExit(f"订阅额度用完了：已核对的帧存在 {out / '_assist'}，额度恢复后重跑同一条命令会接着做") from None
+    index = {c: i for i, c in enumerate(cfg.perception.classes)}
+    counts: dict[str, int] = {}
+    for f in frames:
+        height, width = f.image.shape[:2]
+        review = reviews.get(f.stem)
+        boxes = weak[f.stem] + (assist.apply_review(f.candidates, review) if review else [])
+        split = split_of(f.stem, args.val)
+        (out / "images" / split).mkdir(parents=True, exist_ok=True)
+        (out / "labels" / split).mkdir(parents=True, exist_ok=True)
+        imwrite(out / "images" / split / f"{f.stem}.jpg", f.image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        lines = [yolo_line(index[c], b, width, height) for c, b in boxes if c in index]
+        (out / "labels" / split / f"{f.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        for c, _ in boxes:
+            counts[c] = counts.get(c, 0) + 1
+        (out / "_preview").mkdir(parents=True, exist_ok=True)
+        imwrite(out / "_preview" / f"{f.stem}.jpg", assist.draw_review(f.image, weak[f.stem], f.candidates, review),
+                [cv2.IMWRITE_JPEG_QUALITY, 80])
+    (out / "_assist").mkdir(parents=True, exist_ok=True)
+    report = out / "_assist" / "review.md"
+    report.write_text(assist.review_report([(f.stem, reviews.get(f.stem)) for f in frames]), encoding="utf-8")
+    (out / "data.yaml").write_text(data_yaml(out, cfg.perception.classes), encoding="utf-8")
+    failed = sum(1 for f in frames if reviews.get(f.stem) is None)
+    added = sum(len(r.missing) for r in reviews.values() if r)
+    print("标注：" + "、".join(f"{c}×{v}" for c, v in counts.items()) + f"；Claude 补框 {added} 个；没核对 {failed} 帧")
+    u = reviewer.usage
+    print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens']}、输出 {u['output_tokens']}、缓存读 {u['cache_read_input_tokens']} token")
+    print(f"下一步：先看 {report}，再用 X-AnyLabeling 打开 {out / 'images'} 修正")
+
+
 def _perception_label(cfg: Config, args) -> None:
     """用现有识别器给录下来的画面出弱标注（名字标签 + 圆圈），写成 YOLO 数据集。"""
     import cv2
@@ -829,6 +917,8 @@ def _perception_label(cfg: Config, args) -> None:
     classes = cfg.perception.classes
     index = {c: i for i, c in enumerate(classes)}
     root = Path(args.source)
+    if args.assist and args.spin:
+        raise SystemExit("--assist 不能和 --spin 一起用：转圈录像已经能自动补 self，二选一")
     if args.spin and not args.model:
         raise SystemExit("--spin 要配 --model：认团子要先用模型框出人")
     if args.spin:  # camera spin / #spin 录的目录：只要转动中的帧（NNN_*.jpg），按文件名排就是时间顺序
@@ -840,6 +930,8 @@ def _perception_label(cfg: Config, args) -> None:
         for path in _images(args.source):
             rel = path.relative_to(root) if root.is_dir() else Path(path.name)
             items.append((path, "_".join(rel.with_suffix("").parts)))
+    if args.assist:
+        return _perception_label_assist(cfg, args, items)
     detector = None
     if args.model:  # 用当前模型预标注：人工只需要修正，不用从零画
         from .vision.detect import make_detector
@@ -874,11 +966,7 @@ def _perception_label(cfg: Config, args) -> None:
     for n, (path, stem) in enumerate(items, 1):
         frame = imread(path)
         height, width = frame.shape[:2]
-        skip = [roi_rect(cfg.vision.log_roi, width, height)] if _panel_open(cfg, frame) else []
-        boxes = weak_labels(
-            frame, ocr.recognize(frame), names, icons, cfg.social.icon_offset, skip=skip,
-            keep=roi_rect(cfg.env.roi, width, height), all_text=args.all_text, min_score=args.min_score,
-        )
+        boxes = _weak_boxes(cfg, args, frame, ocr, icons, names)
         weak = len(boxes)
         if detector is not None:
             boxes = merge_labels(boxes, predicted[stem] if stem in predicted else detector.detect(frame))
@@ -1382,6 +1470,8 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--all-text", action="store_true", help="画面里读到的字都当名字标签候选（不只好友名单里的），要人工删错的")
     q.add_argument("--min-score", type=float, default=0.9)
     q.add_argument("--preview", action="store_true", help="另存一份画了框的图到 <output>/_preview/，快速检查")
+    q.add_argument("--assist", action="store_true", help="Claude 辅助标注：检测器出人物候选框，claude -p 核对后写进标注（令牌同 [brain]，见 [assist]）")
+    q.add_argument("--all-frames", action="store_true", help="配 --assist：不挑帧，每一帧都核对（默认去掉和上一张差不多的帧）")
     q = psub.add_parser("compare", help="同一批录像上对比现有的整图 OCR 和 YOLO（认出率、请求延迟、陌生人 / 走开事件、耗时）")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="模型文件（默认 perception.model）")
