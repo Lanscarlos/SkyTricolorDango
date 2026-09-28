@@ -21,6 +21,17 @@ def starts(tmp_path):
     return [l["args"] for l in lines if "args" in l]
 
 
+def test_relative_work_dir_gives_absolute_file_paths(tmp_path, monkeypatch):
+    # run.dir 默认是相对路径 runs/：子进程的 cwd 就是工作目录，传相对路径会被再拼一遍（实测 prompt.md 找不到）
+    monkeypatch.chdir(tmp_path)
+    env = claude_env("tok", tmp_path / "cfg")
+    s = BrainSession(FAKE, env, Path("runs") / "x" / "brain" / "session", "http://127.0.0.1:1/mcp", "规则", "sonnet", "low", 10.0)
+    cmd = s.command()
+    for flag in ("--append-system-prompt-file", "--mcp-config"):
+        path = Path(cmd[cmd.index(flag) + 1])
+        assert path.is_absolute() and path.parent == tmp_path / "runs" / "x" / "brain" / "session"
+
+
 def test_command_locks_tools_and_writes_config(tmp_path):
     s = session(tmp_path)
     s.send("你好")

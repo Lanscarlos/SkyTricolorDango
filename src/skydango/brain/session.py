@@ -32,7 +32,9 @@ class BrainSession:
     ) -> None:
         self.base_cmd = base_cmd
         self.env = env
-        self.cwd = cwd  # 空的专用目录：不让它读到项目的 AGENTS.md / CLAUDE.md
+        # 空的专用目录：不让它读到项目的 AGENTS.md / CLAUDE.md。转成绝对路径：子进程的 cwd 就是它，
+        # 传给 --mcp-config / --append-system-prompt-file 的相对路径会被再拼一遍（run.dir 默认是相对的 runs/）
+        self.cwd = Path(cwd).resolve()
         self.mcp_url = mcp_url
         self.prompt = prompt
         self.model = model
