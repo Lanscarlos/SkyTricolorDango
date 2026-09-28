@@ -24,3 +24,7 @@ memory/
 
 # 大脑用的单独 Claude Code 配置目录（登录状态、会话记录）
 .brain-claude/
+
+# YOLO 数据集和训练出来的模型（本机私有、体积大）
+datasets/
+models/

@@ -2,6 +2,9 @@
 
 > 取代 v0.1（`2026-09-28-perception-yolo-architecture-v0.1.md`）。v0.1 是按从零开始写的，
 > 没对上仓库现状；这一版只写**在现有架构上加 YOLO**这一件事。
+>
+> **进度（2026-09-28）**：代码骨架已完成、单元测试覆盖，默认关闭（`[perception] enabled = false`）。
+> 还没有训练好的模型，也没在真机 / GPU 上跑过 —— 测速（M0）不阻塞后面的开发，GPU 机器到手后跑 §12 的步骤。
 
 ## 1. 目标
 
@@ -106,7 +109,7 @@ track_id, 屏幕框, 名字(可空), 身份(friend / stranger / unknown), 圆圈
 
 ## 10. 待定
 
-- [ ] mumu.py 原生截图的线程安全
+- [x] mumu.py 原生截图的线程安全：截图缓冲区是共用的，已加锁（两个线程同时截会排队）；DLL 句柄跨线程调用是否稳定仍待真机确认
 - [ ] 陌生人没点火时是不是灰色剪影、点过火后和好友外观是否一样（真机确认，决定 `stranger` 判断的规则）
 - [ ] `self` 用类别还是固定区域
 
@@ -115,3 +118,48 @@ track_id, 屏幕框, 名字(可空), 身份(friend / stranger / unknown), 圆圈
 - **识别稳定性**：暗场景、光效、半透明重叠 → 有针对性地补数据；M2 的离线对比兜底。
 - **封号**：纯视觉不变，不读内存、不注入；检测频率高不会增加游戏里的操作，操作频率仍由身体的护栏限速。
 - **回退**：`[perception] enabled = false` 恢复现有实现。
+
+## 12. 实现与使用
+
+### 代码
+
+| 位置 | 内容 |
+|---|---|
+| `vision/detect.py` | 检测器：`.onnx` → onnxruntime（自带 letterbox、YOLOv8/11 输出 + NMS、YOLO26 端到端输出）；`.pt` / `.engine` → ultralytics |
+| `vision/track.py` | IoU 贪心追踪 |
+| `vision/perception.py` | `PerceptionWatcher`：接口同 `EnvWatcher`，多了 `strangers()`；名字标签只跑 OCR 识别（`RapidOcrEngine.read_line`） |
+| `vision/weaklabel.py` | 弱标注：整图 OCR 的好友名字框 → `name_tag`，模板认得出的圆圈 → `social_ring` |
+| `brain/body.py` | 新事件 `stranger`（陌生人来了 / 都走了），`status` 里多一项陌生人数；眼睛在 `stranger` 事件后也会自动看一眼 |
+| `cli.py` | `perception bench / detect / label`；`run` 在 `[perception] enabled` 时用 YOLO 感知层替换 env 扫描 |
+
+在这台开发机（云端 CPU，无 GPU）上验证过：yolo11n / yolo26n 导出的 ONNX 经 `OnnxYoloDetector` 解码，
+和 ultralytics 官方推理的框差几个像素（letterbox 补边方式不同）；1920×1080 输入、640 推理约 30~40 ms/帧（CPU）。
+训练 → 导出 → 加载的整条链路也用两张合成图跑通过（自定义类别名能从 ONNX 元数据读回来）。
+
+### GPU 机器上的步骤
+
+1. **装环境**（50 系 = Blackwell，要 CUDA 12.8+ 的构建）
+   ```bash
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+   pip install -e ".[yolo]"
+   python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+   ```
+   用 `.onnx` 模型推理时还要 GPU 版 onnxruntime：先 `pip uninstall onnxruntime`，再 `pip install onnxruntime-gpu`
+   （两个同时装会冲突；rapidocr 用 GPU 版也能跑）。不想折腾就直接用 `.pt` / `.engine`，走 ultralytics。
+2. **M0 测速**（不用等训练）：开着游戏跑
+   `python -m skydango perception bench --model yolo11n.pt`，看 YOLO 检测、截图的耗时，同时看游戏有没有变卡。
+3. **M1 采数据**：`python -m skydango record --seconds 120 --fps 2`，多录几段（见 §8 要覆盖的场景）。
+4. **弱标注**：`python -m skydango perception label tmp/record/<时间> -o datasets/sky --preview`
+   （好友名单外的名字也想标就加 `--all-text`，之后人工删错的）。
+5. **人工补标**：X-AnyLabeling 打开 `datasets/sky/images/train`（和 val），导入 YOLO 标注，
+   **每一张**都补上 `player` 和 `self`、修正错框。没补全的图会教模型"这里没有人"。
+6. **训练 + 导出**：
+   ```bash
+   yolo detect train data=datasets/sky/data.yaml model=yolo11n.pt imgsz=960 epochs=100
+   yolo export model=runs/detect/train/weights/best.pt format=onnx imgsz=960   # 或 format=engine（TensorRT）
+   ```
+   把导出的模型放到 `models/sky-yolo.onnx`（`models/`、`datasets/` 都不进 git）。
+7. **看效果**：`python -m skydango perception detect`（当前画面，标注图 `tmp/perception.png`），
+   对照画面检查名字、陌生人、圆圈认得对不对。
+8. **M2 / M3**：确认没问题后在 `config.toml` 里 `[perception] enabled = true`（要 15fps 再加 `capture = "own"`），
+   先 dry-run 跑 `run --brain --duration 300`，翻 `runs/` 里的日志看 arrive / leave / stranger 事件准不准。

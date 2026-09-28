@@ -18,7 +18,7 @@ from .images import fit, image_block, label_note
 
 log = logging.getLogger(__name__)
 
-AUTO_LOOK_KINDS = {"arrive", "leave", "scene_change"}  # 这些事件发生后（隔够 auto_look_min）自动看一眼
+AUTO_LOOK_KINDS = {"arrive", "leave", "stranger", "scene_change"}  # 这些事件发生后（隔够 auto_look_min）自动看一眼
 
 EYES_SYSTEM = """你是一个《光遇》玩家的眼睛：看游戏截图，写成简短的中文文字，给另一个 AI 看。
 - 只写看到的，不猜；看不清就说看不清。

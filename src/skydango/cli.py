@@ -275,6 +275,24 @@ def _env_watcher(cfg: Config, background: bool = True, icons=None):
     )
 
 
+def _scene_watcher(cfg: Config, icons=None, dev=None):
+    """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。"""
+    if not cfg.perception.enabled:
+        return _env_watcher(cfg, icons=icons)
+    from .vision.detect import make_detector
+    from .vision.ocr import make_ocr
+    from .vision.perception import PerceptionWatcher
+
+    p = cfg.perception
+    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+    log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
+             p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
+    return PerceptionWatcher(
+        detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
+        icons=icons, capture=dev.screenshot if dev is not None else None,
+    )
+
+
 def cmd_env(cfg: Config, args) -> None:
     """对当前画面识别一次环境（身边有谁、在哪），用来验证。"""
     from .vision.chatlog import find_input_top
@@ -295,6 +313,191 @@ def cmd_env(cfg: Config, args) -> None:
     print("\n写进提示词的环境：\n" + (env.describe(0.0) or "（什么都没认出来）"))
     for req in env.requests.values():
         print(f"互动请求：{req.name} → {req.kind}（圆圈在 {req.pos}）")
+
+
+def _panel_open(cfg: Config, frame) -> bool:
+    from .vision.bubbles import roi_rect
+    from .vision.chatlog import find_input_top
+
+    height, width = frame.shape[:2]
+    area = roi_rect(cfg.vision.log_roi, width, height)
+    return find_input_top(frame[:, area.x : area.x2]) is not None
+
+
+def _images(path: str) -> list[Path]:
+    root = Path(path)
+    files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    files = [p for p in files if not any(part.startswith("_") for part in p.relative_to(root).parts)] if root.is_dir() else files
+    if not files:
+        raise FileNotFoundError(f"{path} 里没有图片")
+    return files
+
+
+def _perception(cfg: Config, args, dev=None):
+    from .vision.detect import make_detector
+    from .vision.ocr import make_ocr
+    from .vision.perception import PerceptionWatcher
+
+    p = cfg.perception
+    for key in ("model", "device", "imgsz"):
+        if getattr(args, key, None):
+            setattr(p, key, getattr(args, key))
+    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+    icons = _icon_classifier(cfg)
+    watcher = PerceptionWatcher(
+        detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
+        icons=icons, background=False, capture=dev.screenshot if dev is not None else None,
+    )
+    return detector, watcher
+
+
+def _stats(values: list[float]) -> str:
+    import numpy as np
+
+    arr = np.asarray(values)
+    return f"平均 {arr.mean():6.1f}  中位 {np.percentile(arr, 50):6.1f}  p95 {np.percentile(arr, 95):6.1f}  最大 {arr.max():6.1f} ms"
+
+
+def cmd_perception(cfg: Config, args) -> None:
+    if args.action == "bench":
+        _perception_bench(cfg, args)
+    elif args.action == "detect":
+        _perception_detect(cfg, args)
+    elif args.action == "label":
+        _perception_label(cfg, args)
+
+
+def _perception_bench(cfg: Config, args) -> None:
+    """测速：检测一帧要多久、整个感知一帧要多久、能不能到 perception.fps。模型可以先用官方的 yolo11n.pt（COCO）凑合。"""
+    dev = None if args.images else _device(cfg)
+    detector, watcher = _perception(cfg, args, dev)
+    files = _images(args.images) if args.images else []
+    frames = [imread(f) for f in files[: args.n]]
+    print(f"模型 {cfg.perception.model}，推理尺寸 {getattr(detector, 'imgsz', cfg.perception.imgsz)}，后端 {'、'.join(getattr(detector, 'providers', []))}")
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            print(f"torch {torch.__version__}，GPU：{torch.cuda.get_device_name(0)}")
+        else:
+            print(f"torch {torch.__version__}，没有可用的 CUDA")
+    except ImportError:
+        pass
+    grab, det, total = [], [], []
+    panel = False
+    for i in range(args.n + 5):  # 前 5 帧预热（加载 CUDA 内核），不计
+        started = time.perf_counter()
+        frame = frames[i % len(frames)] if frames else dev.screenshot()
+        grabbed = time.perf_counter()
+        if i == 0 and dev is not None:
+            panel = _panel_open(cfg, frame)
+        watcher.process(frame, time.monotonic(), panel)
+        if i >= 5:
+            d, t = watcher.timings[-1]
+            grab.append((grabbed - started) * 1000)
+            det.append(d)
+            total.append(t)
+    print(f"测了 {args.n} 帧（{'图片 ' + args.images if args.images else '实时截图'}，分辨率 {frame.shape[1]}×{frame.shape[0]}）")
+    if dev is not None:
+        print(f"  截图     {_stats(grab)}")
+    print(f"  YOLO 检测 {_stats(det)}")
+    print(f"  整个感知 {_stats(total)}（含追踪、名字 OCR、圆圈匹配）")
+    per_frame = (sum(grab) + sum(total)) / len(total)
+    target = 1000 / cfg.perception.fps
+    verdict = "够用" if per_frame <= target else "不够，降低 fps / imgsz 或换 GPU 后端"
+    print(f"每帧合计约 {per_frame:.1f} ms，目标 {cfg.perception.fps:.0f} fps = {target:.1f} ms → {verdict}")
+    counts: dict[str, int] = {}
+    for d in watcher.last_dets:
+        counts[d.cls] = counts.get(d.cls, 0) + 1
+    print("最后一帧检测到：" + ("、".join(f"{k}×{v}" for k, v in counts.items()) or "（无）"))
+    if dev is not None:
+        print("提示：测速时看一下游戏画面有没有变卡（模拟器也在用这张显卡）")
+
+
+def _perception_detect(cfg: Config, args) -> None:
+    """对一张图 / 当前画面跑一遍感知，把框画出来。"""
+    import cv2
+
+    dev = None if args.image else _device(cfg)
+    _, watcher = _perception(cfg, args)
+    frame = imread(args.image) if args.image else dev.screenshot()
+    panel = _panel_open(cfg, frame)
+    now = max(cfg.perception.stranger_after, 0.1)
+    watcher.process(frame, 0.0, panel)
+    watcher.process(frame, now, panel)  # 同一帧再跑一遍：人物要持续 stranger_after 秒没有名字才判陌生人
+    colors = {"player": (0, 200, 0), "name_tag": (0, 200, 255), "social_ring": (255, 120, 0), "self": (200, 200, 200)}
+    out = frame.copy()
+    for t in watcher.last_tracks:
+        b = t.box
+        label = f"{t.cls}#{t.id} {t.score:.2f}"
+        if t.data.get("name"):
+            label += f" {t.data['name']}"
+        elif t.data.get("text"):
+            label += f" ?{t.data['text']}"
+        if t.data.get("stranger"):
+            label += " stranger"
+        cv2.rectangle(out, (b.x, b.y), (b.x2, b.y2), colors.get(t.cls, (0, 0, 255)), 2)
+        cv2.putText(out, label.encode("ascii", "replace").decode(), (b.x, max(12, b.y - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, colors.get(t.cls, (0, 0, 255)), 1)
+        extra = f"  名字 OCR：{t.data.get('text', '')} → {t.data.get('name', '（没对上好友名单）')}" if t.cls == "name_tag" else ""
+        print(f"{t.cls:<12} {t.score:.2f}  ({b.x},{b.y},{b.w},{b.h}){'  陌生人' if t.data.get('stranger') else ''}{extra}")
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    imwrite(args.output, out)
+    print(f"聊天记录面板：{'开着' if panel else '关着'}；标注图：{args.output}")
+    print("\n写进提示词的环境：\n" + (watcher.describe(now) or "（什么都没认出来）"))
+    for req in watcher.requests.values():
+        print(f"互动请求：{req.name} → {req.kind}（圆圈在 {req.pos}）")
+
+
+def _perception_label(cfg: Config, args) -> None:
+    """用现有识别器给录下来的画面出弱标注（名字标签 + 圆圈），写成 YOLO 数据集。"""
+    import cv2
+
+    from .vision.bubbles import roi_rect
+    from .vision.ocr import make_ocr
+    from .vision.weaklabel import data_yaml, split_of, weak_labels, yolo_line
+
+    classes = cfg.perception.classes
+    index = {c: i for i, c in enumerate(classes)}
+    files = _images(args.source)
+    out = Path(args.output)
+    ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
+    icons = _icon_classifier(cfg)
+    names = _friend_names(cfg)()
+    counts = {c: 0 for c in classes}
+    root = Path(args.source)
+    print(f"{len(files)} 张图 → {out}；好友名单：{'、'.join(names) or '（空，只能配 --all-text）'}")
+    for n, path in enumerate(files, 1):
+        frame = imread(path)
+        height, width = frame.shape[:2]
+        skip = [roi_rect(cfg.vision.log_roi, width, height)] if _panel_open(cfg, frame) else []
+        boxes = weak_labels(
+            frame, ocr.recognize(frame), names, icons, cfg.social.icon_offset, skip=skip,
+            keep=roi_rect(cfg.env.roi, width, height), all_text=args.all_text, min_score=args.min_score,
+        )
+        rel = path.relative_to(root) if root.is_dir() else Path(path.name)
+        stem = "_".join(rel.with_suffix("").parts)
+        split = split_of(stem, args.val)
+        (out / "images" / split).mkdir(parents=True, exist_ok=True)
+        (out / "labels" / split).mkdir(parents=True, exist_ok=True)
+        imwrite(out / "images" / split / f"{stem}.jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        lines = [yolo_line(index[c], box, width, height) for c, box in boxes if c in index]
+        (out / "labels" / split / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        for c, _ in boxes:
+            counts[c] = counts.get(c, 0) + 1
+        if args.preview:
+            view = frame.copy()
+            for c, b in boxes:
+                cv2.rectangle(view, (b.x, b.y), (b.x2, b.y2), (0, 200, 255) if c == "name_tag" else (255, 120, 0), 2)
+            (out / "_preview").mkdir(parents=True, exist_ok=True)
+            imwrite(out / "_preview" / f"{stem}.jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if n % 20 == 0:
+            print(f"  {n}/{len(files)}")
+    (out / "data.yaml").write_text(data_yaml(out, classes), encoding="utf-8")
+    print("自动标出：" + "、".join(f"{c}×{v}" for c, v in counts.items()))
+    print(f"数据集配置：{out / 'data.yaml'}")
+    print("下一步：用 X-AnyLabeling 打开 images/ 导入 YOLO 标注，给**每一张**补上 player（其他玩家）和 self（团子自己）框、"
+          "修正错框 —— 没补全的图会教模型“这里没有人”，训出来会漏检")
 
 
 def cmd_record(cfg: Config, args) -> None:
@@ -393,7 +596,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
         notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _env_watcher(cfg, icons=icons) if cfg.env.enabled else None
+    env = _scene_watcher(cfg, icons, dev) if cfg.env.enabled else None
     social = None
     if env and icons:
         from .game.social import SocialHandler
@@ -420,6 +623,8 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
+        if hasattr(env, "stop"):
+            env.stop()
         if emotes is not None:
             try:
                 emotes.restore()
@@ -473,7 +678,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             notes = NotesKeeper(make_llm(cfg.llm), store, cfg.reply.persona, cfg.reply.notes_every)
     live_store = None if cfg.reply.dry_run else store
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _env_watcher(cfg, icons=icons) if cfg.env.enabled else None
+    env = _scene_watcher(cfg, icons, dev) if cfg.env.enabled else None
     social = None
     if env and icons:
         from .game.social import SocialHandler
@@ -527,6 +732,8 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         print("\n已停止")
     finally:
         stop.set()
+        if hasattr(env, "stop"):
+            env.stop()
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
         brain_thread.join(timeout=5)
         if live_store is not None and not brain_thread.is_alive():
@@ -639,6 +846,28 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--fps", type=float, default=5.0)
     p.add_argument("-o", "--output", help="输出目录（默认 tmp/record/<时间>）")
     p.set_defaults(func=cmd_record)
+
+    p = sub.add_parser("perception", help="YOLO 感知层：测速 / 单帧检测 / 自动出弱标注")
+    psub = p.add_subparsers(dest="action", required=True)
+    for name, text in (("bench", "测速：检测和整个感知每帧多久、够不够 perception.fps"), ("detect", "对一张图 / 当前画面跑一遍感知，画框")):
+        q = psub.add_parser(name, help=text)
+        q.add_argument("--model", help="模型文件（默认 perception.model）；还没训练时可以先用 yolo11n.pt 测速")
+        q.add_argument("--device", choices=["cuda", "cpu"])
+        q.add_argument("--imgsz", type=int)
+        if name == "bench":
+            q.add_argument("--images", help="用这个目录 / 这张图测（默认实时截图）")
+            q.add_argument("-n", type=int, default=200, help="测多少帧")
+        else:
+            q.add_argument("image", nargs="?", help="图片路径；不填则实时截屏")
+            q.add_argument("-o", "--output", default="tmp/perception.png")
+    q = psub.add_parser("label", help="用现有识别器给录下来的画面自动标名字标签和圆圈，写成 YOLO 数据集")
+    q.add_argument("source", help="图片目录（比如 record 录的 tmp/record/<时间>）")
+    q.add_argument("-o", "--output", default="datasets/sky")
+    q.add_argument("--val", type=float, default=0.15, help="验证集比例")
+    q.add_argument("--all-text", action="store_true", help="画面里读到的字都当名字标签候选（不只好友名单里的），要人工删错的")
+    q.add_argument("--min-score", type=float, default=0.9)
+    q.add_argument("--preview", action="store_true", help="另存一份画了框的图到 <output>/_preview/，快速检查")
+    p.set_defaults(func=cmd_perception)
 
     p = sub.add_parser("run", help="启动 Agent（默认 dry-run）")
     p.add_argument("--live", action="store_true", help="真的发送消息")

@@ -64,6 +64,24 @@ class RapidOcrEngine:
             return []
         return [OcrLine(str(t), float(s), _box_from_points(b)) for b, t, s in zip(boxes, txts, scores)]
 
+    def read_line(self, img: np.ndarray) -> OcrLine | None:
+        """只跑识别、不跑检测：img 已经是裁好的一行字（比如 YOLO 框出的名字标签），一张十几毫秒。"""
+        if img.size == 0:
+            return None
+        height, width = img.shape[:2]
+        if self._legacy:
+            result, _ = self._engine(img, use_det=False, use_cls=False, use_rec=True)
+            if not result:
+                return None
+            text, score = result[0]
+        else:
+            out = self._engine(img, use_det=False, use_cls=False, use_rec=True)
+            txts, scores = getattr(out, "txts", None), getattr(out, "scores", None)
+            if not txts:
+                return None
+            text, score = txts[0], scores[0]
+        return OcrLine(str(text).strip(), float(score), Rect(0, 0, width, height))
+
 
 def _is_wide(ch: str) -> bool:
     """中日韩文字和全角标点：拼接时两边不需要空格。"""

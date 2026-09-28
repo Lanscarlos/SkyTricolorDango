@@ -37,6 +37,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/agent.py` | 主循环：读 → 攒一会儿 → 回复 → 限速 → 发送；默认 dry-run |
 | `src/skydango/runlog.py` | 每次 `run` 的运行目录（见下） |
 | `src/skydango/vision/env.py` | 识别环境：每隔几秒在后台 OCR 3D 画面，认好友头顶的名字（身边有谁）和地名，写进提示词 |
+| `src/skydango/vision/detect.py` `track.py` `perception.py` `weaklabel.py` | YOLO 感知层（开发中，默认关）：检测器（ONNX / ultralytics）、IoU 追踪、`PerceptionWatcher`（接口同 env，多认陌生人）、弱标注，见下 |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角 |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
@@ -86,6 +87,14 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 （原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受点火（图标还没录到）；
 输入框开着时不点；dry-run 只打印。`python -m skydango record` 连续截图，用来观察新的界面变化。
 
+## YOLO 感知层（`[perception]`，开发中）
+
+设计和 GPU 机器上的操作步骤见 `docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md`（§12）。
+- YOLO 做视觉第一道关卡：每帧检测 `player` / `name_tag` / `social_ring` / `self`，名字标签只裁小图跑 OCR 识别，身份跟着名字走
+- 好友 / 陌生人不是 YOLO 类别：有名字标签且对得上 friends.md 是好友，一直没标签、离得不远的人物是陌生人（身体发 `stranger` 事件）
+- `enabled = true` 时替换 env 的定时整图 OCR，接口一样，身体 / 社交 / 眼睛不用改；关掉就退回原来的
+- **还没有训练好的模型，所有阈值都没在真机验证**；`models/`、`datasets/` 不进 git
+
 ## 统管大脑（`[brain]`，`run --brain`）
 
 设计见 `docs/superpowers/specs/2026-09-27-brain-claude-code-design.md`（身体部分见 `2026-09-27-brain-design.md`）。
@@ -112,6 +121,9 @@ python -m skydango run --brain [--live] [--duration 秒]  # 统管大脑（Claud
 python -m skydango look [--prompt 文件]    # 截一张图让眼睛（Haiku）描述（调眼睛的提示词、看它会不会编名字）
 python -m skydango memory init|show|update # 记忆：生成人设 / 好友文件、查看、立刻整理
 python -m skydango env                    # 对当前画面识别一次环境（身边有谁、在哪）
+python -m skydango perception bench [--model yolo11n.pt] [--images 目录]  # YOLO 测速（没训练前用官方模型看硬件）
+python -m skydango perception detect [图片]  # 跑一遍 YOLO 感知，标注图 tmp/perception.png
+python -m skydango perception label <录像目录> [--preview]  # 用现有识别器出弱标注 → datasets/sky（YOLO 格式）
 python -m skydango emotes scan            # 截下动作列表所有图标 → emotes/scan/，总览图 _sheet.png
 python -m skydango emotes wheel           # 读轮盘 8 格
 python -m skydango emotes set 5 鞠躬       # 放动作进格子（3、8 默认锁定）

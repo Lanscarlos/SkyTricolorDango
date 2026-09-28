@@ -519,3 +519,28 @@ def test_capture_around(clock):
     live.blackout = True
     with pytest.raises(ToolError, match="黑"):
         live.capture_around()
+
+
+def test_strangers_come_and_go(clock):
+    class YoloEnv(FakeEnv):  # YOLO 感知层多一个 strangers()、keep
+        keep = 5.0
+        n = 0
+
+        def strangers(self, now):
+            return self.n
+
+    env = YoloEnv()
+    b, _, _, events = body(clock, env=env)
+    env.n = 2
+    b.step()
+    b.step()  # 人数没从 0 变过来：不重复报
+    (e,) = events.drain()
+    assert e.kind == "stranger" and "2 个" in e.text
+    assert "陌生人：2 个" in b.status()
+    env.n, env.near = 0, ["懒洋洋大王"]
+    b.step()
+    env.near = []
+    b.step()
+    kinds = [(e.kind, e.text) for e in events.drain()]
+    assert kinds[0] == ("arrive", "懒洋洋大王 来到身边") and ("stranger", "陌生人都走开了") in kinds
+    assert any(k == "leave" and "5 秒" in t for k, t in kinds)

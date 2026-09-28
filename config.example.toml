@@ -74,6 +74,16 @@ swap_slots = []
 min_interval = 20.0           # 两次动作至少隔几秒
 swap_min_interval = 120.0     # 两次换轮盘至少隔几秒（换一次要关聊天面板 5~10 秒）
 
+[perception]
+# YOLO 感知层（还在开发，模型要自己训练）：持续检测人物 / 名字标签 / 互动圆圈，替代 [env] 的定时整图 OCR，还能认出陌生人
+# 测速：python -m skydango perception bench --model yolo11n.pt（没训练前先用官方模型看硬件够不够）
+enabled = false
+model = "models/sky-yolo.onnx"  # .onnx 用 onnxruntime（N 卡装 onnxruntime-gpu）；.pt / .engine 用 ultralytics
+device = "cuda"
+imgsz = 960                     # 要和训练时一致
+fps = 15.0
+capture = "body"                # "own"：感知线程自己截图，才能到 15 fps
+
 [brain]
 # 统管大脑：常驻的 Claude Code（订阅）看眼睛写的场景描述、调身体的工具。`run --brain` 打开
 # 先运行一次 claude setup-token，把生成的令牌放进用户环境变量：setx SKYDANGO_CLAUDE_TOKEN "<令牌>"

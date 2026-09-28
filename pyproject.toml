@@ -25,6 +25,8 @@ ocr = [
 openai = ["openai>=1.30"]
 anthropic = ["anthropic>=0.116"]
 brain = ["mcp>=2.2", "uvicorn>=0.30"]
+# YOLO 感知层：训练 / 用 .pt、.engine 模型推理。50 系显卡先装 cu128 的 torch，再装这个
+yolo = ["ultralytics>=8.3"]
 dev = ["pytest>=8", "pillow>=10"]
 all = ["skydango[ocr,openai,anthropic,brain]"]
 

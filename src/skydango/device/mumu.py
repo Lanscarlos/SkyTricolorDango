@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import threading
 from pathlib import Path
 
 import cv2
@@ -66,6 +67,7 @@ class MumuCapture:
         self._handle = 0
         self._display = 0
         self._buf: ctypes.Array | None = None
+        self._lock = threading.Lock()
 
     def _connect(self) -> None:
         self._handle = self._lib.nemu_connect(self.install_dir, self.instance)
@@ -82,6 +84,11 @@ class MumuCapture:
             self._handle = 0
 
     def screenshot(self) -> np.ndarray:
+        # 截图缓冲区是共用的：身体线程和感知线程（perception.capture = "own"）可能同时截，排队来
+        with self._lock:
+            return self._screenshot()
+
+    def _screenshot(self) -> np.ndarray:
         if not self._handle:
             self._connect()
         w, h = ctypes.c_int(), ctypes.c_int()

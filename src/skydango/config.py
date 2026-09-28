@@ -233,6 +233,36 @@ class SocialConfig:
 
 
 @dataclass
+class PerceptionConfig:
+    """YOLO 感知层：视觉的第一道关卡，持续检测人物 / 名字标签 / 互动圆圈，替代 [env] 的定时整图 OCR。
+
+    打开后 [env] 的扫描不再跑（env.enabled 仍要为 true，它决定要不要识别环境）；关掉就退回原来的整图 OCR。
+    设计见 docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md。以下阈值都**未在真机验证**。
+    """
+
+    enabled: bool = False
+    model: str = "models/sky-yolo.onnx"  # .onnx 用 onnxruntime；.pt / .engine 用 ultralytics
+    device: str = "cuda"  # cuda / cpu；要 cuda 但装的是 CPU 版 onnxruntime 时会退回 CPU 并警告
+    classes: list[str] = field(default_factory=lambda: ["player", "name_tag", "social_ring", "self"])  # 模型里读不到类别名时用
+    imgsz: int = 960  # 推理尺寸，要和训练时一致；名字标签只有 40~50 px 高，640 时缩到 15 px 左右，偏小
+    conf: float = 0.35
+    iou: float = 0.5  # NMS 阈值（端到端模型不用）
+    fps: float = 15.0  # 最多每秒检测几帧
+    # 帧从哪来："body" 用身体主循环的截图（约 0.15 s 一张，到不了 15fps）；
+    # "own" 感知线程自己截图（能到 15fps，但 MuMu 原生截图能不能两个线程同时调还没验证）
+    capture: str = "body"
+    track_buffer: float = 1.0  # 轨迹这么久没匹配上就删（秒）
+    track_iou: float = 0.3
+    keep: float = 5.0  # 好友这么久没看到才算走开（15fps 下偶尔被挡一下骗不到它，比 env.keep 短）
+    stranger_after: float = 1.0  # 人物这么久都没有名字标签才算陌生人
+    stranger_min_height: float = 0.08  # 人物框至少这么高（相对截图高度）才判陌生人：太远的好友名字标签可能看不清
+    ocr_retry: float = 1.0  # 名字标签还没认出是谁时，隔多久再 OCR 一次
+    ocr_votes: int = 3  # 同一条标签轨迹最多 OCR 几次（取出现最多的名字）
+    ocr_threads: int = 2
+    self_roi: list[float] = field(default_factory=list)  # 团子自己所在区域 [x1, y1, x2, y2]（归一化）；空 = 靠 self 类别排除
+
+
+@dataclass
 class BrainConfig:
     """统管大脑（brain/）：常驻的 Claude Code（订阅）收事件、调身体的工具；眼睛（Haiku）把画面写成文字。`run --brain` 打开。
 
@@ -282,6 +312,7 @@ class Config:
     run: RunConfig = field(default_factory=RunConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
     social: SocialConfig = field(default_factory=SocialConfig)
+    perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
 
 

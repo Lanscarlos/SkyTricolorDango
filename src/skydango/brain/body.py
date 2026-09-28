@@ -92,6 +92,7 @@ class Body:
         self._accepted_hand: tuple[str, float] | None = None
         self._owner_window_until = float("-inf")  # now < 这个值 = 卡洛的 # 命令还在生效
         self._nearby: set[str] = set()
+        self._strangers = 0  # 上次看到几个陌生人（YOLO 感知层才有）
         self._requests: set[tuple[str, str]] = set()
         self._ref_thumb = None
         self._ref_at = float("-inf")
@@ -261,11 +262,19 @@ class Body:
         for name in sorted(near - self._nearby):
             self.events.put("arrive", f"{name} 来到身边")
         for name in sorted(self._nearby - near):
-            self.events.put("leave", f"{name} 走开了（{self.cfg.env.keep:.0f} 秒没看到名字）")
+            keep = getattr(self.env, "keep", self.cfg.env.keep)
+            self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）")
             if name == self.holding:  # 人都走开了，肯定没牵着了
                 self.events.put("released", f"（推测）和 {name} 分开了")
                 self.holding = None
         self._nearby = near
+        if hasattr(self.env, "strangers"):  # 只有 YOLO 感知层认得出陌生人
+            n = self.env.strangers(now)
+            if n and not self._strangers:
+                self.events.put("stranger", f"身边来了陌生人（{n} 个，头顶没有名字）")
+            elif not n and self._strangers:
+                self.events.put("stranger", "陌生人都走开了")
+            self._strangers = n
 
         requests = dict(self.env.requests)
         current = {(r.name, r.kind) for r in requests.values()}
@@ -358,6 +367,8 @@ class Body:
             parts.append("输入框状态读不到")
         near = self.env.nearby(now) if self.env is not None else []
         parts.append("身边的好友：" + ("、".join(near) if near else "没看到"))
+        if hasattr(self.env, "strangers"):
+            parts.append(f"身边的陌生人：{self.env.strangers(now)} 个")
         if self.holding:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:
