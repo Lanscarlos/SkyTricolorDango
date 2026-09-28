@@ -161,6 +161,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - 只监听 127.0.0.1（画面里有好友昵称和聊天）；`viewer.host = "0.0.0.0"` 手机也能看，但同一局域网的人都能看。网页不存盘
 - `run --brain --view` 时画面下方多一栏**大脑时间线**（设计见 `docs/superpowers/specs/2026-09-28-viewer-brain-trace-design.md`）：最近 50 轮，
   每轮点开看叫醒原因、收到的消息、说的话 / 思考、工具调用和返回、耗时和 tokens；能只看做了事的轮次、复制一整轮。数据在 `brain/trace.py`（只在内存里），走 `/brain` 长轮询
+- `run --brain --view` 时还有一栏**手动控制**（设计见 `docs/superpowers/specs/2026-09-28-viewer-manual-control-design.md`）：直接让身体说话、做动作、转视角 / 复位 / 环视、
+  看人（点画面上的人），**总是真执行**（大脑 dry-run 也一样），照样过身体的护栏；做成后放 `manual` 事件告诉大脑。`brain/manual.py` + `POST /control`；
+  只在本机模式挂（`viewer.host` 是局域网时关掉），请求要带 `X-Skydango` 头、`Host` 必须是本机（防别的网页 / DNS 重绑定）
 
 ## 统管大脑（`[brain]`，`run --brain`）
 
@@ -175,7 +178,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；牵着手时 `emote` 要 `force=true`；陌生人只能接点火
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒或额度用完：聊天交给 `[llm]`（DeepSeek）备用回复，额度用完 10 分钟后再试
 - 退出：身体先复原镜头、恢复轮盘（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code
-- 调提示词时加 `--view`：网页上的大脑时间线能看到每一轮它收到了什么、调了什么工具、工具返回了什么（见「识别可视化」）
+- 调提示词时加 `--view`：网页上的大脑时间线能看到每一轮它收到了什么、调了什么工具、工具返回了什么（见「识别可视化」）；
+  手动控制栏能绕过大脑直接试身体的工具（身体方法的 `live=True`），大脑会收到 `manual` 事件
 - 前提：`pip install --user mcp`；运行一次 `claude setup-token` 并 `setx SKYDANGO_CLAUDE_TOKEN "<令牌>"`
 
 ## 常用命令
