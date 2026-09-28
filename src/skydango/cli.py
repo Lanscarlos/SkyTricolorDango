@@ -831,6 +831,9 @@ def _weak_boxes(cfg: Config, args, frame, ocr, icons, names: list[str]) -> list:
     )
 
 
+_ASSIST_CHUNK = 50  # --assist 每段多少帧：检测 → 核对 → 写盘，原图用完就放掉
+
+
 def _perception_label_assist(cfg: Config, args, items: list) -> None:
     """--assist：挑帧 → 人物候选框 → claude -p 核对 → 和弱标注合并写成数据集 + 预览 + 待核对清单。"""
     import cv2
@@ -860,46 +863,48 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
     icons = _icon_classifier(cfg)
     names = _friend_names(cfg)()
     out = Path(args.output)
-    frames, weak = [], {}
-    for n, (path, stem) in enumerate(items, 1):
-        frame = imread(path)
-        weak[stem] = _weak_boxes(cfg, args, frame, ocr, icons, names)
-        frames.append(assist.FrameInput(stem, frame, propose(frame)))
-        if n % 20 == 0:
-            print(f"  候选框 {n}/{len(items)}")
     cmd = assist.assist_command(base, a)
     work = assist.assist_workdir()
     reviewer = assist.Reviewer(
         lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), out / "_assist", a, source
     )
-    print(f"{len(frames)} 帧交给 Claude（{a.model}）核对：每批 {a.batch} 帧、{a.jobs} 路并发")
-    try:
-        reviews = reviewer.review(frames)
-    except assist.AssistLimit:
-        raise SystemExit(f"订阅额度用完了：已核对的帧存在 {out / '_assist'}，额度恢复后重跑同一条命令会接着做") from None
+    print(f"{len(items)} 帧交给 Claude（{a.model}）核对：每批 {a.batch} 帧、{a.jobs} 路并发")
     index = {c: i for i, c in enumerate(cfg.perception.classes)}
     counts: dict[str, int] = {}
-    for f in frames:
-        height, width = f.image.shape[:2]
-        review = reviews.get(f.stem)
-        boxes = weak[f.stem] + (assist.apply_review(f.candidates, review) if review else [])
-        split = split_of(f.stem, args.val)
-        (out / "images" / split).mkdir(parents=True, exist_ok=True)
-        (out / "labels" / split).mkdir(parents=True, exist_ok=True)
-        imwrite(out / "images" / split / f"{f.stem}.jpg", f.image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        lines = [yolo_line(index[c], b, width, height) for c, b in boxes if c in index]
-        (out / "labels" / split / f"{f.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-        for c, _ in boxes:
-            counts[c] = counts.get(c, 0) + 1
-        (out / "_preview").mkdir(parents=True, exist_ok=True)
-        imwrite(out / "_preview" / f"{f.stem}.jpg", assist.draw_review(f.image, weak[f.stem], f.candidates, review),
-                [cv2.IMWRITE_JPEG_QUALITY, 80])
+    results: list = []  # (帧名, 核对结果)，写清单用
+    for c0 in range(0, len(items), _ASSIST_CHUNK):  # 一段一段来：原图不一次全读进内存（1000 帧约 6 GB）
+        frames, weak = [], {}
+        for path, stem in items[c0 : c0 + _ASSIST_CHUNK]:
+            frame = imread(path)
+            weak[stem] = _weak_boxes(cfg, args, frame, ocr, icons, names)
+            frames.append(assist.FrameInput(stem, frame, propose(frame)))
+        try:
+            reviews = reviewer.review(frames)
+        except assist.AssistLimit:
+            raise SystemExit(f"订阅额度用完了：已核对的帧存在 {out / '_assist'}，额度恢复后重跑同一条命令会接着做") from None
+        for f in frames:
+            height, width = f.image.shape[:2]
+            review = reviews.get(f.stem)
+            results.append((f.stem, review))
+            boxes = weak[f.stem] + (assist.apply_review(f.candidates, review) if review else [])
+            split = split_of(f.stem, args.val)
+            (out / "images" / split).mkdir(parents=True, exist_ok=True)
+            (out / "labels" / split).mkdir(parents=True, exist_ok=True)
+            imwrite(out / "images" / split / f"{f.stem}.jpg", f.image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            lines = [yolo_line(index[c], b, width, height) for c, b in boxes if c in index]
+            (out / "labels" / split / f"{f.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+            for c, _ in boxes:
+                counts[c] = counts.get(c, 0) + 1
+            (out / "_preview").mkdir(parents=True, exist_ok=True)
+            imwrite(out / "_preview" / f"{f.stem}.jpg", assist.draw_review(f.image, weak[f.stem], f.candidates, review),
+                    [cv2.IMWRITE_JPEG_QUALITY, 80])
+        print(f"  {min(c0 + _ASSIST_CHUNK, len(items))}/{len(items)} 帧")
     (out / "_assist").mkdir(parents=True, exist_ok=True)
     report = out / "_assist" / "review.md"
-    report.write_text(assist.review_report([(f.stem, reviews.get(f.stem)) for f in frames]), encoding="utf-8")
+    report.write_text(assist.review_report(results), encoding="utf-8")
     (out / "data.yaml").write_text(data_yaml(out, cfg.perception.classes), encoding="utf-8")
-    failed = sum(1 for f in frames if reviews.get(f.stem) is None)
-    added = sum(len(r.missing) for r in reviews.values() if r)
+    failed = sum(1 for _, r in results if r is None)
+    added = sum(len(r.missing) for _, r in results if r)
     print("标注：" + "、".join(f"{c}×{v}" for c, v in counts.items()) + f"；Claude 补框 {added} 个；没核对 {failed} 帧")
     u = reviewer.usage
     print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")

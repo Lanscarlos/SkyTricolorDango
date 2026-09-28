@@ -301,3 +301,15 @@ def test_assist_workdir_is_outside_repo():
     repo = Path(__file__).resolve().parents[1]
     work = assist_workdir().resolve()
     assert repo not in work.parents and work != repo
+
+
+def test_assist_processes_in_chunks(tmp_path, monkeypatch):
+    """原图不一次全读进内存：按段 检测 → 核对 → 写盘。"""
+    from skydango import cli
+
+    src, out, sent = _cli_env(tmp_path, monkeypatch, n=3)
+    monkeypatch.setattr(cli, "_ASSIST_CHUNK", 2)
+    cli.main(["perception", "label", str(src), "--assist", "--all-frames", "-o", str(out), "--val", "0"])
+    assert sent == [["0000", "0001"], ["0002"]]
+    assert len(list((out / "labels" / "train").glob("*.txt"))) == 3
+    assert "0002" in (out / "_assist" / "review.md").read_text(encoding="utf-8")
