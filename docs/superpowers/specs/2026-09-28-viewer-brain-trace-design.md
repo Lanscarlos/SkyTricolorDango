@@ -97,7 +97,9 @@ trace.since(after: int, timeout) -> dict  # 等到版本号 > after（最多 tim
   - `farewell` 同样三处（reason 为 `farewell`）。
   - `trace=None` 时行为和现在完全一样。
   - 另外给 trace 提供 `state()`：模型 / effort、轮数、连续失败次数、多少秒后重试、是否已转备用回复（`offline()`）。
-- **`cli.py` `_run_brain`**：有 viewer 时建 `BrainTrace`，交给 `Brain(trace=...)`；
+- **`cli.py` `_viewer(cfg, brain=True)`**：大脑模式下在**打开浏览器之前**就建好 `BrainTrace` 挂到 `viewer.brain`
+  （否则页面第一次请求 `/brain` 时还在加载模型、读轮盘，拿到 404 就不再请求——最终评审发现的）。
+- **`cli.py` `_run_brain`**：用 viewer 上已经挂好的 `BrainTrace`（没有就建一个），交给 `Brain(trace=...)`；
   `BrainSession(on_message=...)` 改成先 `log_brain_message(m)` 再 `trace.feed(m)`；`viewer.brain = trace`。
   没有 viewer 时一切照旧。
 - **`vision/viewer.py`**：`Viewer` 加属性 `brain = None`；新增 `GET /brain?after=<版本号>`：
@@ -131,7 +133,8 @@ trace.since(after: int, timeout) -> dict  # 等到版本号 > after（最多 tim
 ▼ 22:42:10  新消息   进行中…                                   ← 自动展开
 ```
 
-- 进行中的那一轮自动展开，步骤实时往下加；其余点一下展开 / 收起，数据刷新后保持用户的展开状态。
+- 进行中的那一轮自动展开，步骤实时往下加；收尾后保持展开，直到下一轮开始才收起（边跑边看时不会在结果出来那一刻被收起）；
+  点过的轮次按用户的来，数据刷新后保持。
 - 原因显示：`events` → 新消息 / 事件，`heartbeat` → 心跳，`farewell` → 退出前总结。
 
 ### 展开后：按时间顺序
