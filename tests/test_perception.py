@@ -181,6 +181,25 @@ def test_far_players_and_self_are_not_strangers():
     assert w.strangers(2.0) == 0
 
 
+def test_unlit_silhouette_is_a_stranger_right_away_even_far_away():
+    det = FakeDetector()
+    det.frames = [[Detection("player_unlit", Rect(1400, 500, 20, 50), 0.9), player(1000), tag(990, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), stranger_after=1.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.strangers(0.0) == 1 and w.unlit(0.0) == 1  # 不用等 stranger_after，也不管离得多远
+    assert "其中 1 个还没点火" in w.describe(0.0)
+
+
+def test_lit_stranger_without_tag_is_not_counted_as_unlit():
+    det = FakeDetector()
+    det.frames = [[player(1500)]]
+    w = watcher(det)
+    for t in (0.0, 1.0):
+        w.process(frame(), t, panel_visible=False)
+    assert w.strangers(1.0) == 1 and w.unlit(1.0) == 0
+    assert "点火" not in w.describe(1.0)
+
+
 def test_self_roi_excludes_the_player_in_the_middle():
     det = FakeDetector()
     det.frames = [[player(915, y=420)]]

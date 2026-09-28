@@ -425,7 +425,7 @@ def _perception_detect(cfg: Config, args) -> None:
     now = max(cfg.perception.stranger_after, 0.1)
     watcher.process(frame, 0.0, panel)
     watcher.process(frame, now, panel)  # 同一帧再跑一遍：人物要持续 stranger_after 秒没有名字才判陌生人
-    colors = {"player": (0, 200, 0), "name_tag": (0, 200, 255), "social_ring": (255, 120, 0), "self": (200, 200, 200)}
+    colors = {"player": (0, 200, 0), "player_unlit": (80, 80, 80), "name_tag": (0, 200, 255), "social_ring": (255, 120, 0), "self": (200, 200, 200)}
     out = frame.copy()
     for t in watcher.last_tracks:
         b = t.box
@@ -496,7 +496,8 @@ def _perception_label(cfg: Config, args) -> None:
     (out / "data.yaml").write_text(data_yaml(out, classes), encoding="utf-8")
     print("自动标出：" + "、".join(f"{c}×{v}" for c, v in counts.items()))
     print(f"数据集配置：{out / 'data.yaml'}")
-    print("下一步：用 X-AnyLabeling 打开 images/ 导入 YOLO 标注，给**每一张**补上 player（其他玩家）和 self（团子自己）框、"
+    print("下一步：用 X-AnyLabeling 打开 images/ 导入 YOLO 标注，给**每一张**补上 player（其他玩家）、player_unlit（没点火的黑影）"
+          "和 self（团子自己）框、"
           "修正错框 —— 没补全的图会教模型“这里没有人”，训出来会漏检")
 
 

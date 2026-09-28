@@ -529,13 +529,16 @@ def test_strangers_come_and_go(clock):
         def strangers(self, now):
             return self.n
 
+        def unlit(self, now):
+            return 1 if self.n else 0
+
     env = YoloEnv()
     b, _, _, events = body(clock, env=env)
     env.n = 2
     b.step()
     b.step()  # 人数没从 0 变过来：不重复报
     (e,) = events.drain()
-    assert e.kind == "stranger" and "2 个" in e.text
+    assert e.kind == "stranger" and "2 个" in e.text and "其中 1 个还没点火" in e.text
     assert "陌生人：2 个" in b.status()
     env.n, env.near = 0, ["懒洋洋大王"]
     b.step()

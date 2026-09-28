@@ -243,7 +243,8 @@ class PerceptionConfig:
     enabled: bool = False
     model: str = "models/sky-yolo.onnx"  # .onnx 用 onnxruntime；.pt / .engine 用 ultralytics
     device: str = "cuda"  # cuda / cpu；要 cuda 但装的是 CPU 版 onnxruntime 时会退回 CPU 并警告
-    classes: list[str] = field(default_factory=lambda: ["player", "name_tag", "social_ring", "self"])  # 模型里读不到类别名时用
+    # 模型里读不到类别名时用。player_unlit = 没点火的陌生人（黑色剪影）；点过火的陌生人外观和好友一样，标 player
+    classes: list[str] = field(default_factory=lambda: ["player", "name_tag", "social_ring", "self", "player_unlit"])
     imgsz: int = 960  # 推理尺寸，要和训练时一致；名字标签只有 40~50 px 高，640 时缩到 15 px 左右，偏小
     conf: float = 0.35
     iou: float = 0.5  # NMS 阈值（端到端模型不用）
@@ -255,7 +256,7 @@ class PerceptionConfig:
     track_iou: float = 0.3
     keep: float = 5.0  # 好友这么久没看到才算走开（15fps 下偶尔被挡一下骗不到它，比 env.keep 短）
     stranger_after: float = 1.0  # 人物这么久都没有名字标签才算陌生人
-    stranger_min_height: float = 0.08  # 人物框至少这么高（相对截图高度）才判陌生人：太远的好友名字标签可能看不清
+    stranger_min_height: float = 0.08  # 点过火的人物框至少这么高（相对截图高度）才判陌生人：太远的好友名字标签可能看不清
     ocr_retry: float = 1.0  # 名字标签还没认出是谁时，隔多久再 OCR 一次
     ocr_votes: int = 3  # 同一条标签轨迹最多 OCR 几次（取出现最多的名字）
     ocr_threads: int = 2

@@ -90,8 +90,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 ## YOLO 感知层（`[perception]`，开发中）
 
 设计和 GPU 机器上的操作步骤见 `docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md`（§12）。
-- YOLO 做视觉第一道关卡：每帧检测 `player` / `name_tag` / `social_ring` / `self`，名字标签只裁小图跑 OCR 识别，身份跟着名字走
-- 好友 / 陌生人不是 YOLO 类别：有名字标签且对得上 friends.md 是好友，一直没标签、离得不远的人物是陌生人（身体发 `stranger` 事件）
+- YOLO 做视觉第一道关卡：每帧检测 `player` / `player_unlit` / `name_tag` / `social_ring` / `self`，名字标签只裁小图跑 OCR 识别，身份跟着名字走
+- 没点火的陌生人是黑影，单独一类 `player_unlit`，看到就是陌生人；点过火的陌生人外观和好友一样，靠名字标签分：有标签且对得上 friends.md 是好友，一直没标签、离得不远的是陌生人（身体发 `stranger` 事件）
 - `enabled = true` 时替换 env 的定时整图 OCR，接口一样，身体 / 社交 / 眼睛不用改；关掉就退回原来的
 - **还没有训练好的模型，所有阈值都没在真机验证**；`models/`、`datasets/` 不进 git
 

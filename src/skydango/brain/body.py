@@ -271,7 +271,9 @@ class Body:
         if hasattr(self.env, "strangers"):  # 只有 YOLO 感知层认得出陌生人
             n = self.env.strangers(now)
             if n and not self._strangers:
-                self.events.put("stranger", f"身边来了陌生人（{n} 个，头顶没有名字）")
+                dark = self.env.unlit(now) if hasattr(self.env, "unlit") else 0
+                note = f"，其中 {dark} 个还没点火" if dark else ""
+                self.events.put("stranger", f"身边来了陌生人（{n} 个，头顶没有名字{note}）")
             elif not n and self._strangers:
                 self.events.put("stranger", "陌生人都走开了")
             self._strangers = n

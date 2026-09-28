@@ -4,12 +4,14 @@
 身体、社交、眼睛不用改；`[perception] enabled = false` 就退回 EnvWatcher 的定时整图 OCR。
 
 每一帧：
-1. YOLO 出框（player / name_tag / social_ring / self），去掉面板挡住的、底部输入栏的、团子自己
+1. YOLO 出框（player / player_unlit / name_tag / social_ring / self），去掉面板挡住的、底部输入栏的、团子自己
 2. 追踪：框接成轨迹
 3. 名字标签轨迹：新出现就裁小图只跑 OCR 识别（不跑检测），多读几次投票，对上 friends.md 就是那个好友
    —— 身份跟着名字走，不跟着轨迹 id 走：转视角轨迹断了，新轨迹一读出名字就接回同一个人
 4. 圆圈：挂到正上方的名字标签上，用现有的剪影模板认图标（牵手 / 拥抱 / ……）；上面没有标签的圆圈算陌生人的
-5. 人物：一直没有名字标签、离得不太远 → 陌生人
+5. 人物：未点火的黑影（player_unlit）一定是陌生人；点过火的陌生人外观和好友一样，
+   只能靠头顶有没有名字标签分 —— 一直没有名字标签、离得不太远 → 陌生人
+   （还有个办法是点一下人物，右边会打开好友树面板，看得出是不是好友；要点屏幕，没做）
 
 以上规则和阈值都还**没在真机验证**（模型还没训练），见 docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md。
 """
@@ -34,6 +36,7 @@ from .track import Track, Tracker, iou
 
 log = logging.getLogger(__name__)
 
+UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
 
@@ -145,7 +148,7 @@ class PerceptionWatcher:
         detected = time.perf_counter()
         tracks = self.tracker.update(dets, now)
         selfs = [t for t in tracks if t.cls == "self"]
-        players = [t for t in tracks if t.cls == "player" and not self._is_self(t, selfs)]
+        players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs)]
         tags = [t for t in tracks if t.cls == "name_tag"]
         rings = [t for t in tracks if t.cls == "social_ring"]
 
@@ -194,8 +197,13 @@ class PerceptionWatcher:
         else:
             self.requests.pop(STRANGER, None)
 
-        strangers = 0
+        strangers = unlit = 0
         for player in players:
+            if player.cls == UNLIT:  # 没点火的黑影：一定是陌生人，远近都算
+                player.data["stranger"] = True
+                strangers += 1
+                unlit += 1
+                continue
             if self._tag_over(player, tags) is not None:
                 player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
             is_stranger = (
@@ -206,7 +214,7 @@ class PerceptionWatcher:
             player.data["stranger"] = is_stranger
             strangers += is_stranger
         with self._lock:  # 身体线程会同时读（strangers()）
-            self._strangers.append((now, strangers))
+            self._strangers.append((now, strangers, unlit))
             while self._strangers and now - self._strangers[0][0] > self.cfg.keep:
                 self._strangers.popleft()
 
@@ -224,7 +232,7 @@ class PerceptionWatcher:
             c = _center(det.box)
             if not _inside(c, area) or (panel is not None and _inside(c, panel)):
                 continue
-            if mine is not None and det.cls == "player" and _inside(c, mine):
+            if mine is not None and det.cls in ("player", UNLIT) and _inside(c, mine):
                 continue
             out.append(det)
         return out
@@ -311,7 +319,13 @@ class PerceptionWatcher:
         """最近 keep 秒里同一帧最多看到几个陌生人（轨迹会断，所以不数轨迹条数）。"""
         with self._lock:
             recent = list(self._strangers)
-        return max((n for t, n in recent if now - t <= self.cfg.keep), default=0)
+        return max((n for t, n, _ in recent if now - t <= self.cfg.keep), default=0)
+
+    def unlit(self, now: float) -> int:
+        """其中还没点火（黑影）的有几个。"""
+        with self._lock:
+            recent = list(self._strangers)
+        return max((u for t, _, u in recent if now - t <= self.cfg.keep), default=0)
 
     def describe(self, now: float) -> str:
         parts = []
@@ -320,7 +334,9 @@ class PerceptionWatcher:
             parts.append(f"- 你身边现在有：{'、'.join(people)}（画面上能看到他们头顶的名字）")
         n = self.strangers(now)
         if n:
-            parts.append(f"- 身边还有 {n} 个陌生人（头顶没有名字）")
+            dark = self.unlit(now)
+            note = f"，其中 {dark} 个还没点火（黑影，看不到外观）" if dark else ""
+            parts.append(f"- 身边还有 {n} 个陌生人（头顶没有名字{note}）")
         if people or n:
             parts.append("- 别的人看不到不代表不在（可能被挡住或离得远）")
         return "\n".join(parts)
