@@ -105,3 +105,9 @@ def test_eyes_prompts_mention_listed_people_and_skip_self():
     assert "没列出的人都叫“陌生人”" in EYES_SYSTEM and "团子、陌生人位置" not in EYES_SYSTEM
     assert "给出的陌生人、团子位置照用" in EYES_SYSTEM
     assert "团子自己不用描述" in LOOK_REQUEST
+
+
+def test_eyes_do_not_auto_look_on_approach():
+    from skydango.brain.eyes import AUTO_LOOK_KINDS
+
+    assert "approach" not in AUTO_LOOK_KINDS

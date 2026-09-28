@@ -772,3 +772,42 @@ def test_no_hint_without_perception(clock):
     reader.batches = [[msg("你好", "陌生人")]]
     b.step()
     assert [e.text for e in events.drain()] == ["聊天  陌生人：「你好」"]
+
+
+# ---- 二期：有人走过来、最近的人 ----
+class ApproachEnv(FakeEnv):
+    def __init__(self, who=(), nearest=None):
+        super().__init__()
+        self.who = list(who)
+        self.near_one = nearest
+
+    def strangers(self, now):
+        return 0
+
+    def pop_approaches(self):
+        out, self.who = self.who, []
+        return out
+
+    def nearest(self, now):
+        return self.near_one
+
+
+def test_approach_events(clock):
+    b, _, _, events = body(clock, env=ApproachEnv(["懒洋洋大王", "陌生人"]))
+    b.step()
+    got = [(e.kind, e.text) for e in events.drain() if e.kind == "approach"]
+    assert got == [("approach", "懒洋洋大王 朝你走过来了"), ("approach", "有个陌生人朝你走过来了")]
+
+
+def test_holding_partner_approach_is_dropped(clock):
+    b, _, _, events = body(clock, env=ApproachEnv(["卡洛"]))
+    b.holding = "卡洛"
+    b.step()
+    assert not [e for e in events.drain() if e.kind == "approach"]
+
+
+def test_status_shows_nearest(clock):
+    b, _, _, _ = body(clock, env=ApproachEnv(nearest=("懒洋洋大王", "近")))
+    assert "离你最近的：懒洋洋大王（近）" in b.status()
+    b2, _, _, _ = body(clock, env=ApproachEnv())
+    assert "离你最近的" not in b2.status()

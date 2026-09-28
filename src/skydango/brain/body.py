@@ -307,6 +307,11 @@ class Body:
             elif not n and self._strangers:
                 self.events.put("stranger", "陌生人都走开了")
             self._strangers = n
+        if hasattr(self.env, "pop_approaches"):  # 有人朝团子走过来（眼睛不因此自动看，省额度）
+            for who in self.env.pop_approaches():
+                if who == self.holding:
+                    continue
+                self.events.put("approach", "有个陌生人朝你走过来了" if who == "陌生人" else f"{who} 朝你走过来了")
 
         requests = dict(self.env.requests)
         current = {(r.name, r.kind) for r in requests.values()}
@@ -426,6 +431,9 @@ class Body:
         parts.append("身边的好友：" + ("、".join(near) if near else "没看到"))
         if hasattr(self.env, "strangers"):
             parts.append(f"身边的陌生人：{self.env.strangers(now)} 个")
+        closest = self.env.nearest(now) if hasattr(self.env, "nearest") else None
+        if closest:
+            parts.append(f"离你最近的：{closest[0]}（{closest[1]}）")
         if self.holding:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:
