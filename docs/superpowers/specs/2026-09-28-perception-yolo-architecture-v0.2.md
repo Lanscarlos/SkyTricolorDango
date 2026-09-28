@@ -4,7 +4,12 @@
 > 没对上仓库现状；这一版只写**在现有架构上加 YOLO**这一件事。
 >
 > **进度（2026-09-28）**：代码骨架已完成、单元测试覆盖，默认关闭（`[perception] enabled = false`）。
-> 还没有训练好的模型，也没在真机 / GPU 上跑过 —— 测速（M0）不阻塞后面的开发，GPU 机器到手后跑 §12 的步骤。
+> 还没有训练好的模型，也没在真机 / GPU 上跑过 —— 测速（M0）不阻塞后面的开发，GPU 机器到手后跑 §13 的步骤。
+>
+> 修订记录：
+> - 初稿：分层、类别、路线
+> - 骨架实现后：陌生人外观（没点火是黑影 → `player_unlit`）、好友树确认（`check_friend`，ESC 关）写进来；
+>   §3 / §5 / §6 改成和实际实现一致；新增 §9 验收标准、§11 已知缺口
 
 ## 1. 目标
 
@@ -22,22 +27,24 @@
 | 项 | 结论 |
 |---|---|
 | 平台 | MuMu 模拟器 + ADB（不变）；截图用 `device/mumu.py` 原生截图（约 9 ms/张） |
-| 硬件 | 50 系 N 卡 → YOLO 跑 GPU，15fps 没压力 |
+| 硬件 | 50 系 N 卡 → YOLO 跑 GPU，15fps 没压力（待 M0 实测） |
 | 大脑 | 不变：Claude Code + MCP 工具，DeepSeek 备用；**不改成 JSON 意图** |
 | 聊天 | 不变：读聊天记录面板（C），**YOLO 不管聊天气泡**（头顶气泡实测不可靠，见 game-ops §3） |
 | 身份 | 不变：不能声称自己是真人（AGENTS.md 底线） |
+| 好友 / 陌生人外观 | 没点火的陌生人是黑色剪影；点火后外观和好友一样，只能靠头顶名字标签分，或点人物看好友树（用户告知，game-ops §5） |
 
 ## 3. 分层
 
 ```
-MuMu 截图（感知线程，15fps）
-  → YOLO 检测：player / name_tag / social_ring（GPU）
-  → 追踪（ByteTrack）+ 名字关联
-  → 世界状态（实体表）
-      ├→ 按需精识别：新 name_tag 轨迹 → 裁小图 OCR 识别（只跑 rec，不跑 det）
-      │              social_ring 裁剪变化 → 现有剪影模板匹配认图标
+MuMu 截图（capture = "body" 用身体主循环的帧；"own" 感知线程自己截，15fps）
+  → YOLO 检测：player / player_unlit / name_tag / social_ring / self（GPU）
+  → 过滤：聊天面板开着时面板里的框、底部按钮栏、团子自己
+  → 追踪（IoU 贪心；够用就不上 ByteTrack）+ 名字关联
+  → 世界状态（轨迹上挂名字投票、身份）
+      ├→ 按需精识别：新 name_tag 轨迹 → 裁小图只跑 OCR 识别（不跑检测）
+      │              social_ring → 现有剪影模板匹配认图标（一次约 1 ms，每帧都认）
       ├→ 反射：好友发起互动 → SocialHandler 直接接受（现有逻辑）
-      └→ 事件：arrive / leave / stranger_near / request / scene_change → body.events → 唤醒大脑 / 眼睛
+      └→ 事件：arrive / leave / stranger / request → body.events → 唤醒大脑 / 眼睛
 ```
 
 原则：
@@ -45,84 +52,116 @@ MuMu 截图（感知线程，15fps）
 - **YOLO 只回答"是什么、在哪"，不回答"是谁"**。好友还是点过火的陌生人由名字标签 + friends.md 判断，不做成 YOLO 类别
   （点过火的陌生人外观和好友一样，标注会自相矛盾）。唯一的例外是没点火的黑影：外观上就能分，单独一类 `player_unlit`。
 - 贵的识别由 YOLO 的结果触发，不再定时整图扫。
+- 需要点屏幕的确认（好友树）不放在感知层，由大脑按需调 `check_friend`。
 
-## 4. 检测类别（初版）
+## 4. 检测类别
 
 | 类别 | 说明 | 用途 |
 |---|---|---|
 | `player` | 其他玩家的角色（含披风），**外观可见的**（好友，或点过火的陌生人） | 身边有几个人、陌生人检测、以后的跟随 |
-| `player_unlit` | 没点火的陌生人：黑色剪影、看不到外观 | 一看到就是陌生人，不用等标签判定 |
 | `name_tag` | 头顶名字标签 | 裁剪 → OCR 认名字 → 关联到 player |
 | `social_ring` | 名字下方的圆圈（✦ / 互动图标） | 裁剪 → 模板匹配认请求类型 |
-| `self` | 团子自己 | 排除自己；也可以先用屏幕中间固定区域代替，不标 |
+| `self` | 团子自己 | 排除自己（也可以用 `self_roi` 固定区域，见 §11） |
+| `player_unlit` | 没点火的陌生人：黑色剪影、看不到外观 | 一看到就是陌生人，不用等标签判定 |
 
-以后再考虑：陌生人头顶的彩虹心形图标（含义未知）、点火相关 UI、场景地标。
+- **类别顺序一旦开始标注就不能改**（YOLO 标注文件里存的是序号）。以后加类别只往后追加；`player_unlit` 就是这样加在最后的。
+- 以后再考虑：陌生人头顶的彩虹心形图标（含义未知）、点火相关 UI、场景地标。
 
-## 5. 世界状态
+## 5. 世界状态（`vision/perception.py`）
 
-实体表（每条轨迹一行）：
-
-```
-track_id, 屏幕框, 名字(可空), 身份(friend / stranger / unknown), 圆圈状态, 首次出现, 最后出现
-```
-
-- **身份**：`player_unlit` → stranger（立刻，远近都算）；轨迹上关联到能对上 friends.md 的名字 → friend；
-  `player` 持续 N 帧（如 1 s）都没有标签、框不太小 → stranger；之前 → unknown。
-  还有一种确认办法是点一下人物、看右侧打开的好友树面板（game-ops §5），要点屏幕，暂不做，留给以后按需做成大脑的工具。
-- **名字**：每条轨迹 OCR 一次，结果缓存；读不清就下一次标签变大 / 变清楚时再读，多帧投票。
-  轨迹断了（转视角、被挡）用名字重新接回原实体。
-- **防抖**：实体消失超过 `leave_after`（如 5 s，比现在的 30 s 短得多，因为 15fps 下不会被偶尔一帧遮挡骗到）才发 `leave`。
-- **name_tag ↔ player 关联**：标签框在 player 框正上方、水平中心接近；圆圈在标签下方约 2.23 倍标签高度（game-ops §6 的实测值，可直接用来校验）。
+- **名字**：name_tag 轨迹刚出现就裁小图 OCR 一次，之后每 `ocr_retry`（1 s）再读，最多 `ocr_votes`（3）次，取出现最多的好友名；
+  对不上 friends.md 的一直按 `ocr_retry` 重试（一张十几毫秒）。
+  **身份跟着名字走，不跟着轨迹 id 走**：转视角轨迹断了，新轨迹一读出名字就接回同一个人，不需要单独的重关联逻辑。
+- **身份**：
+  - `player_unlit` → 陌生人，立刻，远近都算
+  - `player` 轨迹上出现过名字标签 → 不是陌生人（标签之后被挡住也不改判）
+  - `player` 出现超过 `stranger_after`（1 s）一直没标签，且框高 ≥ `stranger_min_height`（8% 屏高）→ 陌生人
+    （太远的好友标签可能读不到，框小的不判，免得把远处的好友当成陌生人）
+- **圆圈**：挂到正上方的名字标签（圆圈中心在标签上沿往下约 2.23 倍标签高度，game-ops §6 实测）。
+  好友标签下没有圆圈 → 圆圈状态记 None（牵着手时圆圈会消失，身体靠它猜牵手状态）。
+  上面没有名字标签的圆圈算陌生人的，发起的请求记在"陌生人"名下，按 `accept_strangers`（只接点火）处理。
+- **防抖**：好友 `keep`（5 s）没看到才算走开；陌生人数取最近 `keep` 秒里单帧最多看到几个（轨迹会断，不数轨迹条数）。
+- **name_tag ↔ player 关联**：标签水平中心落在人物框（左右各放宽 25%）内，标签下沿在人物上沿往上 1.5 个身高到身体上半截之间，取最近的。
 
 ## 6. 和现有代码的接法
 
-- **`EnvWatcher` 的接口不变**：`nearby()`、`requests`、`circles`、`labels`、`describe()` 照旧对外提供，
-  内部实现换成 YOLO + 世界状态。`Body._watch_people`、`SocialHandler` 基本不用改。新增陌生人时加一个事件（`stranger_near` / `stranger_leave`）。
-- **单独的感知线程**：身体主循环约 0.15 s 一圈、还要读聊天和执行命令，15fps 放不进去。
-  感知线程自己截图、跑 YOLO、更新世界状态；身体线程每圈只读状态快照。**需要确认**：mumu.py 的原生截图能不能两个线程同时调
-  （不能就加锁，或者由感知线程截、身体线程取它的最新帧）。
-- **眼睛触发**：`_watch_screen` 现在用缩略图像素差判断"画面大变"；可以改成（或加上）"实体集合变化"触发，更准，少叫 Haiku。
-- **配置**：新增 `[perception]`：`enabled`、`model`、`fps`（默认 15）、`device`（`cuda` / `cpu`）、`conf`、`leave_after`、`stranger_after`。
+- **接口同 `EnvWatcher`**：`observe()`、`nearby()`、`describe()`、`requests`、`labels`、`circles`、`last_seen`，
+  多了 `strangers()` / `unlit()` / `keep`。`Body._watch_people`、`SocialHandler`、眼睛不用改。
+- **身体新事件 `stranger`**：陌生人数从 0 变成有（"身边来了陌生人（N 个，其中 M 个还没点火）"）和变回 0 时各发一次；
+  `status` 多一项陌生人数；眼睛在 `stranger` 事件后也会自动看一眼（同 arrive / leave，受 `auto_look_min` 限制）。
+- **帧从哪来**：`capture = "body"` 用身体主循环的截图（约 0.15 s 一张，到不了 15fps，但最安全）；
+  `"own"` 感知线程按 `fps` 自己截。MuMu 截图缓冲区共用，已加锁排队。
+- **配置 `[perception]`**：`enabled`、`model`、`device`、`imgsz`、`conf`、`iou`、`fps`、`capture`、`keep`、`stranger_after`、
+  `stranger_min_height`、`ocr_retry`、`ocr_votes`、`self_roi`、`classes`、`track_buffer`、`track_iou`。
   `enabled = false` 时退回现在的整图 OCR，出问题能一键回退。
+- **没做**：眼睛改成"实体集合变化"触发（现在 arrive / leave / stranger 事件已经覆盖了主要情况，画面大变仍用缩略图差）。
 
 ## 7. 推理后端
 
 - 训练：Ultralytics（YOLO11n / YOLO26n 起步，不够再上 s）。
-- 部署：导出 ONNX → `onnxruntime-gpu`，或导出 TensorRT 引擎。
+- 部署：导出 ONNX → `onnxruntime-gpu`，或导出 TensorRT 引擎；`.pt` / `.engine` 直接走 ultralytics。
 - **50 系（Blackwell）要新版 CUDA**：PyTorch 要装 cu128 及以上的版本，onnxruntime-gpu / TensorRT 也要选支持 sm_120 的版本，
-  旧版装上会报"no kernel image"或者退回 CPU —— 装完先确认真的在 GPU 上跑。
+  旧版装上会报"no kernel image"或者退回 CPU —— 装完先确认真的在 GPU 上跑（`perception bench` 会打印后端）。
 - 模拟器渲染也用这张卡，测速时看一下游戏帧率有没有掉。
+- **推理尺寸 960**：名字标签只有 40~50 px 高，640 时缩到 15 px 左右，偏小。训练和推理的 `imgsz` 要一致；导出时固定了尺寸的 ONNX 以模型为准。
 
 ## 8. 数据
 
-- 采集：`python -m skydango record` 录画面，要覆盖：好友 / 陌生人（灰的、点过火的）、多人重叠、转视角的模糊帧、
-  暗场景 / 光效强的场景、圆圈的各种状态、聊天面板开着 / 关着。
-- 弱标注起步：用现有识别器自动出框 —— env 的 OCR 框 → `name_tag`，social 的圆圈位置 → `social_ring`；
-  人工只补 `player` 框、修错框（Label Studio / CVAT / X-AnyLabeling 均可）。
+- 采集：`python -m skydango record` 录画面，要覆盖：好友 / 陌生人（**没点火的黑影**、点过火的）、多人重叠、转视角的模糊帧、
+  暗场景（暮土、禁阁）/ 光效强的场景、圆圈的各种状态（✦、各种请求、牵手时消失）、聊天面板开着 / 关着、镜头拉近 / 拉远。
+- 弱标注起步：`perception label` 用现有识别器自动出框 —— 整图 OCR 认出的好友名字 → `name_tag`，模板认得出的圆圈 → `social_ring`；
+  人工补 `player`、`player_unlit`、`self`，修错框。工具用 **X-AnyLabeling**（能直接导入 / 导出 YOLO 格式）。
+- **每张图都要补全**：只标了一部分的图会教模型"这里没有人"。没人的空画面也留一些（负样本），但要确定真的没人。
 - 起步量：几百张标好的图先训一版，看漏检集中在哪类场景再补。
-- 数据放 `datasets/`（gitignore），不进仓库。
+- 数据放 `datasets/`、模型放 `models/`（都 gitignore）。录像里有好友的昵称，别外传。
+- 每次训练记下用的数据集版本和 `imgsz`（比如模型文件名 `sky-yolo-<日期>-960.onnx`），出问题能对上。
 
-## 9. 迭代路线
+## 9. 验收标准（初定，M0 / M2 实测后调整）
 
-1. **M0 测速**：拿现成的 COCO 预训练 nano 模型在本机 GPU + MuMu 开着的情况下跑 15fps，确认耗时、GPU 占用、游戏不掉帧。
-2. **M1 数据**：录画面 + 弱标注 + 人工修正，训第一版 `player` / `name_tag` / `social_ring`。
-3. **M2 离线对比**：同一批录像上，YOLO + 裁剪 OCR 和现有整图 OCR 比：认出的好友、发现请求的延迟、误报。**达标才替换**。
-4. **M3 接进身体**：感知线程 + 世界状态，`EnvWatcher` 换实现，保留 `enabled = false` 回退；加陌生人事件。
-5. **M4 以后**：跟随（先用牵手，视觉伺服最后做）、场景识别。
+| 阶段 | 指标 | 目标 |
+|---|---|---|
+| M0 测速 | YOLO 检测 p95（imgsz 960，GPU） | ≤ 20 ms |
+| | 截图 + 整个感知每帧 | ≤ 66 ms（15fps） |
+| | 游戏帧率 | 肉眼看不出掉帧 |
+| M2 离线对比 | 好友认出率（同一批录像，逐帧对比现有整图 OCR） | 不低于现有方案 |
+| | 发现互动请求的延迟 | ≤ 1 s（现在 2~4 s） |
+| | 把好友误判成陌生人 | 10 分钟录像里 ≤ 1 次 `stranger` 事件 |
+| | 验证集 mAP50（`player` / `name_tag` / `social_ring`） | 参考，≥ 0.8 |
 
-## 10. 待定
+达不到就先补数据再训，不急着打开 `enabled`。
 
-- [x] mumu.py 原生截图的线程安全：截图缓冲区是共用的，已加锁（两个线程同时截会排队）；DLL 句柄跨线程调用是否稳定仍待真机确认
-- [x] 陌生人没点火时是黑色剪影，点过火后外观和好友一样（用户告知）→ 加了 `player_unlit` 类别；点过火的只能靠名字标签（或点人物看好友树）
-- [ ] `self` 用类别还是固定区域
+## 10. 迭代路线
 
-## 11. 风险
+1. **M0 测速**：拿现成的 COCO 预训练 nano 模型在本机 GPU + MuMu 开着的情况下跑 15fps。—— 工具已就绪（`perception bench`），等 GPU 机器。
+2. **M1 数据**：录画面 + 弱标注 + 人工补标，训第一版。—— 工具已就绪（`record`、`perception label`）。
+3. **M2 离线对比**：按 §9 在同一批录像上比 YOLO 和现有整图 OCR。—— **还缺工具**：`perception compare <录像目录>`，
+   两套识别器逐帧跑同一批图（`record` 的文件名里带时间），输出每帧认出的好友 / 陌生人 / 请求和汇总。下一步做。
+4. **M3 接进身体**：`[perception] enabled = true`，先 dry-run 看 `runs/` 里的事件。—— 代码已接好，等模型。
+5. **M4 以后**：跟随（先用牵手，视觉伺服最后做）、场景识别、用 `check_friend` 的结果补 friends.md（要用户确认）。
+
+## 11. 已知缺口 / 待定
+
+- [x] mumu.py 原生截图的线程安全：截图缓冲区共用，已加锁；DLL 句柄跨线程调用是否稳定仍待真机确认
+- [x] 陌生人外观：没点火是黑影 → `player_unlit`；点过火的只能靠名字标签，或大脑调 `check_friend` 点人物看好友树（ESC 关）
+- [ ] **打开 YOLO 后没有地名了**：EnvWatcher 顺带读地名（`env.places`），PerceptionWatcher 不读。地名提示本来就没在真机验证过，
+  先接受这个缺口；要补的话，在画面大变（`scene_change`）后对画面中上部做一次整图 OCR，或者加一个地名文字的 YOLO 类别
+- [ ] `self` 用类别还是固定区域：建议**先标 `self` 类别**（团子在画面中间、外观固定，标起来很快），`self_roi` 留作兜底；M1 训完看效果再定
+- [ ] 陌生人发起点火时，头顶有没有圆圈、在什么位置（现在假设和好友一样，没录到）
+- [ ] `stranger_min_height`（8%）、`stranger_after`（1 s）、关联规则的系数都是估的，M2 用录像调
+- [ ] 好友树面板长什么样、好友和陌生人的面板怎么区分（`friend-check X Y` 截图核对后写进 game-ops 和大脑提示词）
+- [ ] 代码里的 ESC 是模拟 MuMu 实体键盘（sendevent），和用户在电脑键盘上按 ESC 是否等效，待 `friend-check` 实测
+
+## 12. 风险
 
 - **识别稳定性**：暗场景、光效、半透明重叠 → 有针对性地补数据；M2 的离线对比兜底。
+- **误判陌生人会吵醒大脑**：`stranger` 事件会叫醒大脑和眼睛（有额度成本）。事件只在人数从 0 变有 / 变回 0 时发，
+  M2 用 §9 的误判指标把关；实在多就给 `stranger` 事件加冷却。
+- **GPU 争用**：模拟器渲染和推理共用显卡，M0 要看游戏帧率；不行就降 `fps` / `imgsz` 或导出 TensorRT。
 - **封号**：纯视觉不变，不读内存、不注入；检测频率高不会增加游戏里的操作，操作频率仍由身体的护栏限速。
+  `check_friend` 会点屏幕，限 30 秒一次、默认关。
 - **回退**：`[perception] enabled = false` 恢复现有实现。
 
-## 12. 实现与使用
+## 13. 实现与使用
 
 ### 代码
 
@@ -130,10 +169,11 @@ track_id, 屏幕框, 名字(可空), 身份(friend / stranger / unknown), 圆圈
 |---|---|
 | `vision/detect.py` | 检测器：`.onnx` → onnxruntime（自带 letterbox、YOLOv8/11 输出 + NMS、YOLO26 端到端输出）；`.pt` / `.engine` → ultralytics |
 | `vision/track.py` | IoU 贪心追踪 |
-| `vision/perception.py` | `PerceptionWatcher`：接口同 `EnvWatcher`，多了 `strangers()`；名字标签只跑 OCR 识别（`RapidOcrEngine.read_line`） |
+| `vision/perception.py` | `PerceptionWatcher`：接口同 `EnvWatcher`，多了 `strangers()` / `unlit()`；名字标签只跑 OCR 识别（`RapidOcrEngine.read_line`） |
 | `vision/weaklabel.py` | 弱标注：整图 OCR 的好友名字框 → `name_tag`，模板认得出的圆圈 → `social_ring` |
-| `brain/body.py` | 新事件 `stranger`（陌生人来了 / 都走了），`status` 里多一项陌生人数；眼睛在 `stranger` 事件后也会自动看一眼 |
-| `cli.py` | `perception bench / detect / label`；`run` 在 `[perception] enabled` 时用 YOLO 感知层替换 env 扫描 |
+| `game/friendtree.py` | 点人物打开好友树、截图、ESC 关掉、恢复聊天面板（大脑的 `check_friend`，`[friend_check]` 默认关） |
+| `brain/body.py` | 新事件 `stranger`，`status` 里多一项陌生人数；`check_friend` 的护栏（要新鲜的 look 图、不点面板 / 按钮栏、牵手时不点、限频） |
+| `cli.py` | `perception bench / detect / label`、`friend-check`；`run` 在 `[perception] enabled` 时用 YOLO 感知层替换 env 扫描 |
 
 在这台开发机（云端 CPU，无 GPU）上验证过：yolo11n / yolo26n 导出的 ONNX 经 `OnnxYoloDetector` 解码，
 和 ultralytics 官方推理的框差几个像素（letterbox 补边方式不同）；1920×1080 输入、640 推理约 30~40 ms/帧（CPU）。
@@ -164,5 +204,5 @@ track_id, 屏幕框, 名字(可空), 身份(friend / stranger / unknown), 圆圈
    把导出的模型放到 `models/sky-yolo.onnx`（`models/`、`datasets/` 都不进 git）。
 7. **看效果**：`python -m skydango perception detect`（当前画面，标注图 `tmp/perception.png`），
    对照画面检查名字、陌生人、圆圈认得对不对。
-8. **M2 / M3**：确认没问题后在 `config.toml` 里 `[perception] enabled = true`（要 15fps 再加 `capture = "own"`），
+8. **M2 / M3**：按 §9 对比达标后，在 `config.toml` 里 `[perception] enabled = true`（要 15fps 再加 `capture = "own"`），
    先 dry-run 跑 `run --brain --duration 300`，翻 `runs/` 里的日志看 arrive / leave / stranger 事件准不准。
