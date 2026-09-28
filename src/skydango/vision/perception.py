@@ -35,7 +35,7 @@ import numpy as np
 from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
 from ..config import EnvConfig, GestureConfig, PerceptionConfig, SpinConfig
-from ..game.social import IDLE, KIND_NAMES, Request
+from ..game.social import IDLE, KIND_NAMES, Request, is_request
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
 from .gesture import ClipBuffer, eligible, person_crop
@@ -386,7 +386,7 @@ class PerceptionWatcher:
             if ring is not None:
                 ring.data["kind"] = kind
             self.circles[name] = (kind, now)
-            if kind and kind != IDLE:
+            if is_request(kind):
                 if name not in self.requests or self.requests[name].kind != kind:
                     log.info("%s 发起了互动：%s", name, kind)
                 self.requests[name] = Request(name, kind, self._ring_center(ring), now)
@@ -396,7 +396,7 @@ class PerceptionWatcher:
         stranger_req = None
         for ring in orphans:
             kind = ring.data["kind"] = self._classify(frame, ring)
-            if kind and kind != IDLE:
+            if is_request(kind):
                 stranger_req = Request(STRANGER, kind, self._ring_center(ring), now)
                 break
         if stranger_req is not None:
@@ -842,7 +842,7 @@ class PerceptionWatcher:
                 label = d.get("name") or (f"?{d['text']}" if d.get("text") else "?")
             elif t.cls == "social_ring":
                 ring = d.get("kind")
-                kind = "request" if ring and ring != IDLE else "ring"
+                kind = "request" if is_request(ring) else "ring"
                 label = KIND_NAMES.get(ring, "✦" if ring == IDLE else "?")
             else:
                 kind, label = t.cls, t.cls

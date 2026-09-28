@@ -26,8 +26,20 @@ from ..vision.icons import best_match, trim
 
 log = logging.getLogger(__name__)
 
-KIND_NAMES = {"hand": "牵手", "hug": "拥抱", "highfive": "击掌", "piggyback": "背背", "candle": "点火"}
+KIND_NAMES = {
+    "hand": "牵手", "hug": "拥抱", "highfive": "击掌", "piggyback": "背背",
+    "candle": "点火",  # 火焰：陌生人举着蜡烛走到团子旁边，要给团子点火（2026-09-28 用户说明）
+    "stranger": "陌生人", "eye": "在看留影 / 听音乐", "shared": "共享空间",
+}
 IDLE = "star"  # 没有请求时圆圈里是 ✦
+# 只是状态、不是请求的图标：没点火的陌生人平时是蜡烛 + 两只手；眼睛 = 在看留影蜡烛或听音乐；
+# 深色实心圆里的飞人 = 在其他共享空间（点了会问要不要加入，绝不能点）
+PASSIVE = {IDLE, "stranger", "eye", "shared"}
+
+
+def is_request(kind: str | None) -> bool:
+    """圆圈里的图标是不是在请求团子做什么（牵手、拥抱、点火……）。"""
+    return kind is not None and kind not in PASSIVE
 SCALES = [0.8, 0.9, 1.0, 1.1, 1.2]
 
 

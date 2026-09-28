@@ -1207,3 +1207,14 @@ def test_only_one_self_per_frame_rest_become_players():
         w.process(frame(), t, panel_visible=False)
     assert [t.box for t in w.last_tracks if t.cls == "self"] == [Rect(900, 400, 90, 220)]
     assert w.strangers(2.0) == 1  # 另一个是没挂名字的人
+
+
+def test_status_icons_are_not_requests():
+    """眼睛（在看留影 / 听音乐）、陌生人平时的蜡烛图标、共享空间的入口：只是状态，不能当请求去点。"""
+    for kind in ("eye", "stranger", "shared"):
+        det = FakeDetector()
+        det.frames = [[tag(990, 110), ring(1045), ring(1400)]]
+        w = watcher(det, FakeOcr({110: "懒洋洋大王"}), icons=FakeIcons({"next": kind}))
+        w.process(frame(), 0.0, panel_visible=False)
+        assert w.requests == {}, kind
+        assert w.circles["懒洋洋大王"][0] == kind

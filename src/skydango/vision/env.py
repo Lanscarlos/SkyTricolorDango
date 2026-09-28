@@ -117,12 +117,12 @@ class EnvWatcher:
         """名字标签正下方的圆圈：平时是 ✦，有人发起牵手 / 拥抱 / 击掌时换成对应图标。"""
         if self.icons is None:
             return
-        from ..game.social import IDLE, Request
+        from ..game.social import Request, is_request
 
         cx, cy = box.x + box.w // 2, box.y + round(self.icon_offset * box.h)
         kind, _ = self.icons.classify(region[max(0, cy - 56) : cy + 56, max(0, cx - 56) : cx + 56])
         self.circles[name] = (kind, now)
-        if kind and kind != IDLE:
+        if is_request(kind):
             if name not in self.requests or self.requests[name].kind != kind:
                 log.info("%s 发起了互动：%s", name, kind)
             self.requests[name] = Request(name, kind, (cx + offset[0], cy + offset[1]), now)
@@ -131,7 +131,7 @@ class EnvWatcher:
 
     def overlay(self, now: float) -> list[dict]:
         """可视化用：最近两次扫描里认出的名字标签和下面的圆圈（整张截图坐标）。"""
-        from ..game.social import IDLE, KIND_NAMES
+        from ..game.social import IDLE, KIND_NAMES, is_request
 
         out = []
         fresh = self.cfg.interval * 2 + 1
@@ -144,7 +144,7 @@ class EnvWatcher:
                 cx, cy = x + w // 2, y + round(self.icon_offset * h)
                 label = KIND_NAMES.get(kind, "✦" if kind == IDLE else "?")
                 out.append({"x": cx - 50, "y": cy - 50, "w": 100, "h": 100,
-                            "kind": "request" if kind and kind != IDLE else "ring", "label": label})
+                            "kind": "request" if is_request(kind) else "ring", "label": label})
         return out
 
     # 暂停计时：只有 YOLO 感知层需要（keep 只有 5 s）；这里 keep 30 s，用不着，留空实现让身体不用区分

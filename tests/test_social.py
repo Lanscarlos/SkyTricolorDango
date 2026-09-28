@@ -195,3 +195,18 @@ def test_policy_overrides_config():
     assert h.allowed(Request("路人", "hug", (0, 0), 0.0))
     text = h.describe_policy()
     assert text.startswith("好友默认接受：牵手") and "所有好友的背背：不接" in text
+
+
+def test_classifier_knows_stranger_and_status_icons():
+    """2026-09-28 录像 / 用户截图里截的：火焰（陌生人举着蜡烛走过来要点火）、陌生人平时、眼睛（在看留影 / 听音乐）、共享空间。"""
+    clf = IconClassifier(ICONS)
+    for kind in ("candle", "stranger", "eye", "shared"):
+        region = scene(kind)[400 - 56 : 400 + 56, 1400 - 56 : 1400 + 56]
+        assert clf.classify(region)[0] == kind, kind
+
+
+def test_only_real_requests_count():
+    from skydango.game.social import is_request
+
+    assert all(is_request(k) for k in ("candle", "hand", "hug", "highfive", "piggyback"))
+    assert not any(is_request(k) for k in ("star", "stranger", "eye", "shared", None))

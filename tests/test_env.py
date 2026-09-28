@@ -185,3 +185,24 @@ def test_match_names_filters_score_and_fuzzy_matches():
         OcrLine("好", 0.99, Rect(0, 0, 10, 10)),
     ]
     assert [n for n, _ in match_names(lines, ["懒洋洋大王", "番茄炒蛋盖饭"], 0.9)] == ["懒洋洋大王"]
+
+
+def test_scan_ignores_status_icons_below_friend_labels():
+    """好友在看留影蜡烛 / 听音乐时头顶是眼睛：不是请求。"""
+    import cv2
+
+    from skydango.game.social import IconClassifier, load_icons
+
+    img = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+    cx, label_top, label_h = 1400, 300, 44
+    cy = label_top + round(2.23 * label_h)
+    img[cy - 40 : cy + 40, cx - 40 : cx + 40] = cv2.imread("assets/social/eye.png")
+
+    class LabelOcr:
+        def recognize(self, region):
+            return [OcrLine("懒洋洋大王", 0.99, Rect(cx - 80, label_top, 160, label_h))]
+
+    w = EnvWatcher(LabelOcr(), EnvConfig(), lambda: ["懒洋洋大王"], log_roi=[0.0, 0.0, 0.335, 0.855],
+                   background=False, icons=IconClassifier(load_icons("assets/social")), icon_offset=2.23)
+    w.observe(img, 5.0, panel_visible=False)
+    assert w.requests == {}
