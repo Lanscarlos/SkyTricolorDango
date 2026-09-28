@@ -576,3 +576,12 @@ def test_page_retries_control_options():
     # 控制对象要等身体建好才挂上：拿到 404 过 3 秒再试，不能像时间线那样就此放弃
     script = _control_script()
     assert "404" in script and "3000" in script
+
+
+def test_control_refreshes_options_and_shows_busy_action():
+    # 动作刚做完有冷却，列表暂时为空：要定时刷新，不能等下一次操作；环视要几十秒，忙的时候显示在做什么
+    from skydango.vision.viewer import PAGE
+
+    script = _control_script()
+    assert "setInterval" in script and "5000" in script
+    assert 'id="ctl-busy"' in PAGE and "正在做" in script

@@ -316,7 +316,7 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 #control input[type=text],#control input[type=number],#control select{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px;font:inherit}
 #control button:disabled,#control select:disabled,#control input:disabled{opacity:.45;cursor:not-allowed}
 #ctl-warn{color:#facc15;font-size:12px}#ctl-count,#ctl-pick-tip{color:var(--muted);font-size:12px}
-#ctl-pick.on{border-color:#f472b6;color:#f472b6}
+#ctl-pick.on{border-color:#f472b6;color:#f472b6}#ctl-busy{margin-left:auto;color:#60a5fa;font-size:12px}
 #ctl-log{list-style:none;margin:6px 0 0;padding:6px 0 0;border-top:1px solid var(--line);font:12px/1.6 ui-monospace,Consolas,monospace}
 #ctl-log li{word-break:break-all}#ctl-log .ok{color:#3ddc84}#ctl-log .bad{color:#f87171}#ctl-log .t{color:var(--muted)}
 #brain{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}#brain[hidden]{display:none}
@@ -338,7 +338,7 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 </style></head><body><main>
 <div id="stage"><div class="bar"><button id="pause">暂停</button><button id="boxes">隐藏框</button><button id="save">存图</button>
 <span id="status">连接中…</span></div><canvas id="c"></canvas>
-<section id="control" hidden><div class="bhead"><b>手动控制</b><span id="ctl-warn" hidden>手动操作会真的在游戏里执行（大脑是 dry-run 也一样）</span></div>
+<section id="control" hidden><div class="bhead"><b>手动控制</b><span id="ctl-warn" hidden>手动操作会真的在游戏里执行（大脑是 dry-run 也一样）</span><span id="ctl-busy"></span></div>
 <div class="row" id="ctl-say"><b>说话</b><input type="text" id="ctl-say-text" placeholder="让团子说一句…"><span id="ctl-count"></span><button id="ctl-say-go">说</button></div>
 <div class="row" id="ctl-emote"><b>动作</b><select id="ctl-emote-name"></select><label><input type="checkbox" id="ctl-force">牵着手也做（会松手）</label><button id="ctl-emote-go">做</button></div>
 <div class="row" id="ctl-camera"><b>视角</b><button data-cam="left">左转</button><button data-cam="right">右转</button><button data-cam="up">抬头</button><button data-cam="down">低头</button><button data-cam="zoom_in">拉近</button><button data-cam="zoom_out">拉远</button>
@@ -402,8 +402,10 @@ function drawMark(s){if(!K.mark||!s)return;const k=c.width/s.width,x=K.mark[0]*k
   ctx.strokeStyle="#f472b6";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-r,y);ctx.lineTo(x+r,y);ctx.moveTo(x,y-r);ctx.lineTo(x,y+r);ctx.stroke()}
 function ctlApply(){const o=K.opts;if(!o)return;
   $("ctl-warn").hidden=!o.dry_run;
-  const sel=$("ctl-emote-name"),keep=sel.value;while(sel.firstChild)sel.firstChild.remove();
-  for(const n of o.emotes){const op=el("option","",n);op.value=n;sel.append(op)}if(o.emotes.includes(keep))sel.value=keep;
+  const sel=$("ctl-emote-name"),keep=sel.value;
+  if([...sel.options].map(x=>x.value).join("|")!==o.emotes.join("|")){  // 列表变了才重建：定时刷新时别把打开的下拉框关掉
+    while(sel.firstChild)sel.firstChild.remove();
+    for(const n of o.emotes){const op=el("option","",n);op.value=n;sel.append(op)}if(o.emotes.includes(keep))sel.value=keep}
   $("ctl-steps").max=o.max_steps;ctlCount();ctlLock()}
 function ctlLock(){const o=K.opts||{emotes:[],camera:[]},b=K.busy;
   $("ctl-say-text").disabled=b;$("ctl-say-go").disabled=b||!$("ctl-say-text").value.trim();
@@ -422,10 +424,13 @@ async function ctlOptions(retry){
     if(!r.ok)throw new Error(r.status);K.opts=await r.json();$("control").hidden=false;ctlApply();
   }catch(e){if(retry)setTimeout(()=>ctlOptions(true),3000)}}
 async function ctlSend(action,args){if(K.busy)return;K.busy=true;ctlLock();let res;
+  $("ctl-busy").textContent=`正在做：${controlLine(action,args,{text:"…"}).split(" → ")[0]}…（身体排队执行，环视要几十秒）`;
   try{const r=await fetch("/control",{method:"POST",headers:{"Content-Type":"application/json","X-Skydango":"1"},body:JSON.stringify({action,args})});
     res=await r.json().catch(()=>({ok:false,text:`HTTP ${r.status}`}));if(!r.ok&&res.ok===undefined)res={ok:false,text:`HTTP ${r.status}`};
   }catch(e){res={ok:false,text:"连不上（程序停了？）"}}
-  ctlLog(action,args,res);K.busy=false;ctlLock();await ctlOptions(false);return res}
+  ctlLog(action,args,res);$("ctl-busy").textContent="";K.busy=false;ctlLock();await ctlOptions(false);return res}
+// 动作刚做完有冷却（能做的列表暂时变空）：定时刷新，不用等下一次操作
+setInterval(()=>{if(K.opts&&!K.busy)ctlOptions(false)},5000);
 $("ctl-say-text").oninput=ctlCount;
 $("ctl-say-text").onkeydown=e=>{if(e.key==="Enter"&&!e.isComposing)$("ctl-say-go").click()};
 $("ctl-say-go").onclick=async()=>{const t=$("ctl-say-text").value.trim();if(!t)return;const res=await ctlSend("say",{text:t});if(res&&res.ok){$("ctl-say-text").value="";ctlCount()}};
