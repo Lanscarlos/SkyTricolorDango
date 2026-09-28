@@ -31,9 +31,14 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "steps 1~4，默认 1。转之前身体会关掉聊天记录面板，转完再打开。"
     ),
     "camera_reset": "把镜头转回原位（按之前转过的反着转回去）。",
+    "check_friend": (
+        "确认画面里某个人是不是你的好友：身体点一下这个人，右边会打开好友树面板，截图给你看，看完自动关掉。"
+        "x、y 是这个人身上的一点，按 15 秒内 look(image=true) 那张 1280×720 的图给。"
+        "只在名字标签认不出、又确实需要知道时用（点过火的陌生人和好友长得一样）；点屏幕会暂时关掉聊天记录面板，别常用。"
+    ),
 }
 TOOL_NAMES = list(DESCRIPTIONS)
-ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset"}  # 算“做了事”的工具（心跳退档用）
+ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend"}  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
 
 _MISSING = object()
@@ -151,4 +156,7 @@ class ToolBox:
             return lambda: b.camera_move(action, steps)
         if name == "camera_reset":
             return b.camera_reset
+        if name == "check_friend":
+            x, y = _int(a, "x"), _int(a, "y")
+            return lambda: b.check_friend(x, y)
         raise ToolError(f"没有这个工具：{name}")

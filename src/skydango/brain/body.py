@@ -22,6 +22,8 @@ from ..chat.responder import clean_reply, format_incoming
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES
 from .events import EventQueue
+from ..imageio import imwrite
+from ..vision.bubbles import roi_rect
 from .images import crop_view, difference, fit, image_block, is_black, label_note, thumb
 
 log = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ class Body:
         social=None,  # game.social.SocialHandler：按规则秒接请求
         emotes=None,  # game.emotes.EmotePlayer
         camera=None,  # brain.camera.Camera
+        friend_checker=None,  # game.friendtree.FriendChecker：点人物看好友树
         fallback=None,  # chat.responder.Responder：大脑离线时的备用回复
         store=None,  # chat.memory.MemoryStore：live 时记聊天记录
         notes=None,  # chat.memory.NotesKeeper
@@ -70,6 +73,8 @@ class Body:
         self.social = social
         self.emotes = emotes
         self.camera = camera
+        self.friend_checker = friend_checker
+        self._last_friend_check = float("-inf")
         self.fallback = fallback
         self.store = store
         self.notes = notes
@@ -461,6 +466,67 @@ class Body:
             raise ToolError("陌生人只能接点火，牵手 / 拥抱 / 击掌 / 背背都不接陌生人的")
         self.social.set_policy(who, kind, accept)
         return "现在的规则：" + self.social.describe_policy()
+
+    def check_friend(self, x: int, y: int) -> list[dict] | str:
+        """点一下人物（坐标按上次 look(image=true) 那张图）打开好友树面板，截图给大脑看，再关掉。"""
+        fc = self.cfg.friend_check
+        if self.friend_checker is None or not fc.enabled:
+            raise ToolError("这次没开好友树确认（[friend_check] enabled = false：面板还没在真机上核对过）")
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在点不了")
+        if self.holding:
+            raise ToolError(f"正牵着 {self.holding} 的手，先别点人")
+        now = self.clock()
+        if self.look_frame is None or now - self.last_look > fc.max_look_age:
+            raise ToolError(f"先 look(image=true) 看一眼现在的画面（{fc.max_look_age:.0f} 秒内），坐标按那张图给；人会走动，旧图对不上")
+        if now - self._last_friend_check < fc.min_interval:
+            raise ToolError(f"刚确认过，{fc.min_interval - (now - self._last_friend_check):.0f} 秒后再点")
+        fh, fw = self.look_frame.shape[:2]
+        scale = fw / self.cfg.brain.image_size[0]
+        sx, sy = round(x * scale), round(y * scale)
+        if not (0 <= sx < fw and 0 <= sy < fh):
+            raise ToolError("坐标在画面外（按 look(image=true) 那张 1280×720 的图给）")
+        area = roi_rect(self.cfg.env.roi, fw, fh)
+        if not (area.x <= sx < area.x2 and area.y <= sy < area.y2):
+            raise ToolError("那里是底部的按钮栏，不是人")
+        panel = roi_rect(self.cfg.vision.log_roi, fw, fh)
+        if self.reader.panel_closed_since is None and panel.x <= sx < panel.x2 and panel.y <= sy < panel.y2:
+            raise ToolError("那里被聊天记录面板挡着，点不到人")
+        if self.cfg.reply.dry_run:
+            return f"dry-run：没真的点（会点原图上的 ({sx}, {sy})，打开好友树看完再关掉）"
+        self._last_friend_check = now
+        try:
+            result = self.friend_checker.check(sx, sy)
+        except Exception as exc:
+            raise ToolError(f"没点成：{_first_line(exc)}") from None
+        finally:
+            self._ref_thumb = None  # 自己点开的面板，不算画面大变
+        self.last_frame = result.after
+        if self.run_dir is not None:
+            folder = self.run_dir.path / "friend-check"
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%H%M%S", time.localtime(self.wall()))
+            for tag, img in (("before", result.before), ("opened", result.opened), ("after", result.after)):
+                imwrite(folder / f"{stamp}-{tag}.jpg", img)
+        brain = self.cfg.brain
+        if not self.friend_checker.looks_open(result.changed):
+            note = (f"点了原图上的 ({sx}, {sy})，右边没什么变化：可能没点中人（人走开了？），或者面板没出来。"
+                    "图是点完之后的样子；要再试先重新 look(image=true)。")
+            return [image_block(fit(result.opened, tuple(brain.image_size)), brain.jpeg_quality), {"type": "text", "text": note}]
+        left = round(result.opened.shape[1] * self.friend_checker.cfg.panel_left)
+        side = fit(result.opened[:, left:], (brain.look_at_max, brain.look_at_max))
+        note = (f"点了原图上的 ({sx}, {sy})，右边打开了面板（第一张是整个画面，第二张是右边放大）。"
+                "自己看图判断这个人是不是你的好友；看不出来就老实说不确定，别猜。")
+        if result.closed:
+            note += " 面板已经关上了。"
+        else:
+            note += " 注意：面板没关上，画面上还开着（试过 " + "、".join(self.friend_checker.cfg.close) + "）。"
+            self.events.put("error", "好友树面板没关上，画面上还开着")
+        return [
+            image_block(fit(result.opened, tuple(brain.image_size)), brain.jpeg_quality),
+            image_block(side, brain.jpeg_quality),
+            {"type": "text", "text": note},
+        ]
 
     def camera_move(self, action: str, steps: int = 1) -> str:
         if self.camera is None:

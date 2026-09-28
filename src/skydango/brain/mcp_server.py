@@ -83,6 +83,10 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     def camera_reset():
         return call("camera_reset")
 
+    @srv.tool(name="check_friend", description=DESCRIPTIONS["check_friend"])
+    def check_friend(x: int, y: int):
+        return call("check_friend", x=x, y=y)
+
     return srv
 
 

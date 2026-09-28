@@ -97,6 +97,14 @@ move_min_interval = 3.0        # 两次 move 调用最小间隔（秒）
 owner_name = ""                # 卡洛的游戏昵称，精确匹配；留空 = 主人命令模式关闭
 owner_window = 30.0            # 收到卡洛一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
 
+[friend_check]
+# 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉
+# 面板样子、关面板的办法都没在真机验证：先用 python -m skydango friend-check X Y 试，确认后再打开
+enabled = false
+close = ["esc", "back"]         # 关面板的办法，依次试；"tap" 表示点 close_tap（归一化坐标）
+close_tap = []
+min_interval = 30.0             # 两次确认至少隔几秒
+
 [sender]
 # 打开聊天输入框：光遇（MuMu「PC端操作方案」）里按实体键盘 Enter 就会打开。
 # 28 是 Linux 的 KEY_ENTER，通过 sendevent 模拟实体键盘；adb 的 input keyevent 游戏不认

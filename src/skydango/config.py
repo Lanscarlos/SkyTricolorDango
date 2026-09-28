@@ -264,6 +264,24 @@ class PerceptionConfig:
 
 
 @dataclass
+class FriendCheckConfig:
+    """大脑的 check_friend 工具：点一下人物打开右侧的好友树面板，截图给大脑看是不是好友，再关掉。
+
+    面板样子、关面板的办法都**没在真机验证**：先用 `python -m skydango friend-check X Y` 手动试，确认后再打开 enabled。
+    """
+
+    enabled: bool = False
+    open_delay: float = 1.2  # 点完等多久再截图（面板弹出动画）
+    close_delay: float = 0.8  # 每试一种关法后等多久再看
+    close: list[str] = field(default_factory=lambda: ["esc", "back"])  # 依次试：esc 实体键盘 ESC、back 安卓返回键、tap 点 close_tap
+    close_tap: list[float] = field(default_factory=list)  # [x, y] 归一化；close 里有 "tap" 时点这里
+    panel_left: float = 0.55  # 面板在画面右边：比较这条线右边的变化
+    changed: float = 0.06  # 右侧缩略图平均差异超过这个算面板打开了（0~1）
+    min_interval: float = 30.0  # 两次确认至少隔几秒（点屏幕会关聊天面板、打断别的）
+    max_look_age: float = 15.0  # 坐标按上次 look(image=true) 的图给；那张图太旧（人走了）就不点
+
+
+@dataclass
 class BrainConfig:
     """统管大脑（brain/）：常驻的 Claude Code（订阅）收事件、调身体的工具；眼睛（Haiku）把画面写成文字。`run --brain` 打开。
 
@@ -314,6 +332,7 @@ class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     social: SocialConfig = field(default_factory=SocialConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
+    friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
 
 

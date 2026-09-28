@@ -501,6 +501,35 @@ def _perception_label(cfg: Config, args) -> None:
           "修正错框 —— 没补全的图会教模型“这里没有人”，训出来会漏检")
 
 
+def _friend_checker(cfg: Config, dev, reader=None):
+    from .game.friendtree import FriendChecker
+
+    if reader is None:
+        reader, _ = _build_reader(cfg)
+    log_mode = cfg.vision.mode == "log"
+    return FriendChecker(
+        dev, cfg.friend_check, panel_visible=reader.panel_visible if log_mode else None,
+        panel_key=cfg.vision.log_open_key if log_mode else 0,
+    )
+
+
+def cmd_friend_check(cfg: Config, args) -> None:
+    """手动试一次：点 (x, y) 打开好友树面板、截图、按配置的办法关掉。用来核对面板样子和关面板的办法。"""
+    dev = _device(cfg)
+    checker = _friend_checker(cfg, dev)
+    result = checker.check(args.x, args.y)
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    for tag, img in (("before", result.before), ("opened", result.opened), ("after", result.after)):
+        imwrite(out / f"{tag}.png", img)
+    opened = checker.looks_open(result.changed)
+    print(f"点了 ({args.x}, {args.y})；右侧变化 {result.changed:.3f}（阈值 {cfg.friend_check.changed}）→ "
+          f"{'像是打开了面板' if opened else '没什么变化，可能没点中人'}")
+    if opened:
+        print("面板" + (f"用 {result.closed_by} 关上了" if result.closed else f"没关上（试了 {'、'.join(cfg.friend_check.close)}），请手动关掉"))
+    print(f"截图：{out}/before.png、opened.png、after.png —— 看看 opened.png 里好友和陌生人的面板有什么区别")
+
+
 def cmd_record(cfg: Config, args) -> None:
     """连续截图存成 jpg，用来观察游戏里的界面变化（比如别人发起牵手时出现什么提示）。"""
     import cv2
@@ -693,12 +722,13 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     else:
         panel_visible, panel_key = (lambda: False), 0
     camera = Camera(dev, cfg.brain.camera_step, panel_visible, panel_key)
+    friend_checker = _friend_checker(cfg, dev, reader) if cfg.friend_check.enabled else None
     events = EventQueue()
     # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
     fallback = Responder(make_llm(dataclasses.replace(cfg.llm, timeout=10.0, max_retries=0)), cfg.reply)
     body = Body(
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
-        env=env, social=social, emotes=emotes, camera=camera, fallback=fallback, store=live_store, notes=notes, run=run,
+        env=env, social=social, emotes=emotes, camera=camera, friend_checker=friend_checker, fallback=fallback, store=live_store, notes=notes, run=run,
     )
     work = run.path / "brain"
     eyes = Eyes(
@@ -841,6 +871,12 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("look", help="截一张图让眼睛（Claude Haiku）描述一遍（调眼睛的提示词，看它认得准不准）")
     p.add_argument("--prompt", help="换一个问题：文本文件路径")
     p.set_defaults(func=lambda cfg, args: cmd_look(cfg, args))
+
+    p = sub.add_parser("friend-check", help="点一下人物打开好友树面板、截图、再关掉（核对面板和关法；坐标按原图，如 1920×1080）")
+    p.add_argument("x", type=int)
+    p.add_argument("y", type=int)
+    p.add_argument("-o", "--output", default="tmp/friend-check")
+    p.set_defaults(func=cmd_friend_check)
 
     p = sub.add_parser("record", help="连续截图存到 tmp/record/，用来观察界面变化")
     p.add_argument("--seconds", type=float, default=60.0)

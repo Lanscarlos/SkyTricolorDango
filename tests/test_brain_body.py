@@ -547,3 +547,80 @@ def test_strangers_come_and_go(clock):
     kinds = [(e.kind, e.text) for e in events.drain()]
     assert kinds[0] == ("arrive", "懒洋洋大王 来到身边") and ("stranger", "陌生人都走开了") in kinds
     assert any(k == "leave" and "5 秒" in t for k, t in kinds)
+
+
+class FakeChecker:
+    def __init__(self, opened=True, closed=True):
+        from skydango.config import FriendCheckConfig
+
+        self.cfg = FriendCheckConfig()
+        self.calls = []
+        self.opened, self.closed = opened, closed
+
+    def check(self, x, y):
+        from skydango.game.friendtree import CheckResult
+
+        self.calls.append((x, y))
+        img = np.zeros((1080, 1920, 3), np.uint8)
+        return CheckResult(img, img, img, 0.3 if self.opened else 0.0, self.closed, "esc" if self.closed else "")
+
+    def looks_open(self, changed):
+        return changed >= 0.06
+
+
+def friend_body(clock, live=True, **kw):
+    checker = FakeChecker(**kw)
+    b, device, reader, events = body(clock, live=live, frames=[scene(size=(1920, 1080))], friend_checker=checker)
+    b.cfg.friend_check.enabled = True
+    return b, checker, reader, events
+
+
+def test_check_friend_needs_enabling_and_a_fresh_look(clock):
+    b, checker, _, _ = friend_body(clock)
+    b.cfg.friend_check.enabled = False
+    with pytest.raises(ToolError, match="没开"):
+        b.check_friend(800, 300)
+    b.cfg.friend_check.enabled = True
+    with pytest.raises(ToolError, match="look"):
+        b.check_friend(800, 300)
+    b.look()
+    clock.advance(20)  # 图太旧了：人可能走了
+    with pytest.raises(ToolError, match="look"):
+        b.check_friend(800, 300)
+    assert checker.calls == []
+
+
+def test_check_friend_scales_coordinates_and_returns_images(clock):
+    b, checker, _, events = friend_body(clock)
+    b.look()
+    out = b.check_friend(800, 300)
+    assert checker.calls == [(1200, 450)]  # 1280×720 的图 → 1920×1080 原图
+    assert [block["type"] for block in out] == ["image", "image", "text"]
+    assert "已经关上" in out[-1]["text"]
+    with pytest.raises(ToolError, match="刚确认过"):
+        b.check_friend(800, 300)
+
+
+def test_check_friend_refuses_panel_area_bottom_bar_and_holding(clock):
+    b, checker, reader, _ = friend_body(clock)
+    b.look()
+    reader.panel_closed_since = None  # 聊天记录面板开着
+    with pytest.raises(ToolError, match="聊天记录面板"):
+        b.check_friend(100, 300)
+    with pytest.raises(ToolError, match="按钮栏"):
+        b.check_friend(800, 700)
+    b.holding = "懒洋洋大王"
+    with pytest.raises(ToolError, match="牵着"):
+        b.check_friend(800, 300)
+    assert checker.calls == []
+
+
+def test_check_friend_dry_run_and_unclosed_panel(clock):
+    b, checker, _, _ = friend_body(clock, live=False)
+    b.look()
+    assert "dry-run" in b.check_friend(800, 300) and checker.calls == []
+    b, checker, _, events = friend_body(clock, closed=False)
+    b.look()
+    out = b.check_friend(800, 300)
+    assert "没关上" in out[-1]["text"]
+    assert any(e.kind == "error" and "好友树" in e.text for e in events.drain())

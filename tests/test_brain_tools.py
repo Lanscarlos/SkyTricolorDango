@@ -76,9 +76,10 @@ class FakeEyes:
 
 def test_tool_names_and_actions():
     assert TOOL_NAMES == [
-        "look", "look_at", "look_around", "status", "chat_log", "say", "emote", "set_request_policy", "camera", "camera_reset"
+        "look", "look_at", "look_around", "status", "chat_log", "say", "emote", "set_request_policy", "camera", "camera_reset",
+        "check_friend",
     ]
-    assert ACTIONS == {"say", "emote", "set_request_policy", "camera", "camera_reset"}
+    assert ACTIONS == {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend"}
 
 
 def test_look_uses_eyes_unless_image_requested():
