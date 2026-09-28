@@ -1,5 +1,6 @@
 import json
 import threading
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 from conftest import FakeDevice, scene
 
 from skydango.brain.events import EventQueue
+from skydango.brain.trace import BrainTrace
 from skydango.chat.reader import Message
 from skydango.config import Config, EnvConfig, PerceptionConfig, ViewerConfig
 from skydango.game.social import IDLE, Request
@@ -184,6 +186,34 @@ def test_http_server_serves_page_and_snapshot():
             assert r.status == 200 and json.loads(r.read())["boxes"][0]["kind"] == "panel"
         with urllib.request.urlopen(url + "snapshot?after=1", timeout=5) as r:  # 没新帧：等满 2 秒回 204
             assert r.status == 204
+    finally:
+        v.stop()
+
+
+def test_brain_endpoint_404_without_trace():
+    v = viewer()
+    url = v.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(url + "brain?after=0", timeout=5)
+        assert err.value.code == 404
+    finally:
+        v.stop()
+
+
+def test_brain_endpoint_serves_trace():
+    v = viewer()
+    v.brain = BrainTrace()
+    v.brain.begin("events", "你好")
+    url = v.start()
+    try:
+        with urllib.request.urlopen(url + "brain?after=0", timeout=5) as r:
+            body = json.loads(r.read())
+        assert r.status == 200 and body["turns"][0]["prompt"] == "你好" and "state" in body
+        with urllib.request.urlopen(url + f"brain?after={body['version']}", timeout=5) as r:  # 没变化：等满 2 秒照样回 200
+            assert r.status == 200 and json.loads(r.read())["turns"] == []
+        with urllib.request.urlopen(url + "brain?after=abc", timeout=5) as r:
+            assert r.status == 200 and len(json.loads(r.read())["turns"]) == 1
     finally:
         v.stop()
 

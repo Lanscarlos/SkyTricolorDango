@@ -5,6 +5,7 @@
 - 画面、框、状态放在同一份快照里（/snapshot 长轮询），框不会和画面错位
 - 身体每圈调 update() 只是记下最新一帧和框（很便宜）；有浏览器在看时才压 JPEG，同一帧只压一次
 - 只监听 127.0.0.1：画面里有好友昵称和聊天，别开到局域网
+- `run --brain --view` 时 brain 是 brain.trace.BrainTrace：/brain 长轮询给画面下方的大脑时间线，和画面分开
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ class Viewer:
         self._cache: tuple[int, bytes] | None = None  # (seq, 压好的 JSON)
         self._messages: deque[tuple[float, dict]] = deque()
         self._server: ThreadingHTTPServer | None = None
+        self.brain = None  # brain.trace.BrainTrace：有它网页才显示大脑时间线
         self.frames = 0  # 更新了多少帧（测试 / 统计用）
         self.encodes = 0  # 压了多少次 JPEG（测试用）
 
@@ -147,17 +149,22 @@ class Viewer:
                 if url.path == "/":
                     self._send(200, "text/html; charset=utf-8", PAGE.encode())
                 elif url.path == "/snapshot":
-                    try:
-                        after = int(parse_qs(url.query).get("after", ["0"])[0] or 0)
-                    except ValueError:
-                        after = 0
-                    body = viewer.snapshot(after)
+                    body = viewer.snapshot(self._after(url))
                     if body is None:
                         self._send(204, "application/json", b"")
                     else:
                         self._send(200, "application/json; charset=utf-8", body)
+                elif url.path == "/brain" and viewer.brain is not None:
+                    body = json.dumps(viewer.brain.since(self._after(url), WAIT), ensure_ascii=False).encode()
+                    self._send(200, "application/json; charset=utf-8", body)
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
+
+            def _after(self, url) -> int:
+                try:
+                    return int(parse_qs(url.query).get("after", ["0"])[0] or 0)
+                except ValueError:
+                    return 0
 
             def _send(self, code: int, ctype: str, body: bytes) -> None:
                 try:
