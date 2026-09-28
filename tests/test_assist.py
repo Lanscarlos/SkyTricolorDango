@@ -18,11 +18,14 @@ from skydango.vision.assist import (
     build_message,
     draw_candidates,
     draw_review,
+    merge_proposals,
     parse_review,
+    people_candidates,
     pick_frames,
     review_report,
 )
 from skydango.vision.bubbles import Rect
+from skydango.vision.detect import Detection
 
 
 def test_pick_frames_drops_similar_and_forces_gap():
@@ -175,3 +178,15 @@ def test_reviewer_counts_usage(tmp_path):
 def test_assist_command_uses_model_and_no_tools():
     cmd = assist_command(["claude"], AssistConfig(model="sonnet"))
     assert cmd[cmd.index("--model") + 1] == "sonnet" and cmd[cmd.index("--tools") + 1] == ""
+
+
+def test_merge_proposals_dedups_across_models():
+    a = [Detection("player", Rect(0, 0, 100, 200), 0.3)]
+    b = [Detection("player", Rect(5, 5, 100, 200), 0.6), Detection("player", Rect(500, 0, 50, 100), 0.2)]
+    assert [d.score for d in merge_proposals([a, b])] == [0.6, 0.2]
+
+
+def test_people_candidates_filters_classes():
+    dets = [Detection("player", Rect(0, 0, 1, 1), 0.9), Detection("name_tag", Rect(0, 0, 1, 1), 0.9),
+            Detection("self", Rect(1, 1, 1, 1), 0.9)]
+    assert people_candidates(dets) == [Rect(0, 0, 1, 1), Rect(1, 1, 1, 1)]

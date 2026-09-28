@@ -21,6 +21,8 @@ from ..brain.claude import ClaudeError
 from ..brain.images import image_block
 from ..config import AssistConfig
 from .bubbles import Rect
+from .detect import Detection
+from .track import iou
 
 log = logging.getLogger(__name__)
 
@@ -334,3 +336,38 @@ class Reviewer:
         if limit is not None:
             raise limit
         return out
+
+
+def merge_proposals(groups: list[list[Detection]], iou_thr: float = 0.6) -> list[Detection]:
+    """几个模型的候选合在一起，按分数从高到低贪心去重（同一个人只留分最高的框）。"""
+    keep: list[Detection] = []
+    for d in sorted((d for g in groups for d in g), key=lambda d: d.score, reverse=True):
+        if all(iou(d.box, k.box) <= iou_thr for k in keep):
+            keep.append(d)
+    return keep
+
+
+def people_candidates(dets: list[Detection]) -> list[Rect]:
+    """自己训的模型（--model）：人物类的框当候选。"""
+    return [d.box for d in dets if d.cls in PEOPLE]
+
+
+class CocoPeople:
+    """还没有自己的模型时：官方 COCO 模型的 person 类当候选，几个模型合并（试验里 yolo11n + yolo11x 互补）。"""
+
+    def __init__(self, paths: list[str], conf: float, imgsz: int) -> None:
+        from ultralytics import YOLO
+
+        self.models = [YOLO(p) for p in paths]
+        self.conf = conf
+        self.imgsz = imgsz
+
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        groups = []
+        for m in self.models:
+            r = m.predict(frame, imgsz=self.imgsz, conf=self.conf, classes=[0], verbose=False)[0]
+            groups.append([
+                Detection("player", Rect(int(x1), int(y1), int(x2 - x1), int(y2 - y1)), float(s))
+                for (x1, y1, x2, y2), s in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.conf.cpu().numpy())
+            ])
+        return merge_proposals(groups)
