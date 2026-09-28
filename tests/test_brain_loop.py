@@ -55,12 +55,33 @@ class FakeRun:
         self.entries.append(entry)
 
 
-def make(clock, session, store=None, run=None, nearby=None, **cfg):
+class FakeTrace:
+    def __init__(self, broken=False):
+        self.calls = []
+        self.state = None
+        self.broken = broken
+
+    def _record(self, *call):
+        if self.broken:
+            raise RuntimeError("记录坏了")
+        self.calls.append(call)
+
+    def begin(self, reason, prompt):
+        self._record("begin", reason, prompt)
+
+    def finish(self, result, seconds):
+        self._record("finish", result, seconds)
+
+    def fail(self, error, seconds):
+        self._record("fail", error, seconds)
+
+
+def make(clock, session, store=None, run=None, nearby=None, trace=None, **cfg):
     events = EventQueue(clock=clock)
     tb = FakeToolBox()
     near = [] if nearby is None else nearby
     brain = Brain(BrainConfig(**cfg), ChatConfig(), session, tb, events, lambda now: list(near), eyes=FakeEyes(),
-                  clock=clock, wall=lambda: 0.0, run=run, store=store)
+                  clock=clock, wall=lambda: 0.0, run=run, store=store, trace=trace)
     return brain, events, tb, near
 
 
@@ -151,6 +172,51 @@ def test_farewell_writes_summary_to_inbox(clock, tmp_path):
     assert session.sent == [SUMMARY_REQUEST] and "在雨林和懒懒 玩了一会儿" in store.inbox()
     brain.failing_since = 0.0
     assert brain.farewell() is False  # 正在失败：不再发
+
+
+# ---- 交给可视化网页的记录（trace） ----
+def test_wake_reports_to_trace(clock):
+    session, trace = FakeSession(ok("好")), FakeTrace()
+    brain, _, _, _ = make(clock, session, trace=trace)
+    brain.wake(clock(), "heartbeat")
+    assert trace.calls[0] == ("begin", "heartbeat", session.sent[0])
+    kind, result, seconds = trace.calls[1]
+    assert kind == "finish" and result["result"] == "好" and seconds >= 0
+    assert len(trace.calls) == 2
+
+
+def test_failed_wake_reports_error(clock):
+    trace = FakeTrace()
+    brain, _, _, _ = make(clock, FakeSession(ClaudeError("超时")), trace=trace)
+    brain.wake(clock(), "events")
+    assert trace.calls[0][:2] == ("begin", "events")
+    assert trace.calls[-1][0] == "fail" and "超时" in trace.calls[-1][1]
+
+
+def test_farewell_reports_to_trace(clock, tmp_path):
+    trace = FakeTrace()
+    brain, _, _, _ = make(clock, FakeSession(ok("玩了一会儿")), store=MemoryStore(tmp_path), trace=trace)
+    assert brain.farewell() is True
+    assert trace.calls[0] == ("begin", "farewell", SUMMARY_REQUEST)
+    assert trace.calls[-1][0] == "finish"
+
+
+def test_trace_state(clock):
+    trace = FakeTrace()
+    brain, _, _, _ = make(clock, FakeSession(ClaudeError("挂了")), trace=trace)
+    assert trace.state == brain.trace_state
+    cfg = brain.cfg
+    assert brain.trace_state() == {"model": cfg.model, "effort": cfg.effort, "failures": 0, "retry_in": None, "offline": False}
+    brain.wake(clock(), "heartbeat")
+    state = brain.trace_state()
+    assert state["failures"] == 1 and state["retry_in"] == 10.0 and state["offline"] is False
+
+
+def test_trace_errors_do_not_break_wake(clock):
+    run, session = FakeRun(), FakeSession()
+    brain, _, _, _ = make(clock, session, run=run, trace=FakeTrace(broken=True))
+    brain.wake(clock(), "heartbeat")
+    assert len(session.sent) == 1 and len(run.entries) == 1 and brain.failures == 0
 
 
 def test_log_brain_message(caplog):

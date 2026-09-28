@@ -45,6 +45,7 @@ class Brain:
         wall: Callable[[], float] = time.time,
         run=None,  # runlog.RunDir
         store=None,  # chat.memory.MemoryStore：live 时退出前把经过记进 inbox.md
+        trace=None,  # brain.trace.BrainTrace：可视化网页的大脑时间线（run --brain --view）
     ) -> None:
         self.cfg = cfg
         self.chat = chat
@@ -57,6 +58,9 @@ class Brain:
         self.wall = wall
         self.run_dir = run
         self.store = store
+        self.trace = trace
+        if trace is not None:
+            trace.state = self.trace_state
         self.last_wake = float("-inf")  # 刚上线马上醒一次
         self._idle = 0  # 连着几次醒来什么都没做（心跳逐档退后）
         self.failures = 0
@@ -116,11 +120,15 @@ class Brain:
         events = self.events.drain()
         text = self.message(now, events)
         self.toolbox.begin_turn()
+        self._trace("begin", reason, text)
+        start = self.clock()
         try:
             result = self.session.send(text)
         except ClaudeError as exc:
+            self._trace("fail", str(exc), self.clock() - start)
             self._failed(self.clock(), exc)
             return
+        self._trace("finish", result, self.clock() - start)
         self._ok()
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1
         self._log(result)
@@ -130,17 +138,41 @@ class Brain:
         if self.store is None or self.failing_since is not None:
             return False
         self.toolbox.begin_turn()
+        self._trace("begin", "farewell", SUMMARY_REQUEST)
+        start = self.clock()
         try:
             result = self.session.send(SUMMARY_REQUEST)
         except ClaudeError as exc:
+            self._trace("fail", str(exc), self.clock() - start)
             log.warning("退出前写经过失败：%s", exc)
             return False
+        self._trace("finish", result, self.clock() - start)
         text = " ".join((result.get("result") or "").split())
         if not text:
             return False
         self.store.add_memos([f"{format_date(self.wall())} 的经过：{text}"])
         log.info("这次的经过记进了 inbox.md（%d 字）", len(text))
         return True
+
+    # ---- 可视化网页的大脑时间线 ----
+    def trace_state(self) -> dict:
+        """栏头的总体状态。"""
+        now = self.clock()
+        return {
+            "model": self.cfg.model,
+            "effort": self.cfg.effort,
+            "failures": self.failures,
+            "retry_in": self.backoff_until - now if self.backoff_until > now else None,
+            "offline": self.offline(now),
+        }
+
+    def _trace(self, name: str, *args) -> None:
+        if self.trace is None:
+            return
+        try:
+            getattr(self.trace, name)(*args)
+        except Exception:
+            log.debug("大脑记录出错（%s）", name, exc_info=True)
 
     # ---- 失败 / 日志 ----
     def _failed(self, now: float, exc: Exception | None = None) -> None:
