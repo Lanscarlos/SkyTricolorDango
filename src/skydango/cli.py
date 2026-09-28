@@ -839,7 +839,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
     agent = Agent(
         cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store,
-        viewer=viewer,
+        viewer=viewer, camera=_camera(cfg, dev, reader),
     )
     try:
         agent.run(duration)
@@ -852,6 +852,36 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
                 emotes.restore()
             except Exception:
                 log.exception("恢复轮盘失败，请用 emotes wheel 检查")
+
+
+def _camera(cfg: Config, dev, reader):
+    """视角控制：转之前关聊天记录面板（log 模式），转完再打开。普通模式（#spin）和大脑模式共用。"""
+    from .brain.camera import Camera
+
+    if cfg.vision.mode == "log":
+        panel_visible, panel_key = (lambda: reader.panel_visible(dev.screenshot())), cfg.vision.log_open_key
+    else:
+        panel_visible, panel_key = (lambda: False), 0
+    return Camera(dev, cfg.brain.camera_step, panel_visible, panel_key)
+
+
+def cmd_camera(cfg: Config, args) -> None:
+    """camera spin：在电脑前直接转一圈、存每帧截图，标定一圈几秒、视野角、画面多模糊（感知层二期 §0）。"""
+    from .runlog import write_spin
+
+    dev = _device(cfg)
+    reader, _ = _build_reader(cfg)
+    camera = _camera(cfg, dev, reader)
+    spin = cfg.spin
+    turns = max(1, min(args.turns, spin.max_turns))
+    seconds = args.seconds if args.seconds is not None else spin.seconds_per_turn
+    out = Path(args.output) if args.output else Path("tmp/spin") / time.strftime("%H%M%S")
+    print(f"转 {turns} 圈（一圈按住 {seconds:.2f} 秒，{spin.fps:.0f} fps）…")
+    result = camera.spin(dev.screenshot, turns, seconds, spin.fps)
+    s = write_spin(out, result, turns)
+    print(f"转了 {s['seconds']} 秒 {s['frames']} 张（实际 {s['fps']} fps），面板重开：{'是' if s['panel_reopened'] else '否'}，"
+          f"转前转后差异 {s['drift']}{'，中途画面黑了' if s['blackout'] else ''}")
+    print(f"截图和 summary.json 在 {out}")
 
 
 def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
@@ -874,7 +904,6 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     import threading
 
     from .brain.body import Body
-    from .brain.camera import Camera
     from .brain.claude import one_shot
     from .brain.events import EventQueue
     from .brain.eyes import Eyes, eyes_command
@@ -909,11 +938,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel_visible=reader.panel_visible
         )
     emotes = _build_emotes(cfg, dev, reader, no_emotes)
-    if cfg.vision.mode == "log":
-        panel_visible, panel_key = (lambda: reader.panel_visible(dev.screenshot())), cfg.vision.log_open_key
-    else:
-        panel_visible, panel_key = (lambda: False), 0
-    camera = Camera(dev, cfg.brain.camera_step, panel_visible, panel_key)
+    camera = _camera(cfg, dev, reader)
     friend_checker = _friend_checker(cfg, dev, reader) if cfg.friend_check.enabled else None
     events = EventQueue()
     # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
@@ -1069,6 +1094,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("y", type=int)
     p.add_argument("-o", "--output", default="tmp/friend-check")
     p.set_defaults(func=cmd_friend_check)
+
+    p = sub.add_parser("camera", help="视角：spin 转一圈、边转边截图（标定一圈几秒、视野角，存到 tmp/spin/<时间>）")
+    csub = p.add_subparsers(dest="action", required=True)
+    q = csub.add_parser("spin", help="按住方向键转一圈，按 spin.fps 截图，存转前 / 转完 / 每帧和 summary.json")
+    q.add_argument("--turns", type=int, default=1, help="转几圈（最多 spin.max_turns）")
+    q.add_argument("--seconds", type=float, help="一圈按住几秒（临时覆盖 spin.seconds_per_turn，标定用）")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/spin/<时间>）")
+    p.set_defaults(func=cmd_camera)
 
     p = sub.add_parser("record", help="连续截图存到 tmp/record/，用来观察界面变化")
     p.add_argument("--seconds", type=float, default=60.0)
