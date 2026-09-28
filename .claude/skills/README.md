@@ -28,7 +28,7 @@
 所以**全量去掉了 `superpowers:` 前缀**（`superpowers:X` → `X`），其余内容逐字保留。
 
 上游的 SessionStart hook 没有引入——它的作用是每次会话开头把 `using-superpowers` 的正文注入上下文。
-这里改成在 `AGENTS.md` 里写明「先挑 skill 再动手」，效果一样而且不需要仓库级 hook。
+这里改成在 `CLAUDE.md` 里写明「先挑 skill 再动手」，效果一样而且不需要仓库级 hook。
 
 `brainstorming` / `writing-plans` 默认把设计和方案写到 `docs/superpowers/specs/`、`docs/superpowers/plans/`，
 和本仓库已有的目录一致；`brainstorming` 的可视化伴侣会写 `.superpowers/`，已在 `.gitignore` 里。

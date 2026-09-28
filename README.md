@@ -94,7 +94,7 @@ pytest
 
 测试用合成画面覆盖了聊天记录解析、前后帧对齐、气泡检测、去重、限速、发送流程；装了 OCR 时还会跑一次真实 RapidOCR 的端到端识别。
 
-- [AGENTS.md](AGENTS.md)：代码结构、常用命令、工作约定（给接手的 Agent / 开发者）
+- [CLAUDE.md](CLAUDE.md)：代码结构、常用命令、工作约定（给接手的 Agent / 开发者）
 - [docs/game-ops.md](docs/game-ops.md)：光遇 × MuMu 的实测操作手册——按键、界面坐标、聊天记录格式、动作轮盘编辑、踩过的坑
 
 快捷动作轮盘（数字键 1~8 触发）：
