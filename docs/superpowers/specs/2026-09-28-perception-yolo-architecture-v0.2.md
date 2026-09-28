@@ -197,16 +197,23 @@ MuMu 截图（capture = "body" 用身体主循环的帧；"own" 感知线程自�
 
 ### GPU 机器上的步骤
 
-1. **装环境**（50 系 = Blackwell，要 CUDA 12.8+ 的构建）
+1. **装环境**（50 系 = Blackwell，要 CUDA 12.8+ 的构建）。本机装在仓库的 `.pydeps/`、缓存在 `.cache/`，不占 C 盘（见 CLAUDE.md「环境」），
+   都在仓库目录下执行：
    ```bash
-   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-   pip install -e ".[yolo]"
+   python -m skydango.cachedirs      # 写 .pth：.pydeps 进 sys.path，缓存指到 .cache/（先写，pip 缓存才落在仓库里）
+   python -m pip install --no-deps --target .pydeps torch torchvision --index-url https://download.pytorch.org/whl/cu128
+   python -m pip install --no-deps --target .pydeps ultralytics ultralytics-thop ultralytics-platform matplotlib polars polars-runtime-32 psutil sympy mpmath networkx filelock fsspec setuptools contourpy cycler fonttools kiwisolver pyparsing python-dateutil cloudpickle nvidia-ml-py
+   python -m pip check
    python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
    ```
+   （第二条 install 装完会提示 `.pydeps\bin` 已存在、没放 `yolo.exe`：单独 `--target` 装一次 ultralytics 到临时目录，把 `bin\*.exe` 拷进 `.pydeps\bin`。）
+   2026-09-28 在本机（RTX 5070 Ti Laptop）装好：torch 2.11.0+cu128、ultralytics 8.4.164；coco8 训 1 轮跑通，训练期间 C 盘用户目录没有新文件。
    用 `.onnx` 模型推理时还要 GPU 版 onnxruntime：先 `pip uninstall onnxruntime`，再 `pip install onnxruntime-gpu`
    （两个同时装会冲突；rapidocr 用 GPU 版也能跑）。不想折腾就直接用 `.pt` / `.engine`，走 ultralytics。
 2. **M0 测速**（不用等训练）：开着游戏跑
-   `python -m skydango perception bench --model yolo11n.pt`，看 YOLO 检测、截图的耗时，同时看游戏有没有变卡。
+   `python -m skydango perception bench --model models/yolo11n.pt`，看 YOLO 检测、截图的耗时，同时看游戏有没有变卡。
+   2026-09-28 实测（实时截图 1920×1080、imgsz 960、ultralytics:cuda，200 帧）：截图平均 20 ms、YOLO 检测 22 ms、整个感知 28 ms，
+   每帧合计约 48 ms，15 fps（66.7 ms）够用。游戏卡不卡还没确认。
 3. **M1 采数据**：`python -m skydango record --seconds 120 --fps 2`，多录几段（见 §8 要覆盖的场景）。
 4. **弱标注**：`python -m skydango perception label tmp/record/<时间> -o datasets/sky --preview`
    （好友名单外的名字也想标就加 `--all-text`，之后人工删错的）。
@@ -214,8 +221,8 @@ MuMu 截图（capture = "body" 用身体主循环的帧；"own" 感知线程自�
    **每一张**都补上 `player`、`player_unlit`（没点火的黑影）和 `self`、修正错框。没补全的图会教模型"这里没有人"。
 6. **训练 + 导出**：
    ```bash
-   yolo detect train data=datasets/sky/data.yaml model=yolo11n.pt imgsz=960 epochs=100
-   yolo export model=runs/detect/train/weights/best.pt format=onnx imgsz=960   # 或 format=engine（TensorRT）
+   .pydeps\bin\yolo.exe detect train data=datasets/sky/data.yaml model=models/yolo11n.pt imgsz=960 epochs=100
+   .pydeps\bin\yolo.exe export model=runs/detect/train/weights/best.pt format=onnx imgsz=960   # 或 format=engine（TensorRT）
    ```
    把导出的模型放到 `models/sky-yolo.onnx`（`models/`、`datasets/` 都不进 git）。
 7. **看效果**：`python -m skydango perception detect`（当前画面，标注图 `tmp/perception.png`），
