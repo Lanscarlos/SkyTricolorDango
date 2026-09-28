@@ -8,6 +8,7 @@
       config.json     本次实际生效的配置（含命令行覆盖）
       brain.jsonl     大脑每次调用：停在哪、用量、估算花费、调了哪些工具、它想了什么（--brain）
       hard/*.jpg      YOLO 感知层可能认错的画面（难例，[perception] hardcases），hard.jsonl 记原因和检测框
+      unknown_names/  读得清楚但不在好友名单里的名字（names.jsonl + 每个名字一张裁剪图，perception unknown-names 汇总）
       spin/<时间>/    #spin 转一圈的截图（转前、转完、每帧带按住后的秒数）和 summary.json
 """
 

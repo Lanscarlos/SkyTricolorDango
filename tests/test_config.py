@@ -56,3 +56,39 @@ def test_spin_section(tmp_path):
     s = cfg.spin
     assert s.hfov == 75.0
     assert (s.seconds_per_turn, s.fps, s.max_turns, s.min_interval, s.merge_deg, s.self_motion) == (2.0, 15.0, 2, 10.0, 30.0, 0.03)
+
+
+def test_perception_far_crop_defaults(tmp_path):
+    cfg = load_config(None)
+    assert cfg.perception.far_height == 0.08 and cfg.perception.far_crops == 3
+    p = tmp_path / "c.toml"
+    p.write_text("[perception]\nfar_crops = 0\n", encoding="utf-8")
+    assert load_config(p).perception.far_crops == 0
+    assert load_config(ROOT / "config.example.toml").perception.far_crops == 3
+
+
+def test_places_section(tmp_path):
+    cfg = load_config(None)
+    pl = cfg.places
+    assert (pl.enabled, pl.dir, pl.model, pl.size, pl.norm, pl.device) == (False, "places", "models/places.onnx", 224, "imagenet", "cpu")
+    assert (pl.place_min, pl.place_margin, pl.place_interval) == (0.8, 0.05, 30.0)
+    p = tmp_path / "c.toml"
+    p.write_text("[places]\nmodel = \"thumb\"\n", encoding="utf-8")
+    assert load_config(p).places.model == "thumb"
+    assert load_config(ROOT / "config.example.toml").places.enabled is False
+
+
+def test_places_folder_is_gitignored():
+    assert "places/" in (ROOT / ".gitignore").read_text(encoding="utf-8").split()
+
+
+def test_gesture_section(tmp_path):
+    g = load_config(None).gesture
+    assert (g.enabled, g.model, g.labels) == (False, "models/gesture.onnx", ["none", "wave", "bow"])
+    assert g.names == {"wave": "挥手", "bow": "鞠躬"}
+    assert (g.frames, g.fps, g.size, g.interval, g.min_prob, g.cooldown) == (16, 8.0, 112, 2.0, 0.9, 30.0)
+    p = tmp_path / "c.toml"
+    p.write_text("[gesture]\nlabels = [\"none\", \"wave\"]\nnames = {wave = \"招手\"}\n", encoding="utf-8")
+    g2 = load_config(p).gesture
+    assert g2.labels == ["none", "wave"] and g2.names == {"wave": "招手"}
+    assert load_config(ROOT / "config.example.toml").gesture.enabled is False

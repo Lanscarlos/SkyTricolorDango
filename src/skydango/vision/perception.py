@@ -34,10 +34,11 @@ import numpy as np
 
 from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
-from ..config import EnvConfig, PerceptionConfig, SpinConfig
+from ..config import EnvConfig, GestureConfig, PerceptionConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, Request
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
+from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import Track, Tracker, iou
@@ -47,6 +48,10 @@ log = logging.getLogger(__name__)
 UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
+PLACE_GAP = 3.0  # 画面大变后认地图：离上次至少隔这么久（转镜头时画面一直在变）
+FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹最多隔这么久裁一次（还要比 track_buffer 短）；挂上名字标签后这么久内也不裁
+FAR_DUP_IOU = 0.3  # 二次检测找到的框和原图里已有的同类框重叠这么多就算同一个
+UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
 
 
@@ -67,6 +72,16 @@ def approaching(hist: list[tuple[float, float, float]], width: int, grow: float)
     c0 = sum(abs(x - width / 2) for _, _, x in hist[:k]) / k
     c1 = sum(abs(x - width / 2) for _, _, x in hist[-k:]) / k
     return c1 <= c0 or c1 < 0.15 * width
+
+
+def far_region(p: Rect, width: int, height: int) -> Rect | None:
+    """远处小人头顶要再检测一次的区域：宽 3 倍框宽、高 2.5 倍框高（上方 2 个身高到身体上半截），水平居中，夹到画面内。"""
+    x1, y1 = round(p.x + p.w / 2 - 1.5 * p.w), round(p.y - 2 * p.h)
+    x2, y2 = x1 + 3 * p.w, y1 + round(2.5 * p.h)
+    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(width, x2), min(height, y2)
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return None
+    return Rect(x1, y1, x2 - x1, y2 - y1)
 
 
 def people_boxes(dets: list[Detection]) -> list[Detection]:
@@ -98,6 +113,11 @@ class PerceptionWatcher:
         clock: Callable[[], float] = time.monotonic,
         scene_change: float = 0.25,  # 集体消失时，画面差异超过这个才算开了全屏界面（同 brain.scene_change）
         hardcases=None,  # vision.hardcases.HardCaseCollector：可能认错的画面存下来
+        unknown=None,  # vision.unknownnames.UnknownNames：读得清楚但不在好友名单里的名字（三期 §5）
+        places=None,  # vision.places.PlaceRecognizer：认地图（三期 §2）
+        place_interval: float = 30.0,  # 每隔这么久认一次地图（画面大变后也认一次）
+        gestures=None,  # vision.gesture.GestureClassifier：别人对团子做的动作（三期 §3，研究性质）
+        gesture_cfg: GestureConfig | None = None,
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -111,18 +131,29 @@ class PerceptionWatcher:
         self.clock = clock
         self.scene_change = scene_change
         self.hardcases = hardcases
+        self.unknown = unknown
+        self.places = places
+        self.place_interval = place_interval
+        self._place_run = float("-inf")
+        self._place_thumb: np.ndarray | None = None
+        self._place_misses = 0  # 连着几次认不出
+        self.gestures = gestures
+        self.gesture_cfg = gesture_cfg or GestureConfig()
+        self._gestures: list[tuple[str, str]] = []  # (好友名, 动作)，身体取走
+        self._gesture_at: dict[tuple[str, str], float] = {}
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
         self.requests: dict = {}  # 名字 → game.social.Request
         self.labels: dict[str, tuple[int, int, int, int, float]] = {}
         self.circles: dict[str, tuple[str | None, float]] = {}
         self.last_seen: dict[str, float] = {}
-        self.place = ""  # YOLO 不认地名；留着和 EnvWatcher 接口一致
+        self.place = ""  # 认地图认出的地方（三期 §2，没挂 places 时一直空）；和 EnvWatcher 同名
         self.place_at = float("-inf")
         self.last_dets: list[Detection] = []  # 最近一帧的检测（调试画框用）
         self.last_tracks: list[Track] = []
         self.last_low: list[Detection] = []  # 最近一帧置信度在 conf 以下的框（不进追踪，给难例收集看）
         self.timings: deque[tuple[float, float]] = deque(maxlen=300)  # (检测 ms, 整帧 ms)
+        self.far_runs = 0  # 远处二次检测跑了几次（测速 / compare 用）
         self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
@@ -192,6 +223,7 @@ class PerceptionWatcher:
         self._prev_count, self._prev_thumb = 0, None  # 暂停前那一帧不能拿来判"集体消失"（镜头可能已经转走了）
         for track in list(self.tracker.tracks.values()):  # 暂停前后的框高不能连起来判"走过来"（镜头可能动过）
             track.data.pop("hist", None)
+            track.data.pop("clip", None)  # 动作片段也不能跨暂停拼起来
         if d <= 0:
             return
         for name, t in list(self.last_seen.items()):
@@ -312,6 +344,11 @@ class PerceptionWatcher:
         tags = [t for t in tracks if t.cls == "name_tag"]
         rings = [t for t in tracks if t.cls == "social_ring"]
         bubbles = [t for t in tracks if t.cls == "typing"]
+        extra = self._far_tags(frame, players, tags, now, width, height, panel_visible)
+        if extra:
+            tags += [t for t in extra if t.cls == "name_tag"]
+            rings += [t for t in extra if t.cls == "social_ring"]
+            tracks = tracks + extra
 
         friends = self.names()
         for tag in tags:
@@ -369,6 +406,7 @@ class PerceptionWatcher:
                 continue
             tag = self._tag_over(player, tags)
             if tag is not None:
+                player.data["tag_at"] = now
                 if tag.data.get("name"):
                     player.data["name"] = tag.data["name"]
                 player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
@@ -382,12 +420,16 @@ class PerceptionWatcher:
         self._watch_typing(bubbles, players, selfs, now, width, height)
         if not self.paused:
             self._watch_approach(players, now, width)
+            if self.gestures is not None:
+                self._watch_gestures(frame, players, now, width, height)
         with self._lock:  # 身体线程会同时读（strangers()）
             self._strangers.append((now, strangers, unlit))
             while self._strangers and now - self._strangers[0][0] > self.cfg.keep:
                 self._strangers.popleft()
 
         self.last_dets, self.last_tracks, self.last_low = dets, tracks, low
+        if self.places is not None and not self.paused:
+            self._watch_place(frame, dets, now)
         if self.hardcases is not None and not self.paused:
             try:
                 self.hardcases.check(frame, now, tracks, low, set(seen), panel_visible)
@@ -396,6 +438,78 @@ class PerceptionWatcher:
         self.timings.append(((detected - started) * 1000, (time.perf_counter() - started) * 1000))
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))
+
+    def _far_tags(self, frame: np.ndarray, players: list[Track], tags: list[Track], now: float,
+                  width: int, height: int, panel_visible: bool) -> list[Track]:
+        """三期 §1：远处的小人没挂上名字标签 → 在它头顶裁一块再检测一次（只要 name_tag / social_ring），返回新接上的轨迹。
+
+        裁剪直接交给检测器，它自己 letterbox 放大到 imgsz，等于"放大再检测"。"""
+        if self.cfg.far_crops <= 0:
+            return []
+        limit = self.cfg.far_height * height
+        # 远处的标签只在裁剪那一帧出现：下次裁剪要赶在标签轨迹被追踪器删掉（track_buffer）之前，
+        # 不然每次都是新轨迹，名字投票、"同一条标签轨迹只记一次"都不起作用
+        retry = min(FAR_RETRY, 0.8 * self.cfg.track_buffer)
+        todo = [
+            p for p in players
+            if p.cls == "player" and p.box.h < limit and self._tag_over(p, tags) is None
+            and now - p.data.get("tag_at", float("-inf")) >= retry
+            and now - p.data.get("far_at", float("-inf")) >= retry
+        ]
+        todo.sort(key=lambda p: p.data.get("far_at", float("-inf")))
+        found: list[Detection] = []
+        for p in todo[: self.cfg.far_crops]:
+            p.data["far_at"] = now
+            area = far_region(p.box, width, height)
+            if area is None:
+                continue
+            self.far_runs += 1
+            for d in self._detect(area.crop(frame)):
+                if d.cls not in ("name_tag", "social_ring") or d.score < self.cfg.conf:
+                    continue
+                box = Rect(d.box.x + area.x, d.box.y + area.y, d.box.w, d.box.h)
+                found.append(Detection(d.cls, box, d.score))
+        found = self._filter(found, width, height, panel_visible, drop_self=False)
+        seen = {  # 这一帧原图里已经有的框：二次检测又找到一遍的不要（不能多出一条轨迹、多读一次 OCR）
+            cls: [t.box for t in self.tracker.tracks.values() if t.cls == cls and t.last == now]
+            for cls in ("name_tag", "social_ring")
+        }
+        fresh: list[Detection] = []
+        for d in found:
+            same = seen[d.cls]
+            if any(iou(d.box, b) >= FAR_DUP_IOU for b in same) or any(
+                f.cls == d.cls and iou(d.box, f.box) >= FAR_DUP_IOU for f in fresh
+            ):
+                continue
+            fresh.append(d)
+        return self.tracker.update(fresh, now) if fresh else []
+
+    def _watch_place(self, frame: np.ndarray, dets: list[Detection], now: float) -> None:
+        """三期 §2：每 place_interval 秒、或画面比上次认地图时大变（隔 ≥ PLACE_GAP 秒）认一次。
+        偶尔一次认不出先留着原来的；画面大变后认不出、或连着两次认不出就清掉。"""
+        small = thumb(frame)
+        since = now - self._place_run
+        changed = self._place_thumb is not None and difference(self._place_thumb, small) > self.scene_change
+        if since < self.place_interval and not (changed and since >= PLACE_GAP):
+            return
+        self._place_run, self._place_thumb = now, small
+        try:
+            match = self.places.recognize(frame, [d.box for d in dets])
+        except Exception:
+            log.exception("认地图出错")
+            return
+        if match.name is None:
+            log.debug("认不出在哪（最像 %s %.2f，第二像 %.2f）", match.best, match.score, match.second)
+            self._place_misses += 1
+            # 宁可不说也不说错：画面大变后认不出（可能到了图库里没有的地方）、或连着两次认不出，就不再说原来的地名
+            if self.place and (changed or self._place_misses >= 2):
+                log.info("认不出在哪了，不再说在%s", self.place)
+                self.place, self.place_at = "", float("-inf")
+            return
+        self._place_misses = 0
+        if match.name != self.place:
+            log.info("看起来到了：%s（相似度 %.2f）", match.name, match.score)
+        self.place, self.place_at = match.name, now
 
     def _detect(self, frame: np.ndarray) -> list[Detection]:
         with self._infer:
@@ -440,7 +554,8 @@ class PerceptionWatcher:
         if tries >= self.cfg.ocr_votes and votes:
             return
         tag.data["tries"], tag.data["ocr_at"] = tries + 1, now
-        text = self._ocr(tag.box.pad(4, frame.shape[1], frame.shape[0]).crop(frame))
+        crop = tag.box.pad(4, frame.shape[1], frame.shape[0]).crop(frame)
+        text, score = self._ocr(crop)
         if len(normalize(text)) < 2:
             return
         tag.data["text"] = text
@@ -448,18 +563,26 @@ class PerceptionWatcher:
         if name:
             votes[name] += 1
             tag.data["name"] = votes.most_common(1)[0][0]
+        elif self.unknown is not None and score >= UNKNOWN_MIN_SCORE and not tag.data.get("unknown_logged"):
+            tag.data["unknown_logged"] = True  # 同一条标签轨迹只记一次
+            try:
+                self.unknown.add(text, crop)
+            except Exception:
+                log.exception("记没认出的名字出错")
 
     @staticmethod
     def _match_name(text: str, friends: list[str]) -> str | None:
         return next((n for n in friends if similar(text, n, 0.75)), None)
 
-    def _ocr(self, crop: np.ndarray) -> str:
+    def _ocr(self, crop: np.ndarray) -> tuple[str, float]:
+        """名字标签的字和置信度（整块识别时取各段里最低的）。"""
         with self._infer:
             read_line = getattr(self.ocr, "read_line", None)
             if read_line is not None:
                 line = read_line(crop)
-                return line.text if line is not None else ""
-            return join_lines(self.ocr.recognize(crop))
+                return (line.text, line.score) if line is not None else ("", 0.0)
+            lines = self.ocr.recognize(crop)
+            return join_lines(lines), min((l.score for l in lines), default=0.0)
 
     def _ref_height(self, frame_h: int) -> float:
         """算远近的参照：团子的框高（转圈认出的 → 最近一帧的 self 框 → 按 self_height 估）。"""
@@ -496,7 +619,7 @@ class PerceptionWatcher:
                     if ti not in under or abs(tag.box.y2 - d.box.y) < abs(tag.box.y2 - under[ti][1].box.y):
                         under[ti] = (bi, d)
             for ti, tag in enumerate(tags[fi]):
-                text = self._ocr(tag.box.pad(4, width, height).crop(img))
+                text, _ = self._ocr(tag.box.pad(4, width, height).crop(img))
                 name = self._match_name(text, friends) if len(normalize(text)) >= 2 else None
                 bi, body = under.get(ti, (None, None))
                 sightings.append(Sighting(
@@ -600,6 +723,41 @@ class PerceptionWatcher:
                 with self._lock:
                     self._approaches.append(who)
 
+    def _watch_gestures(self, frame: np.ndarray, players: list[Track], now: float, width: int, height: int) -> None:
+        """三期 §3：认出名字、近 / 中、在画面中间的好友，攒够一段（frames 张）后每 interval 秒判一次动作。"""
+        cfg = self.gesture_cfg
+        ref = self._ref_height(height)
+        for p in players:
+            name = p.data.get("name")
+            if p.cls != "player" or not eligible(name, p.box, width, ref, self.cfg.near, self.cfg.far):
+                continue
+            buf: ClipBuffer = p.data.setdefault("clip", ClipBuffer(cfg.frames, cfg.fps))
+            buf.push(now, person_crop(frame, p.box, cfg.size))
+            if not buf.ready() or now - p.data.get("gesture_at", float("-inf")) < cfg.interval:
+                continue
+            p.data["gesture_at"] = now
+            try:
+                with self._infer:
+                    label, prob = self.gestures.classify(buf.clip())
+            except Exception:
+                log.exception("认动作出错")
+                continue
+            if label == "none" or prob < cfg.min_prob:
+                continue
+            key = (name, label)
+            if now - self._gesture_at.get(key, float("-inf")) < cfg.cooldown:
+                continue
+            self._gesture_at[key] = now
+            log.info("%s 对团子做了动作：%s（%.2f）", name, label, prob)
+            with self._lock:
+                self._gestures.append(key)
+
+    def pop_gestures(self) -> list[tuple[str, str]]:
+        """取走"谁对团子做了什么动作"，身体变成 gesture 事件。"""
+        with self._lock:
+            out, self._gestures = self._gestures, []
+        return out
+
     def pop_approaches(self) -> list[str]:
         """取走"朝团子走过来"的人（好友名 / 陌生人），身体变成 approach 事件。"""
         with self._lock:
@@ -691,6 +849,8 @@ class PerceptionWatcher:
 
     def describe(self, now: float) -> str:
         parts = []
+        if self.place and self._frozen(now) - self.place_at <= self.env_cfg.place_keep:
+            parts.append(f"- 看起来在：{self.place}（按画面认的，可能不准）")
         people = self.nearby(now)
         if people:
             parts.append(f"- 你身边现在有：{'、'.join(people)}（画面上能看到他们头顶的名字）")

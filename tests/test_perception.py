@@ -820,3 +820,339 @@ def test_self_box_is_padded_and_self_roi_still_applies():
     for t in (0.0, 1.0, 2.0):
         w.process(frame(), t, panel_visible=False)
     assert w.strangers(2.0) == 0
+
+
+# ---- 三期 §5：没认出的名字 ----
+class RecordingUnknown:
+    def __init__(self):
+        self.added = []
+
+    def add(self, text, crop):
+        self.added.append((text, crop.shape))
+
+
+def test_clear_but_unknown_name_is_recorded_once_per_track():
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    ocr = FakeOcr({110: "星星小铺"})
+    unknown = RecordingUnknown()
+    w = PerceptionWatcher(
+        det, ocr, PerceptionConfig(ocr_retry=1.0, ocr_votes=3), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, unknown=unknown,
+    )
+    for i in range(8):  # 同一条轨迹（间隔 < track_buffer），隔 ocr_retry 重读
+        w.process(frame(), i * 0.5, panel_visible=False)
+    assert ocr.calls >= 3 and w.nearby(3.5) == []
+    assert [a[0] for a in unknown.added] == ["星星小铺"]
+
+
+class LowScoreOcr(FakeOcr):
+    def read_line(self, img):
+        line = super().read_line(img)
+        return OcrLine(line.text, 0.8, line.box) if line else None
+
+
+def test_low_confidence_unknown_text_is_not_recorded():
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    unknown = RecordingUnknown()
+    w = PerceptionWatcher(
+        det, LowScoreOcr({110: "星星小铺"}), PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, unknown=unknown,
+    )
+    w.process(frame(), 0.0, panel_visible=False)
+    assert unknown.added == []
+
+
+def test_friend_names_are_not_recorded_as_unknown():
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    unknown = RecordingUnknown()
+    w = PerceptionWatcher(
+        det, FakeOcr({110: "懒洋洋大王"}), PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, unknown=unknown,
+    )
+    w.process(frame(), 0.0, panel_visible=False)
+    assert unknown.added == [] and w.nearby(0.0) == ["懒洋洋大王"]
+
+
+# ---- 三期 §1：远处小目标二次检测 ----
+from skydango.vision.perception import far_region  # noqa: E402
+
+
+class CropDetector:
+    """整张截图（1080×1920）返回 full；裁剪图返回 crop（裁剪图坐标），记下每次裁剪的尺寸。"""
+
+    def __init__(self, full, crop=()):
+        self.full = list(full)
+        self.crop = list(crop)
+        self.crops = []
+
+    def detect(self, img):
+        if img.shape[:2] == (1080, 1920):
+            return list(self.full)
+        self.crops.append(img.shape[:2])
+        return list(self.crop)
+
+
+def small(x, y=500, w=24, h=60, cls="player"):
+    return Detection(cls, Rect(x, y, w, h), 0.9)
+
+
+def far_watcher(det, ocr=None, **cfg):
+    return PerceptionWatcher(
+        det, ocr or FakeOcr({}), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False,
+    )
+
+
+def test_far_region_is_above_the_head_and_clamped():
+    assert far_region(Rect(1000, 500, 24, 60), 1920, 1080) == Rect(976, 380, 72, 150)
+    assert far_region(Rect(0, 10, 20, 60), 1920, 1080) == Rect(0, 0, 40, 40)  # 左上越界夹回
+    assert far_region(Rect(5, 0, 2, 4), 1920, 1080) is None  # 太小
+
+
+def test_far_player_gets_a_second_look_above_its_head():
+    det = CropDetector([small(1000)], [Detection("name_tag", Rect(10, 20, 50, 14), 0.9)])
+    w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert det.crops == [(150, 72)] and w.far_runs == 1
+    assert w.nearby(0.0) == ["懒洋洋大王"]
+    assert w.labels["懒洋洋大王"][:4] == (986, 400, 50, 14)  # 映射回整图坐标
+    assert any(t.cls == "player" and t.data.get("name") == "懒洋洋大王" for t in w.last_tracks)
+
+
+def test_far_crop_is_rate_limited_per_track_and_per_frame():
+    det = CropDetector([small(200 + 300 * i) for i in range(5)])
+    w = far_watcher(det, far_crops=3)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.far_runs == 3
+    w.process(frame(), 0.5, panel_visible=False)
+    assert w.far_runs == 5  # 剩下两个轮到了；前三个还没到 1 s
+    w.process(frame(), 1.0, panel_visible=False)
+    assert w.far_runs == 8
+
+
+def test_far_crop_skips_tagged_big_and_unlit_players():
+    det = CropDetector([
+        small(1000), Detection("name_tag", Rect(990, 440, 50, 14), 0.9),  # 已经挂上了标签
+        player(1400),  # 离得近（框大）
+        small(300, cls="player_unlit"),  # 黑影不用认名字
+    ])
+    w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.far_runs == 0 and det.crops == []
+
+
+def test_far_crop_drops_tags_already_seen_in_the_full_frame():
+    seen = Detection("name_tag", Rect(986, 385, 50, 14), 0.9)  # 原图也框到了，只是位置没挂上人
+    det = CropDetector([small(1000), seen], [Detection("name_tag", Rect(10, 5, 50, 14), 0.9)])
+    ocr = FakeOcr({50: "懒洋洋大王"})
+    w = far_watcher(det, ocr)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.far_runs == 1
+    assert sum(t.cls == "name_tag" for t in w.last_tracks) == 1 and ocr.calls == 1
+
+
+def test_far_crops_zero_turns_it_off():
+    det = CropDetector([small(1000)], [Detection("name_tag", Rect(10, 20, 50, 14), 0.9)])
+    w = far_watcher(det, FakeOcr({50: "懒洋洋大王"}), far_crops=0)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert det.crops == [] and w.nearby(0.0) == []
+
+
+# ---- 三期 §2：认地图 ----
+from skydango.vision.places import PlaceMatch  # noqa: E402
+
+
+class FakePlaces:
+    def __init__(self, answers):
+        self.answers = list(answers)  # 依次返回的地名（None = 认不出）
+        self.calls = []
+
+    def recognize(self, img, boxes):
+        self.calls.append(list(boxes))
+        name = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        return PlaceMatch(name, 0.9 if name else 0.5, name or "云野", 0.5)
+
+
+def place_watcher(det, places, **cfg):
+    return PerceptionWatcher(
+        det, FakeOcr({}), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, places=places, place_interval=30.0,
+    )
+
+
+def white():
+    return np.full((1080, 1920, 3), 255, np.uint8)
+
+
+def test_place_is_recognized_on_interval_and_after_scene_change():
+    places = FakePlaces(["云野"])
+    w = place_watcher(FakeDetector(), places)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert len(places.calls) == 1 and w.place == "云野" and w.place_at == 0.0
+    assert "看起来在：云野" in w.describe(0.0)
+    w.process(frame(), 10.0, panel_visible=False)  # 画面没变、没到间隔
+    assert len(places.calls) == 1
+    w.process(white(), 12.0, panel_visible=False)  # 画面大变
+    assert len(places.calls) == 2
+    w.process(frame(), 13.0, panel_visible=False)  # 又大变，但离上次不到 3 s
+    assert len(places.calls) == 2
+    w.process(frame(), 16.0, panel_visible=False)  # 和上次认地图时比还是大变，隔够了
+    assert len(places.calls) == 3
+    w.process(frame(), 40.0, panel_visible=False)
+    assert len(places.calls) == 3
+    w.process(frame(), 46.0, panel_visible=False)  # 到 place_interval
+    assert len(places.calls) == 4
+
+
+def test_place_is_not_checked_while_paused():
+    places = FakePlaces(["云野"])
+    w = place_watcher(FakeDetector(), places)
+    w.hold("camera")
+    w.process(frame(), 0.0, panel_visible=False)
+    assert places.calls == [] and w.place == ""
+
+
+def test_unrecognized_place_keeps_the_old_one_until_place_keep():
+    places = FakePlaces(["云野", None])
+    w = place_watcher(FakeDetector(), places)
+    w.process(frame(), 0.0, panel_visible=False)
+    w.process(frame(), 30.0, panel_visible=False)
+    assert len(places.calls) == 2 and w.place == "云野" and w.place_at == 0.0
+    assert "云野" in w.describe(30.0) and "云野" not in w.describe(601.0)
+
+
+def test_place_recognizer_gets_this_frames_boxes_to_mask():
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110)]]
+    places = FakePlaces(["云野"])
+    w = place_watcher(det, places)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert places.calls == [[Rect(1000, 400, 90, 220), Rect(990, 330, 110, 44)]]
+
+
+def test_place_recognizer_error_does_not_break_the_frame():
+    class Broken:
+        def recognize(self, img, boxes):
+            raise RuntimeError("模型坏了")
+
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    w = PerceptionWatcher(det, FakeOcr({110: "懒洋洋大王"}), PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+                          log_roi=[0.0, 0.0, 0.335, 0.855], background=False, places=Broken())
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.nearby(0.0) == ["懒洋洋大王"] and w.place == ""
+
+
+# ---- 三期 §3：别人对团子做的动作 ----
+from skydango.config import GestureConfig  # noqa: E402
+
+
+class FakeGesture:
+    def __init__(self, answer=("wave", 0.95)):
+        self.answer = answer
+        self.calls = 0
+
+    def classify(self, clip):
+        self.calls += 1
+        assert len(clip) == 16 and clip[0].shape == (112, 112, 3)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def gesture_watcher(det, gestures, ocr=None):
+    return PerceptionWatcher(
+        det, ocr or FakeOcr({110: "懒洋洋大王"}), PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, gestures=gestures, gesture_cfg=GestureConfig(),
+    )
+
+
+def feed(w, until, start=0.0, step=0.125):
+    out = []
+    t = start
+    while t <= until + 1e-9:
+        w.process(frame(), t, panel_visible=False)
+        out += w.pop_gestures()
+        t = round(t + step, 3)
+    return out
+
+
+def test_friend_waving_in_front_is_reported_once_per_cooldown():
+    det = FakeDetector()
+    det.frames = [[player(900), tag(890, 110)]]  # 正前方、近
+    g = FakeGesture()
+    w = gesture_watcher(det, g)
+    assert feed(w, 1.75) == [] and g.calls == 0  # 还没攒够 16 张
+    assert feed(w, 29.0, start=1.875) == [("懒洋洋大王", "wave")]
+    assert g.calls > 1  # 每 2 s 还在判，只是冷却中不报
+    assert feed(w, 32.5, start=29.125) == [("懒洋洋大王", "wave")]
+
+
+def test_gesture_skips_strangers_far_people_and_side_people():
+    det = FakeDetector()
+    det.frames = [[
+        player(900),  # 没有名字标签：不知道是谁
+        player(1700), tag(1690, 110),  # 名字认得，但偏到右边
+        player(600, h=60), tag(590, 120, y=350),  # 远
+    ]]
+    ocr = FakeOcr({110: "懒洋洋大王", 120: "番茄炒蛋盖饭"})
+    g = FakeGesture()
+    w = gesture_watcher(det, g, ocr)
+    assert feed(w, 4.0) == [] and g.calls == 0
+
+
+def test_gesture_needs_high_probability_and_not_none():
+    for answer in (("wave", 0.5), ("none", 0.99)):
+        det = FakeDetector()
+        det.frames = [[player(900), tag(890, 110)]]
+        w = gesture_watcher(det, FakeGesture(answer))
+        assert feed(w, 4.0) == []
+
+
+def test_gesture_classifier_error_does_not_break_the_frame():
+    det = FakeDetector()
+    det.frames = [[player(900), tag(890, 110)]]
+    w = gesture_watcher(det, FakeGesture(RuntimeError("模型坏了")))
+    assert feed(w, 4.0) == [] and w.nearby(4.0) == ["懒洋洋大王"]
+
+
+def test_no_gestures_without_classifier():
+    det = FakeDetector()
+    det.frames = [[player(900), tag(890, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    assert feed(w, 3.0) == []
+
+
+def test_far_tag_track_survives_between_crops_with_uneven_frame_times():
+    det = CropDetector([small(1000)], [Detection("name_tag", Rect(10, 20, 50, 14), 0.9)])
+    unknown = RecordingUnknown()
+    ocr = FakeOcr({50: "星星小铺"})
+    w = PerceptionWatcher(det, ocr, PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+                          log_roi=[0.0, 0.0, 0.335, 0.855], background=False, unknown=unknown)
+    ids = set()
+    for i in range(58):  # 0.07 s 一帧，4 s
+        w.process(frame(), round(i * 0.07, 2), panel_visible=False)
+        ids |= {t.id for t in w.last_tracks if t.cls == "name_tag"}
+    assert len(ids) == 1  # 同一条标签轨迹接得上：投票和"只记一次"才有用
+    assert [a[0] for a in unknown.added] == ["星星小铺"]
+
+
+def test_place_is_cleared_when_scene_changed_and_nothing_matches():
+    places = FakePlaces(["云野", None])
+    w = place_watcher(FakeDetector(), places)
+    w.process(frame(), 0.0, panel_visible=False)
+    w.process(white(), 5.0, panel_visible=False)  # 画面大变后认不出：可能到了图库里没有的地方
+    assert len(places.calls) == 2 and w.place == "" and "看起来在" not in w.describe(5.0)
+
+
+def test_place_is_cleared_after_two_misses_in_a_row():
+    places = FakePlaces(["云野", None])
+    w = place_watcher(FakeDetector(), places)
+    w.process(frame(), 0.0, panel_visible=False)
+    w.process(frame(), 30.0, panel_visible=False)
+    assert w.place == "云野"  # 偶尔一次认不出：先留着
+    w.process(frame(), 60.0, panel_visible=False)
+    assert w.place == ""

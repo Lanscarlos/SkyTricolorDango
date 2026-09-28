@@ -312,6 +312,12 @@ class Body:
                 if who == self.holding:
                     continue
                 self.events.put("approach", "有个陌生人朝你走过来了" if who == "陌生人" else f"{who} 朝你走过来了")
+        if hasattr(self.env, "pop_gestures"):  # 好友对团子做了动作（三期 §3）：大脑决定回不回礼
+            names = self.cfg.gesture.names
+            for who, label in self.env.pop_gestures():
+                if who == self.holding:
+                    continue
+                self.events.put("gesture", f"{who}对你{names.get(label, label)}")
 
         requests = dict(self.env.requests)
         current = {(r.name, r.kind) for r in requests.values()}

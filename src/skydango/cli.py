@@ -281,6 +281,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
     有运行目录（run）且 perception.hardcases 打开时，顺带收集难例到 runs/<这次>/hard/。
     """
     if not cfg.perception.enabled:
+        if cfg.places.enabled:
+            log.warning("[places] 要配合 [perception] 用（YOLO 感知层里认地图），现在没打开，不认地图")
         return _env_watcher(cfg, background=background, icons=icons)
     from .vision.detect import make_detector
     from .vision.ocr import make_ocr
@@ -296,11 +298,121 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
 
         audit = make_ocr(cfg.ocr.engine, cfg.env.threads) if p.audit_interval > 0 else None
         hardcases = HardCaseCollector(run.hard, p, cfg.env, cfg.vision.log_roi, _friend_names(cfg), ocr=audit)
+    places = _place_recognizer(cfg) if cfg.places.enabled else None
+    unknown = None
+    if run is not None:
+        from .vision.unknownnames import UnknownNames
+
+        unknown = UnknownNames(run.path / "unknown_names", _friend_names(cfg))
     return PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
-        scene_change=cfg.brain.scene_change, hardcases=hardcases,
+        scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
+        places=places, place_interval=cfg.places.place_interval,
+        gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
     )
+
+
+def _gesture_classifier(cfg: Config):
+    if not cfg.gesture.enabled:
+        return None
+    from .vision.gesture import OnnxGestureClassifier
+
+    log.info("认动作（研究性质）：%s，只报 %s", cfg.gesture.model, "、".join(cfg.gesture.names.values()))
+    return OnnxGestureClassifier(cfg.gesture.model, cfg.gesture.labels, cfg.perception.device)
+
+
+def _place_recognizer(cfg: Config, required: bool = False):
+    """认地图：读图库（places/<地名>/*.jpg）。图库是空的：required 时报错，否则记警告、不认地图。"""
+    from .vision.places import PlaceLibrary, PlaceRecognizer, make_embedder
+
+    library = PlaceLibrary(Path(cfg.places.dir), make_embedder(cfg.places))
+    n = library.load()
+    if not n:
+        msg = f"认地图的图库是空的（{cfg.places.dir}/）：先在游戏里用 places add <地名> 截几张"
+        if required:
+            raise FileNotFoundError(msg)
+        log.warning(msg)
+        return None
+    log.info("认地图：%d 个地方、%d 张参考截图（%s）", len(library.places()), n, cfg.places.model)
+    return PlaceRecognizer(library, cfg.places, cfg.env.roi, [cfg.vision.log_roi])
+
+
+def _scene_boxes(cfg: Config, img) -> list:
+    """认地图前要遮掉的人物 / 名字标签 / 圆圈：YOLO 模型文件在就跑一次检测，不在就只遮固定 UI。"""
+    if not Path(cfg.perception.model).exists():
+        return []
+    from .vision.detect import make_detector
+
+    p = cfg.perception
+    try:
+        detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+        return [d.box for d in detector.detect(img)]
+    except Exception as exc:
+        log.warning("遮人用的 YOLO 跑不了（%s），只遮固定 UI", exc)
+        return []
+
+
+def cmd_places(cfg: Config, args) -> None:
+    """认地图的图库：add 截当前画面（遮掉人和 UI）存进 places/<地名>/；test 逐张认；bench 留一法比较特征模型。"""
+    from .vision.places import PlaceLibrary, PlaceRecognizer
+
+    if getattr(args, "model", None) and args.action != "bench":
+        cfg.places.model = args.model[0] if isinstance(args.model, list) else args.model
+    if args.action == "add":
+        img = imread(args.image) if args.image else _device(cfg).screenshot()
+        boxes = _scene_boxes(cfg, img)
+        library = PlaceLibrary(Path(cfg.places.dir))  # 只存图，不算特征：还没选好特征模型也能先攒图库
+        recognizer = PlaceRecognizer(library, cfg.places, cfg.env.roi, [cfg.vision.log_roi])
+        path = library.add(args.name, recognizer.mask(img, boxes))
+        note = f"遮掉了 {len(boxes)} 个人物 / 标签" if boxes else "只遮了底部按钮栏和聊天面板（没有 YOLO 模型，画面里的人没遮）"
+        print(f"存进 {args.name}：{path}（{note}）；图库现在有 {len(library.entries)} 张：{'、'.join(library.places())}")
+    elif args.action == "test":
+        recognizer = _place_recognizer(cfg, required=True)
+        files = _images(args.source) if args.source else []
+        items = [(f.name, imread(f)) for f in files] or [("当前画面", _device(cfg).screenshot())]
+        for name, img in items:
+            m = recognizer.recognize(img, _scene_boxes(cfg, img))
+            verdict = f"{m.name} {m.score:.2f}" if m.name else f"认不出（最像 {m.best} {m.score:.2f}）"
+            print(f"{name}  → {verdict}  第二像的别的地方 {m.second:.2f}")
+    elif args.action == "bench":
+        _places_bench(cfg, args.model or [cfg.places.model])
+
+
+def _places_bench(cfg: Config, models: list[str]) -> None:
+    """留一法：图库里每张图拿去和其余的图比，看认对 / 认错 / 不说各多少、每张多久。"""
+    import dataclasses
+
+    from .vision.places import PlaceLibrary, decide, make_embedder
+
+    for model in models:
+        pc = dataclasses.replace(cfg.places, model=model)
+        library = PlaceLibrary(Path(pc.dir), make_embedder(pc))
+        n = library.load()
+        if not n:
+            raise FileNotFoundError(f"图库是空的（{pc.dir}/）：先用 places add <地名> 截几张")
+        right = wrong = silent = 0
+        started = time.perf_counter()
+        for i, (name, path) in enumerate(library.entries):
+            m = decide(library.scores(library.vecs[i], exclude=path), pc.place_min, pc.place_margin)
+            if m.name is None:
+                silent += 1
+            elif m.name == name:
+                right += 1
+            else:
+                wrong += 1
+                print(f"  认错：{path} 是 {name}，认成了 {m.name}（{m.score:.2f}）")
+        embed_ms = _embed_ms(library)
+        print(f"{model}：{len(library.places())} 个地方 {n} 张，认对 {right}/{n}、认错 {wrong}、不说 {silent}"
+              f"（目标：认对 ≥ 90%、认错 ≤ 3%）；算一张特征约 {embed_ms:.0f} ms；比对 {(time.perf_counter() - started) * 1000:.0f} ms")
+
+
+def _embed_ms(library) -> float:
+    img = imread(library.entries[0][1])
+    started = time.perf_counter()
+    for _ in range(3):
+        library.embedder.embed(img)
+    return (time.perf_counter() - started) * 1000 / 3
 
 
 def _stop_scene(env) -> None:
@@ -310,6 +422,9 @@ def _stop_scene(env) -> None:
     hard = getattr(env, "hardcases", None)
     if hard is not None and hard.saved:
         print(f"难例：存了 {hard.saved} 张 → {hard.folder}（收进数据集：perception label runs --from-runs）")
+    unknown = getattr(env, "unknown", None)
+    if unknown is not None and unknown.entries:
+        print(f"没认出的名字：{len(unknown.entries)} 个 → {unknown.folder}（汇总：perception unknown-names）")
 
 
 def _viewer(cfg: Config, open_browser: bool = True):
@@ -458,6 +573,8 @@ def _perception(cfg: Config, args, dev=None):
     for key in ("model", "device", "imgsz"):
         if getattr(args, key, None):
             setattr(p, key, getattr(args, key))
+    if getattr(args, "far_crops", None) is not None:
+        p.far_crops = args.far_crops
     detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
     icons = _icon_classifier(cfg)
     watcher = PerceptionWatcher(
@@ -485,6 +602,71 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_augment(args)
     elif args.action == "compare":
         _perception_compare(cfg, args)
+    elif args.action == "unknown-names":
+        _perception_unknown_names(cfg, args)
+    elif args.action == "clips":
+        _perception_clips(cfg, args)
+    elif args.action == "gesture-eval":
+        _perception_gesture_eval(cfg, args)
+
+
+def _perception_clips(cfg: Config, args) -> None:
+    """动作识别的数据（三期 §3）：record 录的画面 → 按人物轨迹切成 16 帧的片段，人工挪进 <数据目录>/<动作>/。"""
+    from .vision.compare import timed_files
+    from .vision.detect import make_detector
+    from .vision.gesture import extract_clips
+
+    p = cfg.perception
+    if args.model:
+        p.model = args.model
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+    out = Path(args.output)
+    n = extract_clips(((t, imread(path)) for t, path in timed), detector, out, cfg.gesture, p.conf)
+    print(f"切出 {n} 段（每段 {cfg.gesture.frames} 张、{cfg.gesture.fps:g} 张/秒）→ {out}")
+    print(f"人工看一遍，把片段目录挪进 <数据目录>/<动作>/（{' / '.join(cfg.gesture.labels)}；none = 站着、走路、别的动作），"
+          "再用 perception gesture-eval 评估")
+
+
+def _perception_gesture_eval(cfg: Config, args) -> None:
+    """在分好类的片段上评估动作模型：精确率 ≥ 90%、召回率 ≥ 60% 才打开 [gesture]。"""
+    from .vision import gesture
+
+    g = cfg.gesture
+    if args.model:
+        g.model = args.model
+    clf = gesture.OnnxGestureClassifier(g.model, g.labels, cfg.perception.device)
+    r = gesture.evaluate(Path(args.data), clf, g)
+    pct = lambda v: "—" if v is None else f"{v:.0%}"  # noqa: E731
+    print(f"{r['clips']} 段，概率 ≥ {g.min_prob} 才算报了：")
+    for label, v in r.items():
+        if label in ("all", "clips"):
+            continue
+        print(f"  {label}（{g.names.get(label, label)}）：精确率 {pct(v['precision'])}、召回率 {pct(v['recall'])}"
+              f"（对 {v['tp']}、错报 {v['fp']}、漏 {v['fn']}）")
+    a = r["all"]
+    ok = (a["precision"] or 0) >= 0.9 and (a["recall"] or 0) >= 0.6
+    print(f"总的：精确率 {pct(a['precision'])}、召回率 {pct(a['recall'])} → "
+          + ("达标（精确率 ≥ 90%、召回率 ≥ 60%），可以真机试 10 分钟" if ok else "没达标，先别打开 [gesture]"))
+
+
+def _perception_unknown_names(cfg: Config, args) -> None:
+    """最近几次运行里读得清楚、但不在好友名单里的名字。只列出来，要加好友自己改 friends.md（或游戏里 #friend）。"""
+    from .vision.unknownnames import collect
+
+    rows = collect(Path(args.runs), args.last, _friend_names(cfg)())
+    if not rows:
+        print(f"最近 {args.last} 次运行里没有没认出的名字")
+        return
+    print(f"最近 {args.last} 次运行里读到、但不在好友名单里的名字（按出现次数）：")
+    for r in rows:
+        print(f"{r['count']:>4} 次  {r['name']}  最后 {r['last']}  {r['image']}")
+    print("是好友的话手动加进 memory/friends.md（## 昵称），或者在游戏里发 #friend 昵称 备注；OCR 读错的不用管")
 
 
 def _perception_compare(cfg: Config, args) -> None:
@@ -574,6 +756,7 @@ def _perception_bench(cfg: Config, args) -> None:
         print(f"  截图     {_stats(grab)}")
     print(f"  YOLO 检测 {_stats(det)}")
     print(f"  整个感知 {_stats(total)}（含追踪、名字 OCR、圆圈匹配）")
+    print(f"  远处二次检测 {watcher.far_runs} 次（far_crops = {cfg.perception.far_crops}，--far-crops 0 关掉对比）")
     per_frame = (sum(grab) + sum(total)) / len(total)
     target = 1000 / cfg.perception.fps
     verdict = "够用" if per_frame <= target else "不够，降低 fps / imgsz 或换 GPU 后端"
@@ -1164,6 +1347,7 @@ def main(argv: list[str] | None = None) -> None:
         q.add_argument("--device", choices=["cuda", "cpu"])
         q.add_argument("--imgsz", type=int)
         if name == "bench":
+            q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关）")
             q.add_argument("--images", help="用这个目录 / 这张图测（默认实时截图）")
             q.add_argument("-n", type=int, default=200, help="测多少帧")
         else:
@@ -1185,13 +1369,37 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--device", choices=["cuda", "cpu"])
     q.add_argument("--imgsz", type=int)
     q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
+    q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关；开关各跑一次对比）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/compare/<时间>）")
+    q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")
+    q.add_argument("--runs", default="runs", help="运行目录的上级（默认 runs/）")
+    q.add_argument("--last", type=int, default=5, help="看最近几次运行")
+    q = psub.add_parser("clips", help="动作识别的数据：录像按人物轨迹切成 16 帧的片段（人工再分到 <动作>/ 目录）")
+    q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
+    q.add_argument("-o", "--output", default="datasets/gesture/_unlabeled")
+    q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q = psub.add_parser("gesture-eval", help="在分好类的片段（<数据目录>/<动作>/<片段>/）上评估动作模型的精确率 / 召回率")
+    q.add_argument("data", help="数据目录，比如 datasets/gesture")
+    q.add_argument("--model", help="动作模型（默认 gesture.model）")
     q = psub.add_parser("augment", help="训练集加运动模糊（转视角）/ 压暗（暗场景）的样本，标注原样复制")
     q.add_argument("dataset", help="数据集目录（perception label 的输出，比如 datasets/sky）")
     q.add_argument("--seed", type=int, default=0)
     q.add_argument("--blur", type=float, default=0.3, help="抽多少比例的图做运动模糊")
     q.add_argument("--dark", type=float, default=0.2, help="抽多少比例的图压暗")
     p.set_defaults(func=cmd_perception)
+
+    p = sub.add_parser("places", help="认地图的图库：截图加进 places/<地名>/、逐张测试、比较特征模型")
+    psub = p.add_subparsers(dest="action", required=True)
+    q = psub.add_parser("add", help="截当前画面（遮掉人物和 UI）存进 places/<地名>/")
+    q.add_argument("name", help="地名，比如 云野")
+    q.add_argument("--image", help="用这张图，不截屏")
+    q.add_argument("--model", help="特征模型（默认 places.model；\"thumb\" = 内置基线）")
+    q = psub.add_parser("test", help="对一批截图（或当前画面）逐张认地图，打印地名和相似度")
+    q.add_argument("source", nargs="?", help="图片目录 / 图片；不填则截当前画面")
+    q.add_argument("--model", help="特征模型（默认 places.model）")
+    q = psub.add_parser("bench", help="图库上留一法：每个模型认对 / 认错 / 不说多少、多快")
+    q.add_argument("--model", action="append", help="特征模型，可以给多个（默认 places.model）")
+    p.set_defaults(func=cmd_places)
 
     p = sub.add_parser("view", help="只看不动：实时截图 → 认人 / 读聊天 → 网页上画识别框（不操作游戏）")
     p.add_argument("--images", help="回放这个目录 / 这张图（比如 record 录的），不用连模拟器")

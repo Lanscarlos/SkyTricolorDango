@@ -96,6 +96,30 @@ approach_grow = 0.25            # 走过来：1.5 秒内框高增大这么多、
 approach_cooldown = 60.0        # 同一个人这么久内只报一次
 approach_strangers = true       # 陌生人走过来也报；陌生人多的地方嫌吵就关掉
 typing_window = 8.0             # 陌生人发消息前这么久内头顶冒过气泡的人，才算可能的说话人（待真机确认）
+far_height = 0.08               # 远处的人（框高 < 屏高 × 这个）没挂上名字标签时，头顶裁一块再检测一次
+far_crops = 3                   # 每帧最多裁几块；0 = 关（perception compare --far-crops 0 对比开关效果）
+
+[places]
+# 认地图（感知层三期，要先打开 [perception]）：和 places/<地名>/ 里的参考截图比，认出在哪张图
+# 加图：python -m skydango places add 云野；看准不准：places test / places bench
+enabled = false
+dir = "places"                  # 图库（不进 git）
+model = "models/places.onnx"    # 图像特征模型（ONNX）；"thumb" = 内置的缩略图基线（不用下载模型，准确率差）
+size = 224
+norm = "imagenet"               # imagenet / clip / none（MobileCLIP 用 none）
+place_min = 0.8                 # 最像的相似度至少这么高（待标定）
+place_margin = 0.05             # 且比第二像的别的地方高这么多
+place_interval = 30.0           # 每隔这么久认一次（画面大变后也认一次）
+
+[gesture]
+# 别人对团子做的动作（感知层三期，研究性质，还没有模型）：好友对着团子挥手、鞠躬时告诉大脑，由它决定回不回礼
+# 数据：record --fps 8 录 → perception clips 切片段 → 人工分到 <动作>/ → 训练导出 ONNX → perception gesture-eval 评估
+enabled = false
+model = "models/gesture.onnx"
+labels = ["none", "wave", "bow"]  # 模型输出的顺序
+names = { wave = "挥手", bow = "鞠躬" }
+min_prob = 0.9                  # 宁可不报：精确率不到 90% 不要打开
+cooldown = 30.0                 # 同一个人同一种动作这么久内只报一次
 
 [spin]
 # 转一圈：主人发 #spin（普通模式）、命令行 camera spin、打开感知层时大脑的 look_around

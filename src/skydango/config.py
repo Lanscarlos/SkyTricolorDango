@@ -278,6 +278,43 @@ class PerceptionConfig:
     approach_cooldown: float = 60.0  # 同一个人这么久内只报一次（陌生人整体算一个）
     approach_strangers: bool = True  # 陌生人走过来也报（陌生人多的地方嫌吵就关掉）
     typing_window: float = 8.0  # 陌生人的消息：这么久内头顶冒过"正在输入"气泡的人才算可能的说话人（待标定）
+    # 三期 §1：远处小目标二次检测（名字标签太小，YOLO 框不到）
+    far_height: float = 0.08  # 人物框高 < 截图高 × 这个、又没挂上名字标签时，在它头顶裁一块再检测一次
+    far_crops: int = 3  # 每帧最多裁几块（同一条轨迹每秒最多一次）；0 = 关
+
+
+@dataclass
+class PlacesConfig:
+    """认地图（感知层三期 §2）：和图库里每个地方的参考截图比特征，最像、又和别的地方拉开差距才算认出。"""
+
+    enabled: bool = False
+    dir: str = "places"  # 图库：places/<地名>/*.jpg（不进 git，截图里可能有好友）；places add <地名> 往里加
+    model: str = "models/places.onnx"  # 图像特征模型（ONNX，候选 MobileCLIP-S0 / DINOv2-small，places bench 比了再定）；"thumb" = 内置缩略图基线
+    size: int = 224  # 输入尺寸（模型固定了尺寸时以模型为准）
+    norm: str = "imagenet"  # 输入归一化：imagenet / clip / none（MobileCLIP 用 none）
+    device: str = "cpu"
+    place_min: float = 0.8  # 最像的余弦相似度至少这么高（待标定）
+    place_margin: float = 0.05  # 且比第二像的"别的地方"高这么多（宁可不说，不能说错）
+    place_interval: float = 30.0  # 每隔这么久认一次；画面大变后也认一次
+
+
+@dataclass
+class GestureConfig:
+    """别人对团子做的动作（感知层三期 §3，研究性质）：好友对着团子挥手、鞠躬时发 gesture 事件，大脑决定回不回礼。
+
+    还没有模型：先 `perception clips` 从录像切片段、人工分到 <动作>/ 目录，训练导出 ONNX 后用 `perception gesture-eval` 评估，
+    精确率 ≥ 90%、召回率 ≥ 60% 才打开。"""
+
+    enabled: bool = False
+    model: str = "models/gesture.onnx"  # 输入 1×frames×3×size×size（RGB，0~1），输出每个标签的分数（logits 或概率）
+    labels: list[str] = field(default_factory=lambda: ["none", "wave", "bow"])  # 模型输出的顺序；none = 没做这几个动作
+    names: dict[str, str] = field(default_factory=lambda: {"wave": "挥手", "bow": "鞠躬"})  # 事件里的中文名
+    frames: int = 16  # 一段几帧（2 s）
+    fps: float = 8.0  # 每秒取几帧
+    size: int = 112  # 人物裁剪缩放到的边长
+    interval: float = 2.0  # 同一个人隔这么久判一次
+    min_prob: float = 0.9  # 概率到这个才报（报错动作很尴尬，宁可不报）
+    cooldown: float = 30.0  # 同一个人同一种动作这么久内只报一次
 
 
 @dataclass
@@ -374,6 +411,8 @@ class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     social: SocialConfig = field(default_factory=SocialConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
+    places: PlacesConfig = field(default_factory=PlacesConfig)
+    gesture: GestureConfig = field(default_factory=GestureConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     spin: SpinConfig = field(default_factory=SpinConfig)
