@@ -165,3 +165,23 @@ def test_scan_records_label_positions_and_circle_state():
     img[cy - 40 : cy + 40, cx - 40 : cx + 40] = (60, 90, 40)  # 圆圈没了（牵着手时就是这样）
     w.observe(img, 10.0, panel_visible=True)
     assert w.circles["懒洋洋大王"] == (None, 10.0)
+
+
+def test_env_watcher_hold_is_noop():
+    w = watcher(FakeOcr([]))
+    w.hold("camera")
+    with w.held("blackout"):
+        assert not w.paused
+    w.release("camera")
+    assert not w.paused
+
+
+def test_match_names_filters_score_and_fuzzy_matches():
+    from skydango.vision.env import match_names
+
+    lines = [
+        OcrLine("懒洋洋大玉", 0.95, Rect(0, 0, 10, 10)),  # OCR 错一个字也算
+        OcrLine("番茄炒蛋盖饭", 0.5, Rect(0, 0, 10, 10)),  # 置信度太低
+        OcrLine("好", 0.99, Rect(0, 0, 10, 10)),
+    ]
+    assert [n for n, _ in match_names(lines, ["懒洋洋大王", "番茄炒蛋盖饭"], 0.9)] == ["懒洋洋大王"]

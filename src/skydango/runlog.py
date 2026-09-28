@@ -7,6 +7,7 @@
       frames/*.jpg    读到新消息时的面板截图（标了框）
       config.json     本次实际生效的配置（含命令行覆盖）
       brain.jsonl     大脑每次调用：停在哪、用量、估算花费、调了哪些工具、它想了什么（--brain）
+      hard/*.jpg      YOLO 感知层可能认错的画面（难例，[perception] hardcases），hard.jsonl 记原因和检测框
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ class RunDir:
         self.cfg = cfg
         self.frames = path / "frames"
         self.rows_log = path / "rows.log"
+        self.hard = path / "hard"  # 难例（vision/hardcases.py 用到时才建）
         self._handler: logging.Handler | None = None
 
     @classmethod

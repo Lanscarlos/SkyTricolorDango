@@ -6,9 +6,9 @@ from skydango.game.social import IDLE
 from skydango.vision.bubbles import Rect
 from skydango.vision.detect import Detection, _parse_names, decode, letterbox
 from skydango.vision.ocr import OcrLine, RapidOcrEngine
-from skydango.vision.perception import STRANGER, PerceptionWatcher
+from skydango.vision.perception import STRANGER, PerceptionWatcher, detector_conf
 from skydango.vision.track import Tracker, iou
-from skydango.vision.weaklabel import data_yaml, split_of, weak_labels, yolo_line
+from skydango.vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, yolo_line
 
 FRIENDS = ["懒洋洋大王", "番茄炒蛋盖饭"]
 
@@ -75,8 +75,10 @@ def test_iou():
 class FakeDetector:
     def __init__(self):
         self.frames = []  # 每次 detect 依次返回一组；用完了一直返回最后一组
+        self.calls = 0
 
     def detect(self, img):
+        self.calls += 1
         return self.frames.pop(0) if len(self.frames) > 1 else (self.frames[0] if self.frames else [])
 
 
@@ -120,12 +122,21 @@ def ring(cx, tag_y=330, tag_h=44):
     return Detection("social_ring", Rect(cx - 50, cy - 50, 100, 100), 0.9)
 
 
-def watcher(detector, ocr=None, icons=None, **cfg):
+def watcher(detector, ocr=None, icons=None, clock=None, **cfg):
     cfg.setdefault("stranger_after", 1.0)
+    extra = {"clock": clock} if clock is not None else {}
     return PerceptionWatcher(
         detector, ocr or FakeOcr({}), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
-        log_roi=[0.0, 0.0, 0.335, 0.855], icons=icons, background=False,
+        log_roi=[0.0, 0.0, 0.335, 0.855], icons=icons, background=False, **extra,
     )
+
+
+class Clock:
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
 
 
 def test_friend_is_recognized_by_reading_the_name_tag_once():
@@ -330,3 +341,233 @@ def test_yolo_label_format_and_split():
 def test_data_yaml(tmp_path):
     text = data_yaml(tmp_path, ["player", "name_tag"])
     assert "train: images/train" in text and "  1: name_tag" in text
+
+
+# ---- 追踪器：补时间、跨类别关联（一期 §4、§5） ----
+def test_tracker_shift_keeps_tracks_alive():
+    t = Tracker(buffer=1.0)
+    first = t.update([Detection("player", Rect(0, 0, 50, 100), 0.9)], 0.0)[0]
+    t.shift(20.0)
+    again = t.update([Detection("player", Rect(2, 0, 50, 100), 0.9)], 20.5)[0]
+    assert again.id == first.id and again.first == 20.0
+
+
+def test_tracker_cross_class_association_counts_flips():
+    t = Tracker(cross=frozenset({"player", "player_unlit"}), cross_iou=0.5)
+    a = t.update([Detection("player", Rect(0, 0, 50, 100), 0.9)], 0.0)[0]
+    b = t.update([Detection("player_unlit", Rect(1, 0, 50, 100), 0.9)], 0.1)[0]
+    c = t.update([Detection("player", Rect(1, 0, 50, 100), 0.9)], 0.2)[0]
+    assert a.id == b.id == c.id and c.cls == "player" and c.flips == 2
+
+
+def test_tracker_without_cross_keeps_classes_apart():
+    t = Tracker()
+    a = t.update([Detection("player", Rect(0, 0, 50, 100), 0.9)], 0.0)[0]
+    b = t.update([Detection("player_unlit", Rect(0, 0, 50, 100), 0.9)], 0.1)[0]
+    assert a.id != b.id
+
+
+# ---- 画面被挡时暂停计时（一期 §4） ----
+def test_hold_stacks_and_nests():
+    w = watcher(FakeDetector())
+    w.release("x")  # 没 hold 过：忽略
+    assert not w.paused
+    w.hold("a")
+    w.hold("b")
+    w.hold("a")  # 同一原因嵌套
+    w.release("a")
+    w.release("b")
+    assert w.paused
+    w.release("a")
+    assert not w.paused
+
+
+def test_held_releases_on_error():
+    w = watcher(FakeDetector())
+    with pytest.raises(RuntimeError):
+        with w.held("camera"):
+            assert w.paused
+            raise RuntimeError
+    assert not w.paused
+
+
+def test_hold_freezes_nearby_and_shifts_last_seen():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), clock=clock, keep=5.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    clock.t = 1.0
+    w.hold("blackout")
+    clock.t = 21.0
+    assert w.nearby(21.0) == ["懒洋洋大王"]  # 暂停期间照常返回暂停前的结果
+    w.release("blackout")
+    assert w.last_seen["懒洋洋大王"] <= 21.0
+    assert w.nearby(25.0) == ["懒洋洋大王"]
+    assert w.nearby(27.0) == []
+
+
+def test_hold_freezes_strangers():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[Detection("player_unlit", Rect(1000, 400, 90, 220), 0.9)]]
+    w = watcher(det, clock=clock, keep=5.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    clock.t = 1.0
+    w.hold("camera")
+    assert w.strangers(30.0) == 1 and w.unlit(30.0) == 1
+    clock.t = 30.0
+    w.release("camera")
+    assert w.strangers(33.0) == 1
+
+
+def test_hold_skips_detection():
+    clock = Clock()
+    det = FakeDetector()
+    w = watcher(det, clock=clock)
+    w.hold("camera")
+    w.observe(frame(), 0.0, panel_visible=False)
+    assert det.calls == 0
+    w.release("camera")
+    w.observe(frame(), 1.0, panel_visible=False)
+    assert det.calls == 1
+
+
+def test_hold_keeps_tracks_no_reocr():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[tag(990, 110)]]
+    ocr = FakeOcr({110: "懒洋洋大王"})
+    w = watcher(det, ocr, clock=clock, ocr_votes=1, track_buffer=1.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    clock.t = 0.5
+    w.hold("friend_tree")
+    clock.t = 20.5
+    w.release("friend_tree")
+    w.process(frame(), 21.0, panel_visible=False)
+    assert ocr.calls == 1 and w.nearby(21.0) == ["懒洋洋大王"]
+
+
+def test_hold_max_auto_releases(caplog):
+    clock = Clock()
+    w = watcher(FakeDetector(), clock=clock, hold_max=60.0)
+    w.hold("camera")
+    clock.t = 61.0
+    with caplog.at_level("WARNING"):
+        w.observe(frame(), 61.0, panel_visible=False)
+    assert not w.paused
+    assert any("暂停" in r.message for r in caplog.records)
+
+
+# ---- 集体消失：玩家自己开了全屏界面（一期 §4） ----
+def bright():
+    return np.full((1080, 1920, 3), 200, np.uint8)
+
+
+def test_two_people_vanish_with_big_change_holds():
+    det = FakeDetector()
+    det.frames = [[player(1000), player(1400)], []]
+    w = watcher(det, clock=Clock())
+    w.process(bright(), 0.0, panel_visible=False)
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.paused
+
+
+def test_one_person_vanishing_does_not_hold():
+    det = FakeDetector()
+    det.frames = [[player(1000)], []]
+    w = watcher(det, clock=Clock())
+    w.process(bright(), 0.0, panel_visible=False)
+    w.process(frame(), 0.1, panel_visible=False)
+    assert not w.paused
+
+
+def test_small_change_does_not_hold():
+    det = FakeDetector()
+    det.frames = [[player(1000), player(1400)], []]
+    w = watcher(det, clock=Clock())
+    w.process(bright(), 0.0, panel_visible=False)
+    w.process(bright(), 0.1, panel_visible=False)
+    assert not w.paused
+
+
+def test_occlusion_released_when_someone_is_back():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[tag(990, 110), tag(1390, 120)], [], [], [tag(990, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王", 120: "番茄炒蛋盖饭"}), clock=clock, keep=5.0)
+    w.process(bright(), 0.0, panel_visible=False)
+    clock.t = 0.1
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.paused
+    w.observe(frame(), 0.2, panel_visible=False)  # occlusion 暂停期间检测照跑
+    assert det.calls == 3
+    clock.t = 20.0
+    w.process(bright(), 20.0, panel_visible=False)
+    assert not w.paused
+    assert w.nearby(20.0) == FRIENDS  # 地图开了 20 s，谁都没走
+
+
+def test_occlusion_gives_up_after_limit():
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[player(1000), player(1400)], []]
+    w = watcher(det, clock=clock, occlusion_hold=30.0)
+    w.process(bright(), 0.0, panel_visible=False)
+    clock.t = 0.1
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.paused
+    clock.t = 31.2
+    w.process(frame(), 31.2, panel_visible=False)
+    assert not w.paused
+
+
+# ---- 出框阈值和判定阈值分开（一期 §5.1 low_conf） ----
+def test_low_confidence_boxes_are_not_tracked_but_kept():
+    det = FakeDetector()
+    det.frames = [[player(1000), Detection("player", Rect(1500, 400, 90, 220), 0.3)]]
+    w = watcher(det, conf=0.35)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert [t.cls for t in w.last_tracks] == ["player"]
+    assert [d.box.x for d in w.last_low] == [1500]
+
+
+def test_detector_conf():
+    assert detector_conf(PerceptionConfig(conf=0.35, low_conf=0.25)) == 0.25
+    assert detector_conf(PerceptionConfig(conf=0.35, hardcases=False)) == 0.35
+
+
+# ---- label --model / --from-runs（一期 §5.2） ----
+def test_merge_labels_prefers_weak_boxes():
+    weak = [("name_tag", Rect(990, 330, 110, 44))]
+    predicted = [
+        Detection("name_tag", Rect(992, 331, 108, 44), 0.8),  # 和弱标注重叠：丢掉，OCR 的名字框更准
+        Detection("player", Rect(1000, 400, 90, 220), 0.6),
+        Detection("name_tag", Rect(300, 330, 110, 44), 0.5),  # 没重叠：保留
+    ]
+    out = merge_labels(weak, predicted)
+    assert out == [("name_tag", Rect(990, 330, 110, 44)), ("player", Rect(1000, 400, 90, 220)),
+                   ("name_tag", Rect(300, 330, 110, 44))]
+
+
+def test_hard_images_collects_from_runs(tmp_path):
+    for run, name in (("20260928-100000-dry", "101010_low_conf.jpg"), ("20260928-110000-live", "111111_flicker.jpg")):
+        (tmp_path / run / "hard").mkdir(parents=True)
+        (tmp_path / run / "hard" / name).write_bytes(b"x")
+    (tmp_path / "20260928-120000-dry").mkdir()
+    out = hard_images(tmp_path)
+    assert [stem for _, stem in out] == ["20260928-100000-dry_101010_low_conf", "20260928-110000-live_111111_flicker"]
+    assert out[0][0] == tmp_path / "20260928-100000-dry" / "hard" / "101010_low_conf.jpg"
+
+
+def test_no_occlusion_right_after_a_camera_hold():
+    # 转完镜头人都不在画面里是正常的：不能拿转之前那一帧比，误判成"开了全屏界面"
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[player(1000), player(1400)], []]
+    w = watcher(det, clock=clock)
+    w.process(bright(), 0.0, panel_visible=False)
+    with w.held("camera"):
+        clock.t = 2.0
+    w.process(frame(), 2.1, panel_visible=False)
+    assert not w.paused

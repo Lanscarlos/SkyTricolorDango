@@ -145,3 +145,8 @@ def test_record_brain_appends_jsonl(tmp_path):
     run.record_brain({"usd": 0.01, "tools": ["say"]})
     line = json.loads((run.path / "brain.jsonl").read_text(encoding="utf-8"))
     assert line["tools"] == ["say"] and line["usd"] == 0.01 and "time" in line
+
+
+def test_run_dir_hard_path(tmp_path):
+    run = RunDir.create(make_cfg(tmp_path), "dry", now=0)
+    assert run.hard == run.path / "hard" and not run.hard.exists()  # 用到时才建

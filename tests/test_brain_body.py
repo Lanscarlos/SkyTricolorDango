@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import base64
 import threading
 from concurrent.futures import Future
@@ -35,9 +36,24 @@ class FakeEnv:
         self.requests = {}
         self.circles = {}
         self.labels = {}
+        self.holds = []  # ("hold" / "release", 原因)
 
     def observe(self, frame, now, panel_visible):
         pass
+
+    def hold(self, reason):
+        self.holds.append(("hold", reason))
+
+    def release(self, reason):
+        self.holds.append(("release", reason))
+
+    @contextmanager
+    def held(self, reason):
+        self.hold(reason)
+        try:
+            yield
+        finally:
+            self.release(reason)
 
     def nearby(self, now):
         return list(self.near)
@@ -624,3 +640,43 @@ def test_check_friend_dry_run_and_unclosed_panel(clock):
     out = b.check_friend(800, 300)
     assert "没关上" in out[-1]["text"]
     assert any(e.kind == "error" and "好友树" in e.text for e in events.drain())
+
+
+# ---- 画面被挡时暂停感知计时（感知层一期 §4） ----
+def test_blackout_holds_env_until_screen_is_back(clock):
+    env = FakeEnv()
+    b, device, _, _ = body(clock, env=env)
+    b.step()
+    device.frames = [np.zeros((720, 1280, 3), np.uint8)]
+    clock.advance(1.5)
+    b.step()
+    assert env.holds == [("hold", "blackout")]
+    device.frames = [scene()]
+    clock.advance(1.5)
+    b.step()
+    assert env.holds == [("hold", "blackout"), ("release", "blackout")]
+
+
+def test_camera_move_is_wrapped_in_held(clock):
+    env = FakeEnv()
+    b, _, _, _ = body(clock, live=True, camera=FakeCamera(), env=env)
+    b.camera_move("left", 1)
+    assert env.holds == [("hold", "camera"), ("release", "camera")]
+    env.holds.clear()
+    b.camera_reset()
+    assert env.holds == [("hold", "camera"), ("release", "camera")]
+
+
+def test_emote_is_wrapped_in_held(clock):
+    env = FakeEnv()
+    b, _, _, _ = body(clock, live=True, emotes=FakeEmotes(), env=env)
+    b.emote("鞠躬")
+    assert env.holds == [("hold", "wheel"), ("release", "wheel")]
+
+
+def test_social_is_wrapped_in_held(clock):
+    env, social = FakeEnv(), FakeSocial()
+    b, _, _, _ = body(clock, env=env, social=social)
+    env.requests = {"懒洋洋大王": Request("懒洋洋大王", "hand", (0, 0), 100.0)}
+    b.step()
+    assert ("hold", "social") in env.holds and env.holds[-1] == ("release", "social")

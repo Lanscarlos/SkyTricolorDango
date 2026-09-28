@@ -12,6 +12,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from ..agent import RateLimiter
@@ -113,6 +114,11 @@ class Body:
         self.stopped = False  # shutdown 之后不再接大脑的命令
 
     # ---- 主循环 ----
+    def _held(self, reason: str) -> AbstractContextManager:
+        """会挡住画面的操作期间暂停感知计时（YOLO 感知层 keep 只有 5 s，不暂停会误报"走开了"）。"""
+        held = getattr(self.env, "held", None)
+        return held(reason) if held is not None else nullcontext()
+
     def step(self) -> None:
         now = self.clock()
         frame = None
@@ -264,6 +270,8 @@ class Body:
         black = is_black(frame)
         if black != self.blackout:
             self.blackout = black
+            if self.env is not None and hasattr(self.env, "hold"):  # 黑屏期间看不到人，别算成"走开了"
+                (self.env.hold if black else self.env.release)("blackout")
             self.events.put("scene_change", "画面整屏黑了（可能在切场景）" if black else "画面恢复了")
             self._ref_thumb = None
         if black or now - self._ref_at < 1.0:
@@ -306,7 +314,8 @@ class Body:
         self._requests = current
         if self.social is not None and requests:
             try:
-                handled = self.social.handle(requests, now)
+                with self._held("social"):
+                    handled = self.social.handle(requests, now)
             except Exception:
                 log.exception("处理互动请求出错")
                 handled = []
@@ -375,7 +384,8 @@ class Body:
         if self.camera is None or self.cfg.reply.dry_run:
             return [self.fresh_frame()]
         try:
-            frames = self.camera.around(self.device.screenshot)
+            with self._held("camera"):
+                frames = self.camera.around(self.device.screenshot)
         finally:
             self._ref_thumb = None  # 自己转的镜头，不算画面大变
         self.last_frame = frames[0]
@@ -467,7 +477,8 @@ class Body:
             self.emotes.pretend(name)
             return f"dry-run：没真的做「{name}」"
         try:
-            self.emotes.perform(name)
+            with self._held("wheel"):
+                self.emotes.perform(name)
         except Exception as exc:
             raise ToolError(f"「{name}」没做成：{exc}") from None
         return f"做了「{name}」"
@@ -512,7 +523,8 @@ class Body:
             return f"dry-run：没真的点（会点原图上的 ({sx}, {sy})，打开好友树看完再关掉）"
         self._last_friend_check = now
         try:
-            result = self.friend_checker.check(sx, sy)
+            with self._held("friend_tree"):
+                result = self.friend_checker.check(sx, sy)
         except Exception as exc:
             raise ToolError(f"没点成：{_first_line(exc)}") from None
         finally:
@@ -552,7 +564,8 @@ class Body:
         if self.cfg.reply.dry_run:
             return f"dry-run：没真的转（{action} ×{steps}）"
         try:
-            result = self.camera.move(action, steps)
+            with self._held("camera"):
+                result = self.camera.move(action, steps)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
@@ -563,7 +576,8 @@ class Body:
             raise ToolError("没有视角控制")
         if self.cfg.reply.dry_run:
             return "dry-run：没真的转"
-        result = self.camera.reset()
+        with self._held("camera"):
+            result = self.camera.reset()
         self._ref_thumb = None
         return result
 

@@ -275,22 +275,41 @@ def _env_watcher(cfg: Config, background: bool = True, icons=None):
     )
 
 
-def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True):
-    """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。"""
+def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, run: RunDir | None = None):
+    """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。
+
+    有运行目录（run）且 perception.hardcases 打开时，顺带收集难例到 runs/<这次>/hard/。
+    """
     if not cfg.perception.enabled:
         return _env_watcher(cfg, background=background, icons=icons)
     from .vision.detect import make_detector
     from .vision.ocr import make_ocr
-    from .vision.perception import PerceptionWatcher
+    from .vision.perception import PerceptionWatcher, detector_conf
 
     p = cfg.perception
-    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
     log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
+    hardcases = None
+    if p.hardcases and run is not None:
+        from .vision.hardcases import HardCaseCollector
+
+        audit = make_ocr(cfg.ocr.engine, cfg.env.threads) if p.audit_interval > 0 else None
+        hardcases = HardCaseCollector(run.hard, p, cfg.env, cfg.vision.log_roi, _friend_names(cfg), ocr=audit)
     return PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
+        scene_change=cfg.brain.scene_change, hardcases=hardcases,
     )
+
+
+def _stop_scene(env) -> None:
+    """退出时停掉感知线程；收集了难例就告诉用户在哪（runs/ 只留最近几次，要用的及时收进数据集）。"""
+    if hasattr(env, "stop"):
+        env.stop()
+    hard = getattr(env, "hardcases", None)
+    if hard is not None and hard.saved:
+        print(f"难例：存了 {hard.saved} 张 → {hard.folder}（收进数据集：perception label runs --from-runs）")
 
 
 def _viewer(cfg: Config, open_browser: bool = True):
@@ -433,13 +452,13 @@ def _images(path: str) -> list[Path]:
 def _perception(cfg: Config, args, dev=None):
     from .vision.detect import make_detector
     from .vision.ocr import make_ocr
-    from .vision.perception import PerceptionWatcher
+    from .vision.perception import PerceptionWatcher, detector_conf
 
     p = cfg.perception
     for key in ("model", "device", "imgsz"):
         if getattr(args, key, None):
             setattr(p, key, getattr(args, key))
-    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
     icons = _icon_classifier(cfg)
     watcher = PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
@@ -462,6 +481,62 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_detect(cfg, args)
     elif args.action == "label":
         _perception_label(cfg, args)
+    elif args.action == "augment":
+        _perception_augment(args)
+    elif args.action == "compare":
+        _perception_compare(cfg, args)
+
+
+def _perception_compare(cfg: Config, args) -> None:
+    """同一批录像上对比现有的整图 OCR 和 YOLO 感知层（一期 M2），输出 report.md / summary.json / diff/。"""
+    import json
+
+    import cv2
+
+    from .vision.compare import compare_frames, report_md, side_by_side, summarize, timed_files
+
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    cfg.env.interval = args.interval
+    out = Path(args.output or f"tmp/compare/{time.strftime('%Y%m%d-%H%M%S')}")
+    (out / "diff").mkdir(parents=True, exist_ok=True)
+    icons = _icon_classifier(cfg)
+    env = _env_watcher(cfg, background=False, icons=icons)
+    _, yolo = _perception(cfg, args)
+    print(f"{len(timed)} 帧（{timed[0][0]:.1f}~{timed[-1][0]:.1f} s），现有方案每 {args.interval:g} 秒扫一次，YOLO 每帧都跑 → {out}")
+
+    def frames():
+        for n, (t, path) in enumerate(timed, 1):
+            frame = imread(path)
+            if n % 50 == 0:
+                print(f"  {n}/{len(timed)}")
+            yield t, path.name, frame, _panel_open(cfg, frame)
+
+    def on_diff(result, frame):
+        img = side_by_side(frame, env.overlay(result.t), yolo.overlay(result.t))
+        imwrite(out / "diff" / f"{Path(result.file).stem}.jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+    results = compare_frames(frames(), env, yolo, on_diff)
+    summary = summarize(results, cfg.env.keep, cfg.perception.keep)
+    (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out / "report.md").write_text(report_md(summary), encoding="utf-8")
+    print(f"两边不一致 {len(summary['diff_frames'])} 帧；报告：{out / 'report.md'}")
+
+
+def _perception_augment(args) -> None:
+    """训练集加运动模糊 / 压暗的样本（只动 images/train，标注原样复制）。"""
+    from .vision.augment import augment_dataset
+
+    try:
+        counts = augment_dataset(Path(args.dataset), seed=args.seed, blur=args.blur, dark=args.dark)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from None
+    print(f"新生成：运动模糊 {counts['blur']} 张、压暗 {counts['dark']} 张（已经有的跳过 {counts['skipped']} 张）→ {args.dataset}/images/train")
+    print("验证集没动（保持真实分布）。训练前在 X-AnyLabeling 里抽查几张，框应该还对得上")
 
 
 def _perception_bench(cfg: Config, args) -> None:
@@ -552,19 +627,32 @@ def _perception_label(cfg: Config, args) -> None:
 
     from .vision.bubbles import roi_rect
     from .vision.ocr import make_ocr
-    from .vision.weaklabel import data_yaml, split_of, weak_labels, yolo_line
+    from .vision.weaklabel import data_yaml, hard_images, merge_labels, split_of, weak_labels, yolo_line
 
     classes = cfg.perception.classes
     index = {c: i for i, c in enumerate(classes)}
-    files = _images(args.source)
+    root = Path(args.source)
+    if args.from_runs:  # runs/*/hard/*.jpg：运行时收集的难例，文件名前加运行目录名
+        items = hard_images(root)
+    else:
+        items = []
+        for path in _images(args.source):
+            rel = path.relative_to(root) if root.is_dir() else Path(path.name)
+            items.append((path, "_".join(rel.with_suffix("").parts)))
+    detector = None
+    if args.model:  # 用当前模型预标注：人工只需要修正，不用从零画
+        from .vision.detect import make_detector
+
+        p = cfg.perception
+        detector = make_detector(args.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
     out = Path(args.output)
     ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
     icons = _icon_classifier(cfg)
     names = _friend_names(cfg)()
     counts = {c: 0 for c in classes}
-    root = Path(args.source)
-    print(f"{len(files)} 张图 → {out}；好友名单：{'、'.join(names) or '（空，只能配 --all-text）'}")
-    for n, path in enumerate(files, 1):
+    print(f"{len(items)} 张图 → {out}；好友名单：{'、'.join(names) or '（空，只能配 --all-text）'}"
+          + (f"；模型预标注：{args.model}" if detector is not None else ""))
+    for n, (path, stem) in enumerate(items, 1):
         frame = imread(path)
         height, width = frame.shape[:2]
         skip = [roi_rect(cfg.vision.log_roi, width, height)] if _panel_open(cfg, frame) else []
@@ -572,8 +660,9 @@ def _perception_label(cfg: Config, args) -> None:
             frame, ocr.recognize(frame), names, icons, cfg.social.icon_offset, skip=skip,
             keep=roi_rect(cfg.env.roi, width, height), all_text=args.all_text, min_score=args.min_score,
         )
-        rel = path.relative_to(root) if root.is_dir() else Path(path.name)
-        stem = "_".join(rel.with_suffix("").parts)
+        weak = len(boxes)
+        if detector is not None:
+            boxes = merge_labels(boxes, detector.detect(frame))
         split = split_of(stem, args.val)
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
@@ -584,12 +673,13 @@ def _perception_label(cfg: Config, args) -> None:
             counts[c] = counts.get(c, 0) + 1
         if args.preview:
             view = frame.copy()
-            for c, b in boxes:
-                cv2.rectangle(view, (b.x, b.y), (b.x2, b.y2), (0, 200, 255) if c == "name_tag" else (255, 120, 0), 2)
+            for i, (c, b) in enumerate(boxes):
+                color = ((0, 200, 255) if c == "name_tag" else (255, 120, 0)) if i < weak else (180, 0, 255)  # 紫 = 模型预标注
+                cv2.rectangle(view, (b.x, b.y), (b.x2, b.y2), color, 2)
             (out / "_preview").mkdir(parents=True, exist_ok=True)
             imwrite(out / "_preview" / f"{stem}.jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if n % 20 == 0:
-            print(f"  {n}/{len(files)}")
+            print(f"  {n}/{len(items)}")
     (out / "data.yaml").write_text(data_yaml(out, classes), encoding="utf-8")
     print("自动标出：" + "、".join(f"{c}×{v}" for c, v in counts.items()))
     print(f"数据集配置：{out / 'data.yaml'}")
@@ -728,7 +818,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
         notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _scene_watcher(cfg, icons, dev) if cfg.env.enabled else None
+    env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
     if env and icons:
         from .game.social import SocialHandler
@@ -756,8 +846,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
-        if hasattr(env, "stop"):
-            env.stop()
+        _stop_scene(env)
         if emotes is not None:
             try:
                 emotes.restore()
@@ -811,7 +900,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             notes = NotesKeeper(make_llm(cfg.llm), store, cfg.reply.persona, cfg.reply.notes_every)
     live_store = None if cfg.reply.dry_run else store
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _scene_watcher(cfg, icons, dev) if cfg.env.enabled else None
+    env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
     if env and icons:
         from .game.social import SocialHandler
@@ -867,8 +956,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         print("\n已停止")
     finally:
         stop.set()
-        if hasattr(env, "stop"):
-            env.stop()
+        _stop_scene(env)
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
         brain_thread.join(timeout=5)
         if live_store is not None and not brain_thread.is_alive():
@@ -1002,12 +1090,26 @@ def main(argv: list[str] | None = None) -> None:
             q.add_argument("image", nargs="?", help="图片路径；不填则实时截屏")
             q.add_argument("-o", "--output", default="tmp/perception.png")
     q = psub.add_parser("label", help="用现有识别器给录下来的画面自动标名字标签和圆圈，写成 YOLO 数据集")
-    q.add_argument("source", help="图片目录（比如 record 录的 tmp/record/<时间>）")
+    q.add_argument("source", help="图片目录（比如 record 录的 tmp/record/<时间>）；配 --from-runs 时是 runs/")
     q.add_argument("-o", "--output", default="datasets/sky")
+    q.add_argument("--model", help="再用这个模型的预测（置信度 ≥ perception.low_conf）当初始标注，和弱标注重叠的留弱标注")
+    q.add_argument("--from-runs", action="store_true", help="source 是 runs/：收集每次运行存下的难例（hard/*.jpg）")
     q.add_argument("--val", type=float, default=0.15, help="验证集比例")
     q.add_argument("--all-text", action="store_true", help="画面里读到的字都当名字标签候选（不只好友名单里的），要人工删错的")
     q.add_argument("--min-score", type=float, default=0.9)
     q.add_argument("--preview", action="store_true", help="另存一份画了框的图到 <output>/_preview/，快速检查")
+    q = psub.add_parser("compare", help="同一批录像上对比现有的整图 OCR 和 YOLO（认出率、请求延迟、陌生人 / 走开事件、耗时）")
+    q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
+    q.add_argument("--model", help="模型文件（默认 perception.model）")
+    q.add_argument("--device", choices=["cuda", "cpu"])
+    q.add_argument("--imgsz", type=int)
+    q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/compare/<时间>）")
+    q = psub.add_parser("augment", help="训练集加运动模糊（转视角）/ 压暗（暗场景）的样本，标注原样复制")
+    q.add_argument("dataset", help="数据集目录（perception label 的输出，比如 datasets/sky）")
+    q.add_argument("--seed", type=int, default=0)
+    q.add_argument("--blur", type=float, default=0.3, help="抽多少比例的图做运动模糊")
+    q.add_argument("--dark", type=float, default=0.2, help="抽多少比例的图压暗")
     p.set_defaults(func=cmd_perception)
 
     p = sub.add_parser("view", help="只看不动：实时截图 → 认人 / 读聊天 → 网页上画识别框（不操作游戏）")

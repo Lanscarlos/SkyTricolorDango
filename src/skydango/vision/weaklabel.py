@@ -16,7 +16,9 @@ import numpy as np
 
 from ..chat.tracker import normalize, similar
 from .bubbles import Rect
+from .detect import Detection
 from .ocr import OcrLine
+from .track import iou
 
 
 def _clip(x1: int, y1: int, x2: int, y2: int, width: int, height: int) -> Rect | None:
@@ -78,3 +80,20 @@ def data_yaml(root: Path, classes: list[str]) -> str:
     lines = [f"path: {root.resolve().as_posix()}", "train: images/train", "val: images/val", "names:"]
     lines += [f"  {i}: {c}" for i, c in enumerate(classes)]
     return "\n".join(lines) + "\n"
+
+
+def merge_labels(weak: list[tuple[str, Rect]], predicted: list[Detection], min_iou: float = 0.5) -> list[tuple[str, Rect]]:
+    """弱标注 + 模型预测（预标注）：同类框重叠（IoU > min_iou）时留弱标注的（OCR 的名字框更准），其余预测框都加上。"""
+    out = list(weak)
+    for det in predicted:
+        if not any(c == det.cls and iou(box, det.box) > min_iou for c, box in weak):
+            out.append((det.cls, det.box))
+    return out
+
+
+def hard_images(runs: Path) -> list[tuple[Path, str]]:
+    """runs/*/hard/*.jpg（运行时收集的难例）→ (路径, "<运行目录名>_<文件名>")：不同次运行的文件名可能重复。"""
+    out = []
+    for path in sorted(Path(runs).glob("*/hard/*.jpg")):
+        out.append((path, f"{path.parent.parent.name}_{path.stem}"))
+    return out

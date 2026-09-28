@@ -144,8 +144,8 @@ MuMu 截图（capture = "body" 用身体主循环的帧；"own" 感知线程自�
 
 1. **M0 测速**：拿现成的 COCO 预训练 nano 模型在本机 GPU + MuMu 开着的情况下跑 15fps。—— 工具已就绪（`perception bench`），等 GPU 机器。
 2. **M1 数据**：录画面 + 弱标注 + 人工补标，训第一版。—— 工具已就绪（`record`、`perception label`）。
-3. **M2 离线对比**：按 §9 在同一批录像上比 YOLO 和现有整图 OCR。—— **还缺工具**：`perception compare <录像目录>`，
-   两套识别器逐帧跑同一批图（`record` 的文件名里带时间），输出每帧认出的好友 / 陌生人 / 请求和汇总。下一步做。
+3. **M2 离线对比**：按 §9 在同一批录像上比 YOLO 和现有整图 OCR。—— 工具已就绪：`perception compare <录像目录>`，
+   两套识别器逐帧跑同一批图（`record` 的文件名里带时间），输出 `report.md`、`summary.json` 和不一致帧的左右拼图。
 4. **M3 接进身体**：`[perception] enabled = true`，先 dry-run 看 `runs/` 里的事件。—— 代码已接好，等模型。
 5. **M4 以后**：跟随（先用牵手，视觉伺服最后做）、场景识别、用 `check_friend` 的结果补 friends.md（要用户确认）。
    §14 的环绕扫描可以在 M1 之后就做（转圈认团子能给 M1 的数据自动标 `self`），见 §14.6。
@@ -166,7 +166,7 @@ MuMu 截图（capture = "body" 用身体主循环的帧；"own" 感知线程自�
 ## 12. 风险
 
 - **识别稳定性**：暗场景、光效、半透明重叠 → 有针对性地补数据；M2 的离线对比兜底。
-- **遮挡时误报"走开了"**：`keep` 只有 5 s，黑屏、转镜头、开界面时人会短暂"消失" → 一期 §4 暂停计时，接进身体前必须做。
+- **遮挡时误报"走开了"**：`keep` 只有 5 s，黑屏、转镜头、开界面时人会短暂"消失" → 一期 §4 暂停计时（**已实现**，待真机验证）。
 - **误判陌生人会吵醒大脑**：`stranger` 事件会叫醒大脑和眼睛（有额度成本）。事件只在人数从 0 变有 / 变回 0 时发，
   M2 用 §9 的误判指标把关；实在多就给 `stranger` 事件加冷却。
 - **GPU 争用**：模拟器渲染和推理共用显卡，M0 要看游戏帧率；不行就降 `fps` / `imgsz` 或导出 TensorRT。
@@ -183,7 +183,10 @@ MuMu 截图（capture = "body" 用身体主循环的帧；"own" 感知线程自�
 | `vision/detect.py` | 检测器：`.onnx` → onnxruntime（自带 letterbox、YOLOv8/11 输出 + NMS、YOLO26 端到端输出）；`.pt` / `.engine` → ultralytics |
 | `vision/track.py` | IoU 贪心追踪 |
 | `vision/perception.py` | `PerceptionWatcher`：接口同 `EnvWatcher`，多了 `strangers()` / `unlit()`；名字标签只跑 OCR 识别（`RapidOcrEngine.read_line`） |
-| `vision/weaklabel.py` | 弱标注：整图 OCR 的好友名字框 → `name_tag`，模板认得出的圆圈 → `social_ring` |
+| `vision/weaklabel.py` | 弱标注：整图 OCR 的好友名字框 → `name_tag`，模板认得出的圆圈 → `social_ring`；`merge_labels` 合并模型预标注，`hard_images` 收集 runs/ 里的难例 |
+| `vision/hardcases.py` | 一期：运行时收集难例（`runs/<…>/hard/`） |
+| `vision/compare.py` | 一期 M2：`perception compare` 的逐帧对比和报告 |
+| `vision/augment.py` | 一期：`perception augment` 离线增强（运动模糊、压暗） |
 | `game/friendtree.py` | 点人物打开好友树、截图、ESC 关掉、恢复聊天面板（大脑的 `check_friend`，`[friend_check]` 默认关） |
 | `brain/body.py` | 新事件 `stranger`，`status` 里多一项陌生人数；`check_friend` 的护栏（要新鲜的 look 图、不点面板 / 按钮栏、牵手时不点、限频） |
 | `cli.py` | `perception bench / detect / label`、`friend-check`；`run` 在 `[perception] enabled` 时用 YOLO 感知层替换 env 扫描 |
@@ -291,7 +294,7 @@ MuMu 截图（capture = "body" 用身体主循环的帧；"own" 感知线程自�
 
 | 期 | 文档 | 目标 | 内容 | 依赖 | 状态 |
 |---|---|---|---|---|---|
-| 一期 | `2026-09-28-perception-phase1-design.md` | 替换现有识别，上线可用 | M0 测速、M1 数据和训练（**数据增强**）、M2 离线对比（`perception compare`）、M3 接进身体；**画面被挡时冻结状态**；**难例收集 + 模型预标注** | GPU 机器 | 设计已确认，待实现 |
+| 一期 | `2026-09-28-perception-phase1-design.md` | 替换现有识别，上线可用 | M0 测速、M1 数据和训练（**数据增强**）、M2 离线对比（`perception compare`）、M3 接进身体；**画面被挡时冻结状态**；**难例收集 + 模型预标注** | GPU 机器 | **代码部分已完成**（冻结、难例、compare / augment / label 扩展）；M0 / M1 / M3 待 GPU 机器 |
 | 二期 | `2026-09-28-perception-phase2-design.md` | 看得更全、更懂人 | `#spin` / `camera spin` 测试命令（可提前做）；环绕扫描 + 转圈认团子（§14）；检测结果交给眼睛；认说话人（`typing` 气泡）；距离和走向 | 一期上线 | 设计已确认，待实现 |
 | 三期 | `2026-09-28-perception-phase3-design.md` | 看得更远、更广 | 远处小目标二次检测；认地图（参考截图匹配）；别人的动作识别（研究性质）；跟随（先牵手，后视觉伺服）；没认出的名字 → 补进 friends.md | 一期上线；跟随另需 `move` 工具 | 设计已确认，待实现 |
 
