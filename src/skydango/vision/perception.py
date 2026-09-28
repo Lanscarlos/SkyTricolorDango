@@ -157,6 +157,7 @@ class PerceptionWatcher:
         now = self.clock()
         d = now - since
         log.debug("感知恢复（%s），暂停了 %.1f 秒", why, d)
+        self._prev_count, self._prev_thumb = 0, None  # 暂停前那一帧不能拿来判"集体消失"（镜头可能已经转走了）
         if d <= 0:
             return
         for name, t in list(self.last_seen.items()):

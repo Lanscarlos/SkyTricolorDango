@@ -558,3 +558,16 @@ def test_hard_images_collects_from_runs(tmp_path):
     out = hard_images(tmp_path)
     assert [stem for _, stem in out] == ["20260928-100000-dry_101010_low_conf", "20260928-110000-live_111111_flicker"]
     assert out[0][0] == tmp_path / "20260928-100000-dry" / "hard" / "101010_low_conf.jpg"
+
+
+def test_no_occlusion_right_after_a_camera_hold():
+    # 转完镜头人都不在画面里是正常的：不能拿转之前那一帧比，误判成"开了全屏界面"
+    clock = Clock()
+    det = FakeDetector()
+    det.frames = [[player(1000), player(1400)], []]
+    w = watcher(det, clock=clock)
+    w.process(bright(), 0.0, panel_visible=False)
+    with w.held("camera"):
+        clock.t = 2.0
+    w.process(frame(), 2.1, panel_visible=False)
+    assert not w.paused
