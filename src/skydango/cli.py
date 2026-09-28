@@ -483,6 +483,48 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_label(cfg, args)
     elif args.action == "augment":
         _perception_augment(args)
+    elif args.action == "compare":
+        _perception_compare(cfg, args)
+
+
+def _perception_compare(cfg: Config, args) -> None:
+    """同一批录像上对比现有的整图 OCR 和 YOLO 感知层（一期 M2），输出 report.md / summary.json / diff/。"""
+    import json
+
+    import cv2
+
+    from .vision.compare import compare_frames, report_md, side_by_side, summarize, timed_files
+
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    cfg.env.interval = args.interval
+    out = Path(args.output or f"tmp/compare/{time.strftime('%Y%m%d-%H%M%S')}")
+    (out / "diff").mkdir(parents=True, exist_ok=True)
+    icons = _icon_classifier(cfg)
+    env = _env_watcher(cfg, background=False, icons=icons)
+    _, yolo = _perception(cfg, args)
+    print(f"{len(timed)} 帧（{timed[0][0]:.1f}~{timed[-1][0]:.1f} s），现有方案每 {args.interval:g} 秒扫一次，YOLO 每帧都跑 → {out}")
+
+    def frames():
+        for n, (t, path) in enumerate(timed, 1):
+            frame = imread(path)
+            if n % 50 == 0:
+                print(f"  {n}/{len(timed)}")
+            yield t, path.name, frame, _panel_open(cfg, frame)
+
+    def on_diff(result, frame):
+        img = side_by_side(frame, env.overlay(result.t), yolo.overlay(result.t))
+        imwrite(out / "diff" / f"{Path(result.file).stem}.jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+    results = compare_frames(frames(), env, yolo, on_diff)
+    summary = summarize(results, cfg.env.keep, cfg.perception.keep)
+    (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out / "report.md").write_text(report_md(summary), encoding="utf-8")
+    print(f"两边不一致 {len(summary['diff_frames'])} 帧；报告：{out / 'report.md'}")
 
 
 def _perception_augment(args) -> None:
@@ -1056,6 +1098,13 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--all-text", action="store_true", help="画面里读到的字都当名字标签候选（不只好友名单里的），要人工删错的")
     q.add_argument("--min-score", type=float, default=0.9)
     q.add_argument("--preview", action="store_true", help="另存一份画了框的图到 <output>/_preview/，快速检查")
+    q = psub.add_parser("compare", help="同一批录像上对比现有的整图 OCR 和 YOLO（认出率、请求延迟、陌生人 / 走开事件、耗时）")
+    q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
+    q.add_argument("--model", help="模型文件（默认 perception.model）")
+    q.add_argument("--device", choices=["cuda", "cpu"])
+    q.add_argument("--imgsz", type=int)
+    q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/compare/<时间>）")
     q = psub.add_parser("augment", help="训练集加运动模糊（转视角）/ 压暗（暗场景）的样本，标注原样复制")
     q.add_argument("dataset", help="数据集目录（perception label 的输出，比如 datasets/sky）")
     q.add_argument("--seed", type=int, default=0)
