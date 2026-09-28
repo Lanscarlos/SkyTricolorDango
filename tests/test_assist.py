@@ -285,3 +285,9 @@ def test_assist_limit_exits_without_writing_dataset(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         cli.main(["perception", "label", str(src), "--assist", "-o", str(out)])
     assert not (out / "labels").exists()
+
+
+def test_parse_survives_stray_braces_around_json():
+    good = '{"a": {"boxes": {"1": {"cls": "player"}}, "missing": [], "unsure": ""}}'
+    for text in (good + " 注：3 号是宠物}", "帧 {a} 的结果：\n" + good, "```json\n" + good + "\n```\n```json\n{}\n```"):
+        assert parse_review(text, {"a": 1}, 1920, 1080)["a"].verdicts[1].cls == "player", text

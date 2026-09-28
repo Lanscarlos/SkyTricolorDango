@@ -140,14 +140,25 @@ def _box(value, width: int, height: int) -> Rect | None:
     return Rect(x1, y1, x2 - x1, y2 - y1) if x2 - x1 >= 2 and y2 - y1 >= 2 else None
 
 
+def extract_json(text: str, stems) -> dict | None:
+    """回答里第一个含本批帧名的 JSON 对象。前后有说明文字、代码块、多余的 { } 都不影响；找不到返回 None。"""
+    decoder = json.JSONDecoder()
+    i = text.find("{")
+    while i >= 0:
+        try:
+            data, _ = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and any(s in data for s in stems):
+            return data
+        i = text.find("{", i + 1)
+    return None
+
+
 def parse_review(text: str, frames: dict[str, int], width: int, height: int) -> dict[str, FrameReview]:
     """Claude 的回答 → 每帧的核对结果。frames：帧名 → 候选框个数。取不出 JSON 返回 {}；回答里缺的帧不在结果里（= 没核对）。"""
-    start, end = text.find("{"), text.rfind("}")
-    try:
-        data = json.loads(text[start : end + 1]) if start >= 0 and end > start else None
-    except json.JSONDecodeError:
-        data = None
-    if not isinstance(data, dict):
+    data = extract_json(text, frames)
+    if data is None:
         return {}
     out: dict[str, FrameReview] = {}
     for stem, count in frames.items():
@@ -308,8 +319,7 @@ class Reviewer:
         text = m.get("result") or ""
         h, w = frames[0].image.shape[:2]
         parsed = parse_review(text, {f.stem: len(f.candidates) for f in frames}, w, h)
-        start, end = text.find("{"), text.rfind("}")
-        raw = json.loads(text[start : end + 1]) if parsed else {}
+        raw = extract_json(text, parsed) or {}
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         for f in frames:
             if f.stem in parsed:
