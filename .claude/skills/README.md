@@ -4,15 +4,18 @@
 云端容器每次都是从仓库重新克隆的，**skill 只有提交进仓库才在云端存在**，装在本地 `~/.claude/`
 或者用 `/plugin` 装的插件，云端都看不到。这就是这些文件在仓库里的原因。
 
-## 从 HyperCraft 拷来的 `frontend-design`
+## `frontend-design`（Anthropic 官方原版）
 
-`frontend-design/` 是 [Lanscarlos/HyperCraft](https://github.com/Lanscarlos/HyperCraft) 自己写的 skill，逐字拷来，没改。
-**内容是 HyperCraft 面板（React + Vite，`web/src/styles.css`、`Page.tsx`、`App.tsx`）的规则**，这个仓库没有那套前端，
-里面提到的文件、令牌名、断点、`npm --prefix web run build` 在这里都不存在。
+来自 [anthropics/skills](https://github.com/anthropics/skills) 的 `skills/frontend-design/`，逐字拷贝，没改
+（和 [anthropics/claude-code](https://github.com/anthropics/claude-code) 里 `plugins/frontend-design` 插件带的 SKILL.md 内容一致）。
 
-这里唯一的网页是识别可视化（`src/skydango/vision/viewer.py` 里内嵌的 HTML）。改它的布局时可以用这个 skill，
-但只借鉴通用原则：`min-width: 0`、栅格优先 `auto-fill` 不加断点、颜色写成变量不写裸 hex、动效时长按动作性质选、
-焦点环和 `aria-label`、窄屏不横向溢出；HyperCraft 特有的文件和约定跳过。
+- 引入时上游提交：`33375500bcea98d610eb30ce10ac4e59b89c390d`
+- 许可：Apache License 2.0，全文在 `frontend-design/LICENSE.txt`
+- 讲的是新做或重做界面时怎么定视觉方向、字体、排版，避免模板感；本仓库目前唯一的网页是识别可视化（`vision/viewer.py` 内嵌的 HTML）
+- 没用 HyperCraft 里同名的那份：那是 HyperCraft 按自己面板改写的规则，不是原版
+
+同步：`git clone --depth 1 https://github.com/anthropics/skills.git tmp/as`，
+然后 `rm -rf .claude/skills/frontend-design && cp -a tmp/as/skills/frontend-design .claude/skills/`，更新上面的提交号。
 
 ## Superpowers（外部引入）
 
@@ -26,7 +29,7 @@
 `writing-plans` `writing-skills`
 
 - 从 [Lanscarlos/HyperCraft](https://github.com/Lanscarlos/HyperCraft) 的 `.claude/skills/` 原样拷过来
-  （HyperCraft 提交 `a6285f11be98359584f9c64797f66a7ef2410d69`，`frontend-design` 也是这次拷的）
+  （HyperCraft 提交 `a6285f11be98359584f9c64797f66a7ef2410d69`）
 - 上游版本：`v6.3.0`，上游提交 `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`
 - 版权：Copyright (c) 2025 Jesse Vincent，MIT License（全文见上游仓库 `LICENSE`）
 

@@ -1,118 +1,71 @@
 ---
 name: frontend-design
-description: HyperCraft 面板（web/）的界面布局与视觉改动指南。当任务涉及调整页面布局、栅格、间距、响应式断点、导航壳、卡片/表格排布、主题令牌、动效或新增前端组件时使用；也用于「界面太挤/太空」「手机上错位」「这一屏重新排一下」这类布局优化请求。
+description: Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.
+license: Complete terms in LICENSE.txt
 ---
 
-# HyperCraft 前端布局优化
+# Frontend Design
 
-面板是 React 18 + TypeScript + Vite，源码在 `web/src`，**全部样式集中在一个 `web/src/styles.css`**（约 9000 行，按区块组织）。没有 CSS 框架、没有 CSS-in-JS、没有 Tailwind——不要引入。
+Approach this as the design lead at a design studio known for giving every client a distinct visual identity that is not mistaken for anyone else's. This client has already rejected proposals that felt cliché or templated, and is paying for a distinctive point of view: make deliberate, opinionated choices about palette, typography, and layout that are specific to this brief, and take aesthetic risk if justified.
 
-## 动手之前
+## Ground your designs in the subject matter
 
-1. **先读令牌区**：`styles.css` 开头到约 215 行是全部设计令牌（颜色、圆角、阴影、时长、缓动、内容宽度）。改布局前先确认要用的值是否已有令牌。
-2. **先读目标区块的注释**：这份代码库的注释解释的是「为什么是这个值」，很多看起来可以简化的写法是踩过坑之后的结果（例如 `.page__head > div:first-child` 用 `:first-child` 而不是 `> div`）。删改之前先读懂注释，注释描述的约束仍然成立就别动。
-3. **确认改的是布局还是别的**：只调间距/换行/断点的改动不要顺手改配色和文案。
+If the brief does not identify what the product or subject matter is, identify it yourself before designing, and confirm with the client. You can come up with one concrete subject, the design's audience, and the design's primary job, as a proposal. If there's any information in your memory about the client's preferences or context about what they're building, use that as a hint. The subject's industry, subject matter, materials, and vernacular are where distinctive visual choices come from — a design for a toy for girls aged 8–11 will be very aesthetically different from a dashboard for financial analysts. Build with the brief's real content and subject matter throughout.
 
-## 布局硬规则
+## Design principles
 
-### 页面语法
+For web designs, the hero is the first thing viewers will see. Open with the most characteristic thing in the subject's world, in the form that is most appropriate: a headline, an image, an animation, a live demo, an interactive moment, or other treatments. Be deliberate with your choice: a big number with a small label, supporting stats, and a gradient accent is the default treatment, so only use it if that's truly the best option.
 
-每个页面读起来都是同一句话，顺序固定：
+Typography carries the personality of the page. You don't need a different typeface for display or headline text and body content: use one family or two, and if two, make them clearly distinct.
 
-```
-Page(wide?)                     ← 面板级页面；实例 section 用 div.stack + <PageHead>
-  PageHead  title [count] / lead / facts / actions
-  .alert?                       ← 这一页没能加载；紧贴页头，上面不放别的，且没有修饰符
-  .tabs?                        ← 一页最多一条切换
-  Toolbar?                      ← 一个列表最多一条，就贴在它上面
-  Section*                      ← 每一个有标题的内容块
-  EmptyState | SkeletonScreen   ← 空 / 加载只有这两种
-```
+Choose your typefaces deliberately, not the default families you would reach for on any other project, and set a clear type scale following the default guidance of The Elements of Typographic Style with intentional weights, widths, and spacing. When type is used as a headline or visual element, use the type treatment itself as an active part of the design, not a neutral delivery vehicle for the content.
 
-`Section` / `Toolbar` / `EmptyState` / `.rowlist > .row` 的用法、各自替掉了哪几套旧写法、
-以及守卫卡哪些类名，写在 `docs/design-system.md` 第 3 节。**不要再造第二种段头、第二条
-工具行、第七种空状态** —— 这份代码库刚从那个状态里爬出来。
+Default to line lengths of less than 80 characters. Serif typefaces can have slightly longer line lengths; give serif body text slightly more line-height than a sans-serif.
 
-**`.alert` 只装页面级加载失败。** 条件说明（跟着表单实时变的校验、「这个文件还不存在」
-这类）用 `<Note tone>`；一次性的操作结果用 `toast()`，失败用 `toastError()`（常驻，
-要点「知道了」）。判据：**能用 `if (条件)` 渲染的不是消息。** 三者的分工写在
-`docs/design-system.md` 第 3 节，`ruleMessageSurfaces` 卡着不许混。
+Avoid these default typographic treatments; they are the commonest tells of a generated page:
+- Accenting just a single word or phrase in a headline, like putting one word in italic/bold or a different color.
+- Using all caps for labels.
+- Adding unnecessary typographic labels above content.
 
-### 页面骨架
+Visual structure is information. Structural devices like outlines, borders, numbering, eyebrows, dividers, labels, etc., encode useful information about the content rather than decorate it. Many generic designs use numbered markers (01 / 02 / 03), but that's only appropriate if the content actually is a sequence — like a stepped process or a timeline. Before adding numbered markers, check the content really is a sequence.
 
-- 每个面板级页面都套 `web/src/components/Page.tsx`，**不要再造一个页面框**。历史上有过三个页面框、三种最大宽度、两套滚动条归属，改错一个看起来「差不多对」——这是最糟的错误形态。
-- 页面只有三种形态，由 `Page` 的 `wide` / `full` 属性决定：
-  - 默认（散文/表单）：子元素 `max-width: var(--content-max)`（880px）。
-  - `wide`（卡片、图表、瓦片）：子元素 `max-width: var(--content-max-wide)`（1440px）。
-  - `full`（全屏工作区）：子元素不设上限，`.page--full` 自己 `flex: 1; min-height: 0; overflow: hidden`，滚动归它内部的画布。**只给「一屏一件事的工具页」用**——目前只有文件页的编辑模式，以后可能的全屏终端是同一类。内容页一律在前两种里选；拿 `full` 装一段要读的东西，等于把行长交给显示器宽度。
-  - 不在 `Page` 里的全屏工作区（实例 section 走的是 `InstanceView` 的 pane）用 `.stack--full`，语义与 `full` 相同。它必须配 `.instance__pane--scroll:has(.stack--full) { overflow: hidden }`，否则页面和画布两层滚动条叠在一起。
-- 宽度限制加在 `.page > *` 上而不是滚动容器上，这样滚动条贴着窗口边缘而不是浮在屏幕中间。新增页面级容器时保持这一点。
-- 壳层结构固定：`.app`（grid：侧栏 + 内容）→ `.shell`（flex 列：TopBar + 主区）→ `.main`（唯一带 padding 的内容区，`overflow: hidden`，滚动交给 `.page`）。
+Use non-user-triggered motion sparingly and deliberately, only to draw attention. A single orchestrated moment — one page-load sequence or one reveal — lands better than scattered effects; fade-and-slide-up entrances on each section and hover transitions on every card are the generic default and read as AI-generated. Motion that answers a person's action (opening, expanding, confirming) is welcome when it shows what changed.
 
-### 尺寸与间距
+Consider written content carefully. Often a design brief may not contain real content, and it's up to you to come up with copy and placeholder content. Copy can make a design feel as templated as the design itself. See the below section on writing for more guidance.
 
-- 用现有令牌：`--radius-sm|--radius|--radius-lg|--radius-pill`、`--shadow-sm|--shadow|--shadow-lg`、`--content-max|--content-max-wide`。
-- 间距没有令牌，是直接写的偶数 px。沿用邻近区块的节奏（页面级 `gap: 16px`、`.main` `gap: 12px`、卡片内 6/8/10/14px），不要凭空引入 13px、17px 这种值。
-- 栅格一律用内在响应：`grid-template-columns: repeat(auto-fill, minmax(<下限>, 1fr))`，下限取卡片真正还能读的宽度。**不要为了排布加媒体查询**——能用 `auto-fill`/`auto-fit` 解决的就不加断点。
-- 任何 flex/grid 子项只要里面可能有长文本或终端，就要有 `min-width: 0`（列方向是 `min-height: 0`），否则内容会把容器撑破。这是本仓库最常见的布局 bug。
+## Process: plan, review against the brief, build, critique
 
-### 响应式
+For calibration, AI-generated design right now clusters around some traits:
+1. a warm cream background (near #F4F1EA) with a high-contrast serif display and a terracotta or warm-clay accent (often near #D97757 — Anthropic's own Claude-interaction accent, so on a user's brief it reads as a tell);
+2. a near-black background with a single bright acid-green or vermilion accent;
+3. a broadsheet-style layout with hairline rules, zero border-radius, and dense newspaper-like columns;
+4. the SaaS-card kit: content chopped into identical rounded cards, one border-radius on everything regardless of hierarchy, the same soft grey shadow (rgba(0,0,0,.1)) under each, and gradient washes as decoration;
+5. template chrome that appears whatever the subject: a tracked-out ALL-CAPS eyebrow label above every heading; meta strings joined with middle dots ('A · B · C'); labels built as 'WORD — fragment' with a spaced em dash; tinted near-black (#0B0B0B, #111) standing in for black; a monospace face for small data labels; a '→' appended to link and button text.
 
-断点是有意少而克制的，**不要新增一档断点来解决单个组件的问题**——先试内在响应。现有的几档：
+All traits are legitimate for some briefs, but they are defaults rather than choices, and they appear regardless of subject. Where the brief pins down a visual direction, follow it exactly — the brief's own words always win, including when it asks for one of these looks. Where it leaves an axis free, don't spend that freedom on one of these defaults. As with a hired human designer, there's often a careful balance between doing what you're good at and taking each project as a chance to experiment and learn.
 
-| 断点 | 作用 |
-| --- | --- |
-| `max-width: 1240px` | 侧栏收窄到 224px，`.main` padding 收到 14/16px |
-| `max-width: 1024px` | 侧栏离开栅格，变成覆盖式抽屉；`DRAWER_QUERY` 在 `App.tsx:59` 与之一致 |
-| `min-width: 1280px` | 控制台右侧才出现 280px 快捷面板 |
-| 其余 | 表格逐级丢列（1100/820px）、单组件收窄（900/780px） |
+Work in two passes. First, brainstorm a short design plan based on the client's design brief: create a compact token system with color, type, layout, and principles.
+- Color: describe the core base palette as 4–6 named hex values.
+- Type: the typefaces and their roles.
+- Layout: a layout concept, using one-sentence prose descriptions and ASCII wireframes to ideate and compare. Include alignment guidance; should the content be left aligned, center aligned, justified?
+- Principles: the high-level guidance for what makes this page unique.
 
-- **1024px 这一档在 CSS 和 JS 两处**：`styles.css` 的媒体查询和 `App.tsx` 的 `DRAWER_QUERY` 常量。改一处必须改另一处，否则抽屉的焦点管理和视觉状态会对不上。
-- 手机是一等场景（服主在外面收到告警要能开机/看日志），窄屏下优先保住：状态、开关机、控制台。次要信息可以隐藏，但不要让它挤成两行错位。
-- 窄屏 padding 用 `max(<值>, env(safe-area-inset-*))`，沿用 `.main` 的写法。
-- 表格在窄屏用「逐级丢列」而不是横向滚动：丢的必须是别处已经能看到的信息（参考 `.ptable__row` 的注释）。
+Then review that plan against the brief before building: if any part of it reads like the generic default you would produce for any similar page (work through a similar prompt to see if you arrive somewhere similar) rather than a choice made for this specific brief — revise that part, say what you changed and why. Only after you've confirmed the relative uniqueness of your design plan should you start to write the code, following the revised plan.
 
-### 动效
+When writing the code, be careful of structuring your CSS selector specificities. It's easy to generate CSS classes that cancel each other out (especially with a type-based selector like .section and an element-based selector like .cta). This can happen often with padding/margin between sections.
 
-- 时长只从 `--dur-1`(90ms) / `--dur`(140ms) / `--dur-3`(220ms) / `--dur-4`(300ms) 里选，**按动作的性质选而不是按距离**：指针反馈 → `--dur-1`；原地变状态 → `--dur`；原地出现/消失（菜单、气泡）→ `--dur-3`；横跨或覆盖屏幕（抽屉、模态、侧栏折叠）→ `--dur-4`。数据驱动的条形走位用 `--dur-data`(400ms) + `--ease-out`。
-- 缓动：进场/移动用 `--ease`，退场用 `--ease-in`，数据用 `--ease-out`。
-- 布局动画优先动**一个数**（`.app` 动的是 `grid-template-columns`），不要动 `width` + 一堆重排。
-- CSS 里的动效已被 `prefers-reduced-motion` 区块统一关掉；但**在 JS 里写的动效（WAAPI、setTimeout）不受它管**，必须自己调用 `motion.ts` 的 `reducedMotion()`。
+## Restraint and self-critique
 
-### 颜色与主题
+Spend your boldness in one place. Let one element be the memorable thing, keep everything around it quiet and disciplined, and cut any decoration that does not serve the brief. Build to a quality floor without announcing it: responsive down to mobile, visible keyboard focus, reduced motion respected, visually accessible, harmonious color palettes. Critique your own work as you build, taking screenshots to review if your environment supports it — a picture is worth 1000 tokens. Consider Chanel's advice: before leaving the house, take a look in the mirror and remove one accessory. Human creatives have memory and always try to do something new, so if you have a space to quickly jot down notes about what you've tried, it can help you in future passes.
 
-- 只用命名令牌，不写裸 hex。表面层级 `--bg` → `--surface-1`（卡片、侧栏）→ `--surface-2/3/4`：需要读作「压在某物之上」就往上走一级，不要发明新值。
-- 文字 `--text` / `--text-dim` / `--text-faint`；描边 `--border` / `--border-strong` / `--border-accent`。
-- 两套令牌块（light / dark）是唯一出现 hex 的地方。新增令牌必须两个块都加，否则暗色下是空值。
-- 终端是例外：两块画布（`--term-*` 服务器控制台、`--shell-*` 主机 shell）在两种模式下都保持深色，且**两者必须一眼可分**——这是防止把 `rm -rf` 敲进错误终端的唯一屏障。别统一它们的配色。
-- 状态色 `--ok`/`--caution`/`--state-*` 有独立色相，且各自对所在表面校验过 3:1，不要换成主色。
+## More on writing in design
 
-### 可访问性
+Words appear in a design for one reason: to make it easier to understand and use. They are design content, not decoration. Bring the same intentionality and minimalism to copywriting that you would bring to spacing and color. Before writing anything, ask what the design needs to say, and how it can best be said to help the person navigate the experience.
 
-- 焦点环用 `--ring`（危险操作 `--ring-danger`），不要 `outline: none` 了事。
-- 抽屉打开时焦点进入、关闭时归还给触发按钮（`App.tsx` 已实现，新增覆盖层照此办理）；离屏内容必须 `visibility: hidden`，不能只靠 `transform` 挪走——否则 Tab 还能走进去。
-- 图标按钮要有 `aria-label`；纯装饰元素 `aria-hidden="true"`。
+Write from the end user's perspective. Name things by what users will understand in simple language, not by how the system is built. A user manages notifications, not webhook config. Describe what something is or does in plain terms rather than selling it. Being specific and legible to new users is always better than being clever.
 
-## 验证
+Use active voice as default. A CTA says exactly what happens when it is used: "Save changes," not "Submit." An action keeps the same name through the whole flow, so the button that says "Publish" produces a toast that says "Published." The vocabulary of an interface is the signposting for someone navigating the product. Cohesion and consistency are how people learn their way around.
 
-改完必须跑：
+Treat failure and emptiness as moments for direction, not mood. Explain what went wrong and how to fix it, in the interface's voice rather than a person's. Errors don't apologize, and they are never vague about what happened. An empty screen is an invitation to act.
 
-```bash
-npm --prefix web run build   # tsc -b + vite build，类型和构建一起过
-```
-
-跑不动依赖就先 `npm --prefix web install`。涉及后端一并改的，`make lint && make test`。
-
-样式改动无法靠类型检查兜底，所以自查这几条：
-
-- 明暗两种模式都看过（新令牌是不是两个块都加了）。
-- 1440 / 1200 / 1024 / 768 / 390 宽度下都没有横向溢出、没有挤成错位的行。
-- 折叠侧栏、打开抽屉、开着控制台的实例页——这三处最容易被布局改动波及。
-- 长内容（六层深的路径、几百行日志、很长的实例名）不会撑破容器。
-
-## 不要做的事
-
-- 不要引入 CSS 框架、UI 组件库、CSS-in-JS，或把 `styles.css` 拆成多文件。
-- 不要为了一处样式加 `!important` 或行内 `style`（除非是必须由 JS 计算的动态值）。
-- 不要在没读注释的情况下「简化」看起来冗余的选择器或媒体查询。
-- 不要顺手扩大改动范围：只做被要求的那部分布局优化。
+Keep the tone conversational: plain verbs, sentence case, no filler, with tone matched to the brand and the audience. Let each written element do exactly one job.
