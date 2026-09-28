@@ -123,7 +123,7 @@ def _fake_run(calls, fail_times=0, limit=False):
             state["fails"] -= 1
             raise ClaudeError("超时")
         body = {s: {"boxes": {"1": {"cls": "player"}}, "missing": [], "unsure": ""} for s in stems}
-        return {"result": json.dumps(body), "usage": {"input_tokens": 10, "output_tokens": 2}}
+        return {"result": json.dumps(body), "usage": {"input_tokens": 10, "output_tokens": 2, "cache_creation_input_tokens": 100}}
 
     return run
 
@@ -173,6 +173,7 @@ def test_reviewer_counts_usage(tmp_path):
     r = Reviewer(_fake_run([]), tmp_path, AssistConfig(batch=1, jobs=2), "m")
     r.review(_frames(3))
     assert r.usage["input_tokens"] == 30 and r.usage["output_tokens"] == 6
+    assert r.usage["cache_creation_input_tokens"] == 300  # 图片的 token 记在这里（实测 input_tokens 只有个位数）
 
 
 def test_assist_command_uses_model_and_no_tools():

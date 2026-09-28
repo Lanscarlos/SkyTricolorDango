@@ -902,7 +902,7 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
     added = sum(len(r.missing) for r in reviews.values() if r)
     print("标注：" + "、".join(f"{c}×{v}" for c, v in counts.items()) + f"；Claude 补框 {added} 个；没核对 {failed} 帧")
     u = reviewer.usage
-    print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens']}、输出 {u['output_tokens']}、缓存读 {u['cache_read_input_tokens']} token")
+    print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")
     print(f"下一步：先看 {report}，再用 X-AnyLabeling 打开 {out / 'images'} 修正")
 
 

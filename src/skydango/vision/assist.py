@@ -272,7 +272,7 @@ class Reviewer:
         self.cache_dir = Path(cache_dir)
         self.cfg = cfg
         self.source = source
-        self.usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}
+        self.usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
         self._lock = threading.Lock()
 
     def _key(self, f: FrameInput) -> dict:
