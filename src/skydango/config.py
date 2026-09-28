@@ -299,6 +299,25 @@ class PlacesConfig:
 
 
 @dataclass
+class GestureConfig:
+    """别人对团子做的动作（感知层三期 §3，研究性质）：好友对着团子挥手、鞠躬时发 gesture 事件，大脑决定回不回礼。
+
+    还没有模型：先 `perception clips` 从录像切片段、人工分到 <动作>/ 目录，训练导出 ONNX 后用 `perception gesture-eval` 评估，
+    精确率 ≥ 90%、召回率 ≥ 60% 才打开。"""
+
+    enabled: bool = False
+    model: str = "models/gesture.onnx"  # 输入 1×frames×3×size×size（RGB，0~1），输出每个标签的分数（logits 或概率）
+    labels: list[str] = field(default_factory=lambda: ["none", "wave", "bow"])  # 模型输出的顺序；none = 没做这几个动作
+    names: dict[str, str] = field(default_factory=lambda: {"wave": "挥手", "bow": "鞠躬"})  # 事件里的中文名
+    frames: int = 16  # 一段几帧（2 s）
+    fps: float = 8.0  # 每秒取几帧
+    size: int = 112  # 人物裁剪缩放到的边长
+    interval: float = 2.0  # 同一个人隔这么久判一次
+    min_prob: float = 0.9  # 概率到这个才报（报错动作很尴尬，宁可不报）
+    cooldown: float = 30.0  # 同一个人同一种动作这么久内只报一次
+
+
+@dataclass
 class FriendCheckConfig:
     """大脑的 check_friend 工具：点一下人物打开右侧的好友树面板，截图给大脑看是不是好友，再关掉。
 
@@ -393,6 +412,7 @@ class Config:
     social: SocialConfig = field(default_factory=SocialConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     places: PlacesConfig = field(default_factory=PlacesConfig)
+    gesture: GestureConfig = field(default_factory=GestureConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     spin: SpinConfig = field(default_factory=SpinConfig)

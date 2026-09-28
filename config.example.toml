@@ -111,6 +111,16 @@ place_min = 0.8                 # 最像的相似度至少这么高（待标定�
 place_margin = 0.05             # 且比第二像的别的地方高这么多
 place_interval = 30.0           # 每隔这么久认一次（画面大变后也认一次）
 
+[gesture]
+# 别人对团子做的动作（感知层三期，研究性质，还没有模型）：好友对着团子挥手、鞠躬时告诉大脑，由它决定回不回礼
+# 数据：record --fps 8 录 → perception clips 切片段 → 人工分到 <动作>/ → 训练导出 ONNX → perception gesture-eval 评估
+enabled = false
+model = "models/gesture.onnx"
+labels = ["none", "wave", "bow"]  # 模型输出的顺序
+names = { wave = "挥手", bow = "鞠躬" }
+min_prob = 0.9                  # 宁可不报：精确率不到 90% 不要打开
+cooldown = 30.0                 # 同一个人同一种动作这么久内只报一次
+
 [spin]
 # 转一圈：主人发 #spin（普通模式）、命令行 camera spin、打开感知层时大脑的 look_around
 seconds_per_turn = 2.0          # 按住方向键转一圈要几秒（估的，待 camera spin 标定）

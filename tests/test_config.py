@@ -80,3 +80,15 @@ def test_places_section(tmp_path):
 
 def test_places_folder_is_gitignored():
     assert "places/" in (ROOT / ".gitignore").read_text(encoding="utf-8").split()
+
+
+def test_gesture_section(tmp_path):
+    g = load_config(None).gesture
+    assert (g.enabled, g.model, g.labels) == (False, "models/gesture.onnx", ["none", "wave", "bow"])
+    assert g.names == {"wave": "挥手", "bow": "鞠躬"}
+    assert (g.frames, g.fps, g.size, g.interval, g.min_prob, g.cooldown) == (16, 8.0, 112, 2.0, 0.9, 30.0)
+    p = tmp_path / "c.toml"
+    p.write_text("[gesture]\nlabels = [\"none\", \"wave\"]\nnames = {wave = \"招手\"}\n", encoding="utf-8")
+    g2 = load_config(p).gesture
+    assert g2.labels == ["none", "wave"] and g2.names == {"wave": "招手"}
+    assert load_config(ROOT / "config.example.toml").gesture.enabled is False
