@@ -3,7 +3,17 @@
 import numpy as np
 
 from skydango.config import Config
-from skydango.vision.assist import build_message, draw_candidates, parse_review, pick_frames
+from skydango.vision.assist import (
+    FrameReview,
+    Verdict,
+    apply_review,
+    build_message,
+    draw_candidates,
+    draw_review,
+    parse_review,
+    pick_frames,
+    review_report,
+)
 from skydango.vision.bubbles import Rect
 
 
@@ -62,3 +72,29 @@ def test_parse_tolerates_fences_and_prose():
 
 def test_parse_garbage_returns_empty():
     assert parse_review('{"a": {"boxes": ', {"a": 1}, 1920, 1080) == {}
+
+
+def _review(**kw):
+    return FrameReview(verdicts=kw.get("v", {}), missing=kw.get("m", []), unsure=kw.get("u", ""), problems=kw.get("p", []))
+
+
+def test_apply_review_keeps_people_uses_fixed_adds_missing():
+    cands = [Rect(0, 0, 10, 10), Rect(20, 0, 10, 10), Rect(40, 0, 10, 10), Rect(60, 0, 10, 10)]
+    r = _review(v={1: Verdict("self", Rect(0, 0, 12, 12), ""), 2: Verdict("duplicate", None, ""),
+                   3: Verdict("not_person", None, ""), 4: Verdict("player_unlit", None, "")},
+                m=[("player", Rect(90, 0, 10, 20), "")])
+    assert apply_review(cands, r) == [
+        ("self", Rect(0, 0, 12, 12)), ("player_unlit", Rect(60, 0, 10, 10)), ("player", Rect(90, 0, 10, 20))
+    ]
+
+
+def test_review_report_orders_sections():
+    md = review_report([("f1", None), ("f2", _review(m=[("player", Rect(0, 0, 5, 5), "远处")])),
+                        ("f3", _review(u="看不清")), ("f4", _review())])
+    assert md.index("f1") < md.index("f2") < md.index("f3") and "远处" in md and "看不清" in md
+    assert "其余 1 帧" in md
+
+
+def test_draw_review_marks_unreviewed():
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    assert draw_review(frame, [], [], None).max() > 0 and frame.max() == 0

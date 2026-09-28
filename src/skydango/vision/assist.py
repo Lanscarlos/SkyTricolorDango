@@ -161,3 +161,70 @@ def parse_review(text: str, frames: dict[str, int], width: int, height: int) -> 
                 missing.append((m["cls"], box, str(m.get("note") or "")))
         out[stem] = FrameReview(verdicts, missing, str(item.get("unsure") or ""), problems)
     return out
+
+
+def apply_review(candidates: list[Rect], review: FrameReview) -> list[tuple[str, Rect]]:
+    """核对结果 → 人物标注框：认可的候选（有修正框用修正框）+ Claude 补的漏框；不是人 / 重复的丢掉。"""
+    out = []
+    for i, box in enumerate(candidates, 1):
+        v = review.verdicts.get(i)
+        if v is not None and v.cls in PEOPLE:
+            out.append((v.cls, v.fixed or box))
+    out += [(cls, box) for cls, box, _ in review.missing]
+    return out
+
+
+PEOPLE_COLORS = {"player": (0, 220, 0), "player_unlit": (255, 0, 200), "self": (200, 200, 200)}
+WEAK_COLORS = {"name_tag": (0, 200, 255), "social_ring": (255, 120, 0)}  # 同 perception label 的预览
+
+
+def _dashed(img: np.ndarray, b: Rect, color, thickness: int = 4, dash: int = 12) -> None:
+    for x in range(b.x, b.x2, dash * 2):
+        cv2.line(img, (x, b.y), (min(x + dash, b.x2), b.y), color, thickness)
+        cv2.line(img, (x, b.y2), (min(x + dash, b.x2), b.y2), color, thickness)
+    for y in range(b.y, b.y2, dash * 2):
+        cv2.line(img, (b.x, y), (b.x, min(y + dash, b.y2)), color, thickness)
+        cv2.line(img, (b.x2, y), (b.x2, min(y + dash, b.y2)), color, thickness)
+
+
+def draw_review(frame: np.ndarray, weak: list[tuple[str, Rect]], candidates: list[Rect], review: FrameReview | None) -> np.ndarray:
+    """预览：弱标注照旧；绿 player、紫 player_unlit、灰白 self；红细框 = 去掉的候选；虚线 = Claude 补的框。"""
+    out = frame.copy()
+    for cls, b in weak:
+        cv2.rectangle(out, (b.x, b.y), (b.x2, b.y2), WEAK_COLORS.get(cls, (0, 200, 255)), 2)
+    if review is None:
+        for b in candidates:
+            cv2.rectangle(out, (b.x, b.y), (b.x2, b.y2), (0, 0, 255), 1)
+        cv2.rectangle(out, (0, 0), (260, 50), (0, 0, 0), -1)
+        cv2.putText(out, "NOT REVIEWED", (8, 36), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)  # 没核对（cv2 写不了中文）
+        return out
+    for i, b in enumerate(candidates, 1):
+        v = review.verdicts.get(i)
+        if v is not None and v.cls in PEOPLE:
+            box, color = v.fixed or b, PEOPLE_COLORS[v.cls]
+            cv2.rectangle(out, (box.x, box.y), (box.x2, box.y2), color, 4)
+            cv2.putText(out, f"{i} {v.cls}", (box.x, max(24, box.y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        else:
+            cv2.rectangle(out, (b.x, b.y), (b.x2, b.y2), (0, 0, 255), 1)
+            cv2.putText(out, f"{i} {v.cls if v else '?'}", (b.x + 4, b.y2 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    for cls, b, _ in review.missing:
+        _dashed(out, b, PEOPLE_COLORS[cls])
+        cv2.putText(out, f"+{cls}", (b.x, max(24, b.y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, PEOPLE_COLORS[cls], 2)
+    return out
+
+
+def review_report(results: list[tuple[str, FrameReview | None]]) -> str:
+    """待核对清单（Markdown），按优先级：没核对 → 有补框 → 拿不准 / 回答有问题 → 其余抽查。"""
+    failed = [s for s, r in results if r is None]
+    added = [(s, r) for s, r in results if r is not None and r.missing]
+    unsure = [(s, r) for s, r in results if r is not None and (r.unsure or r.problems)]
+    listed = set(failed) | {s for s, _ in added} | {s for s, _ in unsure}
+    rest = sum(1 for s, _ in results if s not in listed)
+    lines = ["# 待核对清单（Claude 辅助标注）", "", "预览在 _preview/：绿 player、紫 player_unlit、灰白 self、红细框 = 去掉的候选、虚线 = Claude 补的框。", ""]
+    lines += ["## 1. 没核对（人物框要全补）", ""] + ([f"- {s}" for s in failed] or ["（无）"]) + [""]
+    lines += ["## 2. 有 Claude 补的框（偏松，要拉紧）", ""]
+    lines += [f"- {s}：" + "；".join(f"{c} {n}".strip() for c, _, n in r.missing) for s, r in added] or ["（无）"]
+    lines += ["", "## 3. Claude 拿不准 / 回答有问题", ""]
+    lines += [f"- {s}：" + "；".join(filter(None, [r.unsure, *r.problems])) for s, r in unsure] or ["（无）"]
+    lines += ["", f"## 4. 其余 {rest} 帧：抽查几张就行", ""]
+    return "\n".join(lines)
