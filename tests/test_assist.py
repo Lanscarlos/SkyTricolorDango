@@ -3,7 +3,8 @@
 import numpy as np
 
 from skydango.config import Config
-from skydango.vision.assist import pick_frames
+from skydango.vision.assist import build_message, draw_candidates, pick_frames
+from skydango.vision.bubbles import Rect
 
 
 def test_pick_frames_drops_similar_and_forces_gap():
@@ -16,3 +17,19 @@ def test_assist_config_defaults():
     c = Config().assist
     assert (c.min_change, c.max_gap, c.batch, c.jobs, c.model) == (30.0, 20, 5, 3, "sonnet")
     assert c.proposal_models == ["models/yolo11n.pt", "models/yolo11x.pt"]
+
+
+def test_draw_candidates_keeps_original():
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    out = draw_candidates(frame, [Rect(100, 200, 50, 120)])
+    assert frame.max() == 0 and out.shape == frame.shape and out.max() > 0
+
+
+def test_build_message_lists_frames_and_rules():
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    msg = build_message([("a", frame, [Rect(10, 20, 30, 40)]), ("b", frame, [])], "蓝紫色圆背包")
+    texts = [b["text"] for b in msg if b["type"] == "text"]
+    assert "头顶有圆圈" in texts[0] and "蓝紫色圆背包" in texts[0] and "duplicate" in texts[0]
+    assert "帧 a" in texts[1] and "1=[10,20,40,60]" in texts[1]
+    assert "帧 b" in texts[2] and "没有候选框" in texts[2]
+    assert [b["type"] for b in msg].count("image") == 2
