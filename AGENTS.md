@@ -11,6 +11,33 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - 用中文回答。
 - 每次任务改完，主动把功能分支合并进 main 并推送到远程。
 
+## Skill：动手之前先挑一个
+
+`.claude/skills/` 里的 skill 跟着仓库走，本地和云端（claude.ai/code）都会自动加载——插件装在本地是没用的，云端每次从仓库重新克隆。
+
+**任何任务开始前，先看有没有对得上的 skill；有就先调用它，再动手。** 包括「先问个澄清问题」「先翻一下代码」之前——skill 会告诉你该怎么翻。用之前宣告一句「用 X skill 来做 Y」，然后照着它走；发现不合适再放弃。
+
+| Skill | 什么时候用 |
+| --- | --- |
+| `brainstorming` | 要做新功能／改行为，需求和设计还没定死 |
+| `writing-plans` | 需求清楚了，多步骤改动，写代码之前先出方案 |
+| `executing-plans` / `subagent-driven-development` | 按方案逐条实现（默认用前者，见下） |
+| `test-driven-development` | 实现功能或修 bug，写实现代码之前 |
+| `systematic-debugging` | 遇到 bug、测试挂了、行为不符合预期 |
+| `verification-before-completion` | 要说「做完了／修好了／过了」之前，先跑命令拿证据 |
+| `requesting-code-review` / `receiving-code-review` | 提交或合并前自查；以及收到评审意见之后 |
+| `finishing-a-development-branch` | 实现完成、测试通过，决定怎么合回去 |
+| `dispatching-parallel-agents` | 有两件以上互不依赖的事可以并行 |
+| `using-git-worktrees` | 需要跟当前工作区隔离的分支作业 |
+| `writing-skills` | 新增或修改 skill 本身 |
+| `using-superpowers` | 上面这套规矩的总纲 |
+
+全部来自 [obra/superpowers](https://github.com/obra/superpowers)（MIT），经 [HyperCraft](https://github.com/Lanscarlos/HyperCraft) 引入。来源、版本和同步方法见 `.claude/skills/README.md`。
+
+- **执行方案默认 Inline Execution**：`writing-plans` 收尾时会让人在「Subagent-Driven」和「Inline Execution」之间二选一，**本仓库不要问这一句**，直接宣告「用 executing-plans skill 执行这份方案」，在当前会话里逐条实现。只有用户明确要求用子 agent、或方案里有两件以上互不依赖的大块时才改用 `subagent-driven-development`，换的时候说一句理由。
+- **skill 管不到真机**：TDD、验证类 skill 说的「跑测试」在这里指 `python -m pytest -q`（合成画面 + 假设备）；往游戏里发输入的改动仍然要按下面「工作约定」先在真机上截图验证，单元测试通过不等于游戏里能用。
+- **合并方式以本文件为准**：`finishing-a-development-branch` 会列几种收尾选项，本仓库的规矩是改完合并进 main 并推送（见上）。
+
 ## 环境
 
 - Windows + MuMu 12，游戏包名 `com.netease.sky.vivo`（国服 vivo 渠道），横屏 1920×1080
@@ -43,6 +70,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角 |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
+| `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
 
 ## 记忆（`memory/`，不进 git）
 
