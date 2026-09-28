@@ -421,3 +421,41 @@ def test_owner_name_empty_disables_commands(clock, tmp_path):
     assert agent.sent == []  # 功能关闭时，即使 speaker 匹配也当普通聊天
     assert len(agent.pending) == 1
     assert store.inbox() == ""
+
+
+class HoldEnv:
+    requests = {}
+
+    def __init__(self):
+        self.holds = []
+
+    def observe(self, frame, now, panel_visible):
+        pass
+
+    def nearby(self, now):
+        return []
+
+    def describe(self, now):
+        return ""
+
+    def held(self, reason):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def ctx():
+            self.holds.append(("hold", reason))
+            try:
+                yield
+            finally:
+                self.holds.append(("release", reason))
+
+        return ctx()
+
+
+def test_agent_emote_wrapped_in_held(clock):
+    cfg = live_config()
+    emotes = FakeEmotes()
+    agent, _ = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
+    agent.env = HoldEnv()
+    run_one_turn(agent, clock)
+    assert agent.env.holds == [("hold", "wheel"), ("release", "wheel")]

@@ -290,6 +290,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True):
     return PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
+        scene_change=cfg.brain.scene_change,
     )
 
 

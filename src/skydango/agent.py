@@ -6,6 +6,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 
 from .chat.commands import CommandRouter, is_command
 from .chat.memory import MemoryStore
@@ -96,6 +97,11 @@ class Agent:
         except Exception:
             log.debug("可视化更新出错", exc_info=True)
 
+    def _held(self, reason: str) -> AbstractContextManager:
+        """换轮盘、接互动时暂停感知计时（见 brain/body.py 同名方法）。"""
+        held = getattr(self.env, "held", None)
+        return held(reason) if held is not None else nullcontext()
+
     def step(self) -> str | None:
         """跑一轮；如果这一轮发出（或 dry-run 模拟发出）了回复，返回那句话。"""
         now = self.clock()
@@ -115,7 +121,8 @@ class Agent:
                 self._show(frame, now, fresh)
             if self.social is not None and self.env is not None and self.env.requests:
                 try:
-                    self.social.handle(self.env.requests, now)
+                    with self._held("social"):
+                        self.social.handle(self.env.requests, now)
                 except Exception:
                     log.exception("处理互动请求出错")
         commands: list[Message] = []
@@ -194,7 +201,8 @@ class Agent:
             self.emotes.pretend(name)
             return
         try:
-            self.emotes.perform(name)
+            with self._held("wheel"):
+                self.emotes.perform(name)
         except Exception:  # 换轮盘没找到图标、adb 出错……动作做不成，话照样说
             log.exception("做动作「%s」失败，跳过", name)
 
