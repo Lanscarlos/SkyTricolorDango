@@ -101,3 +101,56 @@ def test_places_test_with_empty_library_explains(tmp_path, monkeypatch):
     (tmp_path / "p").mkdir()
     with pytest.raises(SystemExit):
         cli.main(["places", "test", str(tmp_path / "p"), "--model", "thumb"])
+
+
+class WalkDetector:
+    imgsz = 960
+    providers = ["Fake"]
+
+    def detect(self, img):
+        from skydango.vision.bubbles import Rect
+        from skydango.vision.detect import Detection
+
+        return [Detection("player", Rect(900, 400, 90, 220), 0.9)]
+
+
+def test_perception_clips_from_record_dir(tmp_path, monkeypatch, capsys):
+    import numpy as np
+
+    from skydango.imageio import imwrite
+    from skydango.vision import detect
+
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    for i in range(20):
+        imwrite(rec / f"{i:04d}_{i * 0.125:06.2f}s.jpg", np.zeros((1080, 1920, 3), np.uint8))
+    monkeypatch.setattr(detect, "make_detector", lambda *a, **k: WalkDetector())
+    out = tmp_path / "clips"
+    cli.main(["perception", "clips", str(rec), "-o", str(out)])
+    assert len([p for p in out.iterdir() if p.is_dir()]) == 1
+    assert "1 段" in capsys.readouterr().out
+
+
+def test_perception_gesture_eval_prints_verdict(tmp_path, monkeypatch, capsys):
+    import numpy as np
+
+    from skydango.imageio import imwrite
+    from skydango.vision import gesture
+
+    for label, value in (("wave", 100), ("none", 0)):
+        clip = tmp_path / "data" / label / "c0"
+        clip.mkdir(parents=True)
+        for i in range(16):
+            imwrite(clip / f"{i:02d}.png", np.full((32, 32, 3), value, np.uint8))
+
+    class Fake:
+        def __init__(self, *a, **k):
+            pass
+
+        def classify(self, clip):
+            return ("wave", 0.95) if clip[0].mean() > 50 else ("none", 0.99)
+
+    monkeypatch.setattr(gesture, "OnnxGestureClassifier", Fake)
+    cli.main(["perception", "gesture-eval", str(tmp_path / "data"), "--model", "x.onnx"])
+    out = capsys.readouterr().out
+    assert "wave" in out and "100%" in out and "达标" in out

@@ -34,3 +34,10 @@ def test_brain_prompt_quick_around():
     assert "要十几秒" in brain_prompt(ReplyConfig(), None)
     quick = brain_prompt(ReplyConfig(), None, quick_around=True)
     assert "要十几秒" not in quick and "几秒就好" in quick
+
+
+def test_brain_prompt_mentions_gestures_and_following_by_holding_hands():
+    text = static_prompt(ReplyConfig())
+    assert "对你挥手" in text and "回礼" in text
+    assert "牵我一下" in text and "带着你走" in text
+    assert "跟着别人走" not in text  # 以前说"不能跟着别人走"：现在能靠牵手跟

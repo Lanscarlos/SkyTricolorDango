@@ -309,7 +309,17 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
         scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
         places=places, place_interval=cfg.places.place_interval,
+        gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
     )
+
+
+def _gesture_classifier(cfg: Config):
+    if not cfg.gesture.enabled:
+        return None
+    from .vision.gesture import OnnxGestureClassifier
+
+    log.info("认动作（研究性质）：%s，只报 %s", cfg.gesture.model, "、".join(cfg.gesture.names.values()))
+    return OnnxGestureClassifier(cfg.gesture.model, cfg.gesture.labels, cfg.perception.device)
 
 
 def _place_recognizer(cfg: Config, required: bool = False):
@@ -594,6 +604,55 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_compare(cfg, args)
     elif args.action == "unknown-names":
         _perception_unknown_names(cfg, args)
+    elif args.action == "clips":
+        _perception_clips(cfg, args)
+    elif args.action == "gesture-eval":
+        _perception_gesture_eval(cfg, args)
+
+
+def _perception_clips(cfg: Config, args) -> None:
+    """动作识别的数据（三期 §3）：record 录的画面 → 按人物轨迹切成 16 帧的片段，人工挪进 <数据目录>/<动作>/。"""
+    from .vision.compare import timed_files
+    from .vision.detect import make_detector
+    from .vision.gesture import extract_clips
+
+    p = cfg.perception
+    if args.model:
+        p.model = args.model
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
+    out = Path(args.output)
+    n = extract_clips(((t, imread(path)) for t, path in timed), detector, out, cfg.gesture, p.conf)
+    print(f"切出 {n} 段（每段 {cfg.gesture.frames} 张、{cfg.gesture.fps:g} 张/秒）→ {out}")
+    print(f"人工看一遍，把片段目录挪进 <数据目录>/<动作>/（{' / '.join(cfg.gesture.labels)}；none = 站着、走路、别的动作），"
+          "再用 perception gesture-eval 评估")
+
+
+def _perception_gesture_eval(cfg: Config, args) -> None:
+    """在分好类的片段上评估动作模型：精确率 ≥ 90%、召回率 ≥ 60% 才打开 [gesture]。"""
+    from .vision import gesture
+
+    g = cfg.gesture
+    if args.model:
+        g.model = args.model
+    clf = gesture.OnnxGestureClassifier(g.model, g.labels, cfg.perception.device)
+    r = gesture.evaluate(Path(args.data), clf, g)
+    pct = lambda v: "—" if v is None else f"{v:.0%}"  # noqa: E731
+    print(f"{r['clips']} 段，概率 ≥ {g.min_prob} 才算报了：")
+    for label, v in r.items():
+        if label in ("all", "clips"):
+            continue
+        print(f"  {label}（{g.names.get(label, label)}）：精确率 {pct(v['precision'])}、召回率 {pct(v['recall'])}"
+              f"（对 {v['tp']}、错报 {v['fp']}、漏 {v['fn']}）")
+    a = r["all"]
+    ok = (a["precision"] or 0) >= 0.9 and (a["recall"] or 0) >= 0.6
+    print(f"总的：精确率 {pct(a['precision'])}、召回率 {pct(a['recall'])} → "
+          + ("达标（精确率 ≥ 90%、召回率 ≥ 60%），可以真机试 10 分钟" if ok else "没达标，先别打开 [gesture]"))
 
 
 def _perception_unknown_names(cfg: Config, args) -> None:
@@ -1315,6 +1374,13 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")
     q.add_argument("--runs", default="runs", help="运行目录的上级（默认 runs/）")
     q.add_argument("--last", type=int, default=5, help="看最近几次运行")
+    q = psub.add_parser("clips", help="动作识别的数据：录像按人物轨迹切成 16 帧的片段（人工再分到 <动作>/ 目录）")
+    q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
+    q.add_argument("-o", "--output", default="datasets/gesture/_unlabeled")
+    q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q = psub.add_parser("gesture-eval", help="在分好类的片段（<数据目录>/<动作>/<片段>/）上评估动作模型的精确率 / 召回率")
+    q.add_argument("data", help="数据目录，比如 datasets/gesture")
+    q.add_argument("--model", help="动作模型（默认 gesture.model）")
     q = psub.add_parser("augment", help="训练集加运动模糊（转视角）/ 压暗（暗场景）的样本，标注原样复制")
     q.add_argument("dataset", help="数据集目录（perception label 的输出，比如 datasets/sky）")
     q.add_argument("--seed", type=int, default=0)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
 
@@ -109,9 +110,9 @@ def load_clip(folder: Path) -> list[np.ndarray]:
 
 
 def extract_clips(
-    frames: list[tuple[float, np.ndarray]], detector, out: Path, cfg: GestureConfig, conf: float
+    frames: Iterable[tuple[float, np.ndarray]], detector, out: Path, cfg: GestureConfig, conf: float
 ) -> int:
-    """录像 [(秒, 图)] → 每条 player 轨迹按 fps 取帧，切成不重叠的 frames 张一段存起来，返回段数。"""
+    """录像 [(秒, 图)]（可以是生成器，录像长了不用全读进内存）→ 每条 player 轨迹按 fps 取帧，切成不重叠的 frames 张一段存起来，返回段数。"""
     tracker = Tracker(buffer=1.0, min_iou=0.3)
     buffers: dict[int, tuple[float, list[np.ndarray]]] = {}  # 轨迹 → (这一段开始的秒数, 裁剪)
     last: dict[int, float] = {}

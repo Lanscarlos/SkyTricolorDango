@@ -833,3 +833,28 @@ def test_sweep_around_mentions_blackout(clock):
 
     b, _, _, _ = body(clock, live=True, env=SweepEnv(), camera=DarkCamera())
     assert "中途画面黑了" in b.sweep_around()
+
+
+# ---- 三期：别人对团子做的动作 ----
+class GestureEnv(ApproachEnv):
+    def __init__(self, gestures=()):
+        super().__init__()
+        self.gestures = list(gestures)
+
+    def pop_gestures(self):
+        out, self.gestures = self.gestures, []
+        return out
+
+
+def test_gesture_events(clock):
+    b, _, _, events = body(clock, env=GestureEnv([("懒洋洋大王", "wave"), ("番茄炒蛋盖饭", "clap")]))
+    b.step()
+    got = [(e.kind, e.text) for e in events.drain() if e.kind == "gesture"]
+    assert got == [("gesture", "懒洋洋大王对你挥手"), ("gesture", "番茄炒蛋盖饭对你clap")]
+
+
+def test_holding_partner_gesture_is_dropped(clock):
+    b, _, _, events = body(clock, env=GestureEnv([("卡洛", "wave")]))
+    b.holding = "卡洛"
+    b.step()
+    assert not [e for e in events.drain() if e.kind == "gesture"]

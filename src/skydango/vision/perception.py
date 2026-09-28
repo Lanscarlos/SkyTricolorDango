@@ -34,10 +34,11 @@ import numpy as np
 
 from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
-from ..config import EnvConfig, PerceptionConfig, SpinConfig
+from ..config import EnvConfig, GestureConfig, PerceptionConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, Request
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
+from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import Track, Tracker, iou
@@ -115,6 +116,8 @@ class PerceptionWatcher:
         unknown=None,  # vision.unknownnames.UnknownNames：读得清楚但不在好友名单里的名字（三期 §5）
         places=None,  # vision.places.PlaceRecognizer：认地图（三期 §2）
         place_interval: float = 30.0,  # 每隔这么久认一次地图（画面大变后也认一次）
+        gestures=None,  # vision.gesture.GestureClassifier：别人对团子做的动作（三期 §3，研究性质）
+        gesture_cfg: GestureConfig | None = None,
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -133,6 +136,10 @@ class PerceptionWatcher:
         self.place_interval = place_interval
         self._place_run = float("-inf")
         self._place_thumb: np.ndarray | None = None
+        self.gestures = gestures
+        self.gesture_cfg = gesture_cfg or GestureConfig()
+        self._gestures: list[tuple[str, str]] = []  # (好友名, 动作)，身体取走
+        self._gesture_at: dict[tuple[str, str], float] = {}
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
         self.requests: dict = {}  # 名字 → game.social.Request
@@ -215,6 +222,7 @@ class PerceptionWatcher:
         self._prev_count, self._prev_thumb = 0, None  # 暂停前那一帧不能拿来判"集体消失"（镜头可能已经转走了）
         for track in list(self.tracker.tracks.values()):  # 暂停前后的框高不能连起来判"走过来"（镜头可能动过）
             track.data.pop("hist", None)
+            track.data.pop("clip", None)  # 动作片段也不能跨暂停拼起来
         if d <= 0:
             return
         for name, t in list(self.last_seen.items()):
@@ -411,6 +419,8 @@ class PerceptionWatcher:
         self._watch_typing(bubbles, players, selfs, now, width, height)
         if not self.paused:
             self._watch_approach(players, now, width)
+            if self.gestures is not None:
+                self._watch_gestures(frame, players, now, width, height)
         with self._lock:  # 身体线程会同时读（strangers()）
             self._strangers.append((now, strangers, unlit))
             while self._strangers and now - self._strangers[0][0] > self.cfg.keep:
@@ -701,6 +711,41 @@ class PerceptionWatcher:
                 log.info("%s 朝团子走过来了", who)
                 with self._lock:
                     self._approaches.append(who)
+
+    def _watch_gestures(self, frame: np.ndarray, players: list[Track], now: float, width: int, height: int) -> None:
+        """三期 §3：认出名字、近 / 中、在画面中间的好友，攒够一段（frames 张）后每 interval 秒判一次动作。"""
+        cfg = self.gesture_cfg
+        ref = self._ref_height(height)
+        for p in players:
+            name = p.data.get("name")
+            if p.cls != "player" or not eligible(name, p.box, width, ref, self.cfg.near, self.cfg.far):
+                continue
+            buf: ClipBuffer = p.data.setdefault("clip", ClipBuffer(cfg.frames, cfg.fps))
+            buf.push(now, person_crop(frame, p.box, cfg.size))
+            if not buf.ready() or now - p.data.get("gesture_at", float("-inf")) < cfg.interval:
+                continue
+            p.data["gesture_at"] = now
+            try:
+                with self._infer:
+                    label, prob = self.gestures.classify(buf.clip())
+            except Exception:
+                log.exception("认动作出错")
+                continue
+            if label == "none" or prob < cfg.min_prob:
+                continue
+            key = (name, label)
+            if now - self._gesture_at.get(key, float("-inf")) < cfg.cooldown:
+                continue
+            self._gesture_at[key] = now
+            log.info("%s 对团子做了动作：%s（%.2f）", name, label, prob)
+            with self._lock:
+                self._gestures.append(key)
+
+    def pop_gestures(self) -> list[tuple[str, str]]:
+        """取走"谁对团子做了什么动作"，身体变成 gesture 事件。"""
+        with self._lock:
+            out, self._gestures = self._gestures, []
+        return out
 
     def pop_approaches(self) -> list[str]:
         """取走"朝团子走过来"的人（好友名 / 陌生人），身体变成 approach 事件。"""

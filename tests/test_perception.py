@@ -1044,3 +1044,83 @@ def test_place_recognizer_error_does_not_break_the_frame():
                           log_roi=[0.0, 0.0, 0.335, 0.855], background=False, places=Broken())
     w.process(frame(), 0.0, panel_visible=False)
     assert w.nearby(0.0) == ["懒洋洋大王"] and w.place == ""
+
+
+# ---- 三期 §3：别人对团子做的动作 ----
+from skydango.config import GestureConfig  # noqa: E402
+
+
+class FakeGesture:
+    def __init__(self, answer=("wave", 0.95)):
+        self.answer = answer
+        self.calls = 0
+
+    def classify(self, clip):
+        self.calls += 1
+        assert len(clip) == 16 and clip[0].shape == (112, 112, 3)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def gesture_watcher(det, gestures, ocr=None):
+    return PerceptionWatcher(
+        det, ocr or FakeOcr({110: "懒洋洋大王"}), PerceptionConfig(), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, gestures=gestures, gesture_cfg=GestureConfig(),
+    )
+
+
+def feed(w, until, start=0.0, step=0.125):
+    out = []
+    t = start
+    while t <= until + 1e-9:
+        w.process(frame(), t, panel_visible=False)
+        out += w.pop_gestures()
+        t = round(t + step, 3)
+    return out
+
+
+def test_friend_waving_in_front_is_reported_once_per_cooldown():
+    det = FakeDetector()
+    det.frames = [[player(900), tag(890, 110)]]  # 正前方、近
+    g = FakeGesture()
+    w = gesture_watcher(det, g)
+    assert feed(w, 1.75) == [] and g.calls == 0  # 还没攒够 16 张
+    assert feed(w, 29.0, start=1.875) == [("懒洋洋大王", "wave")]
+    assert g.calls > 1  # 每 2 s 还在判，只是冷却中不报
+    assert feed(w, 32.5, start=29.125) == [("懒洋洋大王", "wave")]
+
+
+def test_gesture_skips_strangers_far_people_and_side_people():
+    det = FakeDetector()
+    det.frames = [[
+        player(900),  # 没有名字标签：不知道是谁
+        player(1700), tag(1690, 110),  # 名字认得，但偏到右边
+        player(600, h=60), tag(590, 120, y=350),  # 远
+    ]]
+    ocr = FakeOcr({110: "懒洋洋大王", 120: "番茄炒蛋盖饭"})
+    g = FakeGesture()
+    w = gesture_watcher(det, g, ocr)
+    assert feed(w, 4.0) == [] and g.calls == 0
+
+
+def test_gesture_needs_high_probability_and_not_none():
+    for answer in (("wave", 0.5), ("none", 0.99)):
+        det = FakeDetector()
+        det.frames = [[player(900), tag(890, 110)]]
+        w = gesture_watcher(det, FakeGesture(answer))
+        assert feed(w, 4.0) == []
+
+
+def test_gesture_classifier_error_does_not_break_the_frame():
+    det = FakeDetector()
+    det.frames = [[player(900), tag(890, 110)]]
+    w = gesture_watcher(det, FakeGesture(RuntimeError("模型坏了")))
+    assert feed(w, 4.0) == [] and w.nearby(4.0) == ["懒洋洋大王"]
+
+
+def test_no_gestures_without_classifier():
+    det = FakeDetector()
+    det.frames = [[player(900), tag(890, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    assert feed(w, 3.0) == []
