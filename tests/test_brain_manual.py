@@ -108,6 +108,7 @@ def test_options(clock):
         "friend_check": False,
         "max_chars": 40,
         "dry_run": True,
+        "panels": False,
     }
     bare, _, _, _ = body(clock)
     opts = ManualControl(bare).options()
@@ -134,3 +135,26 @@ def test_eyes_error_after_look_around_is_reported(clock):
     b, _, _, _ = body(clock, camera=FakeCamera())
     out = ManualControl(here(b), eyes=BrokenEyes()).run("look_around", {})
     assert out["ok"] is False and "眼睛超时" in out["text"]
+
+
+def test_panel_close_is_live_and_tells_brain(clock):
+    from test_brain_panels import DIALOG, DIALOG_READING, FakeOps, FakePanels
+
+    from skydango.vision.panels import UNKNOWN, PanelState
+
+    panels = FakePanels()
+    panels.state = PanelState((DIALOG,))
+    panels.readings = {UNKNOWN: DIALOG_READING}
+    ops = FakeOps(panels)
+    b, _, _, events = body(clock, panels=panels, panel_ops=ops)  # dry-run：手动的照样真关
+    mc = ManualControl(here(b), events=events)
+    assert mc.options()["panels"] is True
+    assert mc.run("panel_read", {})["text"].startswith("不认识的面板")
+    assert mc.run("panel_close", {}) == {"ok": True, "text": "关掉了不认识的面板"}
+    assert ops.closed == [(UNKNOWN, DIALOG_READING)]
+    assert [e.text for e in manual_events(events)][-1] == "主人在面板上手动让团子关了面板：关掉了不认识的面板"
+
+
+def test_options_without_panels(clock):
+    b, _, _, events = body(clock)
+    assert ManualControl(here(b), events=events).options()["panels"] is False

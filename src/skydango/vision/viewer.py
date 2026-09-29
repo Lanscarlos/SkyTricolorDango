@@ -45,6 +45,21 @@ def _box(r: Rect, kind: str, label: str) -> dict:
     return {"x": int(r.x), "y": int(r.y), "w": int(r.w), "h": int(r.h), "kind": kind, "label": label}
 
 
+BUTTON_KINDS = {"retreat": "button_ok", "allow": "button_ok", "other": "button_ask", "never": "button_never"}
+
+
+def panel_boxes(watcher) -> list[dict]:
+    """面板识别（vision.panels.PanelWatcher）认出的面板和按钮的框；聊天记录面板另外画（panel_box）。"""
+    out = []
+    for p in watcher.state.others():
+        kind = "panel_unknown" if p.name == "unknown" else ("panel_ok" if p.verified else "panel_new")
+        out.append(_box(p.box, kind, p.label))
+        reading = watcher.readings.get(p.name)
+        if reading is not None and reading.panel.box == p.box:
+            out += [_box(b.box, BUTTON_KINDS[b.kind], b.text) for b in reading.buttons]
+    return out
+
+
 class Viewer:
     def __init__(self, cfg: ViewerConfig) -> None:
         self.cfg = cfg
@@ -73,6 +88,8 @@ class Viewer:
         messages=(),  # 这一圈读到的新消息（chat.reader.Message，box 是整张截图坐标）
         info: dict | None = None,  # 右侧状态栏额外显示的内容
         source: str = "实时截图",
+        panels=None,  # vision.panels.PanelWatcher：画面板和按钮
+
     ) -> bool:
         """记下这一帧；超过 viewer.fps 的帧直接丢掉（新消息照样记着）。返回这一帧有没有被记下。"""
         for m in messages:
@@ -95,6 +112,12 @@ class Viewer:
                 state.update(describe_env(env, now))
             except Exception:
                 log.debug("取识别框出错", exc_info=True)
+        if panels is not None:
+            try:
+                boxes += panel_boxes(panels)
+                state["开着的面板"] = "、".join(p.describe() for p in panels.state.others()) or "没有"
+            except Exception:
+                log.debug("取面板框出错", exc_info=True)
         boxes += [box for _, box in self._messages]
         state.update(info or {})
         with self._cond:
@@ -344,15 +367,18 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 <div class="row" id="ctl-camera"><b>视角</b><button data-cam="left">左转</button><button data-cam="right">右转</button><button data-cam="up">抬头</button><button data-cam="down">低头</button><button data-cam="zoom_in">拉近</button><button data-cam="zoom_out">拉远</button>
 步数<input type="number" id="ctl-steps" value="1" min="1"><button id="ctl-reset">复位</button><button id="ctl-around">环视一圈</button></div>
 <div class="row"><b>看人</b><button id="ctl-pick">在画面上选人</button><span id="ctl-pick-tip" class="n"></span></div>
+<div class="row" id="ctl-panels" hidden><b>面板</b><button id="ctl-panel-read">读面板</button><button id="ctl-panel-close">关面板</button></div>
 <ul id="ctl-log"></ul></section>
 <section id="brain" hidden><div class="bhead"><b>大脑</b><span id="brain-state">连接中…</span>
 <label><input type="checkbox" id="brain-acted">只看做了事的轮次</label></div><div id="brain-turns"></div></section></div>
 <aside><h1>团子看到的</h1><dl id="info"></dl><div class="legend" id="legend"></div></aside>
 </main><script>
 const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",
-ring:"#22d3ee",request:"#f43f5e",panel:"#6b7280",message:"#f472b6",typing:"#e879f9"};
+ring:"#22d3ee",request:"#f43f5e",panel:"#6b7280",message:"#f472b6",typing:"#e879f9",
+panel_ok:"#3b82f6",panel_new:"#facc15",panel_unknown:"#ef4444",button_ok:"#22c55e",button_ask:"#9ca3af",button_never:"#dc2626"};
 const NAMES={friend:"好友",tag:"没认出的名字",stranger:"陌生人",unlit:"没点火",player:"没判定的人",self:"团子",ring:"互动圆圈",
-request:"互动请求",panel:"聊天面板",message:"新消息",typing:"正在输入"};
+request:"互动请求",panel:"聊天面板",message:"新消息",typing:"正在输入",
+panel_ok:"面板（已核对）",panel_new:"面板（未核对）",panel_unknown:"不认识的面板",button_ok:"能按",button_ask:"要放行",button_never:"不能按"};
 const $=id=>document.getElementById(id),c=$("c"),ctx=c.getContext("2d"),img=new Image();
 let seq=0,paused=false,running=false,showBoxes=true,last=null,times=[];
 $("legend").innerHTML=Object.entries(NAMES).map(([k,v])=>`<span><i style="background:${COLORS[k]}"></i>${v}</span>`).join("");
@@ -365,7 +391,7 @@ function draw(s){
   if(!showBoxes)return;const k=c.width/s.width,fs=Math.max(12,Math.round(c.width/80));
   ctx.font=`${fs}px system-ui,"Microsoft YaHei",sans-serif`;ctx.textBaseline="middle";
   for(const b of s.boxes){const col=COLORS[b.kind]||"#fff",x=b.x*k,y=b.y*k,w=b.w*k,h=b.h*k;
-    ctx.strokeStyle=col;ctx.lineWidth=b.kind==="request"?4:2;ctx.setLineDash(b.kind==="panel"?[8,5]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
+    ctx.strokeStyle=col;ctx.lineWidth=b.kind==="request"?4:2;ctx.setLineDash(b.kind.startsWith("panel")?[8,5]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
     const t=(b.label||"")+(b.score!==undefined?` ${b.score.toFixed(2)}`:"");if(!t)continue;
     const below=b.kind==="ring"||b.kind==="request",tw=ctx.measureText(t).width+8,th=fs+6,ty=(below||y-th<0)?y+h:y-th;
     ctx.fillStyle=col;ctx.fillRect(x,ty,tw,th);ctx.fillStyle="#0b0d12";ctx.fillText(t,x+4,ty+th/2);}
@@ -396,7 +422,7 @@ function toFrame(clientX,clientY,rect,width,height){return [Math.round((clientX-
 function controlLine(action,args,res){const a=args||{};let what;
   if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」${a.force?"（松手也做）":""}`;
   else if(action==="camera")what=`${CAM[a.action]||a.action} ×${a.steps}`;else if(action==="camera_reset")what="复位";
-  else if(action==="look_around")what="环视一圈";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;else what=action;
+  else if(action==="look_around")what="环视一圈";else if(action==="panel_read")what="读面板";else if(action==="panel_close")what="关面板";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;else what=action;
   return `${what} → ${res.text}`}
 function drawMark(s){if(!K.mark||!s)return;const k=c.width/s.width,x=K.mark[0]*k,y=K.mark[1]*k,r=Math.max(12,c.width/60);
   ctx.strokeStyle="#f472b6";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-r,y);ctx.lineTo(x+r,y);ctx.moveTo(x,y-r);ctx.lineTo(x,y+r);ctx.stroke()}
@@ -413,7 +439,8 @@ function ctlLock(){const o=K.opts||{emotes:[],camera:[]},b=K.busy;
   for(const x of document.querySelectorAll("#ctl-camera button,#ctl-steps"))x.disabled=b||!o.camera.length;
   const pick=$("ctl-pick");pick.disabled=b||!o.friend_check;pick.title=o.friend_check?"":"[friend_check] enabled = false";
   $("ctl-pick-tip").textContent=o.friend_check?(K.picking?"点一下画面上的人":""):"没开（[friend_check] enabled = false）";
-  pick.className=K.picking?"on":""}
+  pick.className=K.picking?"on":"";
+  $("ctl-panels").hidden=!o.panels;$("ctl-panel-read").disabled=$("ctl-panel-close").disabled=b||!o.panels}
 function ctlCount(){const n=[...$("ctl-say-text").value.trim()].length,max=K.opts?K.opts.max_chars:0;
   $("ctl-count").textContent=`${n} / ${max}`;ctlLock()}
 function ctlLog(action,args,res){const li=el("li");li.append(el("span","t",new Date().toTimeString().slice(0,8)+" "),el("span",res.ok?"ok":"bad",controlLine(action,args,res)));
@@ -439,6 +466,8 @@ for(const x of document.querySelectorAll("#ctl-camera button[data-cam]"))
   x.onclick=()=>{const max=K.opts?K.opts.max_steps:4,n=Math.min(max,Math.max(1,parseInt($("ctl-steps").value,10)||1));$("ctl-steps").value=n;ctlSend("camera",{action:x.dataset.cam,steps:n})};
 $("ctl-reset").onclick=()=>ctlSend("camera_reset",{});
 $("ctl-around").onclick=()=>ctlSend("look_around",{});
+$("ctl-panel-read").onclick=()=>ctlSend("panel_read",{});
+$("ctl-panel-close").onclick=()=>ctlSend("panel_close",{});
 $("ctl-pick").onclick=()=>{K.picking=!K.picking;K.mark=null;ctlLock();if(last)draw(last)};
 c.addEventListener("click",e=>{if(!K.picking||!last)return;
   const [x,y]=toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height);K.mark=[x,y];draw(last);

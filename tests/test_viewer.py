@@ -585,3 +585,46 @@ def test_control_refreshes_options_and_shows_busy_action():
     script = _control_script()
     assert "setInterval" in script and "5000" in script
     assert 'id="ctl-busy"' in PAGE and "正在做" in script
+
+
+# ---- 面板 ----
+class PanelsStub:
+    def __init__(self):
+        from skydango.vision.panels import UNKNOWN, Button, Panel, PanelReading, PanelState
+
+        dialog = Panel(UNKNOWN, "不认识的面板", Rect(200, 100, 800, 500), False, 100)
+        emote = Panel("emote_panel", "动作面板", Rect(1300, 0, 400, 1080), True, 20)
+        chat = Panel("chat_log", "聊天记录面板", Rect(0, 0, 600, 900), False, 10)
+        self.state = PanelState((dialog, emote, chat))
+        self.readings = {
+            UNKNOWN: PanelReading(
+                dialog, "出错了", "网络断开",
+                (Button("取消", Rect(300, 400, 60, 30), "retreat"), Button("加入", Rect(700, 400, 60, 30), "never"),
+                 Button("确定", Rect(500, 400, 60, 30), "other")), 0.0,
+            )
+        }
+
+
+def test_update_draws_panels():
+    v = viewer()
+    v.update(frame(), 0.0, panels=PanelsStub())
+    s = snap(v)
+    kinds = [(b["kind"], b["label"]) for b in s["boxes"]]
+    assert ("panel_unknown", "不认识的面板") in kinds and ("panel_ok", "动作面板") in kinds
+    assert ("button_ok", "取消") in kinds and ("button_never", "加入") in kinds and ("button_ask", "确定") in kinds
+    assert not any(label == "聊天记录面板" for _, label in kinds)
+    assert s["info"]["开着的面板"] == "不认识的面板、动作面板"
+
+
+def test_update_without_panels_says_nothing_open():
+    from skydango.vision.panels import PanelState
+
+    v = viewer()
+    v.update(frame(), 0.0, panels=type("P", (), {"state": PanelState(), "readings": {}})())
+    assert snap(v)["info"]["开着的面板"] == "没有"
+
+
+def test_page_has_panel_colors_and_buttons():
+    from skydango.vision.viewer import PAGE
+
+    assert "panel_unknown" in PAGE and "button_never" in PAGE and 'id="ctl-panel-close"' in PAGE and 'id="ctl-panel-read"' in PAGE

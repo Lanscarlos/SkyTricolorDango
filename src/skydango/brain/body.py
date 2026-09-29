@@ -177,7 +177,10 @@ class Body:
             info["画面"] = "黑着（切场景？）"
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
-            self.viewer.update(frame, now, env=self.env, panel=panel_box(self.cfg.vision, self.reader, frame), messages=fresh, info=info)
+            self.viewer.update(
+                frame, now, env=self.env, panel=panel_box(self.cfg.vision, self.reader, frame), messages=fresh, info=info,
+                panels=self.panels,
+            )
         except Exception:
             log.debug("可视化更新出错", exc_info=True)
 

@@ -52,6 +52,7 @@ class ManualControl:
             "friend_check": b.friend_checker is not None and cfg.friend_check.enabled,
             "max_chars": cfg.reply.max_chars,
             "dry_run": cfg.reply.dry_run,
+            "panels": getattr(b, "panels", None) is not None,
         }
 
     def run(self, action: str, args: dict) -> dict:
@@ -102,6 +103,10 @@ class ManualControl:
         if action == "check_friend":
             x, y = _int(a, "x"), _int(a, "y")
             return (lambda: b.check_friend_at(x, y, live=True)), f"点了画面上 ({x}, {y}) 的人", None
+        if action == "panel_read":
+            return (lambda: b.panel_read()), "读了面板", None
+        if action == "panel_close":
+            return (lambda: b.panel_close(live=True)), "关了面板", None
         raise ValueError(f"不认识的操作 {action!r}")
 
     def _around(self, frames: list) -> str:
