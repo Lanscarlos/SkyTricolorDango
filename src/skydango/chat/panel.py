@@ -98,26 +98,29 @@ class PanelManager:
         """借走面板（要它关着）：close = 面板开着就按键关掉；False = 调用方自己会关（点屏幕会顺带关面板）。
         yield 借之前面板开没开（嵌套借时是 False）。"""
         was_open = False
-        if self._depth == 0 and self.active:
+        outer = self._depth == 0
+        if outer and self.active:
             was_open = self.visible_now()
             self.lent = who
             log.debug("面板借给 %s", who)
             if close and was_open:
                 self.device.hw_key(self.vision.log_open_key)
                 self.sleep(CLOSE_DELAY)
-        elif self._depth == 0:
+        elif outer:
             self.lent = who
         self._depth += 1
         try:
             yield was_open
         finally:
             self._depth -= 1
-            if self._depth == 0:
+            if outer:
                 self.lent = None
-                self._give_back()
+                self._give_back(was_open)
 
-    def _give_back(self) -> None:
+    def _give_back(self, was_open: bool) -> None:
         if not self.active or not self.should_be_open():
+            return
+        if self.cfg.mode == "always" and not was_open:  # 借之前就关着：和原来一样不管，交给 tick 过一会儿重开
             return
         if self.visible_now():
             return

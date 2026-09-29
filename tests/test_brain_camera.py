@@ -1,20 +1,27 @@
 import pytest
-from conftest import FakeDevice, scene
+from conftest import FakeDevice, fake_panel, scene
 
 from skydango.brain.camera import Camera
 
 
-def cam(panel=True):
+class State(dict):
+    """state["panel"] 读写假面板的开关（老测试的写法）。"""
+
+    def __init__(self, panel_state):
+        super().__init__()
+        self.ps = panel_state
+
+    def __getitem__(self, key):
+        return self.ps.open
+
+    def __setitem__(self, key, value):
+        self.ps.open = value
+
+
+def cam(panel=True, mode="always"):
     dev = FakeDevice([scene()])
-    state = {"panel": panel}
-
-    def hw_key(code):
-        dev.calls.append(("hw_key", code))
-        if code == 46:
-            state["panel"] = not state["panel"]
-
-    dev.hw_key = hw_key
-    return Camera(dev, 0.25, lambda: state["panel"], 46, sleep=lambda s: None), dev, state
+    manager, ps = fake_panel(dev, open_=panel, mode=mode)
+    return Camera(dev, 0.25, manager, sleep=lambda s: None), dev, State(ps)
 
 
 def test_turn_closes_panel_holds_arrow_and_reopens():
@@ -165,3 +172,9 @@ def test_spin_reports_panel_not_reopened_and_blackout():
     frames = iter([scene()] + [np.zeros((1080, 1920, 3), np.uint8)] * 50)
     r = c.spin(lambda: next(frames), seconds_per_turn=0.5, fps=10)
     assert r.panel_reopened is False and r.blackout is True
+
+
+def test_camera_without_panel_presses_nothing():
+    dev = FakeDevice([scene()])
+    Camera(dev, 0.25, None, sleep=lambda s: None).move("left")
+    assert ("hw_key", 46) not in dev.calls

@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from conftest import FakeDevice
+from conftest import FakeDevice, panel_manager
 
 from skydango.config import SocialConfig
 from skydango.game.social import IconClassifier, Request, SocialHandler, load_icons
@@ -94,7 +94,7 @@ def handler(device, **cfg):
 
     h = SocialHandler(
         device, SocialConfig(**cfg), IconClassifier(ICONS), friends=lambda: ["懒洋洋大王"],
-        sleep=sleep, clock=lambda: t[0], panel_visible=lambda frame: device.panel,
+        sleep=sleep, clock=lambda: t[0], panel=panel_manager(device, lambda: device.panel),
     )
     return h, t
 

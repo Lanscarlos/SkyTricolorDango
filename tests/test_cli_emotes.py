@@ -28,15 +28,20 @@ def device():
     return FakeDevice([np.zeros((1080, 1920, 3), np.uint8)])
 
 
+def build(cfg, no_emotes):
+    dev = device()
+    return cli._build_emotes(cfg, dev, cli._panel(cfg, dev, PanelReader()), no_emotes=no_emotes)
+
+
 def test_no_emotes_flag_or_disabled(cfg):
-    assert cli._build_emotes(cfg, device(), PanelReader(), no_emotes=True) is None
+    assert build(cfg, no_emotes=True) is None
     cfg.emotes.enabled = False
-    assert cli._build_emotes(cfg, device(), PanelReader(), no_emotes=False) is None
+    assert build(cfg, no_emotes=False) is None
 
 
 def test_empty_library(cfg, tmp_path):
     cfg.wheel.library_dir = str(tmp_path / "没有")
-    assert cli._build_emotes(cfg, device(), PanelReader(), no_emotes=False) is None
+    assert build(cfg, no_emotes=False) is None
 
 
 def test_start_failure_disables_emotes(cfg, monkeypatch):
@@ -44,11 +49,11 @@ def test_start_failure_disables_emotes(cfg, monkeypatch):
         raise WheelError("没能打开轮盘编辑界面")
 
     monkeypatch.setattr(EmotePlayer, "start", boom)
-    assert cli._build_emotes(cfg, device(), PanelReader(), no_emotes=False) is None
+    assert build(cfg, no_emotes=False) is None
 
 
 def test_builds_player(cfg, monkeypatch):
     monkeypatch.setattr(EmotePlayer, "start", lambda self: None)
-    player = cli._build_emotes(cfg, device(), PanelReader(), no_emotes=False)
+    player = build(cfg, no_emotes=False)
     assert isinstance(player, EmotePlayer)
-    assert player.panel_key == cfg.vision.log_open_key and player.panel_visible() is True
+    assert player.panel is not None and player.panel.active

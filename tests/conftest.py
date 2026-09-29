@@ -109,3 +109,40 @@ class Clock:
 @pytest.fixture
 def clock():
     return Clock()
+
+
+class FakePanelReader:
+    """给 PanelManager 当 reader：面板开没开由 visible() 决定。"""
+
+    def __init__(self, visible) -> None:
+        self.visible = visible
+        self.panel_closed_since = None
+
+    def panel_visible(self, frame) -> bool:
+        return self.visible()
+
+
+def panel_manager(device, visible, mode="always"):
+    from skydango.chat.panel import PanelManager
+    from skydango.config import PanelConfig, VisionConfig
+
+    return PanelManager(VisionConfig(mode="log"), PanelConfig(mode=mode), device, FakePanelReader(visible), sleep=lambda s: None)
+
+
+class PanelState:
+    def __init__(self, open_: bool = True) -> None:
+        self.open = open_
+
+
+def fake_panel(device, open_=True, mode="always"):
+    """假面板：device.hw_key(46) 切换开关；返回 (PanelManager, 状态)。"""
+    state = PanelState(open_)
+    press = device.hw_key
+
+    def hw_key(code):
+        press(code)
+        if code == 46:
+            state.open = not state.open
+
+    device.hw_key = hw_key
+    return panel_manager(device, lambda: state.open, mode), state

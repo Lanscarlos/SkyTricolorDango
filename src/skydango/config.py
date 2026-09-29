@@ -241,7 +241,7 @@ class SocialConfig:
     max_age: float = 10.0  # 请求是多久之内看到的才处理（后台每 env.interval 秒扫一次）
     cooldown: float = 15.0  # 同一个人的同一种请求处理完后隔多久才再处理
     accept_timeout: float = 6.0  # 点了之后最多等多久（团子要走过去）
-    panel_key: int = 46  # 点屏幕会关掉聊天记录面板，接受完按这个键（C）重新打开
+    panel_key: int = 46  # 已不用（面板由 chat/panel.py 统一开关，键见 vision.log_open_key）；留着免得旧配置报错
     check_delay: float = 0.6  # 每次点完等多久再看
     remember: float = 120.0  # 接受之后多久内在提示词里提一句
     error_backoff: float = 10.0  # adb 出错（比如查输入框失败）后这么久不处理请求，免得每 0.15 s 起一个 adb 进程

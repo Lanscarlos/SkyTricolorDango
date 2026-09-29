@@ -1,6 +1,6 @@
 """聊天时做表情动作：轮盘上有的直接按数字键；白名单里的先换到指定格子再做。
 
-- 聊天记录面板（C）开着时数字键照样能做动作，但长按 Z 没反应 → 只有换轮盘时才关面板、换完再打开
+- 聊天记录面板（C）开着时数字键照样能做动作，但长按 Z 没反应 → 只有换轮盘时向 PanelManager 借面板（关掉），换完归还
 - 输入框开着时按键会变成打字 → 先按 BACK 关掉
 - 启动时记下可换格子原来的动作，退出时换回去
 """
@@ -25,16 +25,14 @@ class EmotePlayer:
         device: Device,
         wheel: Wheel,
         cfg: EmoteConfig,
-        panel_visible: Callable[[], bool],
-        panel_key: int,
+        panel,  # chat.panel.PanelManager；None 表示没有面板要管
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.device = device
         self.wheel = wheel
         self.cfg = cfg
-        self.panel_visible = panel_visible
-        self.panel_key = panel_key  # 开关聊天记录面板的键；0 表示没有面板要管
+        self.panel = panel
         self.sleep = sleep
         self.clock = clock
         known = wheel.library.templates
@@ -122,13 +120,8 @@ class EmotePlayer:
 
     @contextmanager
     def _panel_closed(self) -> Iterator[None]:
-        was_open = bool(self.panel_key) and self.panel_visible()
-        if was_open:
-            self.device.hw_key(self.panel_key)
-            self.sleep(self.wheel.cfg.ui_delay)
-        try:
+        if self.panel is None:
             yield
-        finally:
-            if was_open:
-                self.device.hw_key(self.panel_key)
-                self.sleep(self.wheel.cfg.ui_delay)
+            return
+        with self.panel.borrow("emotes"):
+            yield
