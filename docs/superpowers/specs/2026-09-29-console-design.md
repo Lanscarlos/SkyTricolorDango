@@ -2,6 +2,8 @@
 
 日期：2026-09-29　状态：**设计已和用户确认，待写实现计划**
 
+代码里统一叫 `console`（`python -m skydango console`、`src/skydango/console/`、`console.toml`、`[console]`），避免和「聊天记录面板」（`panel`）撞名。
+
 把现在只能看的识别可视化网页（`vision/viewer.py`，设计见 `2026-09-28-viewer-design.md` 等）扩成一个**管理面板**：
 先启动面板，在网页里填密钥、改常用配置、检测 MuMu 连接，再一键启动 / 停止团子；团子运行时在同一个页面里看实时识别、大脑思考和团子状态。
 
@@ -9,7 +11,7 @@
 
 **不用终端也能把团子跑起来、看清楚它在干什么。** 省掉 `setx` 设令牌、手改 `config.toml`、敲 `run --brain --live --view` 这些步骤。
 
-成功的样子：`python -m skydango panel` → 浏览器打开面板 → 设置页填好 DeepSeek Key / Claude 令牌 → 设备页点「开始检测」全绿 →
+成功的样子：`python -m skydango console` → 浏览器打开面板 → 设置页填好 DeepSeek Key / Claude 令牌 → 设备页点「开始检测」全绿 →
 总览页选「大脑、只看」点「启动」→ 状态变成「运行中」，卡片上显示身边有谁，实时页能看到画面和大脑时间线 → 点「停止」，
 团子复原镜头、换回轮盘后退出，状态变成「已退出」。
 
@@ -38,9 +40,9 @@
 ## 1. 架构和模块
 
 ```
-浏览器 ──► 面板进程（python -m skydango panel，127.0.0.1:8760）
-             ├─ /                一个页面，4 个页签（static/panel.html）
-             ├─ /api/settings    读写 panel.toml / secrets.toml、测试按钮
+浏览器 ──► 面板进程（python -m skydango console，127.0.0.1:8760）
+             ├─ /                一个页面，4 个页签（static/console.html）
+             ├─ /api/settings    读写 console.toml / secrets.toml、测试按钮
              ├─ /api/device      设备检测（团子没运行时才能用）
              ├─ /api/run         启动 / 停止 / 状态 / 日志尾巴
              └─ /live/*  ──转发──► 子进程 run --view（127.0.0.1:8761）
@@ -48,24 +50,24 @@
                                      /status /shutdown（新增）
 ```
 
-新增包 `src/skydango/panel/`，每个文件只管一件事：
+新增包 `src/skydango/console/`，每个文件只管一件事：
 
 | 文件 | 内容 |
 |---|---|
 | `server.py` | HTTP 服务和路由、转发 `/live/*` |
 | `runner.py` | 管子进程：拼命令行、起、停、状态机、日志环形缓冲、找运行目录 |
-| `settings.py` | 设置清单（每项的键、中文名、说明、类型、校验、分组）、读写 `panel.toml` / `secrets.toml`、来源标记、密钥打码、小 TOML 写出器 |
+| `settings.py` | 设置清单（每项的键、中文名、说明、类型、校验、分组）、读写 `console.toml` / `secrets.toml`、来源标记、密钥打码、小 TOML 写出器 |
 | `devicecheck.py` | 设备检测的各项检查，复用 `cmd_devices` 的逻辑 |
-| `static/panel.html` | 面板页面（HTML + CSS + 原生 JS，无构建步骤） |
+| `static/console.html` | 面板页面（HTML + CSS + 原生 JS，无构建步骤） |
 
 改动的现有文件：
 
 | 文件 | 改动 |
 |---|---|
-| `config.py` | 新增 `PanelConfig`（§4）；`load_config` 在 `config.toml` 后叠加 `panel.toml`，记下被覆盖的键；读 `secrets.toml` 写进 `os.environ` |
+| `config.py` | 新增 `ConsoleConfig`（§4）；`load_config` 在 `config.toml` 后叠加 `console.toml`，记下被覆盖的键；读 `secrets.toml` 写进 `os.environ` |
 | `vision/viewer.py` | 本机 Host / `X-Skydango` 头校验抽成公共函数（面板共用）；新增 `/shutdown`、`/status`；页面里 4 处 `fetch("/…")` 改成相对路径 |
-| `cli.py` | 新增 `panel` 子命令；`run` 新增参数 `--viewer-port`、`--no-browser`、`--parent-pid`、`--no-brain`、`--dry-run` |
-| `.gitignore` | 加 `panel.toml`、`secrets.toml` |
+| `cli.py` | 新增 `console` 子命令；`run` 新增参数 `--viewer-port`、`--no-browser`、`--parent-pid`、`--no-brain`、`--dry-run` |
+| `.gitignore` | 加 `console.toml`、`secrets.toml` |
 
 只用标准库，不加依赖。
 
@@ -79,7 +81,7 @@
   「做动作」只能关不能开：`emotes.enabled = false` 时总览上这一项置灰并注明「config.toml 里关掉了」。
 - 子进程环境变量 = 面板的环境变量 + `secrets.toml` 的 `[env]` + `PYTHONIOENCODING=utf-8`。
 - Windows 上加 `CREATE_NEW_PROCESS_GROUP`：面板终端按 Ctrl+C 时由面板决定先停谁。
-- stdout / stderr 由后台线程读进环形缓冲（`panel.log_lines` 行）；从「本次运行的日志和截图: <路径>」这一行取运行目录。
+- stdout / stderr 由后台线程读进环形缓冲（`console.log_lines` 行）；从「本次运行的日志和截图: <路径>」这一行取运行目录。
 - 由面板启动时，子进程的 viewer 强制 `host = 127.0.0.1`、端口 `child_port`、不开浏览器。
 
 ### 状态机
@@ -93,7 +95,7 @@
 ### 停止
 
 1. 面板 `POST /shutdown` 给子进程；子进程调 `_thread.interrupt_main()`（可注入，测试用），走和 Ctrl+C 完全一样的收尾。
-2. 页面显示「正在退出（复原镜头、换回轮盘…）」，最多等 `panel.stop_timeout` 秒（默认 60，live 大脑退出前要写记忆）。
+2. 页面显示「正在退出（复原镜头、换回轮盘…）」，最多等 `console.stop_timeout` 秒（默认 60，live 大脑退出前要写记忆）。
 3. 超时（或 `/shutdown` 发不过去）→ 按进程树强杀（Windows `taskkill /F /T /PID`，其他系统 `killpg`），页面醒目提示
    「强制结束了，轮盘可能没换回，请用 `python -m skydango emotes wheel` 检查」。
 
@@ -123,20 +125,20 @@
 | 文件 | 谁写 | 内容 |
 |---|---|---|
 | `config.toml` | 用户手写 | 面板只读不写 |
-| `panel.toml` | 面板 | 和 `config.toml` 同结构，只含下面清单里的项，外加 `[panel]` |
+| `console.toml` | 面板 | 和 `config.toml` 同结构，只含下面清单里的项，外加 `[console]` |
 | `secrets.toml` | 面板 | `[env]` 表，键是环境变量名（`DEEPSEEK_API_KEY = "sk-…"`、`SKYDANGO_CLAUDE_TOKEN = "…"`） |
 
 两个新文件与 `config.toml` 同目录，都进 gitignore。页面注明「明文保存在本机 secrets.toml，别发给别人」。
 
 ### 加载顺序
 
-默认值 → `config.toml` → `panel.toml`。**终端直接敲 `run` 等命令也读 `panel.toml` 和 `secrets.toml`**，面板里改的在哪儿启动都生效。
-- 启动时打一行 INFO：「panel.toml 覆盖了 3 项：device.serial、llm.model、brain.enabled」。
+默认值 → `config.toml` → `console.toml`。**终端直接敲 `run` 等命令也读 `console.toml` 和 `secrets.toml`**，面板里改的在哪儿启动都生效。
+- 启动时打一行 INFO：「console.toml 覆盖了 3 项：device.serial、llm.model、brain.enabled」。
 - `secrets.toml` 的值**覆盖**已有的环境变量（否则面板里换了 Key 还在用旧的 `setx`），打一行 INFO「用 secrets.toml 里的 DEEPSEEK_API_KEY」（不打值）。
 
 ### 设置清单
 
-**启动选项**（存在 `[panel]`，下次打开面板还是上次的选择；不影响终端 `run`）：模式（普通 Agent / 统管大脑）、真发 / 只看、聊天时做动作、运行时长（空 = 一直跑）
+**启动选项**（存在 `[console]`，下次打开面板还是上次的选择；不影响终端 `run`）：模式（普通 Agent / 统管大脑）、真发 / 只看、聊天时做动作、运行时长（空 = 一直跑）
 
 **连接**：`device.adb_path`、`device.serial`、`device.capture`（auto / mumu / adb）
 
@@ -150,10 +152,10 @@
 
 不放：人设、好友（`memory/`，以后可以做「记忆」页签）、坐标和阈值（继续手改 toml）。
 
-### `[panel]` 配置段（`PanelConfig`）
+### `[console]` 配置段（`ConsoleConfig`）
 
 ```toml
-[panel]
+[console]
 port = 8760          # 面板端口；和 view 的 8765 错开，可以同时开
 child_port = 8761    # 团子子进程的 viewer 端口
 stop_timeout = 60.0  # 停止时最多等几秒，超了强杀
@@ -168,7 +170,7 @@ duration = 0.0
 ### 页面上的密钥
 
 - 浏览器拿不到完整密钥：`GET /api/settings` 只返回「已设置（sk-…a1b2）」/「没设置」；输入框留空 = 不改；「清除」按钮删掉这一项。
-- 每一项标来源：默认 / config.toml / 面板；「用回 config.toml 的值」= 从 `panel.toml` 删掉这一项。
+- 每一项标来源：默认 / config.toml / 面板；「用回 config.toml 的值」= 从 `console.toml` 删掉这一项。
 
 ### 校验和保存
 
@@ -248,16 +250,16 @@ duration = 0.0
 
 `python -m pytest -q`，不需要模拟器：
 
-- `test_panel_settings.py`：TOML 写出器往返、加载顺序（默认 → config → panel）、被覆盖键的记录、来源标记、密钥打码 / 留空不改 / 清除、类型校验、主人昵称写两处、原子写入
-- `test_panel_runner.py`：假子进程脚本（打日志、监听端口、响应 `/shutdown`、可选择不理 shutdown / 一启动就崩）测状态机各转换、超时强杀、日志环形缓冲、运行目录解析、只允许一个实例、命令行拼接、环境变量注入
-- `test_panel_server.py`：路由、Host / 头 / Content-Type / 大小校验（403 / 413）、用假上游 HTTP 服务测转发（GET 带 query、POST 头改写）、没运行时 503、设备检测运行中 409
-- `test_panel_devicecheck.py`：假 adb 输出，逐项 ✓ / ✗ / ⚠ / 跳过
+- `test_console_settings.py`：TOML 写出器往返、加载顺序（默认 → config → console）、被覆盖键的记录、来源标记、密钥打码 / 留空不改 / 清除、类型校验、主人昵称写两处、原子写入
+- `test_console_runner.py`：假子进程脚本（打日志、监听端口、响应 `/shutdown`、可选择不理 shutdown / 一启动就崩）测状态机各转换、超时强杀、日志环形缓冲、运行目录解析、只允许一个实例、命令行拼接、环境变量注入
+- `test_console_server.py`：路由、Host / 头 / Content-Type / 大小校验（403 / 413）、用假上游 HTTP 服务测转发（GET 带 query、POST 头改写）、没运行时 503、设备检测运行中 409
+- `test_console_devicecheck.py`：假 adb 输出，逐项 ✓ / ✗ / ⚠ / 跳过
 - `test_viewer.py` 补：`/shutdown` 调注入的中断函数、`/status`、页面里没有以 `/` 开头的 fetch 路径
-- `test_config.py` 补：`panel.toml` 叠加、`secrets.toml` 写进环境变量并覆盖旧值、`[panel]` 默认值
+- `test_config.py` 补：`console.toml` 叠加、`secrets.toml` 写进环境变量并覆盖旧值、`[console]` 默认值
 - 父进程看门狗：判断逻辑（给一个假的「进程在不在」函数）单测
 
 **真机验证**（Windows + MuMu，用户跑；单元测试通过不等于游戏里能用）：
-1. `panel` → 设备页检测全绿（或按提示修到全绿）
+1. `console` → 设备页检测全绿（或按提示修到全绿）
 2. 设置页填 Key / 令牌，两个测试按钮都成功
 3. 总览选「普通、只看」启动 → 运行中，状态卡片有数据，实时页有画面；停止 → 已退出
 4. 大脑 + 只看：实时页有大脑时间线，手动控制能用；停止后用 `emotes wheel` 核对轮盘复原
