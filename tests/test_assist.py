@@ -366,3 +366,52 @@ def test_model_prelabel_also_adds_rings(tmp_path, monkeypatch):
     cli.main(["perception", "label", str(src), "--model", "m.onnx", "-o", str(out), "--val", "0"])
     classes = [l.split()[0] for l in (out / "labels" / "train" / "0000.txt").read_text(encoding="utf-8").splitlines()]
     assert sorted(classes) == ["2", "4"]
+
+
+# ---- Protocol（物品模式复用 Reviewer，spec 2026-09-29-object-recognition §2） ----
+def test_reviewer_uses_protocol(tmp_path):
+    from skydango.vision.assist import Protocol
+
+    sent = []
+
+    def run(content):
+        sent.append(content)
+        return {"result": "随便", "usage": {}}
+
+    proto = Protocol(7, "sys", lambda frames, cfg: [{"type": "text", "text": "|".join(f.stem for f in frames)}],
+                     lambda text, frames: {f.stem: "ok" for f in frames})
+    cfg = AssistConfig(batch=5, jobs=1)
+    out = Reviewer(run, tmp_path, cfg, "m", protocol=proto).review(_frames(2))
+    assert out == {"f0": "ok", "f1": "ok"} and sent == [[{"type": "text", "text": "f0|f1"}]]
+    assert Reviewer(run, tmp_path, cfg, "m", protocol=proto).review(_frames(2)) == {"f0": "ok", "f1": "ok"}
+    assert len(sent) == 1  # 第二次全部命中缓存
+
+
+def test_people_cache_key_unchanged(tmp_path):
+    # 旧格式缓存（只有 prompt_version / source / candidates / review）照样命中
+    from skydango.vision.assist import PROMPT_VERSION
+
+    (tmp_path / "f0.json").write_text(json.dumps({
+        "prompt_version": PROMPT_VERSION, "source": "m", "candidates": [[0, 0, 10, 10]],
+        "review": {"boxes": {"1": {"cls": "player"}}, "missing": [], "unsure": ""}}), encoding="utf-8")
+    calls = []
+    out = Reviewer(_fake_run(calls), tmp_path, AssistConfig(batch=5, jobs=1), "m").review(_frames(1))
+    assert calls == [] and out["f0"].verdicts[1].cls == "player"
+
+
+def test_cache_key_includes_people(tmp_path):
+    calls = []
+    cfg = AssistConfig(batch=5, jobs=1)
+    frames = _frames(1)
+    frames[0].people = [Rect(1, 1, 5, 5)]
+    Reviewer(_fake_run(calls), tmp_path, cfg, "m").review(frames)
+    frames[0].people = [Rect(2, 2, 5, 5)]
+    Reviewer(_fake_run(calls), tmp_path, cfg, "m").review(frames)
+    assert len(calls) == 2
+
+
+def test_assist_command_system_prompt():
+    from skydango.vision.assist import assist_command
+
+    cmd = assist_command(["claude"], AssistConfig(), system="X")
+    assert cmd[cmd.index("--system-prompt") + 1] == "X"

@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -255,12 +256,12 @@ def review_report(results: list[tuple[str, FrameReview | None]]) -> str:
     return "\n".join(lines)
 
 
-def assist_command(base: list[str], cfg: AssistConfig) -> list[str]:
-    """一次性 claude -p：图片直接放在消息里，不需要任何内置工具。"""
+def assist_command(base: list[str], cfg: AssistConfig, system: str = ASSIST_SYSTEM) -> list[str]:
+    """一次性 claude -p：图片直接放在消息里，不需要任何内置工具。system：标人 / 物品模式各自的系统提示词。"""
     return [
         *base, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
         "--model", cfg.model, "--tools", "", "--strict-mcp-config",
-        "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", ASSIST_SYSTEM,
+        "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", system,
     ]
 
 
@@ -275,6 +276,30 @@ class FrameInput:
     stem: str
     image: np.ndarray
     candidates: list[Rect]
+    people: list[Rect] = field(default_factory=list)  # 物品模式：已有的人物框（P1、P2…）
+    hints: list[str] = field(default_factory=list)  # 物品模式：候选框的类别猜测（和 candidates 一一对应）
+
+
+@dataclass(frozen=True)
+class Protocol:
+    """一种核对：提示词怎么拼、回答怎么解析、提示词版本（缓存按它失效）。标人和物品模式共用 Reviewer 的分批 / 并发 / 缓存。"""
+
+    version: int
+    system: str  # claude -p 的 --system-prompt
+    build: Callable[[list[FrameInput], AssistConfig], list[dict]]  # 一批帧 → 内容块
+    parse: Callable[[str, list[FrameInput]], dict[str, Any]]  # 回答 → 帧名 → 核对结果（取不出的帧不在里面）
+
+
+def _people_parse(text: str, frames: list[FrameInput]) -> dict[str, FrameReview]:
+    h, w = frames[0].image.shape[:2]
+    return parse_review(text, {f.stem: len(f.candidates) for f in frames}, w, h)
+
+
+PEOPLE_PROTOCOL = Protocol(
+    PROMPT_VERSION, ASSIST_SYSTEM,
+    lambda frames, cfg: build_message([(f.stem, f.image, f.candidates) for f in frames], cfg.self_hint),
+    _people_parse,
+)
 
 
 class AssistLimit(RuntimeError):
@@ -288,8 +313,10 @@ class Reviewer:
     source：候选框来源（模型路径），和提示词版本、候选框坐标一起决定缓存算不算数。
     """
 
-    def __init__(self, run: Callable[[list[dict]], dict], cache_dir: Path, cfg: AssistConfig, source: str) -> None:
+    def __init__(self, run: Callable[[list[dict]], dict], cache_dir: Path, cfg: AssistConfig, source: str,
+                 protocol: Protocol = PEOPLE_PROTOCOL) -> None:
         self.run = run
+        self.protocol = protocol
         self.cache_dir = Path(cache_dir)
         self.cfg = cfg
         self.source = source
@@ -297,7 +324,13 @@ class Reviewer:
         self._lock = threading.Lock()
 
     def _key(self, f: FrameInput) -> dict:
-        return {"prompt_version": PROMPT_VERSION, "source": self.source, "candidates": [[b.x, b.y, b.x2, b.y2] for b in f.candidates]}
+        key: dict = {"prompt_version": self.protocol.version, "source": self.source,
+                     "candidates": [[b.x, b.y, b.x2, b.y2] for b in f.candidates]}
+        if f.people:  # 标人的键保持老样子：旧缓存照样命中
+            key["people"] = [[b.x, b.y, b.x2, b.y2] for b in f.people]
+        if f.hints:
+            key["hints"] = list(f.hints)
+        return key
 
     def _cached(self, f: FrameInput) -> FrameReview | None:
         path = self.cache_dir / f"{f.stem}.json"
@@ -305,13 +338,13 @@ class Reviewer:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
-        if {k: data.get(k) for k in ("prompt_version", "source", "candidates")} != self._key(f):
+        key = self._key(f)
+        if {k: data.get(k) for k in key} != key or any(k in data for k in ("people", "hints") if k not in key):
             return None
-        h, w = f.image.shape[:2]
-        return parse_review(json.dumps({f.stem: data.get("review")}), {f.stem: len(f.candidates)}, w, h).get(f.stem)
+        return self.protocol.parse(json.dumps({f.stem: data.get("review")}), [f]).get(f.stem)
 
     def _batch(self, frames: list[FrameInput]) -> dict[str, FrameReview | None]:
-        content = build_message([(f.stem, f.image, f.candidates) for f in frames], self.cfg.self_hint)
+        content = self.protocol.build(frames, self.cfg)
         for attempt in (1, 2):
             try:
                 m = self.run(content)
@@ -326,13 +359,12 @@ class Reviewer:
             for k in self.usage:
                 self.usage[k] += int((m.get("usage") or {}).get(k) or 0)
         text = m.get("result") or ""
-        h, w = frames[0].image.shape[:2]
-        parsed = parse_review(text, {f.stem: len(f.candidates) for f in frames}, w, h)
+        parsed = self.protocol.parse(text, frames)
         raw = extract_json(text, parsed) or {}
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         for f in frames:
             if f.stem in parsed:
-                entry = {**self._key(f), "review": raw[f.stem]}
+                entry = {**self._key(f), "review": raw.get(f.stem)}
                 (self.cache_dir / f"{f.stem}.json").write_text(json.dumps(entry, ensure_ascii=False, indent=1), encoding="utf-8")
         return {f.stem: parsed.get(f.stem) for f in frames}
 
