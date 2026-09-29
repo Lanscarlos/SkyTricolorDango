@@ -39,6 +39,11 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "只在名字标签认不出、又确实需要知道时用（点过火的陌生人和好友长得一样）；点屏幕会暂时关掉聊天记录面板，别常用。"
     ),
     "stop_task": "停下身体正在做的事（状态里“正在做：…”那件）。没在做也没关系，会告诉你。",
+    "panel_read": "读现在开着的面板（弹框、动作面板、好友树……）：名字、标题、正文和编了号的按钮，按钮后面写着能不能按。"
+                  "image=true 时附上面板原图。被面板挡着、或者收到面板事件时先读再决定。",
+    "panel_press": "按面板上的一个按钮：button 给 panel_read 里的编号或按钮文字（15 秒内读过的）。"
+                   "关闭 / 取消这类可以直接按；别的要卡洛在聊天里 #允许 放行；花钱、删好友、退出这类不能按。",
+    "panel_close": "关掉最上面那个面板（按卡片上的关法、取消类按钮或右上角 ×）。",
 }
 SWEEP_AROUND = "环顾四周：原地连续转一圈，身体认出每个方向有谁（好友名字、几个陌生人），返回文字，最后回到原来的朝向。几秒就好。"
 
@@ -49,7 +54,9 @@ def descriptions(sweep: bool) -> dict[str, str]:
 
 
 TOOL_NAMES = list(DESCRIPTIONS)
-ACTIONS = {"say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend", "stop_task"}  # 算“做了事”的工具（心跳退档用）
+ACTIONS = {
+    "say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend", "stop_task", "panel_press", "panel_close"
+}  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
 
 _MISSING = object()
@@ -177,4 +184,18 @@ class ToolBox:
             return lambda: b.check_friend(x, y)
         if name == "stop_task":
             return b.stop_task
+        if name == "panel_read":
+            image = _bool(a, "image", False)
+            return lambda: b.panel_read(image)
+        if name == "panel_press":
+            button = a.get("button", _MISSING)
+            if isinstance(button, int) and not isinstance(button, bool):
+                button = str(button)
+            if button is _MISSING:
+                raise ToolError("缺少参数 button")
+            if not isinstance(button, str):
+                raise ToolError("参数 button 应该是按钮编号或文字")
+            return lambda: b.panel_press(button)
+        if name == "panel_close":
+            return b.panel_close
         raise ToolError(f"没有这个工具：{name}")

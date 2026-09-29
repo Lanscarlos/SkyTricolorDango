@@ -25,7 +25,7 @@ from ..config import Config
 from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
 from ..vision.bubbles import Rect, roi_rect
-from ..vision.panels import UNKNOWN, describe_reading
+from ..vision.panels import UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people
 from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "*")
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
 SCENE_EVENT_COOLDOWN = 10.0
+BUTTON_NOTES = {"retreat": "可以按", "allow": "可以按", "other": "要主人放行", "never": "不能按"}
 PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身体自己打开面板的操作：期间这个面板不算遮挡
 
 
@@ -87,6 +88,8 @@ class Body:
         self.panel_ops = panel_ops
         self._panels_held = False
         self._permits: list[tuple[str, float]] = []  # 主人 #允许 的按钮：(文字, 到期时间)
+        self._buttons: list[tuple[PanelReading, Button]] = []  # 上次 panel_read 编了号的按钮
+        self._read_at = float("-inf")
         self.viewer = viewer
         self._last_friend_check = float("-inf")
         self.fallback = fallback
@@ -768,6 +771,101 @@ class Body:
             image_block(side, brain.jpeg_quality),
             {"type": "text", "text": note},
         ]
+
+    # ---- 面板 ----
+    def _need_panels(self) -> None:
+        if self.panels is None or self.panel_ops is None:
+            raise ToolError("这次没开面板识别（[panels] enabled = false）")
+
+    def panel_read(self, image: bool = False) -> str | list[dict]:
+        """读开着的面板（不含聊天记录面板）：名字、标题、正文、编了号的按钮和能不能按。"""
+        self._need_panels()
+        now = self.clock()
+        others = self.panels.state.others()
+        self._buttons, self._read_at = [], now
+        if not others:
+            return "没有开着的面板"
+        frame = self.fresh_frame()
+        blocks, crops = [], []
+        for panel in others:
+            reading = self.panels.read(frame, panel, now)
+            numbered = []
+            for button in reading.buttons:
+                self._buttons.append((reading, button))
+                numbered.append(f"[{len(self._buttons)}] {button.text}（{BUTTON_NOTES[button.kind]}）")
+            blocks.append(
+                f"{panel.describe()}\n  标题：{reading.title or '（没读到）'}\n  正文：{reading.text.replace(chr(10), ' ') or '（没有）'}\n"
+                f"  按钮：{'  '.join(numbered) or '没认出按钮'}"
+            )
+            crops.append(panel.box.crop(frame))
+        text = "\n\n".join(blocks)
+        if not image:
+            return text
+        brain = self.cfg.brain
+        return [{"type": "text", "text": text}] + [
+            image_block(fit(crop, (brain.look_at_max, brain.look_at_max)), brain.jpeg_quality) for crop in crops
+        ]
+
+    def panel_press(self, button: str, live: bool = False) -> str:
+        """按 panel_read 列出的按钮（编号或文字）；过安全规则：never 不按，其他（非撤退类）要主人 #允许。"""
+        self._need_panels()
+        now = self.clock()
+        ttl = self.cfg.panels.read_ttl
+        if now - self._read_at > ttl:
+            raise ToolError(f"先 panel_read（{ttl:.0f} 秒内）再按：面板可能变了")
+        picked = self._pick_button(button.strip())
+        if picked is None:
+            listed = "、".join(f"[{i}] {b.text}" for i, (_, b) in enumerate(self._buttons, 1)) or "没有"
+            raise ToolError(f"没有这个按钮；现在的按钮：{listed}")
+        reading, target = picked
+        if reading.panel.name not in {p.name for p in self.panels.state.panels}:
+            raise ToolError(f"{reading.panel.label}已经关了，重新 panel_read 看看")
+        if target.kind == "never":
+            raise ToolError(f"「{target.text}」不能按（花钱、删好友、退出这类按钮，主人放行也不按）")
+        permit = None
+        if target.kind == "other":
+            permit = self._find_permit(target.text, now)
+            if permit is None:
+                raise ToolError(
+                    f"「{target.text}」要卡洛放行才能按：卡洛在聊天里发「#允许 {target.text}」后 "
+                    f"{self.cfg.panels.permit_window:.0f} 秒内可以按一次"
+                )
+        if self._dry(live):
+            return f"dry-run：没真的点（会点「{target.text}」）"
+        if permit is not None:
+            self._permits.remove(permit)  # 放行用一次就作废
+        state, changed = self.panel_ops.press(reading, target)
+        self._read_at = float("-inf")  # 按完面板变了：要按下一个先重新读
+        self._ref_thumb = None
+        still = "、".join(p.describe() for p in state.others()) or "没有了"
+        return f"按了「{target.text}」" + ("" if changed else "，画面没变（可能没点中）") + f"。现在开着的面板：{still}"
+
+    def panel_close(self, live: bool = False) -> str:
+        """关最上面的面板（卡片关法 → 撤退类按钮 → ×）。"""
+        self._need_panels()
+        top = self.panels.state.top()
+        if top is None:
+            return "没有开着的面板"
+        if self._dry(live):
+            return f"dry-run：没真的关（会关掉{top.label}）"
+        if not self.panel_ops.close(top, self.panels.readings.get(top.name)):
+            raise ToolError(f"没关上{top.label}：找不到能用的关法，或者关了没反应")
+        self._ref_thumb = None
+        return f"关掉了{top.label}"
+
+    def _pick_button(self, key: str) -> tuple[PanelReading, Button] | None:
+        if key.isdigit():
+            i = int(key)
+            return self._buttons[i - 1] if 1 <= i <= len(self._buttons) else None
+        for match in (lambda t: t == key, lambda t: key in t, lambda t: similar(t, key, 0.8)):
+            for item in self._buttons:
+                if key and match(item[1].text):
+                    return item
+        return None
+
+    def _find_permit(self, text: str, now: float) -> tuple[str, float] | None:
+        self._permits = [p for p in self._permits if p[1] >= now]
+        return next((p for p in self._permits if p[0] in text or text in p[0] or similar(p[0], text, 0.8)), None)
 
     def camera_move(self, action: str, steps: int = 1, live: bool = False) -> str:
         if self.camera is None:

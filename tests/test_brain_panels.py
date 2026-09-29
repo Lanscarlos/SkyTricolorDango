@@ -67,6 +67,7 @@ class FakeOps:
 
     def press(self, reading, button):
         self.pressed.append(button.text)
+        self.last = button
         return self.panels.state, self.changed
 
 
@@ -231,3 +232,171 @@ def test_no_panels_means_no_guard(clock):
     assert b.clear_view("camera") == ""
     b.camera_move("left", live=True)
     assert cam.moves == [("left", 1)]
+
+
+# ---- 大脑的面板工具 ----
+def dialog(clock, live=True, reading=DIALOG_READING, **kw):
+    b, panels, ops, reader, events = setup(clock, live=live, **kw)
+    panels.state = PanelState((DIALOG,))
+    panels.readings = {UNKNOWN: reading}
+    return b, panels, ops, events
+
+
+def test_panel_read_lists_numbered_buttons(clock):
+    b, *_ = dialog(clock)
+    assert b.panel_read() == (
+        "不认识的面板\n  标题：出错了\n  正文：网络连接断开，请重试\n"
+        "  按钮：[1] 取消（可以按）  [2] 加入（不能按）  [3] 确定（要主人放行）"
+    )
+
+
+def test_panel_read_two_panels_and_blanks(clock):
+    b, panels, _, _ = dialog(clock)
+    panels.state = PanelState((DIALOG, EMOTE, CHAT_PANEL))
+    panels.readings["emote_panel"] = PanelReading(EMOTE, "", "", (), 100.0)
+    out = b.panel_read()
+    assert out.endswith("动作面板（未核对）\n  标题：（没读到）\n  正文：（没有）\n  按钮：没认出按钮")
+    assert "\n\n动作面板" in out and "聊天记录面板" not in out
+
+
+def test_panel_read_none(clock):
+    b, *_ = setup(clock)
+    assert b.panel_read() == "没有开着的面板"
+
+
+def test_panel_read_image(clock):
+    b, *_ = dialog(clock)
+    out = b.panel_read(image=True)
+    assert out[0]["type"] == "text" and out[1]["type"] == "image"
+
+
+def test_panel_tools_need_panels(clock):
+    b, _, _, _ = body(clock)
+    with pytest.raises(ToolError, match="没开面板识别"):
+        b.panel_read()
+
+
+def test_panel_press_retreat(clock):
+    b, _, ops, _ = dialog(clock)
+    b.panel_read()
+    assert b.panel_press("1").startswith("按了「取消」。现在开着的面板：不认识的面板")
+    assert ops.pressed == ["取消"]
+
+
+def test_panel_press_unchanged_frame(clock):
+    b, _, ops, _ = dialog(clock)
+    ops.changed = False
+    b.panel_read()
+    assert "画面没变（可能没点中）" in b.panel_press("取消")
+
+
+def test_panel_press_requires_recent_read(clock):
+    b, *_ = dialog(clock)
+    with pytest.raises(ToolError, match="先 panel_read"):
+        b.panel_press("1")
+    b.panel_read()
+    clock.advance(16)
+    with pytest.raises(ToolError, match="先 panel_read（15 秒内）"):
+        b.panel_press("1")
+
+
+def test_panel_press_bad_button_lists_choices(clock):
+    b, *_ = dialog(clock)
+    b.panel_read()
+    for bad in ("9", "0", "不存在"):
+        with pytest.raises(ToolError, match="现在的按钮：\\[1\\] 取消、\\[2\\] 加入、\\[3\\] 确定"):
+            b.panel_press(bad)
+
+
+def test_panel_press_same_name_takes_first(clock):
+    other = Button("取消", Rect(900, 400, 60, 30), "retreat")
+    b, _, ops, _ = dialog(clock, reading=replace(DIALOG_READING, buttons=(other, CANCEL)))
+    b.panel_read()
+    b.panel_press("取消")
+    assert ops.pressed == ["取消"] and ops.last is other
+
+
+def test_panel_press_never_even_with_permit(clock):
+    b, _, ops, _ = dialog(clock)
+    b._permits = [("加入", clock() + 60)]
+    b.panel_read()
+    with pytest.raises(ToolError, match="「加入」不能按（花钱、删好友、退出这类按钮，主人放行也不按）"):
+        b.panel_press("加入")
+    assert ops.pressed == []
+
+
+def test_panel_press_other_needs_permit(clock):
+    b, _, ops, _ = dialog(clock)
+    b.panel_read()
+    with pytest.raises(ToolError, match="卡洛在聊天里发「#允许 确定」后 60 秒内可以按一次"):
+        b.panel_press("3")
+    b._permits = [("确定", clock() + 60)]
+    b.panel_press("3")
+    assert ops.pressed == ["确定"] and b._permits == []
+    b.panel_read()
+    with pytest.raises(ToolError, match="#允许"):
+        b.panel_press("3")
+
+
+def test_panel_press_permit_expired(clock):
+    b, *_ = dialog(clock)
+    b._permits = [("确定", clock() + 60)]
+    clock.advance(61)
+    b.panel_read()
+    with pytest.raises(ToolError, match="#允许"):
+        b.panel_press("确定")
+
+
+def test_panel_press_panel_gone(clock):
+    b, panels, _, _ = dialog(clock)
+    b.panel_read()
+    panels.state = PanelState()
+    with pytest.raises(ToolError, match="不认识的面板已经关了"):
+        b.panel_press("1")
+
+
+def test_panel_press_dry_run_keeps_permit(clock):
+    b, _, ops, _ = dialog(clock, live=False)
+    b._permits = [("确定", clock() + 60)]
+    b.panel_read()
+    assert b.panel_press("确定") == "dry-run：没真的点（会点「确定」）"
+    assert b._permits and ops.pressed == []
+    assert b.panel_press("确定", live=True).startswith("按了「确定」") and not b._permits
+
+
+def test_panel_close_top(clock):
+    b, _, ops, _ = dialog(clock)
+    assert b.panel_close() == "关掉了不认识的面板"
+    assert ops.closed == [(UNKNOWN, DIALOG_READING)]
+
+
+def test_panel_close_fails(clock):
+    b, *_ = dialog(clock, ok=False)
+    with pytest.raises(ToolError, match="没关上不认识的面板"):
+        b.panel_close()
+
+
+def test_panel_close_none_and_dry(clock):
+    b, *_ = setup(clock)
+    assert b.panel_close() == "没有开着的面板"
+    dry, _, ops, _ = dialog(clock, live=False)
+    assert dry.panel_close() == "dry-run：没真的关（会关掉不认识的面板）" and ops.closed == []
+
+
+def test_toolbox_panel_tools(clock):
+    from skydango.brain.tools import ToolBox
+
+    b, *_ = dialog(clock)
+    tb = ToolBox(b)
+    assert tb.run("panel_read", {})[1] is False
+    out, err = tb.run("panel_press", {"button": 1})
+    assert not err and out.startswith("按了「取消」") and tb.acted
+    assert tb.run("panel_press", {"button": []})[1] is True
+    assert tb.run("panel_close", {}) == ("关掉了不认识的面板", False)
+
+
+def test_prompt_has_panel_rules():
+    from skydango.brain.prompt import static_prompt
+    from skydango.config import ReplyConfig
+
+    assert "## 面板（panel_read / panel_press / panel_close）" in static_prompt(ReplyConfig())

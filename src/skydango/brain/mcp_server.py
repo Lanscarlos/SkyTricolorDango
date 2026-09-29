@@ -97,6 +97,18 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     def stop_task():
         return call("stop_task")
 
+    @srv.tool(name="panel_read", description=DESCRIPTIONS["panel_read"])
+    def panel_read(image: bool = False):
+        return call("panel_read", image=image)
+
+    @srv.tool(name="panel_press", description=DESCRIPTIONS["panel_press"])
+    def panel_press(button: str):
+        return call("panel_press", button=button)
+
+    @srv.tool(name="panel_close", description=DESCRIPTIONS["panel_close"])
+    def panel_close():
+        return call("panel_close")
+
     return srv
 
 
