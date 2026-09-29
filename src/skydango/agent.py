@@ -213,10 +213,11 @@ class Agent:
 
     def _watch_panel_triggers(self, now: float) -> None:
         """按需打开聊天面板：身边多了好友、好友头顶冒出"正在输入"时去看一眼。"""
-        near = set(self.env.nearby(now))
-        if near - self._nearby:
-            self.panel.trigger("arrive", now)
-        self._nearby = near
+        if hasattr(self.env, "nearby"):
+            near = set(self.env.nearby(now))
+            if near - self._nearby:
+                self.panel.trigger("arrive", now)
+            self._nearby = near
         if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
             self.panel.bubble_seen(now)
 
