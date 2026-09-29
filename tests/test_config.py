@@ -163,3 +163,13 @@ def test_secret_must_be_string(tmp_path):
     (tmp_path / "secrets.toml").write_text("[env]\nX = 1\n", encoding="utf-8")
     with pytest.raises(ValueError, match="X"):
         load_all(tmp_path / "config.toml", environ={})
+
+
+def test_perception_object_classes_appended():
+    from skydango.config import PerceptionConfig
+
+    p = PerceptionConfig()
+    assert p.classes[:6] == ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"]  # 旧编号不变
+    assert p.classes[6:] == ["bench", "bonfire", "instrument", "spirit"]
+    assert (p.object_min_hits, p.object_near, p.object_far) == (3, 0.85, 0.65)
+    assert load_config(ROOT / "config.example.toml").perception.object_min_hits == 3

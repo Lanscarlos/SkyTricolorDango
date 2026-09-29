@@ -703,7 +703,7 @@ def test_overlay_marks_typing():
 
 
 def test_default_classes_end_with_typing():
-    assert PerceptionConfig().classes == ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"]
+    assert PerceptionConfig().classes[:6] == ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"]  # 物品类追加在后面
     assert PerceptionConfig().typing_window == 8.0
 
 
@@ -1326,3 +1326,15 @@ def test_typing_seen_ignores_self():
     w = watcher(det)
     w.process(frame(), 10.0, panel_visible=False)
     assert w.typing_seen(10.0, strangers=True) is False
+
+
+# ---- 物品（spec 2026-09-29-object-recognition） ----
+def test_object_distance_and_describe_things():
+    from skydango.vision.people import Thing, describe_things, object_distance
+
+    assert object_distance(1000, 1080, 0.85, 0.65) == "近"
+    assert object_distance(800, 1080, 0.85, 0.65) == "中"
+    assert object_distance(500, 1080, 0.85, 0.65) == "远"
+    things = [Thing(1, "bench", Rect(0, 0, 1, 1), "左边", "近"), Thing(2, "spirit", Rect(0, 0, 1, 1), "前面", "远")]
+    assert describe_things(things) == "座位（左边·近）、先祖（前面·远）"
+    assert describe_things([]) == ""

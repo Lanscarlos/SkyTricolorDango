@@ -112,6 +112,9 @@ approach_strangers = true       # 陌生人走过来也报；陌生人多的地�
 typing_window = 8.0             # 陌生人发消息前这么久内头顶冒过气泡的人，才算可能的说话人（待真机确认）
 far_height = 0.08               # 远处的人（框高 < 屏高 × 这个）没挂上名字标签时，头顶裁一块再检测一次
 far_crops = 3                   # 每帧最多裁几块；0 = 关（perception compare --far-crops 0 对比开关效果）
+object_min_hits = 3             # 物品（座位 / 篝火 / 乐器 / 先祖）连续看到几帧才算
+object_near = 0.85              # 物品远近按框底边：底边 ≥ 画面高 × 这个算近（待标定）
+object_far = 0.65               # ≥ 这个算中，再高算远（待标定）
 
 [places]
 # 认地图（感知层三期，要先打开 [perception]）：和 places/<地名>/ 里的参考截图比，认出在哪张图

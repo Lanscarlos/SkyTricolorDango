@@ -261,7 +261,9 @@ class PerceptionConfig:
     model: str = "models/sky-yolo.onnx"  # .onnx 用 onnxruntime；.pt / .engine 用 ultralytics
     device: str = "cuda"  # cuda / cpu；要 cuda 但装的是 CPU 版 onnxruntime 时会退回 CPU 并警告
     # 模型里读不到类别名时用。player_unlit = 没点火的陌生人（黑色剪影）；点过火的陌生人外观和好友一样，标 player
-    classes: list[str] = field(default_factory=lambda: ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"])
+    classes: list[str] = field(default_factory=lambda: [  # 新类别只能追加在末尾：标注文件存的是编号
+        "player", "name_tag", "social_ring", "self", "player_unlit", "typing", "bench", "bonfire", "instrument", "spirit",
+    ])
     imgsz: int = 960  # 推理尺寸，要和训练时一致；名字标签只有 40~50 px 高，640 时缩到 15 px 左右，偏小
     conf: float = 0.35
     iou: float = 0.5  # NMS 阈值（端到端模型不用）
@@ -298,6 +300,10 @@ class PerceptionConfig:
     # 三期 §1：远处小目标二次检测（名字标签太小，YOLO 框不到）
     far_height: float = 0.08  # 人物框高 < 截图高 × 这个、又没挂上名字标签时，在它头顶裁一块再检测一次
     far_crops: int = 3  # 每帧最多裁几块（同一条轨迹每秒最多一次）；0 = 关
+    # 物品（座位 / 篝火 / 乐器 / 先祖，spec 2026-09-29-object-recognition）
+    object_min_hits: int = 3  # 一条物品轨迹至少连续看到几帧才算（防一闪而过的误认）
+    object_near: float = 0.85  # 远近按框底边：底边 ≥ 画面高 × 这个算近（待标定）
+    object_far: float = 0.65  # ≥ 这个算中，再高算远（待标定）
 
 
 @dataclass
