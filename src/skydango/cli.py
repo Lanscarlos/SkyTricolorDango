@@ -944,7 +944,8 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
 
 
 def _perception_label_objects(cfg: Config, args) -> None:
-    """--objects：给已经标好人的数据集补标物品（座位 / 篝火 / 乐器 / 先祖），见 vision/objlabel.py。"""
+    """--objects：给已经标好人的数据集补标物品（座位 / 篝火 / 乐器 / 先祖）和头顶气泡 typing，见 vision/objlabel.py。"""
+    import fnmatch
     import hashlib
     import json
     import shutil
@@ -960,9 +961,9 @@ def _perception_label_objects(cfg: Config, args) -> None:
     if args.assist or args.spin or args.from_runs:
         raise SystemExit("--objects 只对已经标好人的数据集跑，不能和 --assist / --spin / --from-runs 一起用")
     classes = cfg.perception.classes
-    lacking = [c for c in objlabel.OBJECTS if c not in classes]
+    lacking = [c for c in objlabel.LABEL_CLASSES if c not in classes]
     if lacking:
-        raise SystemExit(f"[perception] classes 里没有物品类别（{'、'.join(lacking)}）：要带上 bench / bonfire / instrument / spirit（加在末尾）")
+        raise SystemExit(f"[perception] classes 里缺这几类（{'、'.join(lacking)}）：要带上 typing 和 bench / bonfire / instrument / spirit（新类别加在末尾）")
     root = Path(args.source)
     everything = sorted(root.glob("images/*/*.jpg"))
     if not everything:
@@ -970,6 +971,14 @@ def _perception_label_objects(cfg: Config, args) -> None:
     images = [p for p in everything if not p.stem.endswith(SUFFIXES)]
     if len(images) < len(everything):  # 增强图是原图的副本：单独核对白花钱、标注还和原图对不上
         print(f"跳过 {len(everything) - len(images)} 张增强图（_blur / _dark）：补完物品后先删掉它们，再重新 perception augment")
+    only = getattr(args, "only", None)
+    if only:  # 只做这几帧：别的帧不核对、不写回、不进清单（labels/ 照样整个备份）
+        patterns = [p.strip() for arg in only for p in arg.split(",") if p.strip()]
+        images = [p for p in images if any(fnmatch.fnmatch(p.stem, pat) or fnmatch.fnmatch(p.name, pat) for pat in patterns)]
+        if not images:
+            raise SystemExit(f"--only {' '.join(only)} 一帧也没匹配上：按图片文件名匹配（不带扩展名的 0001 或带扩展名的 0001.jpg 都行，"
+                             f"通配 * ? []），增强图（_blur / _dark）不算")
+        print(f"--only：只处理 {len(images)} 帧")
     base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错
     (root / "data.yaml").write_text(data_yaml(root, classes), encoding="utf-8")  # 先写：中途停下时标注里已经有 6~9 类
     labels = root / "labels"
@@ -1015,7 +1024,7 @@ def _perception_label_objects(cfg: Config, args) -> None:
             continue
         todo.append(path)
     done = len(images) - len(todo) - len(edited)
-    print(f"{len(todo)} 帧交给 Claude（{a.model}）补标物品：每批 {a.batch} 帧、{a.jobs} 路并发"
+    print(f"{len(todo)} 帧交给 Claude（{a.model}）补标物品和气泡：每批 {a.batch} 帧、{a.jobs} 路并发"
           + (f"；{done} 帧上次做过、{len(edited)} 帧你改过，跳过（要重新核对加 --recheck）" if done or edited else ""))
     counts: dict[str, int] = {}
     spirits = 0
@@ -1026,12 +1035,12 @@ def _perception_label_objects(cfg: Config, args) -> None:
             text = label.read_text(encoding="utf-8") if label.is_file() else ""
             frame = imread(path)
             height, width = frame.shape[:2]
-            # 已有的物品（重跑 / 手工修过）也当候选：写回时物品行整体替换，不交给 Claude 再核对就丢了
+            # 已有的物品 / 气泡（重跑 / 手工修过）也当候选：写回时这些行整体替换，不交给 Claude 再核对就丢了
             cands = objlabel.objects_in_labels(text, classes, width, height)
             hints = [objlabel.EXISTING + c for c, _ in cands]
             if detector is not None:
                 model = [(d.cls, d.box) for d in detector.detect(frame)
-                         if d.cls in objlabel.OBJECTS and all(iou(d.box, b) < 0.6 for _, b in cands)]
+                         if d.cls in objlabel.LABEL_CLASSES and all(iou(d.box, b) < 0.6 for _, b in cands)]
                 cands += model
                 hints += [f"猜 {c}" for c, _ in model]
             people = objlabel.people_in_labels(text, classes, width, height)
@@ -1065,7 +1074,7 @@ def _perception_label_objects(cfg: Config, args) -> None:
     report = root / "_assist" / "objects.md"
     report.write_text(objlabel.objects_report(sorted(results, key=lambda r: r[0]), edited), encoding="utf-8")
     failed = sum(1 for _, r in results if r is None)
-    print("物品：" + ("、".join(f"{c}×{v}" for c, v in counts.items()) or "没有") + f"；人物框改成先祖 {spirits} 个；没核对 {failed} 帧")
+    print("物品 / 气泡：" + ("、".join(f"{c}×{v}" for c, v in counts.items()) or "没有") + f"；人物框改成先祖 {spirits} 个；没核对 {failed} 帧")
     u = reviewer.usage
     print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")
     print(f"下一步：先看 {report}，再用 X-AnyLabeling 打开 {root / 'images'} 修正")
@@ -1084,6 +1093,8 @@ def _perception_label(cfg: Config, args) -> None:
 
     if args.objects:
         return _perception_label_objects(cfg, args)
+    if getattr(args, "only", None):  # 别处直接构造的 Namespace 可能没有这一项
+        raise SystemExit("--only 只配 --objects 用")
     classes = cfg.perception.classes
     index = {c: i for i, c in enumerate(classes)}
     root = Path(args.source)
@@ -1822,8 +1833,12 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--assist", action="store_true", help="Claude 辅助标注：检测器出人物候选框，claude -p 核对后写进标注（令牌同 [brain]，见 [assist]）")
     q.add_argument("--all-frames", action="store_true", help="配 --assist：不挑帧，每一帧都核对（默认去掉和上一张差不多的帧）")
     q.add_argument("--objects", action="store_true",
-                   help="物品模式：source 是已经标好人的数据集，Claude 补标座位 / 篝火 / 乐器 / 先祖（--model 的物品框当候选；写回前备份 labels/）")
+                   help="物品模式：source 是已经标好人的数据集，Claude 补标座位 / 篝火 / 乐器 / 先祖和头顶气泡 typing"
+                        "（--model 的这几类框当候选；写回前备份 labels/）")
     q.add_argument("--recheck", action="store_true", help="配 --objects：上次做过的、你改过的帧也重新核对（默认跳过）")
+    q.add_argument("--only", action="append", metavar="通配",
+                   help="配 --objects：只处理文件名匹配的帧（fnmatch，对不带扩展名的文件名或带扩展名的文件名都试，比如 0001 / 'rec_*' / '*.jpg'）；"
+                        "可以给多次或用逗号分隔；别的帧不核对、不写回、不进清单。一帧都没匹配上就报错退出")
     q = psub.add_parser("compare", help="同一批录像上对比现有的整图 OCR 和 YOLO（认出率、请求延迟、陌生人 / 走开事件、耗时）")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="模型文件（默认 perception.model）")

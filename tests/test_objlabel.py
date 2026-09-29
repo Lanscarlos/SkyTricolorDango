@@ -326,3 +326,130 @@ def test_objects_mode_skips_augmented_images(tmp_path, monkeypatch):
     cli.main(["perception", "label", str(root), "--objects"])
     assert not (root / "labels" / "train" / "0000_blur.txt").exists()
     assert not (root / "_preview_objects" / "0000_blur.jpg").exists()
+
+
+# ---- typing（头顶气泡）并进物品模式 ----
+TYPING = CLASSES.index("typing")
+
+
+def test_prompt_mentions_typing_and_version_bumped():
+    assert "typing" in OBJECT_RULES and OBJECT_PROMPT_VERSION == 3
+
+
+def test_object_names_has_no_typing():
+    from skydango.vision.objlabel import LABEL_CLASSES
+    from skydango.vision.people import OBJECT_NAMES
+
+    assert "typing" not in OBJECT_NAMES  # 感知层的 objects() 不能把气泡当物品报出来
+    assert "typing" in LABEL_CLASSES and all(c in LABEL_CLASSES for c in OBJECT_NAMES)
+
+
+def test_parse_reads_typing_candidates_and_missing():
+    f = frame_input(cands=[Rect(600, 200, 80, 40)])
+    r = parse_object_review(reply(boxes={"1": {"cls": "typing"}}, missing=[{"cls": "typing", "box": [900, 300, 980, 340]}]), [f])["f0"]
+    assert r.verdicts[1].cls == "typing" and not r.problems
+    assert [(c, b) for c, b, _ in r.missing] == [("typing", Rect(900, 300, 80, 40))]
+    assert apply_object_review(f.candidates, r) == [("typing", Rect(600, 200, 80, 40)), ("typing", Rect(900, 300, 80, 40))]
+
+
+PEOPLE_LABELS = (
+    "0 0.100000 0.200000 0.050000 0.100000\n"   # player
+    "4 0.300000 0.200000 0.050000 0.100000\n"   # player_unlit
+    "1 0.100000 0.100000 0.050000 0.020000\n"   # name_tag
+    "2 0.100000 0.130000 0.020000 0.020000\n"   # social_ring
+    "3 0.500000 0.800000 0.050000 0.100000\n"   # self
+)
+
+
+def test_rewrite_writes_typing_lines_and_keeps_people():
+    out = rewrite_labels(PEOPLE_LABELS, CLASSES, [("typing", Rect(960, 540, 96, 108))], [], W, H).splitlines()
+    assert out[:5] == PEOPLE_LABELS.splitlines()
+    assert len(out) == 6 and out[5].split()[0] == str(TYPING)
+
+
+def test_rewrite_replaces_old_typing_lines_like_objects():
+    old = PEOPLE_LABELS + f"{TYPING} 0.500000 0.100000 0.040000 0.030000\n6 0.500000 0.500000 0.100000 0.100000\n"
+    out = rewrite_labels(old, CLASSES, [("bonfire", Rect(960, 540, 96, 108))], [], W, H).splitlines()
+    assert out[:5] == PEOPLE_LABELS.splitlines()
+    assert [l.split()[0] for l in out[5:]] == ["7"]  # 旧的气泡、座位都换掉了
+
+
+def test_existing_typing_is_a_candidate_and_kept_when_unjudged():
+    from skydango.vision.objlabel import EXISTING, objects_in_labels
+
+    text = PEOPLE_LABELS + f"{TYPING} 0.500000 0.100000 0.040000 0.030000\n"
+    existing = objects_in_labels(text, CLASSES, W, H)
+    assert [c for c, _ in existing] == ["typing"]
+    review = ObjectReview({1: ObjectVerdict("unjudged", None, "")}, [], [], "")
+    assert apply_object_review([b for _, b in existing], review, [EXISTING + "typing"]) == existing
+    review = ObjectReview({1: ObjectVerdict("not_object", None, "")}, [], [], "")
+    apply_object_review([b for _, b in existing], review, [EXISTING + "typing"])
+    assert review.changed == ["1 号已有的气泡删了（not_object）"]
+
+
+def test_report_and_preview_know_typing():
+    from skydango.vision.objlabel import OBJECT_COLORS, draw_objects_preview
+
+    r = ObjectReview({}, [("typing", Rect(0, 0, 10, 10), "")], [], "")
+    md = objects_report([("f0", r)])
+    assert "- f0：气泡" in md and "气泡品红" in md
+    assert OBJECT_COLORS["typing"] == (255, 0, 255)
+    out = draw_objects_preview(img(), [("typing", Rect(100, 100, 50, 30))], [], [], [], ObjectReview({}, [], [], ""))
+    assert tuple(out[100, 120]) == (255, 0, 255)
+
+
+def test_objects_mode_only_processes_matching_frames(tmp_path, monkeypatch):
+    from skydango import cli
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    before = (root / "labels" / "train" / "0000.txt").read_text(encoding="utf-8")
+    cli.main(["perception", "label", str(root), "--objects", "--only", "0001"])
+    assert (root / "labels" / "train" / "0000.txt").read_text(encoding="utf-8") == before
+    assert classes_in(root / "labels" / "train" / "0001.txt") == ["6"]
+    assert not (root / "_preview_objects" / "0000.jpg").exists()
+    report = (root / "_assist" / "objects.md").read_text(encoding="utf-8")
+    assert "0000" not in report and "- 0001" in report
+
+
+def test_objects_mode_only_accepts_globs_and_commas(tmp_path, monkeypatch):
+    from skydango import cli
+    from skydango.imageio import imwrite
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    imwrite(root / "images" / "train" / "rec_0002.jpg", np.zeros((H, W, 3), np.uint8))
+    cli.main(["perception", "label", str(root), "--objects", "--only", "00*.jpg,nothing", "--only", "zzz"])
+    assert (root / "labels" / "train" / "0001.txt").exists() and not (root / "labels" / "train" / "rec_0002.txt").exists()
+    assert classes_in(root / "labels" / "train" / "0000.txt") == ["9", "1", "6"]
+
+
+def test_objects_mode_only_without_match_exits(tmp_path, monkeypatch):
+    import pytest
+
+    from skydango import cli
+
+    root, sent = _dataset(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit, match="--only"):
+        cli.main(["perception", "label", str(root), "--objects", "--only", "nope*"])
+    assert sent == [] and not (root / "_backup").exists()
+
+
+def test_objects_mode_needs_typing_class(tmp_path, monkeypatch):
+    import pytest
+
+    from skydango import cli
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    (tmp_path / "c.toml").write_text('[perception]\nclasses = ["player", "name_tag", "social_ring", "self", "player_unlit", "x",'
+                                     ' "bench", "bonfire", "instrument", "spirit"]\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="typing"):
+        cli.main(["-c", str(tmp_path / "c.toml"), "perception", "label", str(root), "--objects"])
+
+
+def test_only_needs_objects_mode(tmp_path, monkeypatch):
+    import pytest
+
+    from skydango import cli
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit, match="--objects"):
+        cli.main(["perception", "label", str(root), "--only", "0001"])

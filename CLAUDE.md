@@ -169,6 +169,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **物品识别（代码已完成，见 `2026-09-29-object-recognition-design.md`；还没有数据和模型）**：类别末尾追加 `bench` 座位 / `bonfire` 篝火 / `instrument` 乐器 / `spirit` 先祖（编号 6~9，旧编号不变；用 v4 时自然为空）。
   `objects()` 给出方位和远近（按框底边，`object_near` / `object_far` **未标定**，连续 `object_min_hits` 帧才算）；状态里"画面里的东西：座位（左边·近）"、眼睛的位置说明、网页"附近的东西"都有；
   只认出来告诉大脑，**不会走过去坐下**（F 期）。先祖单独成类后不再算陌生人。数据：`perception label datasets/sky --objects` 给已标好人的数据集补标（Claude 判成先祖的人物框自动改、列进清单；重跑跳过做过的帧和你改过的帧，`--recheck` 才重核；增强图不核对，augment 放在最后）；
+  头顶气泡 `typing` 也在物品模式里一起标（`objlabel.LABEL_CLASSES` = 四类物品 + typing；typing **不进** `OBJECT_NAMES`，`objects()` 不报气泡；提示词版本 3）；
+  `--only <通配>`（fnmatch 按图片文件名，带不带 `.jpg` 都行，可多次 / 逗号分隔）只处理匹配的帧，别的帧不核对、不写回、不进清单；
   烛火、光之翼等收集品不做（刷资源）。上线门槛和操作顺序见训练进度文档
 - 普通模式主人命令 `#spin [圈数]`：转一圈、截图存 `runs/<…>/spin/<时间>/`，打开感知层时回复带扫描结果；大脑模式不加
 - **2026-09-28 训到第四版 `models/sky-yolo-v4.pt`**（311 帧、3 张地图，Claude 辅助标注、用户没人工核对），进度、数据、标注规则和待办见 `docs/progress/2026-09-28-yolo-training.md`；
@@ -304,7 +306,7 @@ python -m skydango perception label <录像目录> [--preview] [--model 模型] 
 python -m skydango perception label <录像目录> --assist [--model 模型] [--all-frames]  # Claude 辅助标注：挑帧 + 人物框由 Sonnet 核对，清单在 datasets/sky/_assist/review.md（令牌同 [brain]）
 python -m skydango perception label runs --from-runs --model 模型  # 把各次运行存下的难例收进数据集
 python -m skydango perception label <spin 目录> --spin --model 模型  # 转圈录像：认出团子，每帧自动补 self 框
-python -m skydango perception label datasets/sky --objects [--model 模型]  # 物品模式：给已标好人的数据集补标座位 / 篝火 / 乐器 / 先祖（先备份 labels/），清单在 _assist/objects.md
+python -m skydango perception label datasets/sky --objects [--model 模型] [--only 通配]  # 物品模式：给已标好人的数据集补标座位 / 篝火 / 乐器 / 先祖和头顶气泡 typing（先备份 labels/），清单在 _assist/objects.md；--only 只做文件名匹配的帧
 python -m skydango perception augment datasets/sky  # 训练集加运动模糊 / 压暗样本（只动 train）
 python -m skydango perception compare <录像目录> [--model 模型] [--far-crops 0]  # 同一批录像对比 YOLO 和整图 OCR → tmp/compare/<时间>/report.md（含远处认出率）
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
