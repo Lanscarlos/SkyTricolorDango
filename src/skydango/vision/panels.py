@@ -12,7 +12,7 @@ import re
 import time
 import tomllib
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,9 +22,10 @@ import numpy as np
 
 from ..config import PanelsConfig
 from ..imageio import imread
+from ..brain.images import difference, thumb
 from .bubbles import Rect, roi_rect
 from .icons import best_match, silhouette, trim
-from .ocr import OcrEngine
+from .ocr import OcrEngine, OcrLine
 
 log = logging.getLogger(__name__)
 
@@ -250,6 +251,72 @@ def load_cards(directory: str | Path) -> list[Card]:
     return [load_card(d) for d in sorted(root.iterdir()) if d.is_dir() and not d.name.startswith("_")]
 
 
+# ---- 细读 ----
+CLOSE_MARKS = ("×", "X", "x")
+READ_CACHE_DIFF = 0.02  # 面板区域缩略图差异低于这个就复用上次的细读
+
+
+def classify(text: str, cfg: PanelsConfig, allow: Sequence[str] = (), never: Sequence[str] = ()) -> str:
+    """按钮类别：never（放行也不按）> retreat（撤退类）> allow（卡片登记）> other（要主人放行）。词在按钮文字里就算命中。"""
+    t = text.strip()
+    if any(w in t for w in (*cfg.never, *never)):
+        return "never"
+    if t in CLOSE_MARKS or any(w in t for w in cfg.retreat):
+        return "retreat"
+    if any(w in t for w in allow):
+        return "allow"
+    return "other"
+
+
+def _inside(box: Rect, area: Rect) -> bool:
+    cx, cy = box.x + box.w / 2, box.y + box.h / 2
+    return area.x <= cx < area.x2 and area.y <= cy < area.y2
+
+
+def _is_button(line: OcrLine, card: Card | None, cfg: PanelsConfig, area: Rect | None) -> bool:
+    text = line.text.strip()
+    if not text or len(text) > cfg.button_max_chars:
+        return False
+    if area is not None:  # 卡片划了按钮区域：里面的短字都算
+        return _inside(line.box, area)
+    words = (*cfg.button_words, *cfg.retreat, *cfg.never, *(card.allow if card else ()), *(card.never if card else ()))
+    return text in CLOSE_MARKS or any(w in text for w in words)
+
+
+def split_reading(
+    lines: list[OcrLine], panel: Panel, card: Card | None, cfg: PanelsConfig, width: int, height: int, now: float
+) -> PanelReading:
+    """OCR 行（整张图坐标）→ 标题、正文、按钮。"""
+    lines = sorted((ln for ln in lines if ln.text.strip()), key=lambda ln: (ln.box.y, ln.box.x))
+    area = roi_rect(list(card.buttons_roi), width, height) if card and card.buttons_roi else None
+    buttons = [ln for ln in lines if _is_button(ln, card, cfg, area)]
+    rest = [ln for ln in lines if ln not in buttons]
+    title = ""
+    if card and card.title_roi:
+        title_area = roi_rect(list(card.title_roi), width, height)
+        titles = [ln for ln in rest if _inside(ln.box, title_area)]
+        title = "".join(ln.text.strip() for ln in titles)
+        rest = [ln for ln in rest if ln not in titles]
+    elif rest:
+        title, rest = rest[0].text.strip(), rest[1:]
+    allow, never = (card.allow, card.never) if card else ((), ())
+    return PanelReading(
+        panel,
+        title,
+        "\n".join(ln.text.strip() for ln in rest),
+        tuple(Button(ln.text.strip(), ln.box, classify(ln.text, cfg, allow, never)) for ln in buttons),
+        now,
+    )
+
+
+def describe_reading(reading: PanelReading) -> str:
+    """一行说清面板写了什么：「标题」正文前 40 字，按钮：取消、加入。"""
+    text = reading.text.replace("\n", " ")
+    head = f"「{reading.title}」" if reading.title else ""
+    buttons = "、".join(b.text for b in reading.buttons) or "没认出按钮"
+    return f"{head}{text[:40]}，按钮：{buttons}"
+
+
 # ---- 快看 ----
 TEMPLATE_SCALES = (0.9, 1.0, 1.1)  # 模板按 1080 高裁的；再乘上 截图高 / 1080
 
@@ -313,6 +380,7 @@ class PanelWatcher:
         self._open: dict[str, Panel] = {}  # 特征卡认出、开着的
         self._changes: list[PanelChange] = []
         self._expect: Counter[str] = Counter()
+        self._read_cache: dict[str, tuple[Rect, np.ndarray, PanelReading]] = {}
 
     # ---- 身体线程 ----
     def observe(self, frame: np.ndarray, now: float) -> PanelState:
@@ -330,6 +398,23 @@ class PanelWatcher:
             hits = tuple((f, *check_feature(frame, f, self.builtins)) for f in card.quick)
             out.append(CardCheck(card, hits, bool(hits) and all(h for _, h, _ in hits)))
         return out
+
+    def read(self, frame: np.ndarray, panel: Panel, now: float) -> PanelReading:
+        """细读一个面板：OCR 它的区域，拆成标题、正文、按钮。画面没怎么变时复用上次的结果。"""
+        crop = panel.box.crop(frame)
+        small = thumb(crop)
+        cached = self._read_cache.get(panel.name)
+        if cached is not None and cached[0] == panel.box and difference(cached[1], small) < READ_CACHE_DIFF:
+            return cached[2]
+        height, width = frame.shape[:2]
+        lines = [
+            OcrLine(ln.text, ln.score, Rect(ln.box.x + panel.box.x, ln.box.y + panel.box.y, ln.box.w, ln.box.h))
+            for ln in self.ocr.recognize(crop)
+        ]
+        reading = split_reading(lines, panel, self.cards.get(panel.name), self.cfg, width, height, now)
+        self._read_cache[panel.name] = (panel.box, small, reading)
+        self.readings[panel.name] = reading
+        return reading
 
     def present(self, frame: np.ndarray, panel: Panel) -> bool:
         """单帧判断这个面板还在不在（不去抖；PanelOps 关面板、按按钮后确认用）。"""
