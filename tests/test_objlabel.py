@@ -202,9 +202,10 @@ def test_objects_mode_rerun_is_stable(tmp_path, monkeypatch):
 
     root, _ = _dataset(tmp_path, monkeypatch)
     cli.main(["perception", "label", str(root), "--objects"])
-    first = {p.name: classes_in(p) for p in (root / "labels" / "train").glob("*.txt")}
+    first = {p.name: sorted(classes_in(p)) for p in (root / "labels" / "train").glob("*.txt")}
     cli.main(["perception", "label", str(root), "--objects"])  # 已有的物品当候选再核对一遍，认可 → 不丢、不重复
-    assert {p.name: classes_in(p) for p in (root / "labels" / "train").glob("*.txt")} == first
+    # 行的顺序会变（改成先祖的那行这次当物品写在末尾），YOLO 不在乎顺序
+    assert {p.name: sorted(classes_in(p)) for p in (root / "labels" / "train").glob("*.txt")} == first
 
 
 def test_objects_mode_rejects_other_modes(tmp_path, monkeypatch):
