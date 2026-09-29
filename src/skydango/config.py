@@ -443,6 +443,7 @@ class BrainConfig:
     eyes_timeout: float = 60.0  # 眼睛一次描述最多等多久（秒）
     memory_model: str = "sonnet"  # 记忆整理（随手记 inbox.md、整理 notes.md）用的模型（一次性 claude -p）
     memory_timeout: float = 120.0  # 记忆整理一次最多等多久（秒）
+    history_turns: int = 20  # 启动时把 history.jsonl 最近几轮原话放进大脑的系统提示词（重启后接得上话），0 不带
     turn_timeout: float = 120.0  # 大脑一轮最多等多久（秒），超了结束进程、下次用 --resume 接回
     heartbeat: list[float] = field(default_factory=lambda: [45.0, 90.0, 180.0])  # 没事件时隔多久醒一次，闲着就退到下一档
     max_steps: int = 6  # 每次醒来最多调几次工具

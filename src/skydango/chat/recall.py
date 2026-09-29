@@ -20,7 +20,8 @@ def _heard(turn: Turn) -> str:
     return " / ".join(line.strip() for line in text.splitlines() if line.strip())
 
 
-def _render(turn: Turn) -> str:
+def render_turn(turn: Turn) -> str:
+    """一轮聊天一行：9月28日 21:03  名字：「…」 → 我：…（截到 MAX_CHARS 字）。重启时带给大脑的最近几轮也用它。"""
     d = time.localtime(turn.t)
     text = _heard(turn)
     if turn.reply and turn.reply != SKIP:
@@ -64,7 +65,7 @@ def recall(
     parts = []
     if found:
         parts.append(f"最近 {days} 天（共 {len(turns)} 轮）里找到 {len(found)} 轮（{what}），“我”是你自己说的：")
-        parts += [_render(t) for t in found]
+        parts += [render_turn(t) for t in found]
     else:
         parts.append(f"最近 {days} 天（共 {len(turns)} 轮）里没找到{what}的聊天。")
     if notes:

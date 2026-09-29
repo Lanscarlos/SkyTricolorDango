@@ -64,3 +64,31 @@ def test_brain_prompt_panel_auto():
 def test_prompt_says_to_recall_before_answering_about_the_past():
     text = static_prompt(ReplyConfig())
     assert "recall" in text and "别顺着" in text and "你之前不是这么说的" in text
+
+
+# ---- 重启时带上最近几轮聊天原话 ----
+def _history_store(tmp_path, now):
+    store = MemoryStore(tmp_path)
+    for i in range(5):  # 越往后越新，最后一轮是 14 小时前
+        store.history.append(f"新的聊天消息：\n懒洋洋大王：「第{i}句」", f"回{i}", now - 14 * 3600 - (4 - i) * 60)
+    return store
+
+
+def test_brain_prompt_carries_recent_turns_in_order(tmp_path):
+    import time
+
+    now = time.time()
+    text = brain_prompt(ReplyConfig(), _history_store(tmp_path, now), history_turns=3, now=now)
+    assert "## 上次聊到哪" in text and "14 小时前" in text
+    assert "第1句" not in text  # 只带最近 3 轮
+    assert text.index("懒洋洋大王：「第2句」 → 我：回2") < text.index("第3句") < text.index("第4句")
+    assert text.index("## 上次聊到哪") < text.index("## 你在做什么")  # 在记忆那部分，规则前面
+
+
+def test_no_recent_turns_section_when_off_or_empty(tmp_path):
+    import time
+
+    now = time.time()
+    assert "上次聊到哪" not in brain_prompt(ReplyConfig(), _history_store(tmp_path / "a", now), history_turns=0, now=now)
+    assert "上次聊到哪" not in brain_prompt(ReplyConfig(), MemoryStore(tmp_path / "b"), history_turns=20, now=now)
+    assert "上次聊到哪" not in brain_prompt(ReplyConfig(), None, history_turns=20, now=now)

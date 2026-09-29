@@ -1368,7 +1368,9 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     server.start()
     trace = None if viewer is None else (viewer.brain or BrainTrace())  # 网页上的大脑时间线（一般 _viewer 已经挂好）
     session = BrainSession(
-        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto"),
+        base, claude_vars, work / "session", server.url, brain_prompt(
+            cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns
+        ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
     )
