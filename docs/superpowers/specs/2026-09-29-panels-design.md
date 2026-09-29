@@ -158,7 +158,9 @@ title_roi = []               # 标题在哪；不写 = region 里最上面一行
 ### 细读
 
 `PanelWatcher.read(frame, panel) -> PanelReading`：对 `panel.box` 做一次 OCR（单独的 OCR 实例，线程数 `panels.ocr_threads`，和 env 一样不跟读聊天抢），然后：
-- **按钮**：`buttons.roi`（没有就 `box`）里 ≤ `button_max_chars`（默认 6）个字的文字块；
+- **按钮**：配了 `buttons.roi` 时，这块里 ≤ `button_max_chars`（默认 6）个字的文字块都算按钮；
+  没配时在整个 `box` 里找，≤ 6 个字**并且**含按钮词（`button_words` / `retreat` / `never` / 卡片 `allow` / `never`）或者是 "×" 的才算
+  （不然"共享空间"这种短标题会被当成按钮）；
   分类顺序：全局 `never` 或卡片 `never` 命中 → `never`；`retreat` 词表命中（或 × 模板）→ `retreat`；卡片 `allow` 命中 → `allow`；其余 `other`。
   词表匹配用"包含"（"取消" 匹配 "取消邀请"），`never` 优先级最高（"退出并删除" 是 never，不是 retreat）。
 - **标题**：`title_roi` 里的文字；没配就取最上面一行。
@@ -282,7 +284,7 @@ ui_delay = 0.8
 都不往游戏里发输入（`panels` 默认读当前截图，只截图不点）：
 
 ```bash
-python -m skydango panels [图片或目录]          # 逐张快看：认出了哪些面板、每个特征命中没有 / 分数；标注图 tmp/panels/
+python -m skydango panels scan [图片或目录]     # 逐张快看：认出了哪些面板、每个特征命中没有 / 分数；标注图 tmp/panels/
 python -m skydango panels read [图片]           # 细读一次：标题、正文、按钮和 kind；含通用兜底判定
 python -m skydango panels cut <图片> <卡片> <文件名> --roi x1,y1,x2,y2   # 裁一块存成该卡片的模板图
 ```
@@ -323,7 +325,7 @@ python -m skydango panels cut <图片> <卡片> <文件名> --roi x1,y1,x2,y2   
 ## 上线顺序
 
 1. **代码合进 main**：五张卡全是未核对 → 身体只报告、不自动关；遮挡护栏遇到未核对的面板拒绝、交给大脑；大脑能读文字、按撤退类按钮。
-2. **用户录样本**（`record`）→ 用 `panels` 逐张核对、`panels cut` 裁模板、调阈值 → 改 `verified = true`；每核对一张，身体就多收拾一种面板。
+2. **用户录样本**（`record`）→ 用 `panels scan` 逐张核对、`panels cut` 裁模板、调阈值 → 改 `verified = true`；每核对一张，身体就多收拾一种面板。
    核对结论写回 game-ops"面板"一节。
 
 ## 不做（第一期）
