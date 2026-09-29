@@ -110,7 +110,7 @@ def body(clock, live=False, frames=None, panel_mode=None, **kw):
     cfg.reply.disclosure_prefix = ""
     cfg.sender.open_chat_key = 28
     cfg.proactive.enabled = False  # 旧行为的测试：不管主动开口；pro_body 打开
-    device = FakeDevice(frames or [scene()])
+    device = kw.pop("device_override", None) or FakeDevice(frames or [scene()])
     reader = FakeReader()
     if panel_mode is not None:  # 用假面板：按 46 开关，reader 跟着它
         cfg.panel.mode = panel_mode
@@ -1969,31 +1969,59 @@ CLEAR_BODY = Rect(1250, 420, 160, 400)  # 露出来之后的身体框（和团�
 
 
 class PeekEnv(FakeEnv):
-    """按"已经按了几次镜头键"切换场景：scenes[i] = 按了 i 次之后感知层看到的 (标签, 身体框)，最后一个一直保持。"""
+    """按"已经按了几次镜头键"切换场景：scenes[i] = 按了 i 次之后感知层看到的 (标签, 身体框)，最后一个一直保持。
 
-    def __init__(self, device, clock, scenes, me=ME):
+    delay=True：像真的感知层（后台线程）一样晚一轮 —— 这次 observe 交进来的帧，下一次 observe 才出结果。"""
+
+    def __init__(self, device, clock, scenes, me=ME, delay=False):
         super().__init__()
-        self.device, self.clock, self.scenes, self.me = device, clock, scenes, me
+        self.device, self.clock, self.scenes, self.me, self.delay = device, clock, scenes, me, delay
         self.observed = 0
-        self._apply()
+        self.pending = None
+        self._publish(self._compute())
+
+    def _compute(self):
+        tag, body_box = self.scenes[min(len(camera_keys(self.device)), len(self.scenes) - 1)]
+        return tag, body_box, self.clock()
+
+    def _publish(self, state):
+        tag, body_box, t = state
+        self.labels = {"小明": (*tag, t)} if tag else {}
+        self.people_list = [Person(2, "friend", "小明", body_box, "右边", "近")] if body_box else []
+        self.last_tracks = ([SimpleNamespace(id=1, cls="self", box=self.me, last=t)] if self.me else []) + (
+            [SimpleNamespace(id=2, cls="player", box=body_box, last=t)] if body_box else [])
 
     def _apply(self):
-        presses = len(camera_keys(self.device))
-        tag, body_box = self.scenes[min(presses, len(self.scenes) - 1)]
-        now = self.clock()
-        self.labels = {"小明": (*tag, now)} if tag else {}
-        self.people_list = [Person(1, "friend", "小明", body_box, "右边", "近")] if body_box else []
-        self.last_tracks = [SimpleNamespace(cls="self", box=self.me, last=now)] if self.me else []
+        self._publish(self._compute())
 
     def observe(self, frame, now, panel_visible):
         self.observed += 1
-        self._apply()
+        state = self._compute()
+        if not self.delay:
+            self._publish(state)
+            return
+        if self.pending is not None:
+            self._publish(self.pending)
+        self.pending = state
 
 
-def peek_body(clock, scenes, live=True, **kw):
+class ShiftDevice(FakeDevice):
+    """画面亮度跟着聊天面板开关变（开着 30、关着 200）：看裁出来的图是不是在面板关着时截的。"""
+
+    def __init__(self):
+        super().__init__([np.zeros((1080, 1920, 3), np.uint8)])
+        self.reader = None
+
+    def screenshot(self):
+        closed = self.reader is not None and self.reader.panel_closed_since is not None
+        return np.full((1080, 1920, 3), 200 if closed else 30, np.uint8)
+
+
+def peek_body(clock, scenes, live=True, delay=False, **kw):
     kw.setdefault("frames", [np.full((1080, 1920, 3), 90, np.uint8)])  # 坐标按 1920×1080
     b, device, reader, events = body(clock, live=live, **kw)
-    env = PeekEnv(device, clock, scenes)
+    b.sleep = clock.advance  # 等待会让时间往前走：按键之后的结果才分得出新旧
+    env = PeekEnv(device, clock, scenes, delay=delay)
     b.env = env
     b.camera = Camera(device, 0.25, None, sleep=lambda s: None)
     return b, device, env
@@ -2004,6 +2032,11 @@ def camera_keys(device):  # 镜头键：左右（105 / 106）、拉近拉远（1
 
 
 presses = camera_keys
+
+
+def jpeg_mean(block):
+    data = base64.b64decode(block["source"]["data"])
+    return float(cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE).mean())
 
 
 def test_status_says_who_is_hidden_behind_you(clock):
@@ -2098,3 +2131,63 @@ def test_look_person_peek_clears_scene_change_reference(clock):
     b._ref_thumb = np.zeros((9, 16), np.uint8)
     b.look_person("小明")
     assert b._ref_thumb is None  # 自己转的，不算画面大变
+
+
+# ---- look_person 换角度：评审修正 ----
+
+def test_peek_crops_frame_taken_while_panel_is_lent(clock):  # 面板开 / 关画面横移约 130 px：裁图要用量框时那一帧
+    device = ShiftDevice()
+    b, _, env = peek_body(clock, [(BEHIND_TAG, None), ((1270, 380, 120, 36), CLEAR_BODY)],
+                          frames=None, panel_mode="always", device_override=device)
+    device.reader = b.reader
+    assert b.reader.panel_closed_since is None  # always 模式：面板平时开着
+    img, note = b.look_person("小明")
+    assert "转了一下镜头" in note["text"]
+    assert jpeg_mean(img) > 150  # 面板关着时截的（亮度 200），不是还回面板之后（30）
+
+
+def test_peek_ignores_results_from_before_the_press(clock):  # 感知层晚一轮：拉近之后先读到的是拉近前的小框
+    small = Rect(1300, 500, 60, 150)
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 460, 120, 36), small), ((1250, 380, 120, 36), CLEAR_BODY)],
+                             delay=True)
+    b.look_person("小明")
+    assert [c for c in presses(device) if c == ("hw_key", 12)] == [("hw_key", 12)]  # 只拉近一次，没被旧的小框骗着再拉
+
+
+def test_peek_budget_spent_while_enlarging_still_counts_as_seen(clock):
+    small = Rect(1300, 500, 60, 150)
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 460, 120, 36), small)])
+    b.cfg.peek.max_presses = 2  # 转一下露出来、拉近一下，预算就用完了
+    _, note = b.look_person("小明")
+    assert "没看清" not in note["text"] and "按名字标签估的" not in note["text"]
+
+
+def test_peek_forgets_scene_reference_even_if_a_key_press_fails(clock):
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None), ((980, 360, 120, 36), None)])
+    b._ref_thumb = np.zeros((9, 16), np.uint8)
+    calls = []
+
+    def boom(code, seconds):
+        calls.append(code)
+        if len(calls) == 2:
+            raise RuntimeError("adb 断了")
+
+    device.hw_key_hold = boom
+    with pytest.raises(RuntimeError):
+        b.look_person("小明")
+    assert b._ref_thumb is None
+
+
+def test_peek_ignores_sweep_self_box_after_zooming(clock):  # 转圈认出的团子框在缩放后大小不对：循环里只信当前帧的 YOLO
+    b, device, env = peek_body(clock, [(BEHIND_TAG, None)])
+    env.me = Rect(880, 400, 200, 400)  # YOLO 的团子框（中心 980）
+    env._apply()
+    env.self_box = Rect(660, 100, 600, 900)  # 转圈认的旧框（中心 960，离中线更近）、很大：采信了会一直判"贴太近"拉远
+    b.cfg.peek.max_presses = 3
+    b.look_person("小明")
+    assert ("hw_key", 13) not in presses(device)
+
+
+def test_status_hidden_note_depends_on_whether_peek_can_run(clock):
+    b, _, _ = peek_body(clock, [(BEHIND_TAG, None)], live=False)
+    assert "被你挡住：小明" in b.status() and "会自己换角度" not in b.status()

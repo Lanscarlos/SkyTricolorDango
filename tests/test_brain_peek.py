@@ -175,3 +175,25 @@ def test_zoom_in_capped():
 
 def test_lost_target_is_done():
     assert planner().next(Obs(tag=None, body=None, me=ME)) == Done("lost")
+
+
+# ---- 评审修正 ----
+
+def test_zoom_in_that_loses_friend_entirely_is_undone():  # 拉近后人整个出了画面（看不到）：退一步，不直接放弃
+    p = planner(too_small=0.25)
+    small = Rect(1700, 500, 60, 150)
+    assert p.next(Obs(tag=tag_at(1730, y=460), body=small, me=ME)) == Zoom("in")
+    assert p.next(None) == Zoom("out")
+    assert p.next(None) == Done("lost")
+
+
+def test_missing_obs_before_reveal_is_lost():
+    assert planner().next(None) == Done("lost")
+
+
+def test_flip_flopping_direction_counts_as_stuck():  # 方向假设不对时标签来回越过中线：别抖到预算用完
+    p = planner()
+    assert p.next(Obs(tag=tag_at(930), body=None, me=ME)).direction == "right"
+    assert p.next(Obs(tag=tag_at(990), body=None, me=ME)).direction == "left"
+    assert p.next(Obs(tag=tag_at(930), body=None, me=ME)).direction == "right"
+    assert p.next(Obs(tag=tag_at(990), body=None, me=ME)) == Done("stuck")

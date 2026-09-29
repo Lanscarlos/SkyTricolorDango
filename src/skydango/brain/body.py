@@ -650,11 +650,12 @@ class Body:
             where = f"画面里现在认得出：{'、'.join(known)}" if known else "画面里现在一个名字都没认出来"
             raise ToolError(f"没找到 {name}（{where}）；不在画面里的话可以先 look_around 看看在哪个方向")
         box, guessed = found
-        note = ""
+        note, frame = "", None
         if guessed and self._hidden_tag(name, now) is not None:
-            box, guessed, note = self._peek(name, box, live)
+            box, guessed, note, frame = self._peek(name, box, live)
         bx, by, bw, bh = box.x, box.y, box.w, box.h
-        frame = self.device.screenshot()
+        if frame is None:  # 换过角度就用量框那一帧（面板开 / 关画面会横移），没换才现截
+            frame = self.device.screenshot()
         self.last_frame, self.last_look = frame, now
         fh, fw = frame.shape[:2]
         mx, my = round(bw * 0.2), round(bh * 0.2)  # 四周各放宽 20%：人会动、框也不一定贴身
@@ -666,14 +667,17 @@ class Body:
         return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text + note}]
 
     # ---- look_person 换角度（peek）：好友躲在团子身后 ----
-    def _self_box(self, now: float) -> Rect | None:
-        """团子框：最近一帧 YOLO 的 self（和转圈认出的 self_box），只信在画面水平中间附近的（团子是镜头支点）。"""
+    def _self_box(self, now: float, since: float | None = None) -> Rect | None:
+        """团子框：最近一帧 YOLO 的 self，只信在画面水平中间附近的（团子是镜头支点）。
+
+        since = None（判断挡住、status）时也算上转圈认出的 self_box；换角度的循环里只要 since 之后的 YOLO 结果
+        （缩放过之后转圈那个框大小不对）。"""
         if self.env is None:
             return None
         cfg = self.cfg.peek
         boxes = [t.box for t in list(getattr(self.env, "last_tracks", ()))
-                 if t.cls == "self" and now - t.last <= cfg.tag_age]
-        if getattr(self.env, "self_box", None) is not None:
+                 if t.cls == "self" and now - t.last <= cfg.tag_age and (since is None or t.last >= since)]
+        if since is None and getattr(self.env, "self_box", None) is not None:
             boxes.append(self.env.self_box)
         return pick_self(boxes, self.frame_width, cfg.self_center)
 
@@ -689,8 +693,12 @@ class Body:
                     return Rect(x, y, w, h)
         return None
 
-    def _body_of(self, name: str, now: float) -> Rect | None:
+    def _body_of(self, name: str, now: float, since: float | None = None) -> Rect | None:
+        """这个人的身体框；since：只要感知层在 since 之后又看到过的（people() 会给 1 秒内的旧框）。"""
         people = [p for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        if since is not None:
+            seen = {t.id for t in list(getattr(self.env, "last_tracks", ())) if t.last >= since}
+            people = [p for p in people if p.track_id in seen]
         for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
             for p in people:
                 if same(p.name):
@@ -728,29 +736,32 @@ class Body:
         return ""
 
     def _peek_obs(self, name: str, since: float) -> PeekObs | None:
+        """since 之后感知层的结果（标签、身体框、团子框都要是按键 + 停稳之后看到的）；这个人一样都没有返回 None。"""
         now = self.clock()
-        tag, body = self._fresh_tag(name, now, since), self._body_of(name, now)
+        tag, body = self._fresh_tag(name, now, since), self._body_of(name, now, since)
         if tag is None and body is None:
             return None
-        return PeekObs(tag, body, self._self_box(now))
+        return PeekObs(tag, body, self._self_box(now, since))
 
-    def _peek_wait(self, name: str, pressed_at: float) -> PeekObs | None:
-        """按完一下：等画面停稳，再隔 poll 秒看一次感知层（自己截图喂进去：capture = "body" 时感知层靠身体给帧），
-        看到按键之后的新结果就返回；lost_after 秒内一直看不到这个人返回 None。"""
+    def _peek_look(self, name: str, since: float) -> tuple[PeekObs | None, Any]:
+        """画面停稳之后：每隔 poll 秒截一张喂感知层（capture = "body" 时感知层靠身体给帧），看到 since 之后的结果就返回
+        (结果, 刚截的那一帧)；lost_after 秒内一直看不到这个人返回 (None, None)。"""
         cfg, track = self.cfg.peek, self.cfg.track
-        self.sleep(track.settle)
-        for _ in range(max(1, math.ceil(track.lost_after / cfg.poll))):
+        deadline = self.clock() + track.lost_after
+        for _ in range(max(1, math.ceil(track.lost_after / cfg.poll)) + 1):  # 时钟不走（测试）时也有上限
             frame = self.device.screenshot()
             self.last_frame = frame
             self.env.observe(frame, self.clock(), False)
-            obs = self._peek_obs(name, pressed_at)
+            obs = self._peek_obs(name, since)
             if obs is not None:
-                return obs
+                return obs, frame
+            if self.clock() >= deadline:
+                break
             self.sleep(cfg.poll)
-        return None
+        return None, None
 
-    def _peek(self, name: str, box: Rect, live: bool) -> tuple[Rect, bool, str]:
-        """好友被团子挡住：闭环换角度。返回 (裁图用的框, 是不是按标签估的, 附加说明)。镜头不复位。"""
+    def _peek(self, name: str, box: Rect, live: bool) -> tuple[Rect, bool, str, Any]:
+        """好友被团子挡住：闭环换角度。返回 (裁图用的框, 是不是按标签估的, 附加说明, 量框的那一帧 / None)。镜头不复位。"""
         blocked = self._peek_blocked(live)
         if not blocked:
             try:
@@ -758,42 +769,54 @@ class Body:
             except ToolError as exc:
                 blocked = str(exc)
         if blocked:
-            return box, True, f"；{name} 被你挡住了（{blocked}，没换角度）"
-        cfg = self.cfg.peek
-        frame = self.last_frame if self.last_frame is not None else self.device.screenshot()
-        planner = PeekPlanner(cfg, self.cfg.track, frame.shape[1], frame.shape[0])
-        start, pressed = self.clock(), 0
-        obs = self._peek_obs(name, float("-inf"))
-        last = obs
-        reason = "budget"
-        with self.panel.borrow("look_person"):
-            while True:
-                action = planner.next(obs) if obs is not None else PeekDone("lost")
-                if isinstance(action, PeekDone):
-                    reason = action.reason
-                    break
-                if pressed >= cfg.max_presses or self.clock() - start >= cfg.max_seconds:
-                    break
-                if isinstance(action, PeekTurn):
-                    self.camera.nudge(action.direction, action.seconds)
-                else:
-                    self.camera.zoom_once(action.direction)
-                pressed += 1
-                obs = self._peek_wait(name, self.clock())
-                last = obs or last
-        if pressed:
-            self._ref_thumb = None  # 自己转的，不算画面大变
-            self._forget_self()
+            return box, True, f"；{name} 被你挡住了（{blocked}，没换角度）", None
+        cfg, track = self.cfg.peek, self.cfg.track
+        width = self.frame_width
+        height = int(self.last_frame.shape[0]) if self.last_frame is not None else 1080
+        planner = PeekPlanner(cfg, track, width, height)
+        start, pressed, reason = self.clock(), 0, "budget"
+        last, shot = None, None
+        try:
+            with self.panel.borrow("look_person") as was_open:
+                if was_open:  # 关面板时画面整体横移：等停稳再重新量
+                    self.sleep(track.settle)
+                obs, frame = self._peek_look(name, self.clock())
+                last, shot = (obs, frame) if obs is not None else (None, None)
+                while True:
+                    action = planner.next(obs)
+                    if isinstance(action, PeekDone):
+                        reason = action.reason
+                        break
+                    if pressed >= cfg.max_presses or self.clock() - start >= cfg.max_seconds:
+                        break
+                    if isinstance(action, PeekTurn):
+                        self.camera.nudge(action.direction, action.seconds)
+                    else:
+                        self.camera.zoom_once(action.direction)
+                    pressed += 1
+                    self.sleep(track.settle)
+                    obs, frame = self._peek_look(name, self.clock())
+                    if obs is not None:
+                        last, shot = obs, frame
+        finally:
+            if pressed:
+                self._ref_thumb = None  # 自己转的，不算画面大变
+                self._forget_self()
+        if reason == "budget" and planner.enlarging:  # 已经露出来了，只是还在调大小
+            reason = "revealed"
         where = f"镜头：{self.camera.describe()}，要转回去用 camera_reset" if pressed else ""
         if reason == "revealed" and last is not None:
             done = f"；刚才被你挡住了，转了一下镜头才看清（{where}）" if pressed else ""
             if last.body is not None:
-                return last.body, False, done
-            return self._below_tag((last.tag.x, last.tag.y, last.tag.w, last.tag.h)), True, done
+                return last.body, False, done, shot
+            return self._below_tag((last.tag.x, last.tag.y, last.tag.w, last.tag.h)), True, done, shot
         why = {"lost": "换角度时看不到他了", "stuck": "离得太近转不开"}.get(reason, "转了几下还是没露出来")
-        tag = last.tag if last is not None and last.tag is not None else None
-        guess = self._below_tag((tag.x, tag.y, tag.w, tag.h)) if tag is not None else box
-        return guess, True, f"；{name} 被你挡住了，换了角度也没看清（{why}{'；' + where if where else ''}）"
+        note = f"；{name} 被你挡住了，换了角度也没看清（{why}{'；' + where if where else ''}）"
+        if last is None:  # 一次都没看到：只能用转之前估的位置、现截
+            return box, True, note, None
+        if last.tag is not None:
+            return self._below_tag((last.tag.x, last.tag.y, last.tag.w, last.tag.h)), True, note, shot
+        return last.body, True, note, shot
 
     def fresh_frame(self):
         """眼睛马上要看：在身体线程里截一张新的。"""
@@ -862,7 +885,7 @@ class Body:
             parts.append("画面里：" + people)
         hidden = self.hidden_friends(now)
         if hidden:
-            parts.append("被你挡住：" + "、".join(hidden) + "（look_person 会自己换角度看）")
+            parts.append("被你挡住：" + "、".join(hidden) + ("" if self._peek_blocked(False) else "（look_person 会自己换角度看）"))
         things = describe_things(self.env.objects(now)) if hasattr(self.env, "objects") else ""
         if things:
             parts.append("画面里的东西：" + things)

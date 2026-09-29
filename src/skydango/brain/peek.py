@@ -75,9 +75,18 @@ class PeekPlanner:
         self._streak_dir: str | None = None  # 转不动的判断（同 track）：同方向连按的次数和开始时还差多少
         self._streak_n = 0
         self._streak_gap = 0.0
+        self._last_dir: str | None = None
+        self._flips = 0  # 方向反过几次：转过头反向一两次正常，一直来回 = 方向假设不对 / 人在跟着转，算转不动
 
-    def next(self, obs: Obs) -> Turn | Zoom | Done:
-        if obs.tag is None and obs.body is None:
+    MAX_FLIPS = 2
+
+    def next(self, obs: Obs | None) -> Turn | Zoom | Done:
+        """obs = None：等了 lost_after 秒还是看不到这个人（刚拉近把他推出画面时先退一步）。"""
+        if obs is None or (obs.tag is None and obs.body is None):
+            if self.enlarging and self.zoom_ins and not self.undone:
+                self.undone = True
+                self.zoom_ins -= 1
+                return Zoom("out")
             return Done("lost")
         if obs.me is not None:
             self._last_me = obs.me
@@ -95,6 +104,10 @@ class PeekPlanner:
         if obs.me is not None and obs.me.h > self.cfg.too_close * self.height and self.zoom_outs < self.cfg.max_zoom_out:
             return self._zoom_out()
         direction = "right" if tx < mx else "left"
+        if self._last_dir is not None and direction != self._last_dir:
+            self._flips += 1
+            if self._flips > self.MAX_FLIPS:
+                return Done("stuck")
         if direction == self._streak_dir and self._streak_gap - gap < self.track.stall_px:
             if self._streak_n >= self.track.stall_nudges:
                 if obs.me is not None and self.zoom_outs < self.cfg.max_zoom_out:
@@ -103,6 +116,7 @@ class PeekPlanner:
         else:  # 换了方向或者有进展：重新计数
             self._streak_dir, self._streak_n, self._streak_gap = direction, 0, gap
         self._streak_n += 1
+        self._last_dir = direction
         seconds = self.cfg.gain * max(gap, 0) / (self.width / 2)
         return Turn(direction, round(min(max(seconds, self.track.nudge_min), self.track.nudge_max), 3))
 
