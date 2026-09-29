@@ -83,6 +83,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」） |
+| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、页面 `static/console.html`（见「管理面板」） |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
 
@@ -196,6 +197,22 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **五张卡（聊天记录面板、动作面板、轮盘编辑、好友树、共享空间邀请）都还没在真机核对、缺模板图**：未核对的只报告不自动关，
   录样本后用 `panels scan` / `cut` / `read` 核对再改 `verified = true`
 
+## 管理面板（`[console]`，`console`）
+
+设计见 `docs/superpowers/specs/2026-09-29-console-design.md`，计划 `docs/superpowers/plans/2026-09-29-console.md`。`python -m skydango console` → 浏览器开 `http://127.0.0.1:8760/`：
+总览（启动选项 + 叫醒 / 停止 + 状态卡片 + 日志尾巴）、实时画面（iframe 嵌子进程的 viewer）、设置、设备检测。**还没在真机上用过**（spec §8 真机验证 1~6）。
+- **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
+  加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
+  `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程
+- **父子进程**：面板起 `python -m skydango -c <config> run [--no-brain] --live|--dry-run [--no-emotes] [--duration N] --view --viewer-port 8761 --no-browser --parent-pid <面板>`；
+  模式和真发 / 只看总是显式传，`config.toml` 的 `reply.dry_run` 不会改掉面板上的选择。同一时间只有一个子进程
+- **停止**：面板 `POST /shutdown` 给子进程的 viewer → `interrupt_main()`，走和 Ctrl+C 一样的收尾；`[console] stop_timeout`（60 秒）还没退就按进程树强杀，页面提示检查轮盘。
+  子进程每 2 秒看父进程还在不在（`--parent-pid`），面板没了就自己正常退出；面板启动时 8761 已经有人响应就提示「上次留下的团子」并能让它退出
+- **安全**：只监听 127.0.0.1；`/api/*`、`/live/*` 都校验 Host（防 DNS 重绑定）；POST 要 `X-Skydango: 1` + JSON + ≤ 64 KB（和 viewer 共用 `is_local_host` / `post_guard`）。
+  浏览器拿不到完整密钥（只显示「已设置（sk-…abcd）」）
+- 团子运行时不能做设备检测（设备归身体线程独占）；运行中改设置照样保存，提示重启后生效
+- viewer 为此多了 `/status`（只有状态、不带图）和 `/shutdown`，页面里的请求改成相对路径（放在 `/` 和 `/live/` 下都能用）；大脑模式的状态多了「正在做」「刚说过」
+
 ## 统管大脑（`[brain]`，`run` 默认）
 
 设计见 `docs/superpowers/specs/2026-09-27-brain-claude-code-design.md`（身体部分见 `2026-09-27-brain-design.md`）。
@@ -228,7 +245,8 @@ python -m skydango shot [--grid]          # 截图到 tmp/shot.png
 python -m skydango detect                 # 读一次聊天记录面板（先在游戏里按 C），标注图 tmp/detect.png
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
 python -m skydango chat --emotes 鞠躬,害羞  # 终端里和人设聊天，假装轮盘上有这些动作
-python -m skydango run [--live] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；先 claude setup-token、设 SKYDANGO_CLAUDE_TOKEN；--duration 到点自己退出，牵着手时 --no-emotes
+python -m skydango console [--port 端口] [--no-browser]  # 管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面
+python -m skydango run [--live | --dry-run] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；先 claude setup-token、设 SKYDANGO_CLAUDE_TOKEN；--duration 到点自己退出，牵着手时 --no-emotes
 python -m skydango run --no-brain [--echo] [--live]  # 调试用的普通 Agent（DeepSeek 回复）；--echo 不调模型
 python -m skydango panels scan [图片或目录]    # 面板识别：每张卡开没开、每个特征的分数 + 通用兜底，标注图 tmp/panels/（不发输入）
 python -m skydango panels read [图片]          # 细读开着的面板：标题、正文、按钮和类别

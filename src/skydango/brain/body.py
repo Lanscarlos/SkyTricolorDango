@@ -183,6 +183,8 @@ class Body:
         panel = self.panel.describe(now)
         if panel:
             info["聊天面板"] = panel
+        info["正在做"] = self.skills.describe(now).removeprefix("正在做：")
+        info["刚说过"] = self.said[-3:][::-1] or "还没说话"
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
             self.viewer.update(

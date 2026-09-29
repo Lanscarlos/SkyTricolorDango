@@ -1,6 +1,6 @@
 # 管理面板 — 设计
 
-日期：2026-09-29　状态：**设计已和用户确认，待写实现计划**
+日期：2026-09-29　状态：**已实现**（`src/skydango/console/`，计划 `docs/superpowers/plans/2026-09-29-console.md`），**待真机验证**（§8 真机验证 1~6）
 
 代码里统一叫 `console`（`python -m skydango console`、`src/skydango/console/`、`console.toml`、`[console]`），避免和「聊天记录面板」（`panel`）撞名。
 

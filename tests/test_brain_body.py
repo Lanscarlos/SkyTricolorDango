@@ -1273,3 +1273,19 @@ def test_viewer_info_has_panel_state(clock):
     b, _, _, _ = auto_body(clock, viewer=Viewer())
     b.step()
     assert Viewer.info["聊天面板"].startswith("闲着")
+
+
+def test_viewer_info_has_task_and_recent_says(clock):
+    # 管理面板总览的状态卡片：正在做、刚说过（spec console §3）
+    class Viewer:
+        info = None
+
+        def update(self, frame, now, **kw):
+            Viewer.info = kw["info"]
+
+    b, _, _, _ = auto_body(clock, viewer=Viewer())
+    b.step()
+    assert Viewer.info["正在做"] == "没有在做的事" and Viewer.info["刚说过"] == "还没说话"
+    b.said[:] = ["一", "二", "三", "四"]
+    b.step()
+    assert Viewer.info["刚说过"] == ["四", "三", "二"]

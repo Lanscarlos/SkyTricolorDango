@@ -1,2 +1,430 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>团子管理面板</title></head><body></body></html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>团子管理面板</title>
+<style>
+:root{
+  --bg:#0f1115;--panel:#171a21;--raise:#1d2129;--text:#e6e8ee;--muted:#8b93a7;--line:#2a2f3a;
+  --sakura:#f2a7c3;--rice:#f4efe6;--matcha:#9bc49a;--warn:#e8b25c;--bad:#ef6b6b;
+  --font:"PingFang SC","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"Cascadia Mono",Consolas,"Sarasa Mono SC",monospace;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 var(--font);font-variant-numeric:tabular-nums}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--rice);outline-offset:2px}
+[hidden]{display:none!important}
+
+/* 顶部：团子状态灯 + 页签 */
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+.strip{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 20px 10px;max-width:1280px;margin:0 auto}
+.dango{display:flex;align-items:center;gap:0;position:relative;height:26px;padding:0 4px}
+.dango::before{content:"";position:absolute;left:0;right:0;top:12px;height:2px;background:#6b5a45;border-radius:1px}
+.dango i{position:relative;width:22px;height:22px;border-radius:50%;margin-left:-3px;background:#2a2f3a;box-shadow:inset 0 -3px 0 rgba(0,0,0,.25);transition:background .4s,opacity .4s}
+.dango i:first-child{margin-left:0}
+body[data-state=running] .dango i:nth-child(1),body[data-state=starting] .dango i:nth-child(1){background:var(--sakura)}
+body[data-state=running] .dango i:nth-child(2),body[data-state=starting] .dango i:nth-child(2){background:var(--rice)}
+body[data-state=running] .dango i:nth-child(3),body[data-state=starting] .dango i:nth-child(3){background:var(--matcha)}
+body[data-state=starting] .dango i{animation:wake 1.8s infinite}
+body[data-state=starting] .dango i:nth-child(2){animation-delay:.3s}
+body[data-state=starting] .dango i:nth-child(3){animation-delay:.6s}
+body[data-state=stopping] .dango i{background:#6f6a63;opacity:.7}
+body[data-state=crashed] .dango i{background:var(--bad);opacity:.8}
+@keyframes wake{0%,100%{opacity:.25}40%,70%{opacity:1}}
+@media (prefers-reduced-motion:reduce){body[data-state=starting] .dango i{animation:none;opacity:.7}}
+.name{font-size:19px;font-weight:600;letter-spacing:.04em}
+.facts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.fact{padding:2px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:13px}
+.fact.state{color:var(--text);border-color:#3a404d}
+.fact.live{color:#1b1216;background:var(--sakura);border-color:var(--sakura)}
+.strip .spacer{flex:1}
+nav{display:flex;gap:4px;padding:0 20px;max-width:1280px;margin:0 auto;overflow-x:auto}
+nav button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 14px;color:var(--muted);cursor:pointer;white-space:nowrap}
+nav button[aria-selected=true]{color:var(--text);border-bottom-color:var(--rice)}
+
+/* 通用 */
+main{max-width:1280px;margin:0 auto;padding:20px}
+h2{font-size:17px;font-weight:600;margin:0 0 12px}
+.btn{background:var(--raise);border:1px solid var(--line);border-radius:8px;padding:6px 14px;cursor:pointer}
+.btn:hover:not(:disabled){border-color:#4a5160}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.go{background:var(--matcha);border-color:var(--matcha);color:#11170f;font-weight:600}
+.btn.halt{border-color:#7a3b3b;color:#ffb4b4}
+.btn.small{padding:2px 10px;font-size:13px}
+.note{color:var(--muted);font-size:13px}
+.banner{border:1px solid;border-radius:8px;padding:10px 14px;margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.banner.warn{border-color:#6b5427;background:#231d12;color:#f3d49b}
+.banner.bad{border-color:#6e2e2e;background:#231414;color:#ffc2c2}
+.empty{padding:48px 20px;text-align:center;color:var(--muted)}
+.empty p{margin:0 0 14px}
+
+/* 总览 */
+.overview{display:grid;grid-template-columns:320px minmax(0,1fr);gap:20px;align-items:start}
+.launch{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+.launch fieldset{border:0;margin:0 0 14px;padding:0}
+.launch legend{color:var(--muted);font-size:13px;margin-bottom:6px}
+.choice{display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer}
+.choice small{color:var(--muted)}
+.live-warn{color:var(--sakura);font-size:13px;margin:-2px 0 6px 26px}
+.launch input[type=number]{width:120px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
+#start{width:100%;padding:10px;font-size:16px;margin-top:4px}
+#problems{margin:12px 0 0;padding-left:18px;color:#f3d49b;font-size:14px}
+#problems a{color:var(--rice)}
+.watch{display:flex;flex-direction:column;gap:16px;min-width:0}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.card{padding:12px 14px;min-height:78px;box-shadow:1px 0 0 var(--line),0 1px 0 var(--line)}
+.card.lone{grid-column:1/-1}
+.card dt{color:var(--muted);font-size:13px}
+.card dd{margin:4px 0 0;word-break:break-all}
+.card dd ul{margin:0;padding-left:18px}
+.card .count{font-size:22px;font-weight:600;margin-right:6px}
+.logbox{background:#0b0d11;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.loghead{display:flex;justify-content:space-between;gap:12px;padding:8px 14px;border-bottom:1px solid var(--line);font-size:13px;color:var(--muted);flex-wrap:wrap}
+.loghead code{color:var(--text);font-family:var(--mono);word-break:break-all}
+#log{margin:0;padding:10px 14px;height:360px;overflow:auto;font:12.5px/1.55 var(--mono);white-space:pre-wrap;word-break:break-all;color:#c9ced9}
+#log .w{color:var(--warn)}#log .e{color:var(--bad)}
+
+/* 实时 */
+#live-frame{width:100%;height:calc(100vh - 150px);min-height:520px;border:1px solid var(--line);border-radius:12px;background:#000}
+
+/* 设置 */
+.settings{max-width:920px;padding-bottom:40px}
+.group{margin-bottom:28px}
+.group h2{padding-bottom:8px;border-bottom:1px solid var(--line)}
+.row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,340px);gap:8px 20px;padding:12px 10px;border-radius:8px;align-items:start}
+.row.dirty{background:#1b1f14;box-shadow:inset 3px 0 0 var(--matcha)}
+.row label{font-weight:500}
+.row .help{color:var(--muted);font-size:13px}
+.src{display:inline-block;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 6px;margin-left:8px;vertical-align:1px}
+.src.console,.src.secrets{color:var(--matcha);border-color:#3e5a3d}
+.control{display:flex;flex-direction:column;gap:6px}
+.control .line{display:flex;gap:8px;align-items:center}
+.control input[type=text],.control input[type=password],.control input[type=number],.control select{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 9px}
+.msg{font-size:13px}.msg.bad{color:var(--bad)}.msg.warn{color:var(--warn)}.msg.ok{color:var(--matcha)}
+.linkish{background:none;border:0;padding:0;color:var(--muted);font-size:13px;text-decoration:underline;cursor:pointer;justify-self:start}
+.probe{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:6px 10px}
+.savebar{position:sticky;bottom:12px;box-shadow:0 -12px 24px var(--bg);display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 16px;background:var(--raise);border:1px solid var(--line);border-radius:10px;margin-top:8px}
+.toggle{position:relative;width:40px;height:22px;flex:none}
+.toggle input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer}
+.toggle span{position:absolute;inset:0;border-radius:11px;background:#343a46;transition:background .2s;pointer-events:none}
+.toggle span::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:var(--text);transition:transform .2s}
+.toggle input:checked+span{background:var(--matcha)}
+.toggle input:checked+span::after{transform:translateX(18px)}
+.toggle input:focus-visible+span{outline:2px solid var(--rice);outline-offset:2px}
+
+/* 设备 */
+.device{max-width:920px}
+.device.busy{opacity:.5;pointer-events:none}
+.checks{list-style:none;margin:16px 0 0;padding:0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.checks li{display:grid;grid-template-columns:32px minmax(0,1fr);gap:4px 12px;padding:12px 16px;border-top:1px solid var(--line);background:var(--panel)}
+.checks li:first-child{border-top:0}
+.mark{font-size:18px;line-height:1.4;text-align:center}
+.mark.ok{color:var(--matcha)}.mark.fail{color:var(--bad)}.mark.warn{color:var(--warn)}.mark.skip{color:#555c69}
+.checks b{font-weight:600}
+.checks .detail{color:#c9ced9;word-break:break-all}
+.checks .hint{color:var(--warn);font-size:13px}
+.checks img{max-width:100%;width:480px;border-radius:6px;border:1px solid var(--line);margin-top:6px}
+.devlist{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+
+@media (max-width:860px){
+  .overview{grid-template-columns:minmax(0,1fr)}
+  .row{grid-template-columns:minmax(0,1fr)}
+  .strip,nav,main{padding-left:16px;padding-right:16px}
+}
+</style></head>
+<body data-state="idle">
+<header>
+  <div class="strip">
+    <div class="dango" aria-hidden="true"><i></i><i></i><i></i></div>
+    <span class="name">三彩团子</span>
+    <div class="facts" id="facts" aria-live="polite"></div>
+    <span class="spacer"></span>
+    <button class="btn halt" id="stop" hidden>停止团子</button>
+  </div>
+  <nav role="tablist">
+    <button role="tab" data-tab="overview">总览</button>
+    <button role="tab" data-tab="live">实时画面</button>
+    <button role="tab" data-tab="settings">设置</button>
+    <button role="tab" data-tab="device">设备</button>
+  </nav>
+</header>
+<main>
+  <div id="banners"></div>
+
+  <section id="tab-overview" role="tabpanel">
+    <div class="overview">
+      <form class="launch" id="launch">
+        <h2>这次怎么跑</h2>
+        <fieldset>
+          <legend>模式</legend>
+          <label class="choice"><input type="radio" name="mode" value="brain"> 统管大脑</label>
+          <label class="choice"><input type="radio" name="mode" value="agent"> 普通 Agent <small>调试用</small></label>
+        </fieldset>
+        <fieldset>
+          <legend>发言</legend>
+          <label class="choice"><input type="checkbox" id="opt-live"> 真的发送</label>
+          <div class="live-warn" id="live-warn" hidden>会在游戏里真的说话、做动作</div>
+          <label class="choice"><input type="checkbox" id="opt-emotes"> 聊天时做动作 <small>牵着手时关掉</small></label>
+        </fieldset>
+        <fieldset>
+          <legend>运行时长</legend>
+          <label class="choice"><input type="number" id="opt-duration" min="0" step="60" placeholder="一直跑"> 秒</label>
+        </fieldset>
+        <button class="btn go" id="start" type="submit">叫醒团子</button>
+        <ul id="problems" hidden></ul>
+      </form>
+      <div class="watch">
+        <dl class="cards" id="cards"></dl>
+        <div class="logbox">
+          <div class="loghead"><span>日志</span><span id="rundir"></span></div>
+          <pre id="log" tabindex="0"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-live" role="tabpanel" hidden>
+    <iframe id="live-frame" title="实时识别画面" hidden></iframe>
+    <div class="empty" id="live-empty"><p>团子没在运行，叫醒之后这里显示它看到的画面、大脑时间线和手动控制。</p>
+      <button class="btn" data-go="overview">去总览</button></div>
+  </section>
+
+  <section id="tab-settings" role="tabpanel" hidden>
+    <div class="settings">
+      <div class="banner bad" id="settings-error" hidden></div>
+      <div id="groups"></div>
+      <div class="savebar" id="savebar" hidden>
+        <button class="btn go" id="save">保存</button>
+        <button class="btn" id="discard">放弃修改</button>
+        <span class="msg" id="save-msg"></span>
+      </div>
+      <p class="note">面板改的设置写在 console.toml（叠加在 config.toml 之后，config.toml 不会被改），密钥明文写在本机 secrets.toml，别发给别人。</p>
+    </div>
+  </section>
+
+  <section id="tab-device" role="tabpanel" hidden>
+    <div class="device" id="device">
+      <h2>模拟器连接</h2>
+      <p class="note" id="device-note">检测只读状态，不会往游戏里发任何输入。</p>
+      <button class="btn go" id="check">开始检测</button>
+      <ul class="checks" id="checks" hidden></ul>
+    </div>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+async function getJSON(url){const r=await fetch(url,{cache:"no-store"});return r.json()}
+async function post(url,body){
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","X-Skydango":"1"},body:JSON.stringify(body||{})});
+  let data=null;try{data=await r.json()}catch(e){}
+  return {status:r.status,data:data||{ok:false,text:`面板没回应（${r.status}）`}}
+}
+const S={state:null,launchLoaded:false,settings:null,dirty:{},revert:new Set(),results:{},logNext:0,follow:true,info:null,liveLoaded:false};
+const BUSY=["starting","running","stopping"];
+const STATE_TEXT={idle:"还没叫醒",starting:"正在醒来",running:"醒着",stopping:"正在睡下（复原镜头、换回轮盘…）",exited:"睡了",crashed:"出错停下了"};
+
+/* ---- 页签 ---- */
+const TABS=["overview","live","settings","device"];
+function showTab(name){
+  if(!TABS.includes(name))name="overview";
+  for(const t of TABS){$("tab-"+t).hidden=t!==name}
+  for(const b of document.querySelectorAll("nav button"))b.setAttribute("aria-selected",String(b.dataset.tab===name));
+  if(location.hash!=="#"+name)history.replaceState(null,"","#"+name);
+  if(name==="settings"&&!S.settings)loadSettings();
+}
+for(const b of document.querySelectorAll("nav button"))b.onclick=()=>showTab(b.dataset.tab);
+document.addEventListener("click",e=>{const go=e.target.closest("[data-go]");if(go){e.preventDefault();showTab(go.dataset.go)}});
+window.addEventListener("hashchange",()=>showTab(location.hash.slice(1)));
+
+/* ---- 状态 ---- */
+function fmtUptime(s){if(s==null)return"";s=Math.floor(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);
+  return h?`${h} 小时 ${m} 分`:m?`${m} 分钟`:`${s} 秒`}
+function renderState(){
+  const st=S.state,run=st.run,busy=BUSY.includes(run.state);
+  document.body.dataset.state=run.state;
+  const facts=$("facts");facts.textContent="";
+  let text=STATE_TEXT[run.state]||run.state;
+  if(run.state==="crashed"&&run.exit_code!=null)text+=`（退出码 ${run.exit_code}）`;
+  if(run.state==="starting"&&run.slow_start)text+="，已超过 60 秒，看下面的日志";
+  facts.append(el("span","fact state",text));
+  const o=run.options;
+  if(busy&&o){
+    facts.append(el("span","fact",o.brain?"统管大脑":"普通 Agent"));
+    facts.append(el("span",o.live?"fact live":"fact",o.live?"真的发送":"只打印"));
+    if(run.uptime!=null)facts.append(el("span","fact",`醒了 ${fmtUptime(run.uptime)}`));
+  }
+  $("stop").hidden=!(run.state==="starting"||run.state==="running");
+  // 启动选项：第一次按服务器记住的填，之后用户自己改
+  if(!S.launchLoaded){const l=st.launch;
+    document.querySelector(`input[name=mode][value=${l.brain?"brain":"agent"}]`).checked=true;
+    $("opt-live").checked=l.live;$("opt-emotes").checked=l.emotes;$("opt-duration").value=l.duration>0?l.duration:"";
+    S.launchLoaded=true;liveWarn()}
+  for(const x of $("launch").querySelectorAll("input,button"))x.disabled=busy;
+  $("start").textContent=busy?"团子醒着":"叫醒团子";
+  renderProblems(busy?[]:st.problems);
+  // 横幅：强杀 / 上次留下的团子
+  const banners=$("banners");banners.textContent="";
+  if(run.forced&&!busy){const b=el("div","banner bad");
+    b.append(el("span","","强制结束了，轮盘可能没换回，请用 python -m skydango emotes wheel 检查。"));banners.append(b)}
+  if(st.orphan){const b=el("div","banner warn");
+    b.append(el("span","","上次留下的团子还在运行（占着子进程端口），先让它退出再叫醒新的。"));
+    const btn=el("button","btn small","让它退出");btn.onclick=async()=>{btn.disabled=true;await post("api/orphan/stop");refresh()};
+    b.append(btn);banners.append(b)}
+  $("rundir").textContent="";
+  if(run.run_dir){$("rundir").append("运行目录 ",el("code","",run.run_dir))}
+  $("device").classList.toggle("busy",busy);
+  $("device-note").textContent=busy?"团子醒着，设备归它用；让它睡下之后再检测。":"检测只读状态，不会往游戏里发任何输入。";
+  // 实时页：进入运行状态时加载 iframe
+  const live=run.state==="running"||run.state==="stopping";
+  if(live&&!S.liveLoaded){$("live-frame").src="live/";S.liveLoaded=true}
+  if(!live&&S.liveLoaded){$("live-frame").removeAttribute("src");S.liveLoaded=false;S.info=null;renderCards()}
+  $("live-frame").hidden=!live;$("live-empty").hidden=live;
+}
+function renderProblems(list){
+  const ul=$("problems");ul.textContent="";ul.hidden=!list.length;
+  for(const p of list){const li=el("li","",p);
+    if(p.includes("设置页")){li.append(" ");const a=el("a","","去设置");a.href="#settings";li.append(a)}
+    ul.append(li)}
+}
+async function refresh(){
+  try{S.state=await getJSON("api/state");renderState()}
+  catch(e){document.body.dataset.state="crashed";$("facts").textContent="";$("facts").append(el("span","fact state","连不上面板（程序停了？）"))}
+}
+
+/* ---- 启动 / 停止 ---- */
+function liveWarn(){$("live-warn").hidden=!$("opt-live").checked}
+$("opt-live").onchange=liveWarn;
+$("launch").onsubmit=async e=>{e.preventDefault();
+  const d=$("opt-duration").value.trim();
+  const body={brain:document.querySelector("input[name=mode]:checked").value==="brain",live:$("opt-live").checked,
+    emotes:$("opt-emotes").checked,duration:d===""?0:Number(d)};
+  $("start").disabled=true;
+  const r=await post("api/run/start",body);
+  if(!r.data.ok)renderProblems(r.data.problems||[r.data.text]);
+  else{S.logNext=0;$("log").textContent=""}
+  refresh();
+};
+$("stop").onclick=async()=>{$("stop").disabled=true;await post("api/run/stop");$("stop").disabled=false;refresh()};
+
+/* ---- 日志 ---- */
+const logBox=$("log");
+logBox.addEventListener("scroll",()=>{S.follow=logBox.scrollTop+logBox.clientHeight>=logBox.scrollHeight-8});
+async function pullLogs(){
+  try{const r=await getJSON(`api/logs?after=${S.logNext}`);
+    if(r.next<S.logNext){S.logNext=0;logBox.textContent="";return}  // 重新启动过：从头来
+    for(const line of r.lines){const cls=/Traceback|ERROR|错误/.test(line)?"e":/WARNING/.test(line)?"w":"";
+      logBox.append(el("span",cls,line+"\n"))}
+    while(logBox.childNodes.length>1000)logBox.firstChild.remove();
+    S.logNext=r.next;if(r.lines.length&&S.follow)logBox.scrollTop=logBox.scrollHeight;
+  }catch(e){}
+}
+
+/* ---- 状态卡片（子进程 viewer 的 /status） ---- */
+const CARDS=["身边的好友","陌生人","互动请求","开着的面板","牵着手","正在做","刚说过","聊天面板","画面"];
+function renderCards(){
+  const dl=$("cards");dl.textContent="";const info=S.info;
+  if(!info){const d=el("div","card lone");d.append(el("dt","","团子的状态"),el("dd","","叫醒之后这里显示身边有谁、在做什么。"));dl.append(d);return}
+  for(const key of CARDS){if(!(key in info))continue;const v=info[key],d=el("div","card"),dd=el("dd");
+    if(Array.isArray(v)){
+      if(key==="身边的好友")dd.append(el("span","count",String(v.length)),"个");
+      const ul=el("ul");for(const x of v)ul.append(el("li","",String(x)));dd.append(ul);
+    }else dd.textContent=String(v);
+    d.append(el("dt","",key),dd);dl.append(d)}
+}
+async function pullStatus(){
+  const run=S.state&&S.state.run;
+  if(!run||run.state!=="running")return;
+  try{const r=await fetch("live/status",{cache:"no-store"});if(r.ok){S.info=(await r.json()).info;renderCards()}}catch(e){}
+}
+
+/* ---- 设置 ---- */
+const GROUPS=[["connect","连接"],["llm","普通模式的大模型"],["brain","统管大脑"],["features","功能开关"],["identity","身份"]];
+const SOURCES={default:"默认",config:"config.toml",console:"面板",secrets:"secrets.toml",env:"环境变量",none:"没设置"};
+const PROBES={llm:["llm","测试大模型"],brain:["claude","测试 Claude 令牌"]};
+async function loadSettings(){S.settings=await getJSON("api/settings");renderSettings()}
+function currentValue(f){return f.key in S.dirty?S.dirty[f.key]:f.value}
+function markDirty(key,value){S.dirty[key]=value;S.revert.delete(key);renderSettings()}
+function inputFor(f){
+  const val=currentValue(f);
+  if(f.kind==="bool"){const w=el("span","toggle"),i=el("input");i.type="checkbox";i.checked=!!val;i.id="f-"+f.key;
+    i.onchange=()=>markDirty(f.key,i.checked);w.append(i,el("span"));return w}
+  if(f.kind==="choice"){const s=el("select");s.id="f-"+f.key;for(const c of f.choices){const o=el("option","",c);o.value=c;s.append(o)}
+    s.value=val;s.onchange=()=>markDirty(f.key,s.value);return s}
+  const i=el("input");i.id="f-"+f.key;
+  if(f.kind==="secret"){i.type="password";i.autocomplete="off";i.placeholder=f.value;i.value=f.key in S.dirty?S.dirty[f.key]:""}
+  else if(f.kind==="float"||f.kind==="int"){i.type="number";i.value=val}
+  else{i.type="text";i.value=val}
+  i.onchange=()=>markDirty(f.key,f.kind==="float"||f.kind==="int"?Number(i.value):i.value);
+  return i
+}
+function renderSettings(){
+  const v=S.settings;if(!v)return;
+  $("settings-error").hidden=!v.error;$("settings-error").textContent=v.error?`${v.error}（先改好这个文件，否则保存不了）`:"";
+  const box=$("groups");box.textContent="";
+  for(const [g,title] of GROUPS){const sec=el("section","group");sec.append(el("h2","",title));
+    for(const f of v.fields.filter(x=>x.group===g)){
+      const row=el("div","row");if(f.key in S.dirty||S.revert.has(f.key))row.classList.add("dirty");
+      const left=el("div"),lab=el("label","",f.label);lab.htmlFor="f-"+f.key;
+      const src=S.revert.has(f.key)?(f.kind==="secret"?"将清除":"将用回 config.toml"):SOURCES[f.source]||f.source;
+      left.append(lab,el("span","src "+f.source,src),el("div","help",f.help));
+      const ctl=el("div","control"),line=el("div","line");line.append(inputFor(f));
+      if(f.kind==="secret"&&f.source==="secrets"){const b=el("button","btn small","清除");b.type="button";
+        b.onclick=()=>{delete S.dirty[f.key];S.revert.add(f.key);renderSettings()};line.append(b)}
+      ctl.append(line);
+      const res=S.results[f.key];if(res)ctl.append(el("div","msg "+res[0],res[1]));
+      else if(f.warning)ctl.append(el("div","msg warn",f.warning));
+      if(f.kind!=="secret"&&f.source==="console"&&!S.revert.has(f.key)){const b=el("button","linkish","用回 config.toml 的值");b.type="button";
+        b.onclick=()=>{delete S.dirty[f.key];S.revert.add(f.key);renderSettings()};ctl.append(b)}
+      row.append(left,ctl);sec.append(row)}
+    if(PROBES[g]){const [what,label]=PROBES[g],p=el("div","probe"),b=el("button","btn small",label),m=el("span","msg",S.results["probe-"+what]?S.results["probe-"+what][1]:"");
+      if(S.results["probe-"+what])m.classList.add(S.results["probe-"+what][0]);
+      b.type="button";b.onclick=()=>runProbe(what,b,m);p.append(b,m,el("span","note","会花一点额度；用的是页面上现在填的值"));sec.append(p)}
+    box.append(sec)}
+  const changed=Object.keys(S.dirty).length+S.revert.size;
+  $("savebar").hidden=!changed&&!$("save-msg").textContent;
+  $("save").disabled=!changed||!!v.error;
+}
+async function runProbe(what,btn,msg){
+  btn.disabled=true;msg.className="msg";msg.textContent="测试中…";
+  const r=await post("api/settings/test",{what,values:S.dirty});
+  S.results["probe-"+what]=[r.data.ok?"ok":"bad",r.data.text];btn.disabled=false;renderSettings();
+}
+$("save").onclick=async()=>{
+  const r=await post("api/settings",{values:S.dirty,revert:[...S.revert]});
+  S.results={};
+  if(!r.data.ok){const errs=r.data.errors||{};for(const k in errs)S.results[k]=["bad",errs[k]];
+    $("save-msg").className="msg bad";$("save-msg").textContent=errs._file||r.data.text||"有几项不对，看标红的地方";renderSettings();return}
+  for(const k in r.data.warnings||{})S.results[k]=["warn",r.data.warnings[k]];
+  S.dirty={};S.revert.clear();
+  $("save-msg").className="msg ok";$("save-msg").textContent=r.data.restart?"已保存，重启团子后生效":"已保存";
+  await loadSettings();refresh();
+};
+$("discard").onclick=()=>{S.dirty={};S.revert.clear();S.results={};$("save-msg").textContent="";renderSettings()};
+
+/* ---- 设备 ---- */
+const MARKS={ok:"✓",fail:"✗",warn:"!",skip:"–"};
+$("check").onclick=async()=>{
+  const btn=$("check"),ul=$("checks");btn.disabled=true;btn.textContent="检测中…";
+  const r=await post("api/device");btn.disabled=false;btn.textContent="再检测一次";
+  ul.textContent="";ul.hidden=false;
+  if(!r.data.ok){const li=el("li");li.append(el("span","mark fail",MARKS.fail),el("span","detail",r.data.text));ul.append(li);return}
+  for(const c of r.data.checks){const li=el("li"),body=el("div");
+    body.append(el("b","",c.label));
+    if(c.detail)body.append(el("div","detail",c.detail));
+    if(c.hint)body.append(el("div","hint",c.hint));
+    if(c.data&&c.data.devices&&c.data.devices.length){const list=el("div","devlist");
+      for(const d of c.data.devices){const b=el("button","btn small",`用 ${d}`);b.onclick=async()=>{
+        if(!S.settings)await loadSettings();markDirty("device.serial",d);showTab("settings")};list.append(b)}
+      body.append(list)}
+    if(c.data&&c.data.thumb){const img=el("img");img.alt="模拟器截图";img.src="data:image/jpeg;base64,"+c.data.thumb;body.append(img)}
+    li.append(el("span","mark "+c.status,MARKS[c.status]||"?"),body);ul.append(li)}
+};
+
+/* ---- 轮询 ---- */
+showTab(location.hash.slice(1));
+renderCards();
+refresh();pullLogs();
+setInterval(refresh,1000);setInterval(pullLogs,1000);setInterval(pullStatus,2000);
+</script>
+</body></html>

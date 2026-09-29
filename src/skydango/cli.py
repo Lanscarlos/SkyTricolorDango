@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -1069,6 +1070,40 @@ def cmd_record(cfg: Config, args) -> None:
     print(f"录了 {n} 张")
 
 
+def cmd_console(cfg: Config, args) -> None:
+    """管理面板：本机网页里填密钥、改设置、检测设备、启动 / 停止团子、看实时画面。设计见 docs/superpowers/specs/2026-09-29-console-design.md。"""
+    from .console import runner as runner_mod
+    from .console import server as server_mod
+    from .console.settings import SettingsStore
+
+    config_path = Path(args.config)
+    port = args.port or cfg.console.port
+    runner = runner_mod.Runner(Path.cwd(), cfg.console.child_port, cfg.console.stop_timeout, cfg.console.log_lines)
+    server = server_mod.ConsoleServer(config_path, SettingsStore(config_path), runner, port, cfg.console.child_port)
+    try:
+        url = server.start()
+    except OSError as exc:
+        raise SystemExit(f"管理面板起不来（127.0.0.1:{port}）：{exc}\n端口可能被占用了，用 console --port 换一个") from exc
+    print(f"管理面板：{url}（只有本机能看）；Ctrl+C 结束（会先停掉团子）")
+    if server.orphan:
+        print(f"注意：{cfg.console.child_port} 端口上有上次留下的团子，面板上可以让它退出")
+    if not args.no_browser:
+        import webbrowser
+
+        try:
+            webbrowser.open(url)
+        except Exception:
+            log.debug("打不开浏览器", exc_info=True)
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("\n正在停止团子…")
+    finally:
+        runner.close()
+        server.stop()
+
+
 def cmd_run(cfg: Config, args) -> None:
     if args.live:
         cfg.reply.dry_run = False
@@ -1665,6 +1700,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     p.set_defaults(func=cmd_view)
 
+    p = sub.add_parser("console", help="管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面")
+    p.add_argument("--port", type=int, help="面板端口（默认 [console] port = 8760）")
+    p.add_argument("--no-browser", action="store_true", help="不打开浏览器")
+    p.set_defaults(func=cmd_console)
+
     p = sub.add_parser("run", help="启动团子（默认接统管大脑、dry-run；--no-brain 是调试用的普通模式）")
     live = p.add_mutually_exclusive_group()
     live.add_argument("--live", action="store_true", help="真的发送消息")
@@ -1690,13 +1730,14 @@ def main(argv: list[str] | None = None) -> None:
     if not cfg_path.exists() and args.config != "config.toml":
         parser.error(f"找不到配置文件 {cfg_path}")
     try:
-        loaded = load_all(cfg_path)
+        # 面板每次现读 secrets.toml、只注入它起的子进程：写进它自己的环境变量的话，页面上「清除」之后子进程还会继承旧 Key
+        loaded = load_all(cfg_path, environ={} if args.func is cmd_console else os.environ)
     except ValueError as exc:
         parser.error(str(exc))
     cfg = loaded.cfg
     if loaded.overridden:
         log.info("console.toml 覆盖了 %d 项：%s", len(loaded.overridden), "、".join(loaded.overridden))
-    if loaded.secrets:
+    if loaded.secrets and args.func is not cmd_console:
         log.info("用 secrets.toml 里的 %s", "、".join(loaded.secrets))
     try:
         args.func(cfg, args)

@@ -235,3 +235,35 @@ def test_settings_test_claude(srv, monkeypatch):
 def test_unknown_routes_404(srv):
     assert request(srv.url + "api/nope")[0] == 404
     assert request(srv.url + "api/nope", b"{}", GOOD)[0] == 404
+
+
+# ---- 页面 ----
+def _console_page() -> str:
+    import importlib.resources
+
+    return (importlib.resources.files("skydango.console") / "static/console.html").read_text(encoding="utf-8")
+
+
+def test_page_has_four_tabs_and_uses_relative_api():
+    import re
+
+    page = _console_page()
+    for tab in ("tab-overview", "tab-live", "tab-settings", "tab-device"):
+        assert f'id="{tab}"' in page
+    assert not re.search(r"""fetch\(\s*[`"']/""", page)  # 相对路径
+    assert '"X-Skydango":"1"' in page.replace(" ", "")
+    assert "http://" not in page and "https://" not in page  # 离线也能用：不引外部资源
+
+
+def test_page_script_parses(tmp_path):
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("没有 node")
+    script = re.search(r"<script>(.*)</script>", _console_page(), re.S).group(1)
+    path = tmp_path / "console.js"
+    path.write_text(script, encoding="utf-8")
+    assert subprocess.run([node, "--check", str(path)]).returncode == 0
