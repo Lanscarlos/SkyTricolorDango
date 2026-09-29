@@ -109,6 +109,7 @@ def body(clock, live=False, frames=None, panel_mode=None, **kw):
     cfg.reply.dry_run = not live
     cfg.reply.disclosure_prefix = ""
     cfg.sender.open_chat_key = 28
+    cfg.proactive.enabled = False  # 旧行为的测试：不管主动开口；pro_body 打开
     device = FakeDevice(frames or [scene()])
     reader = FakeReader()
     if panel_mode is not None:  # 用假面板：按 46 开关，reader 跟着它
@@ -120,8 +121,8 @@ def body(clock, live=False, frames=None, panel_mode=None, **kw):
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, "")
     sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
     events = EventQueue(clock=clock)
-    b = Body(cfg, device, reader, sender, self_filter, events, clock=clock, sleep=lambda s: None,
-             wall=lambda: 1_790_000_000.0, **kw)
+    kw.setdefault("wall", lambda: 1_790_000_000.0)
+    b = Body(cfg, device, reader, sender, self_filter, events, clock=clock, sleep=lambda s: None, **kw)
     b.panel.start(clock())
     return b, device, reader, events
 
@@ -1289,3 +1290,105 @@ def test_viewer_info_has_task_and_recent_says(clock):
     b.said[:] = ["一", "二", "三", "四"]
     b.step()
     assert Viewer.info["刚说过"] == ["四", "三", "二"]
+
+
+# ---- 看场合主动开口（spec 2026-09-29-proactive-chat §2 / §4） ----
+def pro_body(clock, near=("阿花",), **kw):
+    """好友在身边、墙钟跟着假时钟走（旧的发言限速构造时就定了 3 秒，测试里两句之间推进够时间）。"""
+    env = kw.pop("env", FakeEnv())
+    env.near = list(near)
+    b, device, reader, events = body(clock, env=env, wall=clock, **kw)
+    b.cfg.proactive.enabled = True
+    b.friend_names = lambda: ["阿花"]
+    return b, env, reader
+
+
+def test_proactive_say_blocked_when_alone(clock):
+    b, _, _ = pro_body(clock, near=())
+    with pytest.raises(ToolError, match="身边没有好友，不主动开口"):
+        b.say("好无聊")
+    assert b.said == []
+
+
+def test_reply_turn_not_limited(clock):
+    b, _, _ = pro_body(clock, near=())
+    b.brain_busy = lambda: True
+    b.say("在呢")
+    assert b.spoken[-1].proactive is False
+
+
+def test_min_gap_and_recovery(clock):
+    b, _, _ = pro_body(clock)
+    b.say("这图好黑")
+    clock.advance(10)
+    with pytest.raises(ToolError, match="刚主动说过"):
+        b.say("真的好黑")
+    clock.advance(55)
+    b.say("真的好黑")
+    assert [s.proactive for s in b.spoken] == [True, True]
+
+
+def cold(b, clock):
+    b.cfg.proactive.min_gap = 0
+    b.cfg.proactive.quota_quiet = 10
+    for text in ("一", "二", "三"):
+        b.say(text)
+        clock.advance(100)
+
+
+def test_cold_pause_then_friend_speaks(clock):
+    b, _, reader = pro_body(clock)
+    cold(b, clock)
+    with pytest.raises(ToolError, match="连着 3 句"):
+        b.say("四")
+    reader.batches = [[msg("嗯？", speaker="阿花")]]
+    b.step()
+    b.say("四")
+
+
+def test_manual_say_ignores_guard(clock):
+    b, _, _ = pro_body(clock)
+    cold(b, clock)
+    b.say("主人让说的", live=True)
+    assert len(b.spoken) == 3
+    clock.advance(5)  # 旧的发言限速（构造时定的 3 秒）
+    with pytest.raises(ToolError, match="连着 3 句"):
+        b.say("四")
+
+
+def test_dry_run_counts(clock):
+    b, _, _ = pro_body(clock)
+    b.cfg.proactive.min_gap = 0
+    b.say("一")
+    clock.advance(5)
+    b.say("二")
+    clock.advance(5)
+    with pytest.raises(ToolError, match="已经主动说了 2 句"):
+        b.say("三")
+
+
+def test_status_has_occasion(clock):
+    b, _, _ = pro_body(clock)
+    assert "场合：安静（身边 阿花" in b.status()
+    alone, _, _, _ = body(clock, wall=clock)
+    alone.cfg.proactive.enabled = True
+    assert "场合：没熟人（身边没人）" in alone.status()
+
+
+def test_disabled_keeps_old_behavior(clock):
+    b, _, _ = pro_body(clock, near=())
+    b.cfg.proactive.enabled = False
+    b.say("好无聊")
+    assert "场合" not in b.status()
+
+
+def test_viewer_info_has_occasion(clock):
+    class Viewer:
+        info = None
+
+        def update(self, frame, now, **kw):
+            Viewer.info = kw["info"]
+
+    b, _, _ = pro_body(clock, viewer=Viewer())
+    b.step()
+    assert Viewer.info["场合"] == "安静 · 还能主动说 2 句"

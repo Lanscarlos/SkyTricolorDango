@@ -29,6 +29,7 @@ from ..vision.bubbles import Rect, roi_rect
 from ..vision.panels import UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people
 from .events import EventQueue
+from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .skills import SkillRunner
 
@@ -107,6 +108,8 @@ class Body:
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
         self.said: list[str] = []  # 说过（含 dry-run）的话
+        self.spoken: deque[Spoken] = deque(maxlen=50)  # 大脑说过的话（含 dry-run）和是不是主动开口；手动控制说的不记
+        self.friend_names: Callable[[], list[str]] = lambda: []  # 好友名单（场合里认聊天的说话人），cli 设
         self.emoted: list[str] = []
         self.last_frame = None
         self.last_look = float("-inf")
@@ -185,6 +188,9 @@ class Body:
             info["聊天面板"] = panel
         info["正在做"] = self.skills.describe(now).removeprefix("正在做：")
         info["刚说过"] = self.said[-3:][::-1] or "还没说话"
+        if self.cfg.proactive.enabled:
+            o = self.occasion()
+            info["场合"] = f"{LEVEL_NAMES[o.level]} · " + ("不主动" if o.blocked else f"还能主动说 {o.left} 句")
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
             self.viewer.update(
@@ -628,10 +634,22 @@ class Body:
             parts.append("互动规则：" + self.social.describe_policy())
         if self.said:
             parts.append("刚说过：" + " | ".join(self.said[-3:]))
+        if self.cfg.proactive.enabled:
+            parts.append("场合：" + self.occasion().line(self.wall()))
         parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
             parts.append("dry-run（说话、动作、转视角都不会真的执行）")
         return " / ".join(parts)
+
+    def occasion(self) -> Occasion:
+        """现在是什么场合（热闹 / 安静 / 没熟人）、上次主动开口有没有人接、还能不能主动开口。"""
+        now = self.clock()
+        friends = self.env.nearby(now) if self.env is not None else []
+        strangers = self.env.strangers(now) if hasattr(self.env, "strangers") else 0
+        return assess(
+            self.cfg.proactive, self.wall(), friends, strangers, list(self.chat), list(self.spoken),
+            is_friend_fn(self.friend_names()),
+        )
 
     def chat_log(self, n: int = 20) -> str:
         if self.panel.auto and self.panel.state == "idle":
@@ -665,12 +683,19 @@ class Body:
             raise ToolError("这句没发：是空的、<skip>，或者说了自己是真人（不能这么说）。换个说法")
         if not self.limiter.allow(now):
             raise ToolError("说得太快了，等几秒再说")
+        proactive = self.cfg.proactive.enabled and not live and not self.brain_busy()
+        if proactive:
+            blocked = self.occasion().blocked
+            if blocked:
+                raise ToolError(blocked)
         note = self.clear_view("say", live)
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
         self.said.append(full)
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
+        if not live:
+            self.spoken.append(Spoken(self.wall(), full, proactive))
         if self._dry(live):
             log.info("[dry-run] 将会发送: %s", full)
             self._remember(body, full, sent=False)

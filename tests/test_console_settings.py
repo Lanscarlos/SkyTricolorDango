@@ -26,7 +26,8 @@ def test_every_spec_field_is_listed():
     assert [f.key for f in FIELDS] == [
         "console.brain", "console.live", "console.emotes", "console.duration",
         "device.adb_path", "device.serial", "device.capture", "llm.provider", "llm.base_url", "llm.model", "secret.llm",
-        "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model", "env.enabled", "perception.enabled",
+        "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model",
+        "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy", "env.enabled", "perception.enabled",
         "perception.model", "places.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
 
