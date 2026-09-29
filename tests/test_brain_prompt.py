@@ -142,3 +142,9 @@ def test_what_you_do_mentions_news():
 def test_prompt_explains_things():
     text = static_prompt(ReplyConfig())
     assert "画面里的东西" in text and "坐下、弹琴还不会" in text
+
+
+def test_prompt_explains_background_events_and_return():
+    text = static_prompt(ReplyConfig(max_chars=40))
+    assert "下次醒来时一起告诉你" in text  # 背景事件不马上叫醒（events.BACKGROUND）
+    assert "回来了" in text and "不用再打招呼" in text

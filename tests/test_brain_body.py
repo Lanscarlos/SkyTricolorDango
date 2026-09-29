@@ -185,6 +185,41 @@ def test_people_arrive_leave_and_requests(clock):
     assert e.kind == "leave" and "懒洋洋大王" in e.text
 
 
+def test_friend_back_soon_is_return_not_arrive(clock):
+    """走出画面又走回来（rejoin 秒内）不再当成来到身边：背景事件，不叫醒大脑打招呼。"""
+    env = FakeEnv()
+    b, _, _, events = body(clock, env=env)
+    b.cfg.brain.rejoin = 60.0
+    env.near = ["懒洋洋大王"]
+    b.step()
+    (e,) = events.drain()
+    assert (e.kind, e.who) == ("arrive", "懒洋洋大王")
+    env.near = []
+    b.step()
+    (e,) = events.drain()
+    assert (e.kind, e.who) == ("leave", "懒洋洋大王")
+    clock.advance(59)
+    env.near = ["懒洋洋大王"]
+    b.step()
+    (e,) = events.drain()
+    assert (e.kind, e.who, e.text) == ("return", "懒洋洋大王", "懒洋洋大王 回来了")
+
+
+def test_friend_back_after_rejoin_is_arrive_again(clock):
+    env = FakeEnv()
+    b, _, _, events = body(clock, env=env)
+    b.cfg.brain.rejoin = 60.0
+    env.near = ["懒洋洋大王"]
+    b.step()
+    env.near = []
+    b.step()
+    events.drain()
+    clock.advance(61)
+    env.near = ["懒洋洋大王"]
+    b.step()
+    assert [e.kind for e in events.drain()] == ["arrive"]
+
+
 def test_holding_is_guessed_from_circle(clock):
     env, social = FakeEnv(), FakeSocial()
     b, _, _, events = body(clock, env=env, social=social)
