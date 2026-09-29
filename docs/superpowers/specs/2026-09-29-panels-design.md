@@ -1,6 +1,6 @@
 # 面板识别 — 设计
 
-日期：2026-09-29　状态：**设计已和用户确认，待写实施计划**
+日期：2026-09-29　状态：**已实现**（`vision/panels.py`、`game/panels.py`、`assets/panels/`、`brain/body.py` / `tools.py` / `mcp_server.py` / `prompt.py` / `manual.py`、`vision/viewer.py`、`cli.py`；计划 `docs/superpowers/plans/2026-09-29-panels.md`）；五张卡未核对，真机核对见 game-ops §7「面板」
 
 让团子实时知道画面上开着哪些面板（聊天记录面板、动作面板、轮盘编辑、好友树、各种弹框……）：
 身体操作前知道画面被挡了，不在面板上乱点；大脑能读出面板上的文字和按钮，自己决定怎么处理。

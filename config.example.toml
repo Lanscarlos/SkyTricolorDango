@@ -175,6 +175,27 @@ close = ["esc"]                 # 关面板的办法，依次试：esc / back（
 close_tap = []
 min_interval = 30.0             # 两次确认至少隔几秒
 
+[panels]
+# 面板识别（大脑模式）：画面上开着哪些面板（动作面板、轮盘编辑、好友树、各种弹框），操作前不被挡，大脑能读文字、按按钮
+# 特征卡在 assets/panels/<名字>/card.toml；五张卡都还没核对（录样本、核对步骤见 docs/game-ops.md「面板」）
+enabled = true
+cards_dir = "assets/panels"
+ocr_threads = 2                 # 细读 / 通用兜底单独用的 OCR 线程数
+scan_interval = 5.0             # 通用兜底：没有别的触发时，隔多久看一次屏幕中部
+unknown_cooldown = 2.0          # 两次通用兜底扫描至少隔这么久
+unknown_roi = [0.15, 0.08, 0.85, 0.92]  # 通用兜底 OCR 的区域（避开左边聊天面板、底部输入栏）
+unknown_min_chars = 6           # 除按钮外至少这么多字才算面板
+unknown_pad = 0.02              # 不认识的面板框：文字外接框往外扩
+unknown_ttl = 30.0              # 这么久没再确认过就当它关了
+change = 0.25                   # 画面变化触发阈值（实测后调）
+button_max_chars = 6
+button_words = ["确定", "取消", "关闭", "加入", "同意", "好的", "知道了", "返回", "拒绝", "稍后", "以后再说", "确认"]
+retreat = ["关闭", "取消", "返回", "拒绝", "稍后", "知道了", "以后再说"]   # 撤退类：大脑可以直接按
+never = ["购买", "充值", "支付", "兑换", "删除", "屏蔽", "举报", "退出", "注销"]  # 永远不按，主人 #允许 也不按
+permit_window = 60.0            # 卡洛在聊天里发「#允许 按钮」后多久内能按一次
+read_ttl = 15.0                 # panel_press 要求 panel_read 在这么久以内
+ui_delay = 0.8                  # 关面板 / 按按钮后等界面动画
+
 [sender]
 # 打开聊天输入框：光遇（MuMu「PC端操作方案」）里按实体键盘 Enter 就会打开。
 # 28 是 Linux 的 KEY_ENTER，通过 sendevent 模拟实体键盘；adb 的 input keyevent 游戏不认
