@@ -38,6 +38,7 @@ class TrackSkill:
         self.cfg = body.cfg.track
         self._start = now
         self._last_nudge = float("-inf")
+        self._blocked_at = float("-inf")  # 上次因为聊天面板开着而等待的时间
         self._seen_at = now  # 开始前身体已经确认看得到
         self._seen = True
         self._side = "前面"
@@ -60,13 +61,19 @@ class TrackSkill:
         if now - self._start >= self.seconds - EPS:
             where = f"在{self._side}" if self._seen else f"最后在{self._side}"
             return SkillStep("done", f"盯了 {self.seconds:.0f} 秒，{self.target}{where}")
+        if self._panel_open(body):
+            # 聊天记录面板开着时方向键转不了视角，还挡住左边：只等。不按键、不算转不动、不算跟丢；
+            # 关上时画面整体横移约 130 px，关上后再等 settle
+            self._blocked_at = self._seen_at = now
+            self._run_dir, self._run_len = None, 0
+            return SkillStep("running", "等聊天面板关上")
         if found is None:
             if now - self._seen_at > cfg.lost_after:
                 return SkillStep("failed", f"跟丢了（最后在{self._side}）")
             return SkillStep("running", f"看不到{self.target}，等一下")
         if body.camera is None:
             return SkillStep("failed", "没有镜头，转不了")
-        if now - self._start < cfg.settle - EPS or now - self._last_nudge < cfg.settle - EPS:
+        if any(now - t < cfg.settle - EPS for t in (self._start, self._last_nudge, self._blocked_at)):
             return SkillStep("running", f"盯着{self.target}（{self._side}）")
 
         err = cx - half
@@ -92,5 +99,17 @@ class TrackSkill:
         self._run_len += 1
         return SkillStep("running", f"{self.target}在{self._side}，往{'右' if direction == 'right' else '左'}转一点")
 
+    @staticmethod
+    def _panel_open(body: Any) -> bool:
+        """聊天记录面板开着（只在读面板的 log 模式下看得出来；别的模式 panel_closed_since 一直是 None，不算）。
+        输入框开没开没有便宜的判断（ime_shown 是一次很慢的 adb），不管。"""
+        vision = body.cfg.vision
+        if vision.mode != "log" or not vision.log_require_panel:
+            return False
+        return getattr(body.reader, "panel_closed_since", 0.0) is None
+
     def stop(self, body: Any, reason: str) -> None:
-        """一次按键按完即松，没有按着的键；镜头不复原（交给 camera_reset）。"""
+        """一次按键按完即松；Ctrl+C 打断按键时方向键可能没抬起来，左右各补一次抬起。镜头不复原（交给 camera_reset）。"""
+        release = getattr(body.camera, "release", None)
+        if release is not None:
+            release()

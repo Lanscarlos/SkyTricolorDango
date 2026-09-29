@@ -16,22 +16,28 @@ class FakeCam:
     def __init__(self):
         self.nudges = []
         self.resets = 0
+        self.released = 0
 
     def nudge(self, direction, seconds):
         self.nudges.append((direction, seconds))
         return seconds
 
-    def reset(self):
+    def reset(self, refine_seconds=None):
         self.resets += 1
         return "镜头转回原位了"
 
+    def release(self):
+        self.released += 1
+
 
 class FakeBody:
-    """x = None 表示这一圈看不到目标。"""
+    """x = None 表示这一圈看不到目标。reader.panel_closed_since = None 表示聊天记录面板开着。"""
 
     def __init__(self, x=960.0):
         self.x = x
         self.cfg = Config()
+        self.cfg.vision.mode = "log"
+        self.reader = SimpleNamespace(panel_closed_since=0.0)
         self.camera = FakeCam()
         self.frame_width = 1920
         self.blackout = False
@@ -174,6 +180,42 @@ def test_stop_does_nothing_to_camera(clock):
     before = list(b.camera.nudges)
     skill.stop(b, "大脑叫停")
     assert b.camera.nudges == before and b.camera.resets == 0  # 镜头不复原，交给 camera_reset
+
+
+def test_stop_releases_arrow_keys(clock):
+    skill, b = begin(clock)
+    skill.stop(b, "身体停了")
+    assert b.camera.released == 1  # Ctrl+C 打断按键时方向键可能没抬起：补一次
+
+
+def test_waits_while_chat_panel_is_open(clock):
+    """面板开着时方向键转不了视角：只等，不按键、不算转不动、不算跟丢。"""
+    t0 = clock()
+    skill, b = begin(clock, x=1400)
+    b.reader.panel_closed_since = None  # 面板被重新打开了
+    for t in (0.7, 1.4, 2.1, 2.8, 3.5):
+        step = at(skill, b, clock, t0, t)
+        assert step.state == "running" and "面板" in step.note
+    b.x = None  # 面板挡住了左边：看不到也不算跟丢
+    for t in (4.0, 6.0, 8.0):
+        assert at(skill, b, clock, t0, t).state == "running"
+    assert b.camera.nudges == []
+    b.reader.panel_closed_since = t0 + 8.0  # 面板关上了（画面横移约 130 px）
+    b.x = 1400
+    at(skill, b, clock, t0, 8.1)
+    assert b.camera.nudges == []  # 先等画面停稳
+    for t in (8.7, 9.4, 10.1):
+        at(skill, b, clock, t0, t)
+    assert len(b.camera.nudges) == 3  # 面板开着那几圈没算进"转不动"
+
+
+def test_panel_state_ignored_outside_log_mode(clock):
+    t0 = clock()
+    skill, b = begin(clock, x=1700)
+    b.cfg.vision.mode = "bubble"  # 不读聊天记录面板：panel_closed_since 一直是 None，不代表面板开着
+    b.reader.panel_closed_since = None
+    at(skill, b, clock, t0, 0.7)
+    assert len(b.camera.nudges) == 1
 
 
 def test_runs_inside_skill_runner_and_borrows_panel(clock):
