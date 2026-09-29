@@ -173,7 +173,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   `--only <通配>`（fnmatch 按图片文件名，带不带 `.jpg` 都行，可多次 / 逗号分隔）只处理匹配的帧，别的帧不核对、不写回、不进清单；
   烛火、光之翼等收集品不做（刷资源）。上线门槛和操作顺序见训练进度文档
 - 普通模式主人命令 `#spin [圈数]`：转一圈、截图存 `runs/<…>/spin/<时间>/`，打开感知层时回复带扫描结果；大脑模式不加
-- **2026-09-28 训到第四版 `models/sky-yolo-v4.pt`**（311 帧、3 张地图，Claude 辅助标注、用户没人工核对），进度、数据、标注规则和待办见 `docs/progress/2026-09-28-yolo-training.md`；
+- **本机在用 `models/sky-yolo-v7.pt`**（2026-09-30，539 帧，能认头顶气泡 `typing`；v4 在 run 里真机用过、v5 / v6 没上线），进度、数据、标注规则、各版对比和待办见 `docs/progress/2026-09-28-yolo-training.md`；
+  **标气泡别只靠 Claude**：它标不出好友名字下方叠着的文字气泡，要 OCR 兜底（做法见进度文档 09-30 一节）；
   **还没在 `run` 里打开过感知层，所有阈值都没在真机验证**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
 
 ## 识别可视化（`[viewer]`，`view` / `run --view`）
