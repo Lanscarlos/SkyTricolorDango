@@ -1955,3 +1955,146 @@ def test_move_and_blackout_forget_camera_reference(clock):
     clock.advance(1.5)
     b.step()
     assert cam.forgets == 2
+
+
+# ---- look_person 换角度（peek）：好友躲在团子身后，边转边看让他露出来 ----
+from types import SimpleNamespace  # noqa: E402
+
+from skydango.brain.camera import Camera  # noqa: E402
+from skydango.vision.people import Person  # noqa: E402
+
+ME = Rect(860, 400, 200, 400)  # 团子：画面正中
+BEHIND_TAG = (900, 360, 120, 36)  # 名字标签压在团子头上
+CLEAR_BODY = Rect(1250, 420, 160, 400)  # 露出来之后的身体框（和团子不重叠、够大）
+
+
+class PeekEnv(FakeEnv):
+    """按"已经按了几次镜头键"切换场景：scenes[i] = 按了 i 次之后感知层看到的 (标签, 身体框)，最后一个一直保持。"""
+
+    def __init__(self, device, clock, scenes, me=ME):
+        super().__init__()
+        self.device, self.clock, self.scenes, self.me = device, clock, scenes, me
+        self.observed = 0
+        self._apply()
+
+    def _apply(self):
+        presses = len(camera_keys(self.device))
+        tag, body_box = self.scenes[min(presses, len(self.scenes) - 1)]
+        now = self.clock()
+        self.labels = {"小明": (*tag, now)} if tag else {}
+        self.people_list = [Person(1, "friend", "小明", body_box, "右边", "近")] if body_box else []
+        self.last_tracks = [SimpleNamespace(cls="self", box=self.me, last=now)] if self.me else []
+
+    def observe(self, frame, now, panel_visible):
+        self.observed += 1
+        self._apply()
+
+
+def peek_body(clock, scenes, live=True, **kw):
+    kw.setdefault("frames", [np.full((1080, 1920, 3), 90, np.uint8)])  # 坐标按 1920×1080
+    b, device, reader, events = body(clock, live=live, **kw)
+    env = PeekEnv(device, clock, scenes)
+    b.env = env
+    b.camera = Camera(device, 0.25, None, sleep=lambda s: None)
+    return b, device, env
+
+
+def camera_keys(device):  # 镜头键：左右（105 / 106）、拉近拉远（12 / 13）；不算借面板按的 C（46）
+    return [c for c in device.calls if c[0] in ("hw_hold", "hw_key") and c[1] in (105, 106, 12, 13)]
+
+
+presses = camera_keys
+
+
+def test_status_says_who_is_hidden_behind_you(clock):
+    b, _, _ = peek_body(clock, [(BEHIND_TAG, None)])
+    assert "被你挡住：小明" in b.status()
+
+
+def test_status_quiet_when_friend_is_visible(clock):
+    b, _, _ = peek_body(clock, [((1270, 380, 120, 36), CLEAR_BODY)])
+    assert "被你挡住" not in b.status()
+
+
+def test_look_person_turns_until_friend_is_revealed(clock):
+    b, device, env = peek_body(clock, [(BEHIND_TAG, None), ((980, 360, 120, 36), None), ((1270, 380, 120, 36), CLEAR_BODY)])
+    img, note = b.look_person("小明")
+    held = [c for c in presses(device) if c[0] == "hw_hold"]
+    assert len(held) == 2 and all(c[1] == 105 for c in held)  # 标签在团子中心偏左…偏右 → 都按左（推开）
+    assert "挡住" in note["text"] and "转了一下镜头" in note["text"]
+    assert "按名字标签估的" not in note["text"]  # 露出来了：用身体框裁
+    assert "camera_reset" in note["text"]
+    assert not b.camera.at_home()  # 看完不复位
+    assert img["type"] == "image"
+
+
+def test_look_person_direction_follows_tag_side(clock):
+    b, device, _ = peek_body(clock, [((880, 360, 120, 36), None), ((1270, 380, 120, 36), CLEAR_BODY)])
+    b.look_person("小明")
+    assert presses(device)[0][1] == 106  # 标签中心 940 在团子中心 960 左边：按右
+
+
+def test_look_person_zooms_in_on_small_revealed_friend(clock):
+    small = Rect(1300, 500, 60, 150)
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 460, 120, 36), small), ((1250, 380, 120, 36), CLEAR_BODY)])
+    b.look_person("小明")
+    assert ("hw_key", 12) in presses(device)  # 拉近一步
+    assert "拉近了 1 步" in b.camera.describe()
+
+
+def test_look_person_gives_up_within_budget(clock):
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None)])  # 怎么转都出不来
+    _, note = b.look_person("小明")
+    assert 0 < len(presses(device)) <= b.cfg.peek.max_presses
+    assert "没看清" in note["text"] and "按名字标签估的" in note["text"]
+
+
+def test_look_person_does_not_peek_in_dry_run(clock):
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None)], live=False)
+    _, note = b.look_person("小明")
+    assert presses(device) == []
+    assert "被你挡住" in note["text"] and "dry-run" in note["text"]
+
+
+def test_look_person_does_not_interrupt_camera_skill(clock):
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None)])
+    skill = camera_skill()
+    b.skills.start(b, skill)
+    _, note = b.look_person("小明")
+    assert presses(device) == [] and b.skills.active is skill
+    assert "被你挡住" in note["text"]
+
+
+def test_look_person_does_not_peek_in_blackout(clock):
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None)])
+    b.blackout = True
+    b.look_person("小明")
+    assert presses(device) == []
+
+
+def test_look_person_does_not_peek_when_disabled(clock):
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, None)])
+    b.cfg.peek.enabled = False
+    b.look_person("小明")
+    assert presses(device) == []
+
+
+def test_look_person_does_not_peek_when_friend_is_beside_you(clock):
+    b, device, _ = peek_body(clock, [((1500, 380, 120, 36), None)])
+    _, note = b.look_person("小明")
+    assert presses(device) == [] and "挡住" not in note["text"]
+
+
+def test_look_person_ignores_self_box_off_center(clock):  # YOLO 把旁边的人认成团子：不采信，不算挡住
+    b, device, env = peek_body(clock, [((150, 360, 120, 36), None)])
+    env.me = Rect(100, 400, 200, 400)
+    env._apply()
+    b.look_person("小明")
+    assert presses(device) == []
+
+
+def test_look_person_peek_clears_scene_change_reference(clock):
+    b, _, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 380, 120, 36), CLEAR_BODY)])
+    b._ref_thumb = np.zeros((9, 16), np.uint8)
+    b.look_person("小明")
+    assert b._ref_thumb is None  # 自己转的，不算画面大变

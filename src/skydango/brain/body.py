@@ -33,6 +33,7 @@ from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
+from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
 from .skills import SkillRunner
 from .track import TrackSkill
 
@@ -632,8 +633,11 @@ class Body:
         found = self._locate(name, now)
         return found[0] if found else None
 
-    def look_person(self, name: str) -> list[dict]:
-        """按名字找到这个人，把他裁出来给大脑看（和 look 共用频率限制）。"""
+    def look_person(self, name: str, live: bool = False) -> list[dict]:
+        """按名字找到这个人，把他裁出来给大脑看（和 look 共用频率限制）。
+
+        他躲在团子身后（只有名字标签、压在团子框上）时先换角度：边转边看 YOLO 让他露出来、太小就拉近（_peek），
+        看完镜头不复位，结果里告诉大脑镜头现在在哪。"""
         now = self.clock()
         brain = self.cfg.brain
         if now - self.last_look < brain.look_min_interval:
@@ -646,6 +650,9 @@ class Body:
             where = f"画面里现在认得出：{'、'.join(known)}" if known else "画面里现在一个名字都没认出来"
             raise ToolError(f"没找到 {name}（{where}）；不在画面里的话可以先 look_around 看看在哪个方向")
         box, guessed = found
+        note = ""
+        if guessed and self._hidden_tag(name, now) is not None:
+            box, guessed, note = self._peek(name, box, live)
         bx, by, bw, bh = box.x, box.y, box.w, box.h
         frame = self.device.screenshot()
         self.last_frame, self.last_look = frame, now
@@ -656,7 +663,137 @@ class Body:
         text = f"这是 {name}（原图 ({x1}, {y1}) 起 {x2 - x1}×{y2 - y1}）"
         if guessed:
             text += "；按名字标签估的位置，可能没框全"
-        return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text}]
+        return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text + note}]
+
+    # ---- look_person 换角度（peek）：好友躲在团子身后 ----
+    def _self_box(self, now: float) -> Rect | None:
+        """团子框：最近一帧 YOLO 的 self（和转圈认出的 self_box），只信在画面水平中间附近的（团子是镜头支点）。"""
+        if self.env is None:
+            return None
+        cfg = self.cfg.peek
+        boxes = [t.box for t in list(getattr(self.env, "last_tracks", ()))
+                 if t.cls == "self" and now - t.last <= cfg.tag_age]
+        if getattr(self.env, "self_box", None) is not None:
+            boxes.append(self.env.self_box)
+        return pick_self(boxes, self.frame_width, cfg.self_center)
+
+    def _fresh_tag(self, name: str, now: float, since: float = float("-inf")) -> Rect | None:
+        """这个人 peek.tag_age 秒内（且不早于 since）的名字标签；名字先找一模一样的，再容忍 OCR 错一两个字。"""
+        if self.env is None:
+            return None
+        labels = {n: v for n, v in dict(self.env.labels).items()  # 后台线程会改：先拍快照
+                  if now - v[4] <= self.cfg.peek.tag_age and v[4] >= since}
+        for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
+            for n, (x, y, w, h, _t) in labels.items():
+                if same(n):
+                    return Rect(x, y, w, h)
+        return None
+
+    def _body_of(self, name: str, now: float) -> Rect | None:
+        people = [p for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
+            for p in people:
+                if same(p.name):
+                    return p.box
+        return None
+
+    def _hidden_tag(self, name: str, now: float) -> Rect | None:
+        """这个好友被团子挡住了就返回他的名字标签：标签新鲜、没有身体框、标签压在团子框上。"""
+        tag = self._fresh_tag(name, now)
+        me = self._self_box(now)
+        if tag is None or me is None or self._body_of(name, now) is not None:
+            return None
+        return tag if occluded(tag, me) else None
+
+    def hidden_friends(self, now: float) -> list[str]:
+        """status 用：被团子挡住的好友。"""
+        if self.env is None or not hasattr(self.env, "people"):
+            return []
+        names = [n for n, v in dict(self.env.labels).items() if now - v[4] <= self.cfg.peek.tag_age]
+        return [n for n in names if self._hidden_tag(n, now) is not None]
+
+    def _peek_blocked(self, live: bool) -> str:
+        """换不了角度的原因（空串 = 可以换）。"""
+        skill = self.skills.active
+        if not self.cfg.peek.enabled:
+            return "没开换角度（[peek] enabled）"
+        if self._dry(live):
+            return "dry-run 不转镜头"
+        if self.camera is None:
+            return "没有视角控制"
+        if self.blackout:
+            return "画面黑着"
+        if skill is not None and getattr(skill, "needs_camera", False):
+            return f"正在{skill.goal}，没打断"
+        return ""
+
+    def _peek_obs(self, name: str, since: float) -> PeekObs | None:
+        now = self.clock()
+        tag, body = self._fresh_tag(name, now, since), self._body_of(name, now)
+        if tag is None and body is None:
+            return None
+        return PeekObs(tag, body, self._self_box(now))
+
+    def _peek_wait(self, name: str, pressed_at: float) -> PeekObs | None:
+        """按完一下：等画面停稳，再隔 poll 秒看一次感知层（自己截图喂进去：capture = "body" 时感知层靠身体给帧），
+        看到按键之后的新结果就返回；lost_after 秒内一直看不到这个人返回 None。"""
+        cfg, track = self.cfg.peek, self.cfg.track
+        self.sleep(track.settle)
+        for _ in range(max(1, math.ceil(track.lost_after / cfg.poll))):
+            frame = self.device.screenshot()
+            self.last_frame = frame
+            self.env.observe(frame, self.clock(), False)
+            obs = self._peek_obs(name, pressed_at)
+            if obs is not None:
+                return obs
+            self.sleep(cfg.poll)
+        return None
+
+    def _peek(self, name: str, box: Rect, live: bool) -> tuple[Rect, bool, str]:
+        """好友被团子挡住：闭环换角度。返回 (裁图用的框, 是不是按标签估的, 附加说明)。镜头不复位。"""
+        blocked = self._peek_blocked(live)
+        if not blocked:
+            try:
+                self.clear_view("camera", live)
+            except ToolError as exc:
+                blocked = str(exc)
+        if blocked:
+            return box, True, f"；{name} 被你挡住了（{blocked}，没换角度）"
+        cfg = self.cfg.peek
+        frame = self.last_frame if self.last_frame is not None else self.device.screenshot()
+        planner = PeekPlanner(cfg, self.cfg.track, frame.shape[1], frame.shape[0])
+        start, pressed = self.clock(), 0
+        obs = self._peek_obs(name, float("-inf"))
+        last = obs
+        reason = "budget"
+        with self.panel.borrow("look_person"):
+            while True:
+                action = planner.next(obs) if obs is not None else PeekDone("lost")
+                if isinstance(action, PeekDone):
+                    reason = action.reason
+                    break
+                if pressed >= cfg.max_presses or self.clock() - start >= cfg.max_seconds:
+                    break
+                if isinstance(action, PeekTurn):
+                    self.camera.nudge(action.direction, action.seconds)
+                else:
+                    self.camera.zoom_once(action.direction)
+                pressed += 1
+                obs = self._peek_wait(name, self.clock())
+                last = obs or last
+        if pressed:
+            self._ref_thumb = None  # 自己转的，不算画面大变
+            self._forget_self()
+        where = f"镜头：{self.camera.describe()}，要转回去用 camera_reset" if pressed else ""
+        if reason == "revealed" and last is not None:
+            done = f"；刚才被你挡住了，转了一下镜头才看清（{where}）" if pressed else ""
+            if last.body is not None:
+                return last.body, False, done
+            return self._below_tag((last.tag.x, last.tag.y, last.tag.w, last.tag.h)), True, done
+        why = {"lost": "换角度时看不到他了", "stuck": "离得太近转不开"}.get(reason, "转了几下还是没露出来")
+        tag = last.tag if last is not None and last.tag is not None else None
+        guess = self._below_tag((tag.x, tag.y, tag.w, tag.h)) if tag is not None else box
+        return guess, True, f"；{name} 被你挡住了，换了角度也没看清（{why}{'；' + where if where else ''}）"
 
     def fresh_frame(self):
         """眼睛马上要看：在身体线程里截一张新的。"""
@@ -723,6 +860,9 @@ class Body:
         people = describe_people(self.env.people(now)) if hasattr(self.env, "people") else ""
         if people:
             parts.append("画面里：" + people)
+        hidden = self.hidden_friends(now)
+        if hidden:
+            parts.append("被你挡住：" + "、".join(hidden) + "（look_person 会自己换角度看）")
         things = describe_things(self.env.objects(now)) if hasattr(self.env, "objects") else ""
         if things:
             parts.append("画面里的东西：" + things)

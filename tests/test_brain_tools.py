@@ -132,6 +132,21 @@ def test_look_around_gets_longer_timeout():
     assert ToolBox(body).run("look_around", {})[1] is True  # 没开眼睛
 
 
+def test_look_person_gets_room_to_peek():  # 被挡住时边转边看：按键 + 等画面停稳最多 [peek] max_seconds 秒，再截图裁图
+    from skydango.brain.tools import PEEK_TIMEOUT
+    from skydango.config import Config
+
+    body = FakeBody()
+    ToolBox(body).run("look_person", {"name": "小明"})
+    assert body.timeouts[-1] == PEEK_TIMEOUT and PEEK_TIMEOUT >= Config().peek.max_seconds + 10
+
+
+def test_look_person_description_says_camera_is_not_reset():
+    from skydango.brain.tools import DESCRIPTIONS
+
+    assert "挡住" in DESCRIPTIONS["look_person"] and "camera_reset" in DESCRIPTIONS["look_person"]
+
+
 def test_camera_reset_gets_longer_timeout():
     from skydango.brain.tools import RESET_TIMEOUT
 
