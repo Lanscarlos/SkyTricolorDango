@@ -77,6 +77,9 @@ class ConsoleServer:
         self.device_checks, self.make_device, self.find_spec = device_checks, make_device, find_spec
         self.parent_pid = os.getpid() if parent_pid is None else parent_pid
         self.orphan = probe_status(child_port)  # 上次留下的团子还占着端口
+        self.proxy_timeout = PROXY_TIMEOUT
+        self._device_lock = threading.Lock()  # 检测设备期间不让启动（两边会同时碰设备）
+        self._checking = False
         self._server: ThreadingHTTPServer | None = None
 
     # ---- 各个接口 ----
@@ -91,7 +94,8 @@ class ConsoleServer:
         opts = self.launch_options()
         busy = self._busy()
         return {"run": self.runner.status(), "launch": dataclasses.asdict(opts),
-                "problems": preflight(self.store, opts, busy, self.find_spec), "orphan": self.orphan and not busy}
+                "problems": preflight(self.store, opts, busy, self.find_spec), "orphan": self.orphan and not busy,
+                "emotes_allowed": self.store._fallback().emotes.enabled}  # config.toml 关了动作：面板上只能关不能开
 
     def start_run(self, body: dict) -> tuple[int, dict]:
         try:
@@ -100,21 +104,24 @@ class ConsoleServer:
             return 400, {"ok": False, "text": str(exc)}
         self.store.save({"console.brain": opts.brain, "console.live": opts.live, "console.emotes": opts.emotes,
                          "console.duration": opts.duration})  # 下次打开面板还是这次的选择
-        problems = preflight(self.store, opts, self._busy(), self.find_spec)
-        if not self._busy() and probe_status(self.child_port):  # 上次留下的团子还占着端口：再起一个会有两个团子
-            self.orphan = True
-            problems.append(f"{self.child_port} 端口上有上次留下的团子，先点「让它退出」")
-        try:
-            secrets = read_secrets(console_paths(self.config_path)[1])
-        except ValueError as exc:
-            problems.append(str(exc))
-        if problems:
-            return 409, {"ok": False, "problems": problems}
-        cmd = build_command(opts, self.config_path, self.child_port, self.parent_pid)
-        try:
-            self.runner.start(cmd, child_env(os.environ, secrets), opts)
-        except (RuntimeError, OSError) as exc:
-            return 409, {"ok": False, "problems": [str(exc)]}
+        with self._device_lock:  # 和设备检测互斥：检查完到真的起进程之间，检测不能插进来
+            problems = preflight(self.store, opts, self._busy(), self.find_spec)
+            if self._checking:
+                problems.append("正在检测设备，等检测完再叫醒")
+            if not self._busy() and probe_status(self.child_port):  # 上次留下的团子还占着端口：再起一个会有两个团子
+                self.orphan = True
+                problems.append(f"{self.child_port} 端口上有上次留下的团子，先点「让它退出」")
+            try:
+                secrets = read_secrets(console_paths(self.config_path)[1])
+            except ValueError as exc:
+                problems.append(str(exc))
+            if problems:
+                return 409, {"ok": False, "problems": problems}
+            cmd = build_command(opts, self.config_path, self.child_port, self.parent_pid)
+            try:
+                self.runner.start(cmd, child_env(os.environ, secrets), opts)
+            except (RuntimeError, OSError) as exc:
+                return 409, {"ok": False, "problems": [str(exc)]}
         self.orphan = False
         return 200, {"ok": True}
 
@@ -144,17 +151,24 @@ class ConsoleServer:
         return 200, probes.test_claude(path, cfg.brain.config_dir, form.get("secret.claude") or self.store.secret("claude"))
 
     def check_device(self) -> tuple[int, dict]:
-        if self._busy():
-            return 409, {"ok": False, "text": "团子运行中，设备归它用"}
+        with self._device_lock:
+            if self._busy():
+                return 409, {"ok": False, "text": "团子运行中，设备归它用"}
+            if self._checking:
+                return 409, {"ok": False, "text": "正在检测设备"}
+            self._checking = True
         try:
-            cfg = self.store.effective()
-        except ValueError as exc:
-            return 200, {"ok": False, "text": str(exc)}
-        make = self.make_device
-        if make is None:
-            from ..cli import _device as make  # 延迟导入：cli 也导入这个模块
-        checks = self.device_checks(cfg, make)
-        return 200, {"ok": True, "checks": [dataclasses.asdict(c) for c in checks]}
+            try:
+                cfg = self.store.effective()
+            except ValueError as exc:
+                return 200, {"ok": False, "text": str(exc)}
+            make = self.make_device
+            if make is None:
+                from ..cli import _device as make  # 延迟导入：cli 也导入这个模块
+            checks = self.device_checks(cfg, make)
+            return 200, {"ok": True, "checks": [dataclasses.asdict(c) for c in checks]}
+        finally:
+            self._checking = False
 
     def stop_orphan(self) -> tuple[int, dict]:
         ok = send_shutdown(self.child_port)
@@ -170,7 +184,7 @@ class ConsoleServer:
         headers = {"Content-Type": "application/json", "X-Skydango": "1"} if method == "POST" else {}
         req = urllib.request.Request(url, data=body, headers=headers, method=method)  # Host 自动是 127.0.0.1:<child_port>
         try:
-            with LOCAL.open(req, timeout=PROXY_TIMEOUT) as r:
+            with LOCAL.open(req, timeout=self.proxy_timeout) as r:
                 return r.status, r.headers.get("Content-Type", "application/octet-stream"), r.read()
         except urllib.error.HTTPError as err:
             return err.code, err.headers.get("Content-Type", "text/plain"), err.read()

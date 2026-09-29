@@ -24,8 +24,13 @@ def read(path: Path) -> dict:
         raise ValueError(f"{path.name} 读不出来：{exc}") from exc
 
 
+def _string(text: str) -> str:
+    # JSON 字符串的转义是 TOML basic string 的子集，只差 U+007F：JSON 不转义，TOML 不许原样出现
+    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
 def _key(key: str) -> str:
-    return key if _BARE.match(key) else json.dumps(key, ensure_ascii=False)
+    return key if _BARE.match(key) else _string(key)
 
 
 def _value(value) -> str:
@@ -37,9 +42,9 @@ def _value(value) -> str:
     if isinstance(value, float):
         return repr(value)
     if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
+        return _string(value)
     if isinstance(value, list) and all(isinstance(v, str) for v in value):
-        return "[" + ", ".join(json.dumps(v, ensure_ascii=False) for v in value) + "]"
+        return "[" + ", ".join(_string(v) for v in value) + "]"
     raise ValueError(f"TOML 写不了这种值：{value!r}")
 
 

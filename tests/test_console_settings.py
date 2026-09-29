@@ -114,3 +114,18 @@ def test_broken_console_toml_is_reported_and_not_overwritten(tmp_path):  # Revie
 def test_unknown_key_in_console_toml_is_reported(tmp_path):
     v = store(tmp_path, console="[device]\nserail = 1\n").view()
     assert "serail" in v["error"]
+
+
+def test_broken_secrets_structure_is_reported(tmp_path):
+    s = store(tmp_path, secrets='env = "x"\n')
+    assert "secrets.toml" in s.view()["error"]
+    r = s.save({"secret.llm": "sk-x"})
+    assert not r["ok"] and "secrets.toml" in r["errors"]["_file"]
+    assert (tmp_path / "secrets.toml").read_text(encoding="utf-8") == 'env = "x"\n'
+
+
+def test_pasted_secret_is_stripped(tmp_path):
+    s = store(tmp_path)
+    assert s.save({"secret.llm": "  sk-x\n"})["ok"]
+    assert s.secret("llm") == "sk-x"
+    assert s.save({"secret.llm": "   "})["ok"] and s.secret("llm") == "sk-x"  # 只有空白 = 不改

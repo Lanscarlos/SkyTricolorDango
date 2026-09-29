@@ -111,3 +111,16 @@ def test_device_factory_error_is_online_fail(tmp_path):
 
     checks = run_checks(cfg(tmp_path), boom, run=ok_run)
     assert checks[1].status == "fail" and "adb 失败" in checks[1].detail
+
+
+def test_capture_handle_is_closed(tmp_path):  # MuMu 截图句柄每次检测都新建，用完要关
+    class Capture:
+        closed = False
+
+        def close(self):
+            Capture.closed = True
+
+    dev = Dev()
+    dev.capture = Capture()
+    run_checks(cfg(tmp_path), lambda c: dev, run=ok_run)
+    assert Capture.closed

@@ -8,13 +8,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", type=int, required=True)
-parser.add_argument("--mode", default="normal", choices=["normal", "ignore", "crash", "gbk"])
+parser.add_argument("--mode", default="normal", choices=["normal", "ignore", "crash", "gbk", "late"])
 args = parser.parse_args()
 
 print("本次运行的日志和截图: /tmp/runs/x", flush=True)
 if args.mode == "crash":
     print("boom", flush=True)
     sys.exit(3)
+if args.mode == "late":  # 启动慢：过一会儿才开端口
+    import time
+
+    time.sleep(1.5)
 if args.mode == "gbk":
     sys.stdout.buffer.write("中文乱码\n".encode("gbk"))
     sys.stdout.buffer.write(b"x" * 5000 + b"\n")
@@ -36,7 +40,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         self._reply({"ok": True})
-        if args.mode == "normal":
+        if args.mode in ("normal", "late"):
             print("收到退出", flush=True)
             os._exit(0)
 

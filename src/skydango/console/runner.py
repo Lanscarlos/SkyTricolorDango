@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 IDLE, STARTING, RUNNING, STOPPING, EXITED, CRASHED = "idle", "starting", "running", "stopping", "exited", "crashed"
 MAX_LINE = 2000  # 日志一行最多留几个字（进度条之类的超长行）
 RUN_DIR = re.compile(r"本次运行的日志和截图: (.+)$")
+LINE_END = re.compile(rb"\r\n|\n|\r")
 
 
 @dataclass
@@ -141,14 +142,33 @@ class Runner:
         log.info("起团子：%s", " ".join(cmd))
 
     def _read(self, proc: subprocess.Popen) -> None:
-        for raw in proc.stdout:
-            text = raw.decode("utf-8", "replace").rstrip("\r\n")[:MAX_LINE]
-            with self._lock:
-                self._count += 1
-                self._lines.append((self._count, text))
-                found = RUN_DIR.search(text)
-                if found and self._run_dir is None:
-                    self._run_dir = found.group(1).strip()
+        """按 \n 或单独的 \r 分行：进度条只用 \r 刷新时，新的一段顶掉上一段（像终端那样），不攒成一整行。"""
+        buf, overwrite = b"", False
+        while True:
+            chunk = proc.stdout.read1(65536)
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                end = LINE_END.search(buf)
+                if end is None or (end.group() == b"\r" and end.end() == len(buf)):  # 可能是 \r\n 的前半个，等下一块
+                    break
+                self._line(buf[: end.start()], overwrite)
+                buf, overwrite = buf[end.end():], end.group() == b"\r"
+            buf = buf[: MAX_LINE * 4]  # 一直不换行的输出：只留开头，别无限攒（UTF-8 一个字最多 4 字节）
+        if buf.rstrip(b"\r"):
+            self._line(buf.rstrip(b"\r"), overwrite)
+
+    def _line(self, raw: bytes, overwrite: bool) -> None:
+        text = raw.decode("utf-8", "replace")[:MAX_LINE]
+        with self._lock:
+            if overwrite and self._lines:
+                self._lines.pop()
+            self._count += 1
+            self._lines.append((self._count, text))
+            found = RUN_DIR.search(text)
+            if found and self._run_dir is None:
+                self._run_dir = found.group(1).strip()
 
     def _monitor(self, proc: subprocess.Popen, reader: threading.Thread) -> None:
         while True:

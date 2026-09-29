@@ -45,3 +45,8 @@ def test_write_atomic_replaces_and_leaves_no_temp(tmp_path):
     write_atomic(p, "new = 1\n")
     assert p.read_text(encoding="utf-8") == "new = 1\n"
     assert [f.name for f in tmp_path.iterdir()] == ["x.toml"]
+
+
+def test_dumps_escapes_delete_char():  # U+007F：json.dumps 不转义，tomllib 却不认
+    data = {"reply": {"disclosure_prefix": "a\x7fb"}}
+    assert tomllib.loads(dumps(data)) == data

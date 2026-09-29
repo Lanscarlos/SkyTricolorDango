@@ -164,7 +164,7 @@ h2{font-size:17px;font-weight:600;margin:0 0 12px}
           <legend>发言</legend>
           <label class="choice"><input type="checkbox" id="opt-live"> 真的发送</label>
           <div class="live-warn" id="live-warn" hidden>会在游戏里真的说话、做动作</div>
-          <label class="choice"><input type="checkbox" id="opt-emotes"> 聊天时做动作 <small>牵着手时关掉</small></label>
+          <label class="choice"><input type="checkbox" id="opt-emotes"> 聊天时做动作 <small id="emotes-note">牵着手时关掉</small></label>
         </fieldset>
         <fieldset>
           <legend>运行时长</legend>
@@ -261,6 +261,9 @@ function renderState(){
     $("opt-live").checked=l.live;$("opt-emotes").checked=l.emotes;$("opt-duration").value=l.duration>0?l.duration:"";
     S.launchLoaded=true;liveWarn()}
   for(const x of $("launch").querySelectorAll("input,button"))x.disabled=busy;
+  // config.toml 里关了动作：这里只能关不能开
+  if(!st.emotes_allowed){$("opt-emotes").checked=false;$("opt-emotes").disabled=true}
+  $("emotes-note").textContent=st.emotes_allowed?"牵着手时关掉":"config.toml 里关掉了";
   $("start").textContent=busy?"团子醒着":"叫醒团子";
   renderProblems(busy?[]:st.problems);
   // 横幅：强杀 / 上次留下的团子

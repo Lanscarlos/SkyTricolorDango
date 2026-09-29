@@ -174,3 +174,29 @@ def test_kill_forces_immediately(tmp_path):
     r.kill()
     wait_state(r, EXITED, CRASHED, timeout=5)
     assert r.status()["forced"] is True
+
+
+def test_carriage_return_progress_keeps_latest(tmp_path):  # 进度条只用 \r 刷新：留最新的，不攒成一行
+    r = runner(tmp_path)
+    code = "import sys; sys.stdout.write('10%\\r20%\\r30%\\ndone\\nx\\ry'); sys.stdout.flush()"
+    r.start([sys.executable, "-c", code], dict(os.environ), LaunchOptions())
+    wait_state(r, EXITED)
+    assert r.logs()["lines"] == ["30%", "done", "y"]
+
+
+def test_endless_line_without_newline_is_cut(tmp_path):
+    r = runner(tmp_path)
+    code = "import sys; sys.stdout.write('x' * 10000); sys.stdout.flush()"
+    r.start([sys.executable, "-c", code], dict(os.environ), LaunchOptions())
+    wait_state(r, EXITED)
+    lines = r.logs()["lines"]
+    assert lines and max(len(line) for line in lines) <= 2000
+
+
+def test_stop_while_starting_then_port_opens_exits_cleanly(tmp_path):  # 重试的 shutdown 送到了，就不用强杀
+    r = runner(tmp_path, stop_timeout=8.0)
+    r.start(child(r, "late"), dict(os.environ), LaunchOptions())
+    assert r.status()["state"] == STARTING
+    r.stop()
+    wait_state(r, EXITED)
+    assert r.status()["forced"] is False and "收到退出" in r.logs()["lines"]

@@ -185,6 +185,10 @@ class SettingsStore:
             self.effective()
         except ValueError as exc:
             console_data, error = {}, error or str(exc)
+        try:
+            read_secrets(self.secrets_path)
+        except ValueError as exc:
+            error = error or str(exc)
         cfg = self._fallback()
         fields = []
         for f in FIELDS:
@@ -210,6 +214,7 @@ class SettingsStore:
         try:
             console_data = read(self.console_path)
             secrets_data = read(self.secrets_path)
+            read_secrets(self.secrets_path)  # env 不是表、值不是字符串：先报出来，别写坏
             cfg = self.effective()
         except ValueError as exc:
             return {"ok": False, "errors": {"_file": str(exc)}, "warnings": {}}
@@ -225,7 +230,7 @@ class SettingsStore:
             if f.kind == "secret":
                 if not isinstance(value, str):
                     errors[key] = "要是文字"
-                elif value:
+                elif value := value.strip():  # 粘贴时常带空格、换行；只有空白 = 不改
                     secrets_env[self._env_name(key.split(".")[1], cfg)] = value
                     touched.add("secrets")
                 continue

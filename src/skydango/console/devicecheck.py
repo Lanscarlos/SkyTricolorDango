@@ -120,14 +120,22 @@ def run_checks(
         dev = make_device(cfg)
         return _check_online(cfg, dev)
 
-    checks.append(_safe("online", online))
-    if checks[1].status == "fail":
-        return checks + _skipped(["screen", "ime", "game", "keys"])
-    checks.append(_safe("screen", lambda: _check_screen(dev)))
-    checks.append(_safe("ime", lambda: _check_ime(cfg, dev)))
-    checks.append(_safe("game", lambda: _check_game(dev)))
-    keys = _safe("keys", lambda: _check_keys(dev))
-    if keys.status == "fail":  # 找不到键盘设备不影响读聊天，只是按不了实体键
-        keys.status, keys.hint = "warn", "可以在 config.toml 的 device.key_device 里手动指定（adb shell getevent -pl 查看）"
-    checks.append(keys)
-    return checks
+    try:
+        checks.append(_safe("online", online))
+        if checks[1].status == "fail":
+            return checks + _skipped(["screen", "ime", "game", "keys"])
+        checks.append(_safe("screen", lambda: _check_screen(dev)))
+        checks.append(_safe("ime", lambda: _check_ime(cfg, dev)))
+        checks.append(_safe("game", lambda: _check_game(dev)))
+        keys = _safe("keys", lambda: _check_keys(dev))
+        if keys.status == "fail":  # 找不到键盘设备不影响读聊天，只是按不了实体键
+            keys.status, keys.hint = "warn", "可以在 config.toml 的 device.key_device 里手动指定（adb shell getevent -pl 查看）"
+        checks.append(keys)
+        return checks
+    finally:
+        close = getattr(getattr(dev, "capture", None), "close", None)
+        if close is not None:  # MuMu 原生截图的句柄：每次检测都新建，用完就关
+            try:
+                close()
+            except Exception:
+                pass
