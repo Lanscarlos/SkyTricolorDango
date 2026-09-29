@@ -843,6 +843,10 @@ class PerceptionWatcher:
         order = {"左边": 0, "前面": 1, "右边": 2}
         return sorted(out, key=lambda p: (order[p.side], -p.box.h))
 
+    def typing_seen(self, now: float, within: float = 1.0, strangers: bool = False) -> bool:
+        """最近 within 秒里有好友（strangers 时陌生人也算）头顶冒着"正在输入"气泡（团子自己的不算）：聊天面板该打开看了。"""
+        return any(now - r[0] <= within and (r[2] or strangers) for r in list(self._typing))
+
     def speaker_hint(self, now: float) -> str | None:
         """陌生人的消息是谁说的：最近 typing_window 秒内头顶冒过气泡、又不是好友的人恰好一个 → 说出他在画面哪儿。"""
         recent = [r for r in list(self._typing) if now - r[0] <= self.cfg.typing_window and not r[2]]

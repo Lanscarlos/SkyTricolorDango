@@ -307,3 +307,97 @@ def test_describe():
     always, _ = manager([True])
     assert always.describe(0.0) == "常开"
     assert manager([True], mode="bubble")[0].describe(0.0) == ""
+
+
+# ---- 好友头顶冒气泡：开着面板等消息 ----
+def bubble_open(m, t):
+    m.bubble_seen(t)
+    m.tick(t, [], visible=False)
+    assert m.state == "bubble"
+
+
+def test_bubble_keeps_panel_open_until_message():
+    m, dev, _ = auto()
+    bubble_open(m, 10.0)
+    for t in (10.5, 12.0, 14.0, 16.0):
+        m.bubble_seen(t)
+        m.tick(t, [], visible=True)
+    assert m.state == "bubble" and presses(dev) == 1  # 对方还在打字：不关
+    m.tick(16.2, ["小明：在吗"], visible=True)
+    assert m.state == "chatting" and presses(dev) == 1
+
+
+def test_bubble_closes_after_bubble_gone():
+    m, dev, _ = auto()
+    bubble_open(m, 10.0)
+    m.bubble_seen(12.0)
+    m.tick(12.0, [], visible=True)
+    m.tick(14.9, [], visible=True)
+    assert m.state == "bubble"
+    m.tick(15.0, [], visible=True)  # 气泡没了 3 秒还没新消息
+    assert m.state == "idle" and presses(dev) == 2
+
+
+def test_bubble_closes_after_bubble_wait():
+    m, dev, _ = auto()
+    bubble_open(m, 10.0)
+    for t in range(11, 25):
+        m.bubble_seen(float(t))
+        m.tick(float(t), [], visible=True)
+    assert m.state == "bubble"
+    m.bubble_seen(25.0)
+    m.tick(25.0, [], visible=True)  # 一直在打字也最多等 15 秒
+    assert m.state == "idle" and presses(dev) == 2
+
+
+def test_bubble_seen_while_chatting_changes_nothing():
+    m, dev, state = auto()
+    chatting(m, state, 100.0)
+    m.bubble_seen(101.0)
+    m.tick(101.0, [], visible=True)
+    assert m.state == "chatting" and presses(dev) == 0
+
+
+def test_bubble_describe():
+    m, dev, _ = auto()
+    bubble_open(m, 10.0)
+    assert m.describe(16.0) == "等气泡（还剩 9 秒）"
+
+
+def test_borrow_during_bubble_waits_again_after_return():
+    m, dev, state = auto()
+    bubble_open(m, 10.0)
+    with m.borrow("camera"):
+        pass
+    m.tick(11.0, [], visible=False)
+    assert m.state == "bubble"
+
+
+# ---- 说话前先开面板 ----
+def test_before_speak_opens_panel_first_when_idle():
+    m, dev, state = auto()
+    m.before_speak(5.0)
+    assert dev.calls == [("hw_key", 46)] and state.open is True and m.state == "chatting"
+    m.tick(49.0, [], visible=True)  # 说话算"不安静"
+    assert m.state == "chatting"
+
+
+def test_before_speak_does_not_press_while_typing():
+    m, dev, state = auto()
+    dev.shown = True
+    m.before_speak(5.0)
+    assert dev.calls == [] and m.state == "chatting"
+
+
+def test_before_speak_while_lent_reopens_on_return():
+    m, dev, state = auto()
+    with m.borrow("camera", close=False):
+        m.before_speak(5.0)
+        assert dev.calls == []
+    assert state.open is True and m.state == "chatting"
+
+
+def test_before_speak_does_nothing_in_always_mode():
+    m, dev = manager([False])
+    m.before_speak(5.0)
+    assert dev.calls == []
