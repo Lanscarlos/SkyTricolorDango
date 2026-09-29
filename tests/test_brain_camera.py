@@ -190,3 +190,129 @@ def test_spin_reports_restored_when_idle():  # 闲着不重开也算"回到该�
     c, dev, state = spin_cam(panel=False, mode="auto")
     r = c.spin(lambda: scene(), turns=1, seconds_per_turn=0.2, fps=10)
     assert r.panel_reopened is True and ("hw_key", 46) not in dev.calls
+
+
+# ---- nudge：短按记秒数；reset：先粗转回去，再按参照图闭环细调 ----
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+
+from skydango.brain.camera import REFINE_MAX, thumb_similarity  # noqa: E402
+
+
+def texture(w=1920, h=1080, seed=1, cell=40):
+    """平滑的随机纹理：平移几十像素内相关系数单调下降（模拟背景）。"""
+    rng = np.random.default_rng(seed)
+    small = rng.integers(0, 256, (h // cell + 2, w // cell + 2), dtype=np.uint8)
+    g = cv2.resize(small, ((w // cell + 2) * cell, (h // cell + 2) * cell), interpolation=cv2.INTER_LINEAR)[:h, :w]
+    return cv2.merge([g, g, g])
+
+
+class TurnDevice(FakeDevice):
+    """画面随镜头平移：平移像素 = 累计转了多少秒 × 800（右转画面里的东西往左移）。"""
+
+    PX = 800
+    MARGIN = 1000
+
+    def __init__(self):
+        super().__init__([scene()])
+        self.pano = texture(1920 + 2 * self.MARGIN)
+        self.turned = 0.0  # 累计按了多少秒（右正左负）
+
+    def hw_key_hold(self, code, seconds):
+        super().hw_key_hold(code, seconds)
+        self.turned += seconds if code == 106 else -seconds if code == 105 else 0.0
+
+    def screenshot(self):
+        x = self.MARGIN + int(round(self.turned * self.PX))
+        return self.pano[:, x : x + 1920].copy()
+
+
+class NoiseDevice(FakeDevice):
+    """每次截图都是新的随机噪声：和参照图永远对不上。"""
+
+    def __init__(self):
+        super().__init__([scene()])
+        self.rng = np.random.default_rng(7)
+
+    def screenshot(self):
+        return self.rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8)
+
+
+def holds(dev):
+    return [c for c in dev.calls if c[0] == "hw_hold"]
+
+
+def test_nudge_holds_arrow_and_counts_seconds():
+    c, dev, _ = cam(panel=False)
+    assert c.nudge("right", 0.05) == pytest.approx(0.05)
+    assert holds(dev) == [("hw_hold", 106, pytest.approx(0.05))]
+    assert c.turn_seconds == pytest.approx(0.05)
+    assert c.nudge("left", 0.5) == pytest.approx(0.1)  # 最长 0.1 s
+    assert holds(dev)[-1] == ("hw_hold", 105, pytest.approx(0.1))
+    assert c.turn_seconds == pytest.approx(-0.05)
+    assert c.nudge("right", 0.001) == pytest.approx(0.02)  # 最短 0.02 s
+    with pytest.raises(ValueError):
+        c.nudge("up", 0.05)
+
+
+def test_nudge_does_not_touch_panel():
+    c, dev, state = cam(panel=True)
+    dev.shown = True  # 输入框开着也不按 BACK（调用方是技能，已经借好面板）
+    c.nudge("right", 0.05)
+    assert state["panel"] is True
+    assert ("hw_key", 46) not in dev.calls and ("key", 4) not in dev.calls
+
+
+def test_nudge_remembers_reference_only_at_home():
+    c, dev, _ = cam(panel=False)
+    assert c.ref is None
+    c.nudge("right", 0.05)
+    first = c.ref
+    assert first is not None
+    dev.frames = [texture(seed=3)]  # 画面变了，但镜头已经不在原位：不覆盖
+    c.nudge("right", 0.05)
+    assert c.ref is first
+
+
+def test_reset_undoes_nudges_then_refines_to_reference():
+    dev = TurnDevice()
+    c = Camera(dev, 0.25, None, sleep=lambda s: None)
+    for _ in range(3):
+        c.nudge("right", 0.1)
+    dev.turned += 0.04  # 反向按不准：多漂了 0.04 s
+    result = c.reset()
+    assert abs(dev.turned) <= 0.02 + 1e-9
+    assert result.startswith("镜头转回原位") and "没对准" not in result
+    assert c.turn_seconds == 0 and c.ref is None
+
+
+def test_reset_without_reference_only_reverses():
+    c, dev, _ = cam(panel=False)
+    c.turn_seconds = 0.2
+    c.reset()
+    assert holds(dev) == [("hw_hold", 105, pytest.approx(0.1))] * 2
+    assert c.turn_seconds == 0
+
+
+def test_reset_reports_when_reference_never_matches():
+    dev = NoiseDevice()
+    c = Camera(dev, 0.25, None, sleep=lambda s: None)
+    c.nudge("right", 0.05)
+    dev.calls.clear()
+    result = c.reset()
+    assert "没对准" in result
+    refine = holds(dev)[1:]  # 第一下是粗转回去
+    assert holds(dev)[0] == ("hw_hold", 105, pytest.approx(0.05))
+    assert len(refine) <= REFINE_MAX * 2
+    net = sum(s if code == 106 else -s for _, code, s in refine)
+    assert net == pytest.approx(0.0)  # 找不到高峰：停在粗转的位置
+    assert c.turn_seconds == 0 and c.ref is None
+
+
+def test_thumb_similarity_ignores_chat_panel_area():
+    a = texture(seed=5)
+    b = a.copy()
+    b[:, : int(1920 * 0.33)] = texture(seed=9)[:, : int(1920 * 0.33)]  # 只有左边聊天面板那块不一样
+    b[int(1080 * 0.46) :, :] = 0  # 下半部分（人、按钮）不一样也不管
+    assert thumb_similarity(a, b) > 0.99
+    assert thumb_similarity(a, texture(seed=9)) < 0.5
