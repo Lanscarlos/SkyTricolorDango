@@ -82,7 +82,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/panels.py` `game/panels.py` `assets/panels/` | 面板识别：特征卡快看 + OCR 细读 + 通用兜底认出开着哪些面板（`vision`）；按卡片关面板、点按钮（`game`）；五张特征卡（见「面板识别」） |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
-| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」） |
+| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`occasion.py` 场合（见「看场合主动开口」） |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、页面 `static/console.html`（见「管理面板」） |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
@@ -247,6 +247,20 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - 调提示词时加 `--view`：网页上的大脑时间线能看到每一轮它收到了什么、调了什么工具、工具返回了什么（见「识别可视化」）；
   手动控制栏能绕过大脑直接试身体的工具（身体方法的 `live=True`），大脑会收到 `manual` 事件
 - 前提：`pip install --user mcp`；运行一次 `claude setup-token` 并 `setx SKYDANGO_CLAUDE_TOKEN "<令牌>"`
+
+## 看场合主动开口（`[proactive]`，大脑模式）
+
+设计见 `docs/superpowers/specs/2026-09-29-proactive-chat-design.md`，计划 `docs/superpowers/plans/2026-09-29-proactive-chat.md`。
+远期目标是把团子做成有存在感的**游戏里的伙伴**（像 Neuro-sama，但不做主播）；这是第一步：看到了就有话说。**还没在真机上跑过，数字都是估的**（spec「真机验证」四步）。
+- **眼睛挑新鲜事**：自动看时附上上一份描述（≤ `prev_max_age`），多要一项“新鲜事”（天黑了、好友换装 / 弹琴、篝火……），身体放 `notice` 事件叫醒大脑；
+  认地图的地名从一个变成另一个也发（"看起来到了雨林"）。大脑自己 `look` 不发；`notice_min` 内、和上一条一样、没熟人、主动额度用完都不发（省额度）。好友在身边时眼睛 `auto_look_busy`（60 秒）看一次
+- **场合**（`brain/occasion.py`，纯计算）：热闹 / 安静 / 没熟人 + 上次主动开口有没有人接 + 还能主动说几句，写进 `status`（网页、管理面板卡片也有）。
+  **主动** = 大脑这一轮不是被聊天 / 主人命令叫醒的（`brain_busy()` 为假）；手动控制说的不算
+- **护栏**（`body.say`，只管主动）：没熟人不说、10 分钟额度（热闹 4 / 安静 2）、两句间隔 60 秒、连续 3 句没人接就停到有好友说话；dry-run 也计数
+- **提示词**：“别自言自语”换成「主动开口」一节（看场合、带自己的看法别播报、新鲜事不是任务、不说就在心里写“不说：原因”）。
+  调的时候用 `run --view` 看大脑时间线
+- **喜好**：`memory init` 的人设模板多了「喜好和看法」；已有的 `memory/profile.md` 要自己把这一节加进去。随手记会记下团子说过的评价，下次态度一致
+- `enabled = false` 完全照旧（旧提示词、不发 `notice`、不拦）。history.jsonl 先不清（旧回合只是没主动，不冲突），太保守再按「记忆」一节挪走
 
 ## 常用命令
 
