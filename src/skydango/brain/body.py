@@ -110,6 +110,10 @@ class Body:
         self.said: list[str] = []  # 说过（含 dry-run）的话
         self.spoken: deque[Spoken] = deque(maxlen=50)  # 大脑说过的话（含 dry-run）和是不是主动开口；手动控制说的不记
         self.friend_names: Callable[[], list[str]] = lambda: []  # 好友名单（场合里认聊天的说话人），cli 设
+        self._news: queue.Queue[str] = queue.Queue()  # 眼睛线程交来的新鲜事，身体线程里过滤后变成 notice
+        self._place_seen = ""  # 上次认出的（非空）地名：换了地方就发 notice
+        self._notice_at = float("-inf")
+        self._notice_last = ""
         self.emoted: list[str] = []
         self.last_frame = None
         self.last_look = float("-inf")
@@ -210,6 +214,8 @@ class Body:
         if self.env is not None:
             self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
             self._watch_people(now)
+        if self.cfg.proactive.enabled:
+            self._watch_news(now)
 
     def run(self, duration: float = 0.0, stop: threading.Event | None = None) -> None:
         """一直跑；duration > 0 时跑这么多秒后自己退出（别在外面套 timeout）。stop 被设置时也退出。"""
@@ -313,6 +319,35 @@ class Body:
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
             else:
                 self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」")
+
+    def news(self, text: str) -> None:
+        """眼睛自动看时挑出的新鲜事（眼睛线程调，只入队）。"""
+        self._news.put(text)
+
+    def _watch_news(self, now: float) -> None:
+        """新鲜事 / 换了地图 → notice 事件；没熟人、主动额度用完、太勤、和上一条一样都不发（省得为此叫醒大脑）。"""
+        found = []
+        while True:
+            try:
+                found.append("眼睛注意到：" + self._news.get_nowait())
+            except queue.Empty:
+                break
+        place = getattr(self.env, "place", "") or ""
+        if place:
+            if self._place_seen and place != self._place_seen:
+                found.append(f"看起来到了{place}")
+            self._place_seen = place
+        if not found:
+            return
+        o = self.occasion()
+        for text in found:
+            if o.level == "alone" or o.left == 0:
+                log.debug("新鲜事没发（%s）：%s", o.blocked or "主动额度用完了", text)
+            elif now - self._notice_at < self.cfg.proactive.notice_min or similar(text, self._notice_last, 0.9):
+                log.debug("新鲜事没发（太勤或重复）：%s", text)
+            else:
+                self.events.put("notice", text)
+                self._notice_at, self._notice_last = now, text
 
     def _watch_panel(self, now: float) -> None:
         """只在面板该开着（常开模式 / 聊天中）却没开时告诉大脑；按需模式闲着时关着是正常的。"""

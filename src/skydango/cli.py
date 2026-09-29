@@ -1361,7 +1361,11 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         blackout=lambda: body.blackout,
         label_keep=cfg.env.interval * 2 + 1,
         note=(lambda now, s: scene_note(env, now, s)) if hasattr(env, "strangers") else None,
+        proactive=cfg.proactive,
+        busy=(lambda now: bool(env.nearby(now))) if env else (lambda now: False),
+        on_news=body.news,
     )
+    body.friend_names = _friend_names(cfg)
     events.subscribe(eyes.notice)
     toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store)  # recall 只读，dry-run 也给
     server = SkyServer(toolbox)

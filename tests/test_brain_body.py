@@ -1392,3 +1392,73 @@ def test_viewer_info_has_occasion(clock):
     b, _, _ = pro_body(clock, viewer=Viewer())
     b.step()
     assert Viewer.info["场合"] == "安静 · 还能主动说 2 句"
+
+
+def notices(events):
+    return [e.text for e in events.drain() if e.kind == "notice"]
+
+
+def test_news_becomes_notice(clock):
+    b, _, _ = pro_body(clock)
+    b.news("天黑了")
+    b.step()
+    assert notices(b.events) == ["眼睛注意到：天黑了"]
+
+
+def test_notice_min_and_duplicate(clock):
+    b, _, _ = pro_body(clock)
+    b.news("天黑了")
+    b.news("下雨了")
+    b.step()
+    assert notices(b.events) == ["眼睛注意到：天黑了"]  # 60 秒内的第二条不发
+    clock.advance(61)
+    b.news("天黑了")
+    b.step()
+    assert notices(b.events) == []  # 和上一条一样
+    b.news("下雨了")
+    b.step()
+    assert notices(b.events) == ["眼睛注意到：下雨了"]
+
+
+def test_notice_dropped_when_alone_or_no_quota(clock):
+    b, env, _ = pro_body(clock, near=())
+    b.news("天黑了")
+    b.step()
+    assert notices(b.events) == []
+    env.near = ["阿花"]
+    b.cfg.proactive.min_gap = 0
+    b.say("一")
+    clock.advance(5)
+    b.say("二")  # 安静时额度 2 句用完
+    b.news("下雨了")
+    b.step()
+    assert notices(b.events) == []
+
+
+def test_place_change(clock):
+    b, env, _ = pro_body(clock)
+    got = []
+    for place in ("", "云野", "", "雨林"):
+        env.place = place
+        b.step()
+        got += notices(b.events)
+        clock.advance(61)
+    assert got == ["看起来到了雨林"]
+
+
+def test_place_change_without_place_attribute(clock):
+    b, _, _ = pro_body(clock)
+    b.step()  # FakeEnv 没有 place：不报错
+    none, _, _, events = body(clock, wall=clock)
+    none.cfg.proactive.enabled = True
+    none.news("天黑了")
+    none.step()  # 没开 env：当成没熟人
+    assert notices(events) == []
+
+
+def test_notice_off_when_disabled(clock):
+    b, _, _ = pro_body(clock)
+    b.cfg.proactive.enabled = False
+    b.news("天黑了")
+    b.step()
+    assert notices(b.events) == []
