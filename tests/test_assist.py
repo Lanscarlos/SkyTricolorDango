@@ -255,9 +255,41 @@ def test_assist_writes_labels_preview_and_report(tmp_path, monkeypatch):
     src, out, sent = _cli_env(tmp_path, monkeypatch)
     cli.main(["perception", "label", str(src), "--assist", "-o", str(out), "--val", "0"])
     labels = sorted((out / "labels" / "train").glob("*.txt"))
-    assert [p.stem for p in labels] == ["0000", "0001"] and sent == [["0000", "0001"]]
+    # source 就是一段录像：文件名前加录像目录名（rec_），不同录像的同名帧不会互相覆盖
+    assert [p.stem for p in labels] == ["rec_0000", "rec_0001"] and sent == [["rec_0000", "rec_0001"]]
     assert [l.split()[0] for l in labels[0].read_text(encoding="utf-8").splitlines()] == ["0", "4"]
-    assert (out / "_preview" / "0000.jpg").exists() and "0000" in (out / "_assist" / "review.md").read_text(encoding="utf-8")
+    assert (out / "_preview" / "rec_0000.jpg").exists() and "rec_0000" in (out / "_assist" / "review.md").read_text(encoding="utf-8")
+
+
+def test_assist_skips_frame_whose_name_is_taken_by_another_image(tmp_path, monkeypatch, capsys):
+    """数据集里已有同名的另一张图：这一帧不交给 Claude、不写图和标注，旧文件原样保留，收尾时列出来。"""
+    from skydango import cli
+    from skydango.imageio import imwrite
+
+    src, out, sent = _cli_env(tmp_path, monkeypatch)
+    old_img, old_label = out / "images" / "train" / "rec_0000.jpg", out / "labels" / "train" / "rec_0000.txt"
+    imwrite(old_img, np.full((1080, 1920, 3), 200, np.uint8))
+    old_label.parent.mkdir(parents=True)
+    old_label.write_text("1 0.5 0.5 0.1 0.1\n", encoding="utf-8")
+    before = old_img.read_bytes()
+    cli.main(["perception", "label", str(src), "--assist", "--all-frames", "-o", str(out), "--val", "0"])
+    assert sent == [["rec_0001"]]
+    assert old_img.read_bytes() == before and old_label.read_text(encoding="utf-8") == "1 0.5 0.5 0.1 0.1\n"
+    assert (out / "labels" / "train" / "rec_0001.txt").exists()
+    printed = capsys.readouterr().out
+    assert "rec_0000.jpg" in printed and "数据集里已有同名的另一张图" in printed
+
+
+def test_assist_relabels_same_image(tmp_path, monkeypatch):
+    """同一段录像重新标注：同名同图照常覆盖标注。"""
+    from skydango import cli
+
+    src, out, sent = _cli_env(tmp_path, monkeypatch)
+    cli.main(["perception", "label", str(src), "--assist", "--all-frames", "-o", str(out), "--val", "0"])
+    label = out / "labels" / "train" / "rec_0000.txt"
+    label.write_text("", encoding="utf-8")
+    cli.main(["perception", "label", str(src), "--assist", "--all-frames", "-o", str(out), "--val", "0"])
+    assert label.read_text(encoding="utf-8") != ""
 
 
 def test_assist_picks_frames_unless_all_frames(tmp_path, monkeypatch):
@@ -268,9 +300,9 @@ def test_assist_picks_frames_unless_all_frames(tmp_path, monkeypatch):
     for i in range(1, 4):  # 和第 0 张一样的帧：挑帧时去掉
         imwrite(src / f"{i:04d}.jpg", np.zeros((1080, 1920, 3), np.uint8))
     cli.main(["perception", "label", str(src), "--assist", "-o", str(out)])
-    assert sent == [["0000"]]
+    assert sent == [["rec_0000"]]
     cli.main(["perception", "label", str(src), "--assist", "--all-frames", "-o", str(tmp_path / "ds2")])
-    assert sent[1] == ["0000", "0001", "0002", "0003"]
+    assert sent[1] == ["rec_0000", "rec_0001", "rec_0002", "rec_0003"]
 
 
 def test_assist_skips_picking_for_from_runs(tmp_path, monkeypatch):
@@ -312,9 +344,9 @@ def test_assist_processes_in_chunks(tmp_path, monkeypatch):
     src, out, sent = _cli_env(tmp_path, monkeypatch, n=3)
     monkeypatch.setattr(cli, "_ASSIST_CHUNK", 2)
     cli.main(["perception", "label", str(src), "--assist", "--all-frames", "-o", str(out), "--val", "0"])
-    assert sent == [["0000", "0001"], ["0002"]]
+    assert sent == [["rec_0000", "rec_0001"], ["rec_0002"]]
     assert len(list((out / "labels" / "train").glob("*.txt"))) == 3
-    assert "0002" in (out / "_assist" / "review.md").read_text(encoding="utf-8")
+    assert "rec_0002" in (out / "_assist" / "review.md").read_text(encoding="utf-8")
 
 
 def test_assist_adds_rings_above_reviewed_people(tmp_path, monkeypatch):
@@ -340,7 +372,7 @@ def test_assist_adds_rings_above_reviewed_people(tmp_path, monkeypatch):
     monkeypatch.setattr("skydango.vision.assist.CocoPeople", Coco)
     monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: IconClassifier(load_icons(Path(__file__).parents[1] / "assets/social")))
     cli.main(["perception", "label", str(src), "--assist", "-o", str(out), "--val", "0"])
-    classes = [l.split()[0] for l in (out / "labels" / "train" / "0000.txt").read_text(encoding="utf-8").splitlines()]
+    classes = [l.split()[0] for l in (out / "labels" / "train" / "rec_0000.txt").read_text(encoding="utf-8").splitlines()]
     assert sorted(classes) == ["0", "2"]
 
 
@@ -364,7 +396,7 @@ def test_model_prelabel_also_adds_rings(tmp_path, monkeypatch):
     monkeypatch.setattr("skydango.vision.detect.make_detector", lambda *a, **k: Det())
     monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: IconClassifier(load_icons(Path(__file__).parents[1] / "assets/social")))
     cli.main(["perception", "label", str(src), "--model", "m.onnx", "-o", str(out), "--val", "0"])
-    classes = [l.split()[0] for l in (out / "labels" / "train" / "0000.txt").read_text(encoding="utf-8").splitlines()]
+    classes = [l.split()[0] for l in (out / "labels" / "train" / "rec_0000.txt").read_text(encoding="utf-8").splitlines()]
     assert sorted(classes) == ["2", "4"]
 
 

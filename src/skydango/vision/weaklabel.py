@@ -105,6 +105,61 @@ def hard_images(runs: Path) -> list[tuple[Path, str]]:
     return out
 
 
+def label_items(source: Path, files: Iterable[Path]) -> list[tuple[Path, str]]:
+    """录像里的图 → (路径, 数据集里的文件名)。source 是上一级目录（tmp/record）时是 "<录像>_<文件名>"；
+    source 就是一段录像（图直接放在它下面）时也加上录像目录名，不然不同录像的 0000_000.00s 会互相覆盖；
+    source 是单张图时就用它自己的名字。"""
+    source = Path(source)
+    out = []
+    for path in files:
+        if source.is_dir():
+            parts = path.relative_to(source).with_suffix("").parts
+            if len(parts) == 1:
+                parts = (source.name, *parts)
+        else:
+            parts = (path.stem,)
+        out.append((path, "_".join(parts)))
+    return out
+
+
+SAME_IMAGE_DIFF = 2.0  # 像素均值差小于它算同一张图（写数据集时会重新压缩 JPEG，不会一模一样）
+CLASH_REASON = "数据集里已有同名的另一张图"
+
+
+def dataset_clash(out: Path, stem: str, frame: np.ndarray, tol: float = SAME_IMAGE_DIFF) -> Path | None:
+    """images/{train,val} 里已经有同名、但不是同一张的图时返回它的路径（这一帧不能写，会覆盖掉别的录像）；
+    没有同名的、或者就是同一张（重新标注同一段录像）返回 None。"""
+    from ..imageio import imread
+
+    for split in ("train", "val"):
+        path = Path(out) / "images" / split / f"{stem}.jpg"
+        if not path.exists():
+            continue
+        try:
+            old = imread(path)
+        except RuntimeError:
+            return path  # 读不出来的也不碰
+        if old.shape != frame.shape or np.abs(old.astype(np.int16) - frame.astype(np.int16)).mean() >= tol:
+            return path
+    return None
+
+
+def write_sample(out: Path, split: str, stem: str, frame: np.ndarray, lines: list[str]) -> Path | None:
+    """写一帧的图（JPEG 95）和 YOLO 标注。数据集里已有同名的另一张图时什么都不写，返回那张图的路径。"""
+    import cv2
+
+    from ..imageio import imwrite
+
+    clash = dataset_clash(out, stem, frame)
+    if clash is not None:
+        return clash
+    out = Path(out)
+    (out / "labels" / split).mkdir(parents=True, exist_ok=True)
+    imwrite(out / "images" / split / f"{stem}.jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    (out / "labels" / split / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return None
+
+
 def ring_labels(frame: np.ndarray, boxes: list[tuple[str, Rect]], icons, min_score: float = 0.75) -> list[Rect]:
     """人物头顶的互动圆圈（陌生人的也要）：weak_labels 只看好友名字下方，这里按人物框在头顶附近用图标模板找。
 

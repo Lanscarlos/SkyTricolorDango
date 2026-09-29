@@ -853,6 +853,14 @@ def _weak_boxes(cfg: Config, args, frame, ocr, icons, names: list[str]) -> list:
 _ASSIST_CHUNK = 50  # --assist 每段多少帧：检测 → 核对 → 写盘，原图用完就放掉
 
 
+def _print_skipped(skipped: list[str], reason: str) -> None:
+    """perception label 收尾：没写进数据集的帧和原因（没有就不打印）。"""
+    if skipped:
+        print(f"跳过 {len(skipped)} 帧（{reason}，没写图和标注）：")
+        for stem in skipped:
+            print(f"  {stem}.jpg")
+
+
 def _perception_label_assist(cfg: Config, args, items: list) -> None:
     """--assist：挑帧 → 人物候选框 → claude -p 核对 → 和弱标注合并写成数据集 + 预览 + 待核对清单。"""
     import cv2
@@ -861,7 +869,7 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
     from .brain.images import thumb
     from .vision import assist
     from .vision.ocr import make_ocr
-    from .vision.weaklabel import data_yaml, ring_labels, split_of, yolo_line
+    from .vision.weaklabel import CLASH_REASON, data_yaml, dataset_clash, ring_labels, split_of, write_sample, yolo_line
 
     base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错，别白跑检测
     a = cfg.assist
@@ -891,10 +899,14 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
     index = {c: i for i, c in enumerate(cfg.perception.classes)}
     counts: dict[str, int] = {}
     results: list = []  # (帧名, 核对结果)，写清单用
+    skipped: list[str] = []  # 数据集里已有同名的另一张图：不核对、不写
     for c0 in range(0, len(items), _ASSIST_CHUNK):  # 一段一段来：原图不一次全读进内存（1000 帧约 6 GB）
         frames, weak = [], {}
         for path, stem in items[c0 : c0 + _ASSIST_CHUNK]:
             frame = imread(path)
+            if dataset_clash(out, stem, frame) is not None:  # 交给 Claude 之前就查，不白花额度
+                skipped.append(stem)
+                continue
             weak[stem] = _weak_boxes(cfg, args, frame, ocr, icons, names)
             frames.append(assist.FrameInput(stem, frame, propose(frame)))
         try:
@@ -904,16 +916,14 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
         for f in frames:
             height, width = f.image.shape[:2]
             review = reviews.get(f.stem)
-            results.append((f.stem, review))
             boxes = weak[f.stem] + (assist.apply_review(f.candidates, review) if review else [])
             if icons is not None:  # 陌生人头顶的圆圈：弱标注只看好友名字下方
                 boxes += [("social_ring", r) for r in ring_labels(f.image, boxes, icons)]
-            split = split_of(f.stem, args.val)
-            (out / "images" / split).mkdir(parents=True, exist_ok=True)
-            (out / "labels" / split).mkdir(parents=True, exist_ok=True)
-            imwrite(out / "images" / split / f"{f.stem}.jpg", f.image, [cv2.IMWRITE_JPEG_QUALITY, 95])
             lines = [yolo_line(index[c], b, width, height) for c, b in boxes if c in index]
-            (out / "labels" / split / f"{f.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+            if write_sample(out, split_of(f.stem, args.val), f.stem, f.image, lines) is not None:
+                skipped.append(f.stem)
+                continue
+            results.append((f.stem, review))
             for c, _ in boxes:
                 counts[c] = counts.get(c, 0) + 1
             (out / "_preview").mkdir(parents=True, exist_ok=True)
@@ -924,6 +934,7 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
     report = out / "_assist" / "review.md"
     report.write_text(assist.review_report(results), encoding="utf-8")
     (out / "data.yaml").write_text(data_yaml(out, cfg.perception.classes), encoding="utf-8")
+    _print_skipped(skipped, CLASH_REASON)
     failed = sum(1 for _, r in results if r is None)
     added = sum(len(r.missing) for _, r in results if r)
     print("标注：" + "、".join(f"{c}×{v}" for c, v in counts.items()) + f"；Claude 补框 {added} 个；没核对 {failed} 帧")
@@ -1066,7 +1077,10 @@ def _perception_label(cfg: Config, args) -> None:
 
     from .vision.bubbles import Rect, roi_rect
     from .vision.ocr import make_ocr
-    from .vision.weaklabel import data_yaml, hard_images, merge_labels, ring_labels, split_of, weak_labels, with_self, yolo_line
+    from .vision.weaklabel import (
+        CLASH_REASON, data_yaml, dataset_clash, hard_images, label_items, merge_labels, ring_labels, split_of, with_self,
+        write_sample, yolo_line,
+    )
 
     if args.objects:
         return _perception_label_objects(cfg, args)
@@ -1081,11 +1095,8 @@ def _perception_label(cfg: Config, args) -> None:
         items = [(p, f"{root.name}_{p.stem}") for p in sorted(root.glob("[0-9][0-9][0-9]_*.jpg"))]
     elif args.from_runs:  # runs/*/hard/*.jpg：运行时收集的难例，文件名前加运行目录名
         items = hard_images(root)
-    else:
-        items = []
-        for path in _images(args.source):
-            rel = path.relative_to(root) if root.is_dir() else Path(path.name)
-            items.append((path, "_".join(rel.with_suffix("").parts)))
+    else:  # 一段录像 → "<录像>_<文件名>"，不然不同录像的同名帧会互相覆盖
+        items = label_items(root, _images(args.source))
     if args.assist:
         return _perception_label_assist(cfg, args, items)
     detector = None
@@ -1119,8 +1130,12 @@ def _perception_label(cfg: Config, args) -> None:
     counts = {c: 0 for c in classes}
     print(f"{len(items)} 张图 → {out}；好友名单：{'、'.join(names) or '（空，只能配 --all-text）'}"
           + (f"；模型预标注：{args.model}" if detector is not None else ""))
+    skipped: list[str] = []
     for n, (path, stem) in enumerate(items, 1):
         frame = imread(path)
+        if dataset_clash(out, stem, frame) is not None:  # 先查一遍，省得白跑 OCR
+            skipped.append(stem)
+            continue
         height, width = frame.shape[:2]
         boxes = _weak_boxes(cfg, args, frame, ocr, icons, names)
         weak = len(boxes)
@@ -1130,12 +1145,10 @@ def _perception_label(cfg: Config, args) -> None:
             boxes = with_self(boxes, selves[stem])
         if detector is not None and icons is not None:  # 模型预标注出了人：顺带补他们头顶的圆圈
             boxes += [("social_ring", r) for r in ring_labels(frame, boxes, icons)]
-        split = split_of(stem, args.val)
-        (out / "images" / split).mkdir(parents=True, exist_ok=True)
-        (out / "labels" / split).mkdir(parents=True, exist_ok=True)
-        imwrite(out / "images" / split / f"{stem}.jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
         lines = [yolo_line(index[c], box, width, height) for c, box in boxes if c in index]
-        (out / "labels" / split / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        if write_sample(out, split_of(stem, args.val), stem, frame, lines) is not None:
+            skipped.append(stem)
+            continue
         for c, _ in boxes:
             counts[c] = counts.get(c, 0) + 1
         if args.preview:
@@ -1148,6 +1161,7 @@ def _perception_label(cfg: Config, args) -> None:
         if n % 20 == 0:
             print(f"  {n}/{len(items)}")
     (out / "data.yaml").write_text(data_yaml(out, classes), encoding="utf-8")
+    _print_skipped(skipped, CLASH_REASON)
     print("自动标出：" + "、".join(f"{c}×{v}" for c, v in counts.items()))
     print(f"数据集配置：{out / 'data.yaml'}")
     print("下一步：用 X-AnyLabeling 打开 images/ 导入 YOLO 标注，给**每一张**补上 player（其他玩家）、player_unlit（没点火的黑影）"
