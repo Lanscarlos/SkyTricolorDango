@@ -1462,3 +1462,21 @@ def test_notice_off_when_disabled(clock):
     b.news("天黑了")
     b.step()
     assert notices(b.events) == []
+
+
+def test_fallback_reply_is_not_proactive(clock):
+    # 评审 #1：大脑离线时的备用回复是接话，不过主动开口的护栏、不占主动额度
+    from skydango.chat.responder import Reply
+
+    class Responder:
+        def reply(self, batch):
+            return Reply("在呢")
+
+    b, env, reader = pro_body(clock, near=(), live=True, fallback=Responder())
+    b.brain_offline = lambda now: True
+    reader.batches = [[msg("有人吗", speaker="路人")]]
+    b.step()
+    clock.advance(2)
+    b.step()
+    assert "在呢" in b.said[-1]
+    assert [s.proactive for s in b.spoken] == [False]

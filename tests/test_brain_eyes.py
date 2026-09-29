@@ -187,3 +187,20 @@ def test_news_callback_errors_are_swallowed(clock):
     e = Eyes(BrainConfig(), d, frame, lambda: {}, lambda: False, clock=clock, proactive=ProactiveConfig(), on_news=boom)
     e.tick(clock())
     assert e.tick(clock() + 200) is True and e.latest[0].startswith("描述2")
+
+
+def test_parse_news_nothing_variants():
+    # 评审 #2：“无 + 补充”这类写法都当没有
+    for text in ("无明显变化", "无（和上次差不多）", "没有明显变化。", "无，画面和上次基本一样", "和上次差不多，没什么变化", "none", "暂无"):
+        assert parse_news("新鲜事：" + text) == "", text
+
+
+def test_parse_news_numbered_and_headings():
+    # 评审 #5：编号、标题、括号说明都认得；后面不带符号的“名字：…”条目不丢
+    assert parse_news("5. 新鲜事：天黑了") == "天黑了"
+    assert parse_news("**5. 新鲜事**：天黑了") == "天黑了"
+    assert parse_news("### 新鲜事\n- 天黑了") == "天黑了"
+    assert parse_news("新鲜事（和上次比）：下雨了") == "下雨了"
+    assert parse_news("新鲜事：\n小明：换了斗篷\n阿花：坐下弹琴了") == "小明：换了斗篷；阿花：坐下弹琴了"
+    assert parse_news("新鲜事：天黑了\n\n画面状态：正常") == "天黑了"
+    assert parse_news("新鲜事：天黑了\n画面状态：正常") == "天黑了"  # 下一项（已知的标题）到此为止

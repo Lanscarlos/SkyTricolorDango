@@ -92,6 +92,7 @@ BRAIN_RULES = """
 """.strip()
 
 QUIET_RULE = "没人理你的时候别自言自语。"
+NO_NEW_TOPIC = "对方没问就别硬找话题。"  # 和“安静时偶尔抛个话头”矛盾：主动开口时换掉
 PROACTIVE_POINTER = "要不要主动开口，看下面“主动开口”一节。"
 PROACTIVE_RULES = """## 主动开口
 - 状态里的“场合”告诉你现在是什么场合：
@@ -113,6 +114,7 @@ def static_prompt(reply: ReplyConfig, proactive: bool = True) -> str:
     """proactive：看场合主动开口（[proactive] enabled）；关掉就是原来的“别自言自语”。"""
     rules = BRAIN_RULES.format(max_chars=reply.max_chars)
     if proactive:
+        rules = rules.replace(NO_NEW_TOPIC, "接话时别硬转话题。", 1)
         rules = rules.replace(QUIET_RULE, PROACTIVE_POINTER, 1).replace("## 身份", PROACTIVE_RULES + "\n\n## 身份", 1)
     return rules
 

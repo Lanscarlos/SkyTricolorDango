@@ -38,10 +38,12 @@ NEWS_ITEM = """新鲜事：和上次比，有没有值得跟朋友提一句的�
   不值得：镜头角度变了、人挪了几步、陌生人来来去去"""
 LOOK_REQUEST_NEWS = LOOK_REQUEST.replace("按这四项写", "按这五项写") + "\n" + NEWS_ITEM
 NEWS_MAX = 80
-_NEWS_HEAD = re.compile(r"^[\s\-•*]*新鲜事[\s*]*[：:][\s*]*(.*)$")
+_PREFIX = r"^[\s\-•*#]*(?:\d+[.、)）][\s*]*)?"  # 列表符号、标题井号、编号（“5. ”）
+_NEWS_HEAD = re.compile(_PREFIX + r"新鲜事[\s*]*(?:[（(][^）)]*[）)])?[\s*]*(?:[：:][\s*]*(.*)|$)")
 _BULLET = re.compile(r"^\s*(?:[-•*]|\d+[.、)）])\s*")
-_HEADER = re.compile(r"^[\s\-•*]*[^\s：:]{2,8}[\s*]*[：:]")  # 下一项“xx：”开头：新鲜事到此为止
-_NOTHING = {"", "无", "没有", "暂无", "没有新鲜事"}
+_NEXT_ITEM = re.compile(_PREFIX + r"(?:地点和环境|好友|陌生人|画面状态)[\s*]*[：:]")  # 请求里的别的项：新鲜事到此为止
+_NOTHING = re.compile(r"^(?:无|没有|暂无|none)(?:$|[，,。.；;（(、\s]|明显|变化|什么|新鲜)", re.IGNORECASE)
+_NOTHING_WORDS = ("没什么变化", "没啥变化", "没有变化", "无变化", "没有明显", "无明显", "和上次差不多", "跟上次差不多", "和上次基本一样")
 
 
 def parse_news(text: str) -> str:
@@ -51,14 +53,20 @@ def parse_news(text: str) -> str:
         m = _NEWS_HEAD.match(raw.strip())
         if m is None:
             continue
-        items = [m.group(1)]
+        items = [m.group(1) or ""]
         for more in lines[i + 1 :]:
-            if not more.strip() or _HEADER.match(more) and not _BULLET.match(more):
+            if not more.strip():
+                if any(p.strip() for p in items):
+                    break
+                continue  # 标题下面空一行再列条目
+            if _NEXT_ITEM.match(more):
                 break
             items.append(_BULLET.sub("", more))
         parts = [p.strip().strip("*").strip().rstrip("。.").strip() for p in items]
         news = "；".join(p for p in parts if p)
-        return "" if news in _NOTHING else news[:NEWS_MAX]
+        if not news or _NOTHING.match(news) or any(w in news for w in _NOTHING_WORDS):
+            return ""
+        return news[:NEWS_MAX]
     return ""
 
 

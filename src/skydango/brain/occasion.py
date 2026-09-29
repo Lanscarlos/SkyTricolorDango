@@ -116,13 +116,11 @@ def assess(
     recent = len(in_window)
     recent_replied = sum(1 for _, (st, _) in in_window if st in ("called", "replied"))
 
-    tail = states[-cfg.cold_after :] if cfg.cold_after > 0 else []
-    cold = (
-        cfg.cold_after > 0
-        and len(tail) == cfg.cold_after
-        and all(st == "none" for st, _ in tail)
-        and not any(t > last.t and is_friend(who) for t, who, _ in chat)
-    )
+    # 冷场：最后一次有好友说话之后，连着 cold_after 句主动的话都没人接（好友一开口就重新计数）
+    heard_at = max((t for t, who, _ in chat if is_friend(who)), default=float("-inf"))
+    since = [st for s, (st, _) in zip(mine, states) if s.t > heard_at]
+    tail = since[-cfg.cold_after :] if cfg.cold_after > 0 else []
+    cold = cfg.cold_after > 0 and len(tail) == cfg.cold_after and all(st == "none" for st in tail)
     limit = cfg.quota_busy if level == "busy" else cfg.quota_quiet
     left = 0 if level == "alone" or cold else max(0, limit - recent)
 
@@ -132,7 +130,8 @@ def assess(
     elif cold:
         blocked = f"连着 {cfg.cold_after} 句主动的话都没人接，等有好友说话再主动开口"
     elif recent >= limit:
-        wait = math.ceil(in_window[0][0].t + cfg.quota_window - now) if in_window else 0
+        # 要等到窗口里只剩 limit - 1 句（档位变低时不止最早那一句）
+        wait = math.ceil(in_window[recent - limit][0].t + cfg.quota_window - now) if in_window else 0
         blocked = f"最近 {cfg.quota_window / 60:g} 分钟已经主动说了 {recent} 句，{wait} 秒后才能再主动开口"
     elif last is not None and now - last.t < cfg.min_gap:
         blocked = f"刚主动说过，{math.ceil(last.t + cfg.min_gap - now)} 秒后才能再主动开口"

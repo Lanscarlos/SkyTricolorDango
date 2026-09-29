@@ -710,15 +710,15 @@ class Body:
                 return
             self.sleep(self.cfg.vision.poll_interval)
 
-    def say(self, text: str, live: bool = False) -> str:
-        """live = 手动控制：dry-run 下也真的发（护栏照旧）。"""
+    def say(self, text: str, live: bool = False, reply: bool = False) -> str:
+        """live = 手动控制：dry-run 下也真的发（护栏照旧）。reply = 明确是接话（大脑离线时的备用回复），不算主动开口。"""
         now = self.clock()
         body = clean_reply(text, self.cfg.reply.max_chars)  # 含“不能声称自己是真人”的硬过滤
         if body is None:
             raise ToolError("这句没发：是空的、<skip>，或者说了自己是真人（不能这么说）。换个说法")
         if not self.limiter.allow(now):
             raise ToolError("说得太快了，等几秒再说")
-        proactive = self.cfg.proactive.enabled and not live and not self.brain_busy()
+        proactive = self.cfg.proactive.enabled and not live and not reply and not self.brain_busy()
         if proactive:
             blocked = self.occasion().blocked
             if blocked:
@@ -1030,7 +1030,7 @@ class Body:
         if reply is None or reply.text is None:
             return
         try:
-            self.say(reply.text)
+            self.say(reply.text, reply=True)
         except ToolError as exc:
             log.warning("备用回复没发出去：%s", exc)
             return

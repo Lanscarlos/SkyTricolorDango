@@ -88,3 +88,17 @@ def test_line():
     assert "上次主动开口 20 秒前「好无聊」，还在等人接" in occ(spoken=[said(20)]).line(NOW)
     assert "，没人接" in occ(spoken=[said(200)]).line(NOW)
     assert "，阿花叫了你" in occ(spoken=[said(200)], chat=[line(150, "阿花", "团子？")]).line(NOW)
+
+
+def test_cold_counts_only_after_friend_spoke():
+    # 评审 #3：好友说话后重新计数，“连续 3 句”不把解冻前的算进去
+    cfg = ProactiveConfig(quota_quiet=10)
+    o = occ(spoken=[said(900), said(750), said(600), said(200)], chat=[line(400, "阿花")], cfg=cfg)
+    assert not o.blocked.startswith("连着")
+
+
+def test_quota_wait_when_level_drops():
+    # 评审 #4：热闹时说了 3 句、现在安静（上限 2）：要等到只剩 1 句在窗口里
+    o = occ(spoken=[said(500), said(400), said(300)], chat=[line(450, "阿花")])  # 中间有人接，不算冷场
+    assert o.level == "quiet"
+    assert o.blocked == "最近 10 分钟已经主动说了 3 句，200 秒后才能再主动开口"

@@ -108,3 +108,9 @@ def test_proactive_off_keeps_old_rules():
     assert "没人理你的时候别自言自语" in text and "## 主动开口" not in text
     full = brain_prompt(ReplyConfig(), None, proactive=False)
     assert "没人理你的时候别自言自语" in full and "## 主动开口" not in full
+
+
+def test_proactive_rules_drop_contradiction():
+    # 评审 #7：“对方没问就别硬找话题”和“安静时偶尔抛个话头”矛盾
+    assert "对方没问就别硬找话题" not in static_prompt(ReplyConfig())
+    assert "对方没问就别硬找话题" in static_prompt(ReplyConfig(), proactive=False)
