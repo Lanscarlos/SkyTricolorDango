@@ -369,3 +369,15 @@ def test_new_row_is_confirmed_on_next_frame_to_get_full_speaker():
 def test_split_speaker_falls_back_to_middle_dot():
     rows = parse_rows(panel(), [line(0, "嗯应该是正太·懒洋洋大王"), line(1, "哈·哈 - 卡洛")], self_min_value=150)
     assert [(r.speaker, r.text) for r in rows] == [("懒洋洋大王", "嗯应该是正太"), ("卡洛", "哈·哈")]
+
+
+def test_reader_settling_is_false_initially():
+    from skydango.chat.reader import ChatReader
+    from skydango.chat.tracker import SelfFilter
+    from skydango.config import ChatConfig, OcrConfig, VisionConfig
+    from conftest import FakeOcr
+
+    reader = ChatReader(FakeOcr([]), VisionConfig(mode="log"), OcrConfig(), ChatConfig(), SelfFilter(3.0, 0.8, ""))
+    assert reader.settling is False
+    reader._confirming = True
+    assert reader.settling is True

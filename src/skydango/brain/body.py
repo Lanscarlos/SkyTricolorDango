@@ -92,7 +92,7 @@ class Body:
         self.wall = wall
         self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
         self.brain_offline: Callable[[float], bool] = lambda now: False
-        self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在想（一轮还没结束）：聊天面板别因为安静关掉
+        self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在回聊天（取走了聊天的那一轮还没结束）：聊天面板别因为安静关掉
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
         self.said: list[str] = []  # 说过（含 dry-run）的话

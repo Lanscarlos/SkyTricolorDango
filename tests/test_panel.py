@@ -1,6 +1,7 @@
 import pytest
 from conftest import FakeDevice, scene
 
+from conftest import fake_panel
 from skydango.chat.panel import PanelManager
 from skydango.config import PanelConfig, VisionConfig
 
@@ -54,11 +55,12 @@ def test_start_opens_panel_in_always_mode():
 
 
 def test_borrow_closes_then_reopens_in_always_mode():
-    m, device = manager([True, False, True])  # 借前开着 → 还的时候关着 → 按了之后开了
+    device = FakeDevice([scene()])
+    m, state = fake_panel(device, open_=True)
     with m.borrow("camera") as was_open:
-        assert was_open is True and m.lent == "camera"
+        assert was_open is True and m.lent == "camera" and state.open is False
         assert device.calls == [("hw_key", 46)]
-    assert device.calls == [("hw_key", 46), ("hw_key", 46)] and m.lent is None
+    assert device.calls == [("hw_key", 46), ("hw_key", 46)] and m.lent is None and state.open is True
 
 
 def test_borrow_nested_restores_once():
@@ -78,11 +80,12 @@ def test_borrow_close_false_does_not_press_on_enter():  # social / friendtree：
 
 
 def test_borrow_restores_on_exception():
-    m, device = manager([True, False, True])
+    device = FakeDevice([scene()])
+    m, state = fake_panel(device, open_=True)
     with pytest.raises(RuntimeError):
         with m.borrow("camera"):
             raise RuntimeError("转镜头出错")
-    assert m.lent is None and device.calls == [("hw_key", 46), ("hw_key", 46)]
+    assert m.lent is None and device.calls == [("hw_key", 46), ("hw_key", 46)] and state.open is True
 
 
 def test_no_reopen_while_lent():
@@ -409,3 +412,127 @@ def test_before_speak_reopens_panel_when_chatting_but_closed():
     state.open = False  # 聊天中面板被关了（点了屏幕之类）
     m.before_speak(101.0)
     assert state.open is True and presses(dev) == 1
+
+
+# ---- 整分支评审的修复 ----
+class SlowPanel:
+    """按键后面板要过 lag 次截图才真的变（开 / 关的动画）。"""
+
+    def __init__(self, device, open_=False, lag=2):
+        self.open, self.target, self.countdown, self.lag = open_, open_, 0, lag
+        press = device.hw_key
+
+        def hw_key(code):
+            press(code)
+            if code == 46:
+                self.target, self.countdown = not self.target, self.lag
+
+        device.hw_key = hw_key
+
+    def visible(self):
+        if self.countdown > 0:
+            self.countdown -= 1
+        else:
+            self.open = self.target
+        return self.open
+
+
+def slow(open_=False, mode="auto"):
+    from conftest import panel_manager
+
+    device = FakeDevice([scene()])
+    panel = SlowPanel(device, open_)
+    m = panel_manager(device, panel.visible, mode)
+    m.start(0.0)
+    return m, device, panel
+
+
+def test_borrow_enter_failure_does_not_leave_panel_lent():  # I1
+    m, device = manager([True])
+
+    def boom(code):
+        raise RuntimeError("adb 失败")
+
+    device.hw_key = boom
+    with pytest.raises(RuntimeError):
+        with m.borrow("camera"):
+            pass
+    assert m.lent is None and m.should_be_open() is True
+
+
+def test_borrow_right_after_peek_press_closes_the_opening_panel():  # I2 场景 A
+    m, dev, panel = slow()
+    m.tick(30.0, [], visible=False)  # 按了 C，面板还在打开的动画里
+    with m.borrow("camera"):
+        assert panel.target is False  # 等面板开出来再关掉，转镜头时面板是关着的
+    assert presses(dev) == 2
+
+
+def test_borrow_right_after_close_does_not_reopen():  # I2 场景 B
+    m, dev, panel = slow(open_=True)
+    m.tick(1.0, ["小明：在吗"], visible=True)
+    m.tick(46.0, [], visible=True)  # 安静 45 秒：按 C 关，关的动画中
+    with m.borrow("camera") as was_open:
+        assert was_open is False
+    assert presses(dev) == 1 and panel.target is False
+
+
+def test_before_speak_right_after_peek_press_does_not_toggle_back():  # I2 场景 C
+    m, dev, panel = slow()
+    m.tick(30.0, [], visible=False)
+    m.before_speak(30.0)
+    assert presses(dev) == 1 and panel.target is True and m.state == "chatting"
+
+
+def settling_auto():
+    m, dev, state = auto()
+    m.reader.settling = True  # ChatReader 看到新行，正在等下一帧确认
+    return m, dev, state
+
+
+def test_peek_does_not_close_while_reader_settling():  # I3
+    m, dev, _ = settling_auto()
+    peek(m, 30.0)
+    m.tick(30.6, [], visible=True)
+    assert m.state == "peek" and presses(dev) == 1
+    m.reader.settling = False
+    m.tick(30.8, [], visible=True)
+    assert m.state == "idle"
+
+
+def test_chatting_does_not_close_while_reader_settling():  # I3
+    m, dev, state = settling_auto()
+    chatting(m, state, 100.0)
+    m.tick(145.0, [], visible=True)
+    assert m.state == "chatting"
+
+
+def test_bubble_does_not_close_while_reader_settling():  # I3
+    m, dev, _ = settling_auto()
+    bubble_open(m, 10.0)
+    m.tick(14.0, [], visible=True)
+    assert m.state == "bubble"
+
+
+def test_always_restored_when_panel_was_closed_before_borrow():  # M1
+    m, _ = manager([False])
+    with m.borrow("camera", close=False):
+        pass
+    assert m.restored() is True  # 和原来一样：借之前就关着，不算"没恢复"
+
+
+def test_borrow_does_not_press_while_typing():  # M4
+    m, device = manager([True])
+    device.shown = True
+    with m.borrow("camera") as was_open:
+        assert was_open is True
+    assert device.calls == []
+
+
+def test_peek_close_does_not_press_while_typing():  # M4
+    m, dev, _ = auto()
+    m.tick(30.0, [], visible=False)
+    dev.shown = True  # 看一眼时用户按 Enter 开始打字
+    m.tick(30.2, [], visible=True)
+    m.tick(30.4, [], visible=True)
+    assert presses(dev) == 1 and m.state == "chatting"

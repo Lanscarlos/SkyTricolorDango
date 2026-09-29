@@ -241,18 +241,20 @@ def test_unexpected_error_still_closes_the_turn(clock, tmp_path):
     assert trace.calls[-1][0] == "fail" and "写不了" in trace.calls[-1][1]
 
 
-def test_in_turn_only_during_session_send(clock):
+def test_chat_turn_only_while_answering_chat(clock):  # I4：只有取走了聊天的那一轮才算"在回话"
     seen = []
 
     class Watching(FakeSession):
         def send(self, text):
-            seen.append(brain.in_turn)
+            seen.append(brain.chat_turn)
             return super().send(text)
 
-    brain, _, _, _ = make(clock, Watching(ok(), RuntimeError("进程起不来")))
-    assert brain.in_turn is False
-    brain.wake(clock(), "heartbeat")
-    assert seen == [True] and brain.in_turn is False
+    brain, events, _, _ = make(clock, Watching(ok(), ok(), RuntimeError("进程起不来")))
+    assert brain.chat_turn is False
+    brain.wake(clock(), "heartbeat")  # 心跳：不算
+    events.put("arrive", "小明 来到身边")
+    brain.wake(clock(), "events")  # 只有来人：不算
+    events.put("chat", "聊天  小明：「在吗」")
     with pytest.raises(RuntimeError):
-        brain.wake(clock(), "heartbeat")
-    assert brain.in_turn is False
+        brain.wake(clock(), "events")
+    assert seen == [False, False, True] and brain.chat_turn is False

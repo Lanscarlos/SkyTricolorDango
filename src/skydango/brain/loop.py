@@ -66,7 +66,7 @@ class Brain:
         self.failures = 0
         self.failing_since: float | None = None
         self.backoff_until = float("-inf")
-        self.in_turn = False  # 一轮还没结束（身体据此别把聊天面板当成安静关掉）
+        self.chat_turn = False  # 正在回聊天（这一轮取走了聊天 / 主人命令，还没结束）：身体据此别把聊天面板当成安静关掉
 
     # ---- 什么时候醒 ----
     def offline(self, now: float) -> bool:
@@ -123,7 +123,7 @@ class Brain:
         self.toolbox.begin_turn()
         self._trace("begin", reason, text)
         start = self.clock()
-        self.in_turn = True
+        self.chat_turn = any(e.kind in ("chat", "owner_command") for e in events)
         try:
             result = self.session.send(text)
         except ClaudeError as exc:
@@ -134,7 +134,7 @@ class Brain:
             self._trace("fail", f"{type(exc).__name__}: {exc}", self.clock() - start)
             raise
         finally:
-            self.in_turn = False
+            self.chat_turn = False
         self._trace("finish", result, self.clock() - start)
         self._ok()
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1

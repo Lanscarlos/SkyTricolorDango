@@ -53,6 +53,9 @@ class PanelManager:
         self._pending: str | None = None  # 闲着时等着看一眼的原因（冷却中先记着）
         self._missing_since: float | None = None  # 聊天中：面板从什么时候开始不见了
         self._bubble_start = 0.0  # 等气泡：什么时候开始等
+        self._pressed_at = float("-inf")  # 上次按开面板的键（self.clock()）：之后 open_timeout 秒内面板可能还在动画里
+        self._expect_open = True  # 上次按键后面板应该是开还是关
+        self._returned_was_open = True  # 最近一次归还的借出：借之前面板开没开
         self._last_bubble = 0.0  # 等气泡：上次看到气泡
 
     @property
@@ -78,7 +81,7 @@ class PanelManager:
             log.warning("输入框开着，没法用按键打开聊天记录面板；请手动打开（光遇里按 C）")
             return False
         log.info("聊天记录面板没打开，按键 %d 打开", key)
-        self.device.hw_key(key)
+        self._press(True)
         self.sleep(1.0)
         if self.reader.panel_visible(self.device.screenshot()):
             return True
@@ -120,8 +123,11 @@ class PanelManager:
         if self.state != "chatting":
             self._pending = None
             self._set("chatting", "团子要说话")
-        if self.lent is not None or self.visible_now() or self.device.ime_shown():
-            return  # 借出中：归还时按聊天中重开；输入框开着按键会打出字母
+        if self.lent is not None:
+            return  # 借出中：归还时按聊天中重开
+        self._settle()
+        if self.visible_now() or self.device.ime_shown():
+            return  # 输入框开着按键会打出字母
         if not self._open_and_wait():
             log.warning("说话前没能打开聊天记录面板，照样说")
 
@@ -153,12 +159,19 @@ class PanelManager:
 
     def shutdown(self) -> None:
         """退出：面板恢复成开着（和用户接手时的习惯一致）。"""
-        if self.auto and not self.visible_now():
-            self.ensure_open()
+        if self.auto:
+            self._settle()
+            if not self.visible_now():
+                self.ensure_open()
 
     def restored(self) -> bool:
         """面板回到了该有的状态（不该开时关着也算）。"""
-        return not self.active or not self.should_be_open() or self.visible_now()
+        if not self.active or not self.should_be_open():
+            return True
+        if not self.auto and not self._returned_was_open:  # 常开模式：借之前就关着，和原来一样不算"没恢复"
+            return True
+        self._settle()
+        return self.visible_now()
 
     def tick(self, now: float, fresh: list, visible: bool, blackout: bool = False) -> None:
         """主循环每圈调一次（fresh = 这一圈读到的新消息，visible = 这一帧面板开没开）。不 sleep 太久。"""
@@ -207,7 +220,7 @@ class PanelManager:
             self._last_activity = now
             self._set("chatting", "输入框开着")
             return
-        self.device.hw_key(self.vision.log_open_key)
+        self._press(True)
         self._opened_at, self._seen = now, 0
         if reason == "bubble":  # 对方还在打字：开着等他发出来
             self._bubble_start = self._last_bubble = now
@@ -218,7 +231,7 @@ class PanelManager:
     def _tick_peek(self, now: float, visible: bool) -> None:
         if visible:
             self._seen += 1
-            if self._seen >= 2:  # 第一帧面板可能还没画完
+            if self._seen >= 2 and not self._settling():  # 第一帧面板可能还没画完；读聊天的还在等确认也先别关
                 self._close(now, "看一眼：没有新消息")
                 self._last_peek = now
         elif now - self._opened_at >= self.cfg.open_timeout:
@@ -239,6 +252,8 @@ class PanelManager:
             why = f"等了 {self.cfg.bubble_wait:.0f} 秒没等到消息"
         else:
             return
+        if self._settling():
+            return
         self._close(now, why)
         self._last_peek = now
 
@@ -251,7 +266,7 @@ class PanelManager:
               and now - self._last_reopen >= self.vision.log_reopen_cooldown):
             self._last_reopen = now
             self.ensure_open()
-        if now - self._last_activity < self.cfg.quiet_close:
+        if now - self._last_activity < self.cfg.quiet_close or self._settling():
             return
         if self.device.ime_shown():
             self._last_activity = now
@@ -264,9 +279,30 @@ class PanelManager:
         self._last_read, self._missing_since = now, None
 
     def _close(self, now: float, why: str) -> None:
-        self.device.hw_key(self.vision.log_open_key)
+        if self.device.ime_shown():  # 按键会打出字母；输入框开着说明在说话，就当聊天中
+            self._last_activity = now
+            self._set("chatting", "输入框开着")
+            return
+        self._press(False)
         self._closed_at = now
         self._set("idle", why)
+
+    def _settling(self) -> bool:
+        """读聊天的看到了新行、在等下一帧确认（ChatReader.settling）：这时关面板会让消息拖到下一次才读到。"""
+        return bool(getattr(self.reader, "settling", False))
+
+    def _press(self, expect_open: bool) -> None:
+        self.device.hw_key(self.vision.log_open_key)
+        self._pressed_at, self._expect_open = self.clock(), expect_open
+
+    def _settle(self) -> None:
+        """刚按过键（open_timeout 秒内）：面板可能还在开 / 关的动画里，截图看到的不准 —— 等它变成按键后该有的样子。"""
+        if self.clock() - self._pressed_at >= self.cfg.open_timeout:
+            return
+        for _ in range(max(1, math.ceil(self.cfg.open_timeout / POLL))):
+            if self.visible_now() == self._expect_open:
+                return
+            self.sleep(POLL)
 
     def _maybe_reopen(self, now: float) -> None:
         since = self.reader.panel_closed_since
@@ -281,35 +317,40 @@ class PanelManager:
     @contextmanager
     def borrow(self, who: str, close: bool = True) -> Iterator[bool]:
         """借走面板（要它关着）：close = 面板开着就按键关掉；False = 调用方自己会关（点屏幕会顺带关面板）。
-        yield 借之前面板开没开（嵌套借时是 False）。"""
+        yield 借之前面板开没开（嵌套借时是 False）。进门按键出错也会归还（不然 lent 一直留着，面板再也不重开）。"""
         was_open = False
         outer = self._depth == 0
-        if outer and self.active:
-            if self.state in ("peek", "bubble"):  # 看一眼 / 等气泡被打断：归还后补上
-                self._pending = "bubble" if self.state == "bubble" else (self._pending or "补看")
-                self.state = "idle"
-            was_open = self.visible_now()
-            self.lent = who
-            log.info("面板借给 %s", who)
-            if close and was_open:
-                self.device.hw_key(self.vision.log_open_key)
-                self.sleep(CLOSE_DELAY)
-        elif outer:
-            self.lent = who
         self._depth += 1
         try:
+            if outer:
+                self.lent = who
+                if self.active:
+                    log.info("面板借给 %s", who)
+                    if self.state in ("peek", "bubble"):  # 看一眼 / 等气泡被打断：归还后补上
+                        self._pending = "bubble" if self.state == "bubble" else (self._pending or "补看")
+                        self.state = "idle"
+                    self._settle()
+                    was_open = self.visible_now()
+                    if close and was_open and not self.device.ime_shown():  # 输入框开着按键会打出字母
+                        self._press(False)
+                        self.sleep(CLOSE_DELAY)
             yield was_open
         finally:
             self._depth -= 1
             if outer:
                 self.lent = None
-                self._give_back(was_open)
+                self._returned_was_open = was_open
+                try:
+                    self._give_back(was_open)
+                except Exception:  # 别盖掉借的一方的异常；重开交给 tick
+                    log.exception("归还聊天面板时出错，主循环稍后会再试")
 
     def _give_back(self, was_open: bool) -> None:
         if not self.active or not self.should_be_open():
             return
         if self.cfg.mode == "always" and not was_open:  # 借之前就关着：和原来一样不管，交给 tick 过一会儿重开
             return
+        self._settle()
         if self.visible_now():
             return
         if self.device.ime_shown():  # 按键会变成打字：交给 tick 以后重开
@@ -319,7 +360,7 @@ class PanelManager:
 
     def _open_and_wait(self) -> bool:
         """按一下开面板的键，等它出现（最多 open_timeout 秒）。"""
-        self.device.hw_key(self.vision.log_open_key)
+        self._press(True)
         for _ in range(max(1, math.ceil(self.cfg.open_timeout / POLL))):
             self.sleep(POLL)
             if self.visible_now():

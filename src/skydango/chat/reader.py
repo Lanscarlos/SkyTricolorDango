@@ -86,6 +86,11 @@ class ChatReader:
             return area, False
         return Rect(area.x, area.y, area.w, top - 4 - area.y), True
 
+    @property
+    def settling(self) -> bool:
+        """看到了新行、在等下一帧确认：这时关面板，消息要拖到下次打开才报（chat/panel.py 据此晚一点关）。"""
+        return self._confirming
+
     def panel_visible(self, frame: np.ndarray) -> bool:
         """聊天记录面板开着没：看面板底部的“聊天……”输入框（它是面板的一部分，面板关了就没有）。
 

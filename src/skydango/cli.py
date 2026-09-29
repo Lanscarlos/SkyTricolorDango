@@ -1317,7 +1317,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
     body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
-    body.brain_busy = lambda: brain.in_turn
+    body.brain_busy = lambda: brain.chat_turn
     brain_thread.start()
     eyes_thread.start()
     try:
