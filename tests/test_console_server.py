@@ -60,6 +60,15 @@ class Upstream(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         path, _, query = self.path.partition("?")
+        if path == "/partial":  # 子进程在传响应体的半路上被结束
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            self.wfile.write(b'{"half')
+            self.wfile.flush()
+            self.close_connection = True
+            return
         self._reply({"path": path, "query": query})
 
     def do_POST(self):  # noqa: N802
@@ -86,12 +95,20 @@ def upstream():
     server.server_close()
 
 
-def make_server(tmp_path, upstream, secrets="", checks=None):
+def free_port():
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def make_server(tmp_path, upstream, secrets="", checks=None, child_port=None):
     if secrets:
         (tmp_path / "secrets.toml").write_text(secrets, encoding="utf-8")
     store = SettingsStore(tmp_path / "config.toml", environ={})
     runner = FakeRunner()
-    srv = ConsoleServer(tmp_path / "config.toml", store, runner, port=0, child_port=upstream.server_address[1],
+    srv = ConsoleServer(tmp_path / "config.toml", store, runner, port=0, child_port=child_port or upstream.server_address[1],
                         device_checks=checks or (lambda cfg, make: []), make_device=lambda cfg: None,
                         find_spec=lambda name: object())
     srv.url = srv.start()
@@ -108,7 +125,7 @@ def srv(tmp_path, upstream):
 
 @pytest.fixture
 def srv_with_token(tmp_path, upstream):
-    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n')
+    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n', child_port=free_port())
     yield s
     s.stop()
 
@@ -267,3 +284,18 @@ def test_page_script_parses(tmp_path):
     path = tmp_path / "console.js"
     path.write_text(script, encoding="utf-8")
     assert subprocess.run([node, "--check", str(path)]).returncode == 0
+
+
+def test_start_refused_while_orphan_holds_port(tmp_path, upstream):  # 终审 Important 3：别起第二个团子
+    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n')
+    try:
+        status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
+        assert status == 409 and "上次留下的团子" in res["problems"][0] and s.fake_runner.started == []
+        assert request(s.url + "api/state")[1]["orphan"] is True
+    finally:
+        s.stop()
+
+
+def test_live_proxy_body_cut_off_is_503(srv):  # Review Focus 4：子进程在半路退出
+    srv.fake_runner.state = "running"
+    assert request(srv.url + "live/partial") == (503, {"ok": False, "text": "团子没在运行"})

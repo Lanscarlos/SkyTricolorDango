@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 
-from skydango.console.watchdog import pid_alive, watch_parent
+from skydango.console.watchdog import once, pid_alive, watch_parent
 
 
 def test_interrupts_once_when_parent_gone():
@@ -30,3 +30,11 @@ def test_pid_alive_for_self_and_dead_child():
     p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
     assert not pid_alive(p.pid)
+
+
+def test_once_only_interrupts_once():  # 终审 Important 2：收尾中再来一次中断会打断收尾
+    hits = []
+    stop = once(lambda: hits.append(1))
+    stop()
+    stop()
+    assert hits == [1]

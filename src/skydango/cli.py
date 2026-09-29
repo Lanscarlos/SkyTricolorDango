@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import Config, load_all
+from .config import Config, Loaded, load_all, load_config
 from .imageio import imread, imwrite
 from .runlog import RunDir
 
@@ -437,7 +437,7 @@ def _stop_scene(env) -> None:
         print(f"没认出的名字：{len(unknown.entries)} 个 → {unknown.folder}（汇总：perception unknown-names）")
 
 
-def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False):
+def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False, on_shutdown=None):
     """起可视化网页（后台线程），打印地址、打开浏览器。端口被占用时直接退出并提示换一个。
     brain：大脑模式，打开浏览器前先挂上大脑时间线（页面第一次请求 /brain 拿到 404 就不再请求了）。"""
     from .vision.viewer import Viewer
@@ -452,9 +452,14 @@ def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False):
     except OSError as exc:
         raise SystemExit(f"可视化网页起不来（{cfg.viewer.host}:{cfg.viewer.port}）：{exc}\n端口可能被占用了，"
                          "用 view --port 换一个，或改 config.toml 的 viewer.port") from exc
-    import _thread
+    if cfg.viewer.host in ("127.0.0.1", "localhost", "::1"):  # 局域网模式不收 /shutdown（和手动控制一样）
+        if on_shutdown is None:
+            import _thread
 
-    viewer.on_shutdown = _thread.interrupt_main  # POST /shutdown（管理面板点停止）= Ctrl+C，走同样的收尾
+            from .console.watchdog import once
+
+            on_shutdown = once(_thread.interrupt_main)
+        viewer.on_shutdown = on_shutdown  # POST /shutdown（管理面板点停止）= Ctrl+C，走同样的收尾
     where = "只有本机能看" if cfg.viewer.host in ("127.0.0.1", "localhost", "::1") else "同一局域网的人都能看！"
     print(f"可视化：{url}（{where}）")
     if open_browser:
@@ -1098,9 +1103,13 @@ def cmd_console(cfg: Config, args) -> None:
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
-        print("\n正在停止团子…")
-    finally:
+        print("\n正在停止团子…（再按一次 Ctrl+C 强制结束，轮盘可能换不回）")
+    try:
         runner.close()
+    except KeyboardInterrupt:
+        print("强制结束团子；用 python -m skydango emotes wheel 检查轮盘")
+        runner.kill()
+    finally:
         server.stop()
 
 
@@ -1111,12 +1120,13 @@ def cmd_run(cfg: Config, args) -> None:
         cfg.reply.dry_run = True
     if args.viewer_port is not None:  # 管理面板起的子进程：viewer 固定端口、只给本机
         cfg.viewer.port, cfg.viewer.host = args.viewer_port, "127.0.0.1"
+    import _thread
+
+    from .console import watchdog
+
+    request_exit = watchdog.once(_thread.interrupt_main)  # 看门狗和 /shutdown 共用：只中断一次，不打断收尾
     if args.parent_pid is not None:
-        import _thread
-
-        from .console import watchdog
-
-        watchdog.watch_parent(args.parent_pid, _thread.interrupt_main)
+        watchdog.watch_parent(args.parent_pid, request_exit)
     if args.echo:
         cfg.llm.provider = "echo"
     cfg.brain.enabled = not args.no_brain  # 默认接大脑；普通 Agent 只留作调试
@@ -1131,7 +1141,7 @@ def cmd_run(cfg: Config, args) -> None:
     viewer = None
     try:
         if args.view:
-            viewer = _viewer(cfg, open_browser=not args.no_browser, brain=cfg.brain.enabled)
+            viewer = _viewer(cfg, open_browser=not args.no_browser, brain=cfg.brain.enabled, on_shutdown=request_exit)
         if cfg.brain.enabled:
             _run_brain(cfg, run, args.no_emotes, args.duration, viewer)
         else:
@@ -1733,7 +1743,14 @@ def main(argv: list[str] | None = None) -> None:
         # 面板每次现读 secrets.toml、只注入它起的子进程：写进它自己的环境变量的话，页面上「清除」之后子进程还会继承旧 Key
         loaded = load_all(cfg_path, environ={} if args.func is cmd_console else os.environ)
     except ValueError as exc:
-        parser.error(str(exc))
+        if args.func is not cmd_console:
+            parser.error(str(exc))
+        # 面板要能打开才能在设置页上把坏掉的 console.toml / secrets.toml 指出来：先只用 config.toml
+        log.warning("%s；面板先只用 config.toml，设置页上会显示这个错误", exc)
+        try:
+            loaded = Loaded(load_config(cfg_path if cfg_path.exists() else None), [], [])
+        except ValueError as exc2:
+            parser.error(str(exc2))
     cfg = loaded.cfg
     if loaded.overridden:
         log.info("console.toml 覆盖了 %d 项：%s", len(loaded.overridden), "、".join(loaded.overridden))

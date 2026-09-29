@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import dataclasses
+import http.client
 import importlib.resources
 import importlib.util
 import json
@@ -26,7 +27,7 @@ from ..vision.viewer import is_local_host, post_guard
 from . import probes
 from .devicecheck import run_checks
 from .preflight import preflight
-from .runner import LaunchOptions, Runner, build_command, child_env, probe_status, send_shutdown
+from .runner import LOCAL, LaunchOptions, Runner, build_command, child_env, probe_status, send_shutdown
 from .settings import SettingsStore
 
 log = logging.getLogger(__name__)
@@ -100,6 +101,9 @@ class ConsoleServer:
         self.store.save({"console.brain": opts.brain, "console.live": opts.live, "console.emotes": opts.emotes,
                          "console.duration": opts.duration})  # 下次打开面板还是这次的选择
         problems = preflight(self.store, opts, self._busy(), self.find_spec)
+        if not self._busy() and probe_status(self.child_port):  # 上次留下的团子还占着端口：再起一个会有两个团子
+            self.orphan = True
+            problems.append(f"{self.child_port} 端口上有上次留下的团子，先点「让它退出」")
         try:
             secrets = read_secrets(console_paths(self.config_path)[1])
         except ValueError as exc:
@@ -166,11 +170,11 @@ class ConsoleServer:
         headers = {"Content-Type": "application/json", "X-Skydango": "1"} if method == "POST" else {}
         req = urllib.request.Request(url, data=body, headers=headers, method=method)  # Host 自动是 127.0.0.1:<child_port>
         try:
-            with urllib.request.urlopen(req, timeout=PROXY_TIMEOUT) as r:
+            with LOCAL.open(req, timeout=PROXY_TIMEOUT) as r:
                 return r.status, r.headers.get("Content-Type", "application/octet-stream"), r.read()
         except urllib.error.HTTPError as err:
             return err.code, err.headers.get("Content-Type", "text/plain"), err.read()
-        except (urllib.error.URLError, OSError):
+        except (urllib.error.URLError, OSError, http.client.HTTPException):  # 连不上、超时、响应体传到一半断了
             return not_running
 
     # ---- HTTP ----

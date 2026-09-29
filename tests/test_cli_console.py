@@ -23,6 +23,11 @@ def fake_console(monkeypatch, events):
 
         def close(self):
             events.append("runner.close")
+            if "impatient" in events:
+                raise KeyboardInterrupt  # 等收尾时又按了一次 Ctrl+C
+
+        def kill(self):
+            events.append("runner.kill")
 
     def interrupt(seconds):
         raise KeyboardInterrupt
@@ -65,3 +70,28 @@ def test_console_port_in_use_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit, match="console --port"):
         cli.main(["console", "--no-browser", "--port", "8760"])
+
+
+@pytest.mark.parametrize("name, text", [("console.toml", "[device\n"), ("console.toml", "[foo]\nbar = 1\n"), ("secrets.toml", "[env\n")])
+def test_console_starts_with_broken_overlay(tmp_path, monkeypatch, caplog, name, text):  # 终审 Important 4
+    (tmp_path / name).write_text(text, encoding="utf-8")
+    events = []
+    fake_console(monkeypatch, events)
+    monkeypatch.chdir(tmp_path)
+    cli.main(["console", "--no-browser"])
+    assert events[0] == "start" and name in caplog.text
+
+
+def test_broken_overlay_still_fails_other_commands(tmp_path, monkeypatch):
+    (tmp_path / "console.toml").write_text("[device\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        cli.main(["devices"])
+
+
+def test_second_ctrl_c_force_kills(tmp_path, monkeypatch):
+    events = ["impatient"]
+    fake_console(monkeypatch, events)
+    monkeypatch.chdir(tmp_path)
+    cli.main(["console", "--no-browser"])
+    assert events[-3:] == ["runner.close", "runner.kill", "server.stop"]

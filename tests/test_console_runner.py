@@ -13,8 +13,11 @@ from skydango.console.runner import (
     STARTING,
     LaunchOptions,
     Runner,
+    _popen_flags,
     build_command,
     child_env,
+    probe_status,
+    send_shutdown,
 )
 
 FAKE = Path(__file__).with_name("fake_child.py")
@@ -143,3 +146,31 @@ def test_close_blocks_until_stopped(tmp_path):
     wait_state(r, RUNNING)
     r.close()
     assert r.status()["state"] == EXITED
+
+
+def test_local_requests_ignore_proxy(tmp_path, monkeypatch):  # 终审 Important 1：开着 Clash 的机器
+    r = runner(tmp_path)
+    r.start(child(r, "ignore"), dict(os.environ), LaunchOptions())
+    wait_state(r, RUNNING)
+    try:
+        for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+            monkeypatch.setenv(name, "http://127.0.0.1:9")
+        for name in ("NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(name, raising=False)
+        assert probe_status(r.child_port) and send_shutdown(r.child_port)
+    finally:
+        r.stop()
+        wait_state(r, EXITED)
+
+
+def test_windows_child_gets_hidden_console_of_its_own():  # 终审：关面板窗口不能连带把团子直接结束
+    assert _popen_flags("win32") == {"creationflags": 0x00000200 | 0x08000000}
+    assert _popen_flags("linux") == {"start_new_session": True}
+
+
+def test_kill_forces_immediately(tmp_path):
+    r = runner(tmp_path, stop_timeout=30.0)
+    r.start(SLEEPER, dict(os.environ), LaunchOptions())
+    r.kill()
+    wait_state(r, EXITED, CRASHED, timeout=5)
+    assert r.status()["forced"] is True

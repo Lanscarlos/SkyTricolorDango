@@ -8,6 +8,20 @@ import threading
 from collections.abc import Callable
 
 
+def once(fn: Callable[[], None]) -> Callable[[], None]:
+    """只触发一次：/shutdown 和看门狗都要团子退出时，第二次中断会落在收尾（换回轮盘、写经过）的中途把它打断。"""
+    lock, done = threading.Lock(), []
+
+    def call() -> None:
+        with lock:
+            if done:
+                return
+            done.append(True)
+        fn()
+
+    return call
+
+
 def pid_alive(pid: int) -> bool:
     if sys.platform == "win32":
         import ctypes

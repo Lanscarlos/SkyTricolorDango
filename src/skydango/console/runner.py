@@ -53,9 +53,13 @@ def child_env(base: Mapping[str, str], secrets: Mapping[str, str]) -> dict[str, 
     return {**base, **secrets, "PYTHONIOENCODING": "utf-8"}
 
 
+# 本机请求不走代理：urllib 默认读 HTTP_PROXY 和 Windows 注册表里的代理（开着 Clash 时 127.0.0.1 也会被转走）
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def probe_status(port: int, timeout: float = 1.0) -> bool:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout=timeout) as r:
+        with LOCAL.open(f"http://127.0.0.1:{port}/status", timeout=timeout) as r:
             return r.status == 200
     except Exception:
         return False
@@ -67,7 +71,7 @@ def send_shutdown(port: int, timeout: float = 2.0) -> bool:
         headers={"Content-Type": "application/json", "X-Skydango": "1"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with LOCAL.open(req, timeout=timeout) as r:
             return r.status == 200
     except Exception:
         return False
@@ -82,6 +86,14 @@ def kill_tree(pid: int) -> None:
             os.killpg(os.getpgid(pid), signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def _popen_flags(platform: str) -> dict:
+    """Windows：新进程组（面板终端的 Ctrl+C 不直接落到团子身上）+ 团子自己一个不显示的控制台
+    （关掉面板的终端窗口不会连带把团子直接结束，而是由 --parent-pid 看门狗让它正常收尾）。"""
+    if platform == "win32":
+        return {"creationflags": 0x00000200 | 0x08000000}  # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+    return {"start_new_session": True}
 
 
 class Runner:
@@ -116,9 +128,9 @@ class Runner:
                 raise RuntimeError("团子已经在运行")
             self._lines.clear()
             self._count, self._exit_code, self._run_dir, self._forced, self._options = 0, None, None, False, options
-            kwargs: dict = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
             self._proc = subprocess.Popen(
-                cmd, cwd=self.cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs
+                cmd, cwd=self.cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                **_popen_flags(sys.platform),
             )
             self._started = time.monotonic()
             self._state = STARTING
@@ -180,6 +192,15 @@ class Runner:
             with self._lock:
                 self._forced = True
             self._kill(proc.pid)
+
+    def kill(self) -> None:
+        """马上强杀（面板退出时又按了一次 Ctrl+C）。"""
+        with self._lock:
+            proc = self._proc
+            if self._state not in (STARTING, RUNNING, STOPPING) or proc is None:
+                return
+            self._state, self._forced = STOPPING, True
+        self._kill(proc.pid)
 
     def close(self) -> None:
         """面板退出用：停掉并等到真的退出。"""

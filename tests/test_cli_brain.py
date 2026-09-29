@@ -207,7 +207,7 @@ def test_run_live_and_dry_run_conflict():
 
 def test_run_viewer_port_forces_local_and_no_browser(tmp_path, monkeypatch):
     seen = {}
-    monkeypatch.setattr(cli, "_viewer", lambda cfg, open_browser=True, brain=False: seen.update(
+    monkeypatch.setattr(cli, "_viewer", lambda cfg, open_browser=True, brain=False, on_shutdown=None: seen.update(
         host=cfg.viewer.host, port=cfg.viewer.port, open=open_browser))
     monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: None)
     monkeypatch.chdir(tmp_path)
@@ -221,14 +221,28 @@ def test_run_parent_pid_starts_watchdog(tmp_path, monkeypatch):
     monkeypatch.setattr("skydango.console.watchdog.watch_parent", lambda pid, interrupt, **k: seen.append((pid, interrupt)))
     monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: None)
     monkeypatch.chdir(tmp_path)
-    cli.main(["run", "--parent-pid", "4321"])
-    assert seen == [(4321, _thread.interrupt_main)]
+    monkeypatch.setattr(cli, "_viewer", lambda cfg, open_browser=True, brain=False, on_shutdown=None: seen.append(on_shutdown))
+    cli.main(["run", "--view", "--parent-pid", "4321"])
+    pid, watch_hook = seen[0]
+    assert pid == 4321 and seen[1] is watch_hook  # 看门狗和 /shutdown 共用同一个只触发一次的中断
 
 
 def test_viewer_hooks_shutdown_to_interrupt_main(monkeypatch):
     monkeypatch.setattr("webbrowser.open", lambda url: None)
+    calls = []
+    monkeypatch.setattr(_thread, "interrupt_main", lambda: calls.append(1))
     v = cli._viewer(Config(viewer=ViewerConfig(port=0)), open_browser=False)
     try:
-        assert v.on_shutdown is _thread.interrupt_main
+        v.on_shutdown()
+        v.on_shutdown()
+        assert calls == [1]
+    finally:
+        v.stop()
+
+
+def test_lan_viewer_has_no_shutdown(monkeypatch):  # 终审：局域网模式别人也能停团子
+    v = cli._viewer(Config(viewer=ViewerConfig(port=0, host="0.0.0.0")), open_browser=False)
+    try:
+        assert v.on_shutdown is None
     finally:
         v.stop()
