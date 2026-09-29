@@ -27,7 +27,7 @@ from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
 from ..vision.bubbles import Rect, roi_rect
 from ..vision.panels import UNKNOWN, Button, PanelReading, describe_reading
-from ..vision.people import describe_people
+from ..vision.people import describe_people, describe_things
 from .camera import MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
@@ -666,6 +666,9 @@ class Body:
         people = describe_people(self.env.people(now)) if hasattr(self.env, "people") else ""
         if people:
             parts.append("画面里：" + people)
+        things = describe_things(self.env.objects(now)) if hasattr(self.env, "objects") else ""
+        if things:
+            parts.append("画面里的东西：" + things)
         if self.holding:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:

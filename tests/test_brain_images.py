@@ -81,3 +81,23 @@ def test_scene_note_name_only_and_empty():
     env = OverlayEnv([{"x": 300, "y": 90, "w": 120, "h": 45, "kind": "name", "label": "番茄炒蛋盖饭"}])
     assert "- 番茄炒蛋盖饭：头顶名字在 (360, 90)，人在名字下方" in scene_note(env, 0.0, 1.0)
     assert scene_note(OverlayEnv([]), 0.0, 1.0) == "画面里没认出人（可能被挡住、离得远，或者没人）\n没列出的人都叫“陌生人”。"
+
+
+def test_scene_note_lists_objects():
+    from skydango.brain.images import scene_note
+    from skydango.vision.bubbles import Rect
+    from skydango.vision.people import Thing
+
+    class ThingEnv(OverlayEnv):
+        def __init__(self, boxes, things):
+            super().__init__(boxes)
+            self.things = things
+
+        def objects(self, now):
+            return list(self.things)
+
+    note = scene_note(ThingEnv([], [Thing(1, "bench", Rect(400, 500, 20, 120), "左边", "近")]), 0.0, 0.5)
+    assert "画面里认出的东西（坐标按这张图）：\n- 座位：(205, 280) 附近" in note
+    assert note.endswith("没列出的东西按你自己看到的说。")
+    empty = scene_note(ThingEnv([], []), 0.0, 0.5)
+    assert "认出的东西" not in empty and "没列出的东西" not in empty

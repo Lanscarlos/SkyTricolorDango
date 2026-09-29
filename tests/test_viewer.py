@@ -672,3 +672,23 @@ def test_shutdown_404_without_hook():
 def test_is_local_host():
     assert is_local_host("127.0.0.1:8761", 8761) and is_local_host("[::1]:8761", 8761) and is_local_host("localhost:8761", 8761)
     assert not is_local_host("evil.com:8761", 8761) and not is_local_host("127.0.0.1:80", 8761) and not is_local_host("", 8761)
+
+
+def test_describe_env_lists_things():
+    from skydango.vision.people import Thing
+
+    class ThingEnv:
+        requests = {}
+        things = []
+
+        def nearby(self, now):
+            return []
+
+        def objects(self, now):
+            return list(self.things)
+
+    env = ThingEnv()
+    assert describe_env(env, 0.0)["附近的东西"] == "没有"
+    env.things = [Thing(1, "bonfire", Rect(0, 0, 1, 1), "右边", "中")]
+    assert describe_env(env, 0.0)["附近的东西"] == "篝火（右边·中）"
+    assert 'bench:"#1d4ed8"' in PAGE and 'spirit:"先祖"' in PAGE

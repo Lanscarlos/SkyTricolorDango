@@ -7,6 +7,8 @@ import base64
 import cv2
 import numpy as np
 
+from ..vision.people import OBJECT_NAMES
+
 
 def encode_jpeg(img: np.ndarray, quality: int = 80) -> str:
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
@@ -90,6 +92,12 @@ def scene_note(env, now: float, scale: float) -> str:
         for b in sorted((b for b in boxes if b["kind"] == "name" and b["label"] not in friends), key=lambda b: b["x"])
     ]
     tail = "没列出的人都叫“陌生人”。"
-    if not rows:
-        return "画面里没认出人（可能被挡住、离得远，或者没人）\n" + tail
-    return "画面里认出的人（坐标按这张图）：\n" + "\n".join(rows) + "\n" + tail
+    text = ("画面里没认出人（可能被挡住、离得远，或者没人）\n" + tail) if not rows else (
+        "画面里认出的人（坐标按这张图）：\n" + "\n".join(rows) + "\n" + tail)
+    things = env.objects(now) if hasattr(env, "objects") else []
+    if things:  # 物品（座位 / 篝火 / 乐器 / 先祖）：只是提示，眼睛看到别的照样说
+        text += "\n画面里认出的东西（坐标按这张图）：\n" + "\n".join(
+            f"- {OBJECT_NAMES.get(t.kind, t.kind)}：({round((t.box.x + t.box.w / 2) * scale)}, {round((t.box.y + t.box.h / 2) * scale)}) 附近"
+            for t in things
+        ) + "\n没列出的东西按你自己看到的说。"
+    return text

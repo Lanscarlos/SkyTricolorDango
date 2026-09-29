@@ -26,6 +26,7 @@ import numpy as np
 
 from ..config import ViewerConfig
 from .bubbles import Rect
+from .people import describe_things
 
 log = logging.getLogger(__name__)
 
@@ -339,6 +340,8 @@ def describe_env(env, now: float) -> dict:
         n = env.strangers(now)
         dark = env.unlit(now) if hasattr(env, "unlit") else 0
         out["陌生人"] = f"{n} 个" + (f"（{dark} 个没点火）" if dark else "")
+    if hasattr(env, "objects"):
+        out["附近的东西"] = describe_things(env.objects(now)) or "没有"
     requests = [f"{r.name}：{KIND_NAMES.get(r.kind, r.kind)}" for r in list(dict(env.requests).values())]
     out["互动请求"] = requests or "没有"
     timings = getattr(env, "timings", None)
@@ -407,9 +410,11 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 </main><script>
 const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",
 ring:"#22d3ee",request:"#f43f5e",panel:"#6b7280",message:"#f472b6",typing:"#e879f9",
+bench:"#1d4ed8",bonfire:"#ea580c",instrument:"#fda4af",spirit:"#ffffff",
 panel_ok:"#3b82f6",panel_new:"#facc15",panel_unknown:"#ef4444",button_ok:"#22c55e",button_ask:"#9ca3af",button_never:"#dc2626"};
 const NAMES={friend:"好友",tag:"没认出的名字",stranger:"陌生人",unlit:"没点火",player:"没判定的人",self:"团子",ring:"互动圆圈",
 request:"互动请求",panel:"聊天面板",message:"新消息",typing:"正在输入",
+bench:"座位",bonfire:"篝火",instrument:"乐器",spirit:"先祖",
 panel_ok:"面板（已核对）",panel_new:"面板（未核对）",panel_unknown:"不认识的面板",button_ok:"能按",button_ask:"要放行",button_never:"不能按"};
 const $=id=>document.getElementById(id),c=$("c"),ctx=c.getContext("2d"),img=new Image();
 let seq=0,paused=false,running=false,showBoxes=true,last=null,times=[];

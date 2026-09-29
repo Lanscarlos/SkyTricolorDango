@@ -137,3 +137,8 @@ def test_what_you_do_mentions_news():
 
     assert "新鲜事" in intro(static_prompt(ReplyConfig()))
     assert "新鲜事" not in intro(static_prompt(ReplyConfig(), proactive=False))
+
+
+def test_prompt_explains_things():
+    text = static_prompt(ReplyConfig())
+    assert "画面里的东西" in text and "坐下、弹琴还不会" in text

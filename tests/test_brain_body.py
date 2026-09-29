@@ -1641,3 +1641,22 @@ def test_occasion_errors_do_not_break_the_loop(clock):
     b.step()
     assert Viewer.info["场合"] == "算不出来" and ran == [1]
     assert "场合：算不出来（详见日志）" in b.status()
+
+
+# ---- 物品（spec 2026-09-29-object-recognition §3） ----
+def test_status_lists_things(clock):
+    from skydango.vision.people import Thing
+
+    class ThingEnv(FakeEnv):
+        things = []
+
+        def objects(self, now):
+            return list(self.things)
+
+    env = ThingEnv()
+    b, _, _, _ = body(clock, env=env)
+    assert "画面里的东西" not in b.status()
+    env.things = [Thing(1, "bench", Rect(0, 0, 1, 1), "左边", "近"), Thing(2, "spirit", Rect(0, 0, 1, 1), "前面", "远")]
+    assert "画面里的东西：座位（左边·近）、先祖（前面·远）" in b.status()
+    plain, _, _, _ = body(clock, env=FakeEnv())
+    assert "画面里的东西" not in plain.status()
