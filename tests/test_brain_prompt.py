@@ -92,3 +92,19 @@ def test_no_recent_turns_section_when_off_or_empty(tmp_path):
     assert "上次聊到哪" not in brain_prompt(ReplyConfig(), _history_store(tmp_path / "a", now), history_turns=0, now=now)
     assert "上次聊到哪" not in brain_prompt(ReplyConfig(), MemoryStore(tmp_path / "b"), history_turns=20, now=now)
     assert "上次聊到哪" not in brain_prompt(ReplyConfig(), None, history_turns=20, now=now)
+
+
+# ---- 看场合主动开口（spec 2026-09-29-proactive-chat §3） ----
+def test_proactive_rules():
+    text = static_prompt(ReplyConfig())
+    assert "## 主动开口" in text and "不说：原因" in text and "眼睛注意到" in text
+    assert "没人理你的时候别自言自语" not in text
+    assert text.index("## 主动开口") < text.index("## 身份")
+    assert "不要说“我是真人”" in text and "老实承认是 AI" in text  # 身份底线不能丢
+
+
+def test_proactive_off_keeps_old_rules():
+    text = static_prompt(ReplyConfig(), proactive=False)
+    assert "没人理你的时候别自言自语" in text and "## 主动开口" not in text
+    full = brain_prompt(ReplyConfig(), None, proactive=False)
+    assert "没人理你的时候别自言自语" in full and "## 主动开口" not in full

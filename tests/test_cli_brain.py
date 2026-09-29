@@ -146,6 +146,16 @@ def test_run_brain_wires_proactive(tmp_path, monkeypatch):
     assert seen["on_news"].__func__.__name__ == "news" and body.friend_names.__name__ == "names"  # cli 的 _friend_names
 
 
+def test_profile_template_has_likes(tmp_path):
+    import argparse
+
+    assert "## 喜好和看法" in cli.PROFILE_TEMPLATE and "樱花发型天下第一" in cli.PROFILE_TEMPLATE
+    cfg = Config()
+    cfg.reply.memory_dir = str(tmp_path)
+    cli.cmd_memory(cfg, argparse.Namespace(action="init"))
+    assert "## 喜好和看法" in (tmp_path / "profile.md").read_text(encoding="utf-8")
+
+
 def test_memory_update_uses_claude(tmp_path, monkeypatch):
     import argparse
 
