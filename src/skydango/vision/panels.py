@@ -9,15 +9,22 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import tomllib
+from collections import Counter
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
 import numpy as np
 
+from ..config import PanelsConfig
 from ..imageio import imread
-from .bubbles import Rect
-from .icons import silhouette, trim
+from .bubbles import Rect, roi_rect
+from .icons import best_match, silhouette, trim
+from .ocr import OcrEngine
 
 log = logging.getLogger(__name__)
 
@@ -241,3 +248,159 @@ def load_cards(directory: str | Path) -> list[Card]:
     """读 directory 下每个子目录的 card.toml（按目录名排序，跳过 _ 开头的）。"""
     root = Path(directory)
     return [load_card(d) for d in sorted(root.iterdir()) if d.is_dir() and not d.name.startswith("_")]
+
+
+# ---- 快看 ----
+TEMPLATE_SCALES = (0.9, 1.0, 1.1)  # 模板按 1080 高裁的；再乘上 截图高 / 1080
+
+
+def check_feature(frame: np.ndarray, feature: Feature, builtins: dict[str, Callable[[np.ndarray], bool]]) -> tuple[bool, float]:
+    """一个特征命中没有：(命中, 分数)。template 的分数是最高匹配分；dark 是 V 中位数；builtin 是 1 / 0；text 要细读，这里恒不中。"""
+    height, width = frame.shape[:2]
+    if feature.kind == "template":
+        if feature.template is None:
+            return False, 0.0
+        crop = roi_rect(list(feature.roi), width, height).crop(frame)
+        k = height / 1080
+        match = best_match(silhouette(crop), feature.template, [k * s for s in TEMPLATE_SCALES])
+        return match.score >= feature.threshold, match.score
+    if feature.kind == "dark":
+        crop = roi_rect(list(feature.roi), width, height).crop(frame)
+        value = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[:, :, 2]
+        median = float(np.median(value))
+        return median <= feature.max_value and float(value.std()) <= feature.max_std, median
+    if feature.kind == "builtin":
+        fn = builtins.get(feature.name)
+        hit = bool(fn(frame)) if fn is not None else False
+        return hit, 1.0 if hit else 0.0
+    return False, 0.0
+
+
+@dataclass(frozen=True)
+class CardCheck:
+    """一张卡在一帧上的判断（不去抖），panels scan 命令打印用。"""
+
+    card: Card
+    hits: tuple[tuple[Feature, bool, float], ...]  # 每个快看特征：(特征, 命中, 分数)
+    open: bool
+
+
+class PanelWatcher:
+    """身体每圈调 observe(frame, now)：哪些面板开着（去抖后），开 / 关的变化用 pop_changes() 取走。"""
+
+    def __init__(
+        self,
+        cfg: PanelsConfig,
+        cards: list[Card],
+        ocr: OcrEngine,
+        builtins: dict[str, Callable[[np.ndarray], bool]],
+        clock: Callable[[], float] = time.monotonic,
+        background: bool = True,
+    ) -> None:
+        for card in cards:
+            for f in card.quick:
+                if f.kind == "builtin" and f.name not in builtins:
+                    raise ValueError(f"面板卡片 {card.name}: 没有叫 {f.name} 的内置判断")
+        self.cfg = cfg
+        self.cards: dict[str, Card] = {c.name: c for c in cards}
+        self.ocr = ocr
+        self.builtins = builtins
+        self.clock = clock
+        self.background = background
+        self.state = PanelState()
+        self.readings: dict[str, PanelReading] = {}  # 各面板最近的细读
+        self._streak: dict[str, int] = {}  # 正数 = 连续命中几帧，负数 = 连续不中几帧
+        self._open: dict[str, Panel] = {}  # 特征卡认出、开着的
+        self._changes: list[PanelChange] = []
+        self._expect: Counter[str] = Counter()
+
+    # ---- 身体线程 ----
+    def observe(self, frame: np.ndarray, now: float) -> PanelState:
+        height, width = frame.shape[:2]
+        for card in self.cards.values():
+            if card.quick:
+                hit = all(check_feature(frame, f, self.builtins)[0] for f in card.quick)
+                self._step(card, hit, width, height)
+        self._rebuild()
+        return self.state
+
+    def explain(self, frame: np.ndarray) -> list[CardCheck]:
+        out = []
+        for card in self.cards.values():
+            hits = tuple((f, *check_feature(frame, f, self.builtins)) for f in card.quick)
+            out.append(CardCheck(card, hits, bool(hits) and all(h for _, h, _ in hits)))
+        return out
+
+    def present(self, frame: np.ndarray, panel: Panel) -> bool:
+        """单帧判断这个面板还在不在（不去抖；PanelOps 关面板、按按钮后确认用）。"""
+        card = self.cards.get(panel.name)
+        if card is None or not card.quick:
+            return False
+        return all(check_feature(frame, f, self.builtins)[0] for f in card.quick)
+
+    def mark_closed(self, name: str) -> None:
+        """PanelOps 确认关掉了：马上从状态里去掉，排一个 close 变化。"""
+        panel = self._open.pop(name, None)
+        if panel is None:
+            return
+        self._streak[name] = 0
+        self._emit("close", panel)
+        self._rebuild()
+
+    @property
+    def expected(self) -> set[str]:
+        return {name for name, n in self._expect.items() if n > 0}
+
+    @contextmanager
+    def expect(self, name: str | None) -> Iterator[None]:
+        """身体自己要打开这个面板（换轮盘、看好友树）：期间它不算遮挡、开关不发变化；结束时和进来时比，开关变了才补一个变化。"""
+        if name is None:
+            yield
+            return
+        was_open = name in self._open
+        self._expect[name] += 1
+        try:
+            yield
+        finally:
+            self._expect[name] -= 1
+            if self._expect[name] <= 0:
+                del self._expect[name]
+                panel = self._open.get(name)
+                if panel is not None and not was_open:
+                    self._emit("open", panel)
+                elif panel is None and was_open:
+                    self._emit("close", Panel(name, self.cards[name].label, Rect(0, 0, 1, 1), self.cards[name].verified, self.cards[name].layer))
+
+    def blocking(self, action: str) -> list[Panel]:
+        """挡着这个操作的面板（身体自己打开的、卡片 allows 里有这个操作的不算），从上到下。"""
+        expected = self.expected
+        return [p for p in self.state.panels if p.name not in expected and action not in p.allows]
+
+    def pop_changes(self) -> list[PanelChange]:
+        out, self._changes = self._changes, []
+        return out
+
+    def close(self) -> None:
+        """停后台线程（通用兜底）。"""
+
+    # ---- 内部 ----
+    def _panel(self, card: Card, width: int, height: int) -> Panel:
+        return Panel(card.name, card.label, roi_rect(list(card.region), width, height), card.verified, card.layer, card.allows)
+
+    def _step(self, card: Card, hit: bool, width: int, height: int) -> None:
+        streak = self._streak.get(card.name, 0)
+        streak = max(streak, 0) + 1 if hit else min(streak, 0) - 1
+        self._streak[card.name] = streak
+        if card.name not in self._open and streak >= card.confirm_frames:
+            panel = self._open[card.name] = self._panel(card, width, height)
+            self._emit("open", panel)
+        elif card.name in self._open and -streak >= card.confirm_frames:
+            self._emit("close", self._open.pop(card.name))
+
+    def _emit(self, kind: str, panel: Panel, reading: PanelReading | None = None) -> None:
+        if panel.name not in self.expected:
+            self._changes.append(PanelChange(kind, panel, reading))
+
+    def _rebuild(self) -> None:
+        panels = sorted(self._open.values(), key=lambda p: -p.layer)
+        self.state = PanelState(tuple(panels))
