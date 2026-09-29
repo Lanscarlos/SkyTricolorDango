@@ -3,7 +3,7 @@ import types
 
 import pytest
 
-from skydango.chat.llm import AnthropicClient, read_key
+from skydango.chat.llm import AnthropicClient, make_llm, read_key
 from skydango.config import LlmConfig
 
 
@@ -62,3 +62,11 @@ def test_max_retries_is_passed_to_sdk(monkeypatch):
     cfg.max_retries = 0
     AnthropicClient(cfg)
     assert made["max_retries"] == 0
+
+
+def test_make_llm_uses_given_key(monkeypatch):
+    # 管理面板「测试大模型」用页面上还没保存的 Key：不经过环境变量
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("skydango.chat.llm._user_env", lambda name: "")
+    client = make_llm(LlmConfig(), api_key="sk-given")
+    assert client._client.api_key == "sk-given"

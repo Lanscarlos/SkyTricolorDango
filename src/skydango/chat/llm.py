@@ -41,14 +41,14 @@ def _api_key(cfg: LlmConfig) -> str:
 
 
 class OpenAICompatClient:
-    def __init__(self, cfg: LlmConfig) -> None:
+    def __init__(self, cfg: LlmConfig, api_key: str | None = None) -> None:
         try:
             from openai import OpenAI
         except ImportError as exc:
             raise ImportError("pip install \"skydango[openai]\"") from exc
         self.cfg = cfg
         self._client = OpenAI(
-            base_url=cfg.base_url or None, api_key=_api_key(cfg), timeout=cfg.timeout, max_retries=cfg.max_retries
+            base_url=cfg.base_url or None, api_key=api_key or _api_key(cfg), timeout=cfg.timeout, max_retries=cfg.max_retries
         )
 
     def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
@@ -66,13 +66,13 @@ _NO_SAMPLING = ("claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-8")
 
 
 class AnthropicClient:
-    def __init__(self, cfg: LlmConfig) -> None:
+    def __init__(self, cfg: LlmConfig, api_key: str | None = None) -> None:
         try:
             import anthropic
         except ImportError as exc:
             raise ImportError("pip install \"skydango[anthropic]\"") from exc
         self.cfg = cfg
-        kwargs = {"api_key": _api_key(cfg), "timeout": cfg.timeout, "max_retries": cfg.max_retries}
+        kwargs = {"api_key": api_key or _api_key(cfg), "timeout": cfg.timeout, "max_retries": cfg.max_retries}
         if cfg.base_url:
             kwargs["base_url"] = cfg.base_url
         self._client = anthropic.Anthropic(**kwargs)
@@ -101,11 +101,12 @@ class EchoClient:
         return "收到：" + " / ".join(quoted or [last])
 
 
-def make_llm(cfg: LlmConfig) -> LlmClient:
+def make_llm(cfg: LlmConfig, api_key: str | None = None) -> LlmClient:
+    """api_key：直接用这个 Key，不读环境变量（管理面板「测试大模型」用页面上还没保存的 Key）。"""
     if cfg.provider == "openai":
-        return OpenAICompatClient(cfg)
+        return OpenAICompatClient(cfg, api_key)
     if cfg.provider == "anthropic":
-        return AnthropicClient(cfg)
+        return AnthropicClient(cfg, api_key)
     if cfg.provider == "echo":
         return EchoClient()
     raise ValueError(f"不支持的 llm.provider: {cfg.provider}")
