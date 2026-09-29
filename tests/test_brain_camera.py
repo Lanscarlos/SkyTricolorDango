@@ -208,22 +208,22 @@ def texture(w=1920, h=1080, seed=1, cell=40):
 
 
 class TurnDevice(FakeDevice):
-    """画面随镜头平移：平移像素 = 累计转了多少秒 × 800（右转画面里的东西往左移）。"""
+    """画面随镜头平移，每按一下移 30 + 360 × 秒 px（非线性，同 D0：0.02 s ≈ 37 px、0.1 s ≈ 66 px；左右对称）。"""
 
-    PX = 800
     MARGIN = 1000
 
     def __init__(self):
         super().__init__([scene()])
         self.pano = texture(1920 + 2 * self.MARGIN)
-        self.turned = 0.0  # 累计按了多少秒（右正左负）
+        self.px = 0.0  # 画面累计平移（右转为正）
 
     def hw_key_hold(self, code, seconds):
         super().hw_key_hold(code, seconds)
-        self.turned += seconds if code == 106 else -seconds if code == 105 else 0.0
+        step = 30 + 360 * seconds
+        self.px += step if code == 106 else -step if code == 105 else 0.0
 
     def screenshot(self):
-        x = self.MARGIN + int(round(self.turned * self.PX))
+        x = self.MARGIN + int(round(self.px))
         return self.pano[:, x : x + 1920].copy()
 
 
@@ -279,19 +279,88 @@ def test_reset_undoes_nudges_then_refines_to_reference():
     c = Camera(dev, 0.25, None, sleep=lambda s: None)
     for _ in range(3):
         c.nudge("right", 0.1)
-    dev.turned += 0.04  # 反向按不准：多漂了 0.04 s
+    dev.px += 40  # 反向按不准：多漂了 40 px（约一小步）
     result = c.reset()
-    assert abs(dev.turned) <= 0.02 + 1e-9
+    assert abs(dev.px) <= 20
     assert result.startswith("镜头转回原位") and "没对准" not in result
     assert c.turn_seconds == 0 and c.ref is None
 
 
+def test_reset_replays_presses_with_same_durations():
+    """转动和按键时长不成比例（D0）：秒数加总后分块反向按会差很远，要按同样的时长逐次反向重放。"""
+    dev = TurnDevice()
+    c = Camera(dev, 0.25, None, sleep=lambda s: None)
+    for _ in range(10):
+        c.nudge("right", 0.02)  # 10 × 37.2 px
+    for _ in range(3):
+        c.nudge("left", 0.1)  # 3 × 66 px；净秒数 -0.1 s，净平移却是 +174 px
+    dev.px += 10  # 一点点误差
+    result = c.reset()
+    assert abs(dev.px) <= 20 and "没对准" not in result
+    reverse = holds(dev)[13:26]  # 粗转：同样的时长反过来按
+    assert sorted(reverse) == sorted([("hw_hold", 105, pytest.approx(0.02))] * 10 + [("hw_hold", 106, pytest.approx(0.1))] * 3)
+
+
 def test_reset_without_reference_only_reverses():
     c, dev, _ = cam(panel=False)
-    c.turn_seconds = 0.2
+    c.turns[0.1] = 2
+    assert c.turn_seconds == pytest.approx(0.2)
     c.reset()
     assert holds(dev) == [("hw_hold", 105, pytest.approx(0.1))] * 2
-    assert c.turn_seconds == 0
+    assert c.turn_seconds == 0 and not c.turns
+
+
+def test_reference_taken_once_per_excursion():
+    """净秒数 / 净次数回到 0 也不重拍参照图：每次离开原位只拍一次，reset 之后才清掉。"""
+    c, dev, _ = cam(panel=False)
+    for _ in range(5):
+        c.nudge("right", 0.02)
+    c.nudge("left", 0.1)  # 净秒数 0，但镜头其实不在原位
+    first = c.ref
+    dev.frames = [texture(seed=3)]
+    c.nudge("right", 0.05)
+    c.nudge("left", 0.05)
+    for _ in range(5):
+        c.nudge("left", 0.02)
+    c.nudge("right", 0.1)  # 记账全部抵消
+    c.nudge("right", 0.05)
+    assert c.ref is first
+    c.reset()
+    assert c.ref is None
+    c.nudge("right", 0.05)  # 复位之后是新的一次离开：重拍
+    assert c.ref is not None and c.ref is not first
+
+
+def test_forget_reference_keeps_accounting():
+    c, dev, _ = cam(panel=False)
+    c.nudge("right", 0.05)
+    c.forget_reference()  # 身体走动 / 黑屏之后：参照图不作数了
+    assert c.ref is None
+    c.nudge("right", 0.05)
+    assert c.ref is None  # 这次离开原位不再重拍
+    dev.calls.clear()
+    assert "没对准" not in c.reset()
+    assert holds(dev) == [("hw_hold", 105, pytest.approx(0.05))] * 2  # 只粗转，不细调
+
+
+def test_reset_refine_time_limit():
+    dev = NoiseDevice()
+    c = Camera(dev, 0.25, None)
+    t = {"now": 0.0}
+    c.clock = lambda: t["now"]
+    c.sleep = lambda s: t.__setitem__("now", t["now"] + s)
+    c.nudge("right", 0.05)
+    dev.calls.clear()
+    assert "没对准" in c.reset(refine_seconds=2.0)
+    refine = holds(dev)[1:]
+    assert len(refine) <= 2 * 6  # 每步等 0.4 s：2 秒内最多走五六步（含退回）
+    assert sum(s if code == 106 else -s for _, code, s in refine) == pytest.approx(0.0)
+
+
+def test_release_lifts_both_arrows():
+    c, dev, _ = cam(panel=False)
+    c.release()
+    assert ("hw_up", 105) in dev.calls and ("hw_up", 106) in dev.calls
 
 
 def test_reset_reports_when_reference_never_matches():
