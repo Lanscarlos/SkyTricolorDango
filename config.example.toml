@@ -183,6 +183,22 @@ move_min_interval = 3.0        # 两次 move 调用最小间隔（秒）
 owner_name = ""                # 卡洛的游戏昵称，精确匹配；留空 = 主人命令模式关闭
 owner_window = 30.0            # 收到卡洛一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
 
+[proactive]
+# 看场合主动开口（大脑模式）：眼睛挑新鲜事叫醒大脑、状态里给“场合”、主动开口有护栏。数字都是估的，没在真机验证
+enabled = true                 # false = 完全照旧（只接话、不主动）
+notice_min = 60.0              # 两个 notice（眼睛注意到的新鲜事 / 换了地图）至少隔几秒
+prev_max_age = 600.0           # 上一份场景描述超过几秒就不拿来比
+auto_look_busy = 60.0          # 好友在身边时眼睛最久几秒看一次（越短越费订阅额度）
+busy_window = 180.0            # 热闹：这么多秒里别人说了至少 busy_lines 句
+busy_lines = 4
+reply_window = 90.0            # 主动那句之后多少秒内有好友说话算有人接
+quota_window = 600.0           # 主动开口额度的时间窗口（秒）
+quota_busy = 4                 # 热闹时窗口内最多主动说几句
+quota_quiet = 2                # 安静时窗口内最多主动说几句
+min_gap = 60.0                 # 两句主动的话之间至少隔几秒
+cold_after = 3                 # 连续几句主动的话没人接就暂停主动，等有好友说话
+self_names = ["团子", "三彩"]   # 聊天里出现这些字算“叫了你”
+
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉
 # 关面板用 ESC（用户确认）；面板样子还没核对：先用 python -m skydango friend-check X Y 试，确认后再打开

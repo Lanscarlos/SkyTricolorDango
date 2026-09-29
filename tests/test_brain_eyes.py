@@ -1,8 +1,8 @@
 import numpy as np
 
 from skydango.brain.events import EventQueue
-from skydango.brain.eyes import AROUND_REQUEST, Eyes, eyes_command
-from skydango.config import BrainConfig
+from skydango.brain.eyes import AROUND_REQUEST, Eyes, eyes_command, parse_news
+from skydango.config import BrainConfig, ProactiveConfig
 
 
 def frame():
@@ -10,20 +10,27 @@ def frame():
 
 
 class Describer:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, replies=None):
         self.calls = []
         self.fail = fail
+        self.replies = list(replies or [])  # 依次返回；用完了就是“描述N”
 
     def __call__(self, content):
         self.calls.append(content)
         if self.fail:
             raise RuntimeError("Haiku 没回")
-        return f" 描述{len(self.calls)} "
+        return self.replies.pop(0) if self.replies else f" 描述{len(self.calls)} "
+
+    def request(self, i):
+        return self.calls[i][-1]["text"]
 
 
-def eyes(clock, blackout=False, labels=None, fail=False):
-    d = Describer(fail)
-    e = Eyes(BrainConfig(), d, frame, lambda: dict(labels or {}), lambda: blackout, clock=clock)
+def eyes(clock, blackout=False, labels=None, fail=False, proactive=None, busy=False, replies=None):
+    d = Describer(fail, replies)
+    news = []
+    e = Eyes(BrainConfig(), d, frame, lambda: dict(labels or {}), lambda: blackout, clock=clock,
+             proactive=proactive, busy=lambda now: busy, on_news=news.append)
+    e.news_got = news  # 测试里看 on_news 收到了什么
     return e, d
 
 
@@ -111,3 +118,89 @@ def test_eyes_do_not_auto_look_on_approach():
     from skydango.brain.eyes import AUTO_LOOK_KINDS
 
     assert "approach" not in AUTO_LOOK_KINDS
+
+
+# ---- 新鲜事（spec 2026-09-29-proactive-chat §1） ----
+def test_parse_news():
+    assert parse_news("地点和环境：云野\n新鲜事：天黑了") == "天黑了"
+    assert parse_news("**新鲜事**：无。") == ""
+    assert parse_news("好友：没看到\n新鲜事：\n- 天黑了\n- 小明坐下弹琴了") == "天黑了；小明坐下弹琴了"
+    assert parse_news("地点和环境：云野\n画面状态：正常") == ""
+    assert parse_news("新鲜事: 没有") == ""
+    assert parse_news("- **新鲜事：** 下雨了。") == "下雨了"
+    assert len(parse_news("新鲜事：" + "很长" * 100)) == 80
+
+
+def test_first_look_has_no_news_item(clock):
+    e, d = eyes(clock, proactive=ProactiveConfig(), replies=["描述1\n新鲜事：天黑了"])
+    assert e.tick(clock()) is True
+    assert "新鲜事" not in d.request(0) and e.news_got == []
+
+
+def test_second_look_compares_and_reports(clock):
+    e, d = eyes(clock, proactive=ProactiveConfig(), replies=["描述1", "描述2\n新鲜事：下雨了"])
+    e.tick(clock())
+    assert e.tick(clock() + 200) is True
+    assert "上次（200 秒前）看到的：\n描述1" in d.request(1) and "按这五项写" in d.request(1)
+    assert e.news_got == ["下雨了"]
+
+
+def test_old_description_not_compared(clock):
+    d = Describer(replies=["描述1", "描述2\n新鲜事：下雨了"])
+    news = []
+    e = Eyes(BrainConfig(), d, frame, lambda: {}, lambda: False, clock=clock, proactive=ProactiveConfig(), on_news=news.append)
+    e.tick(clock())
+    assert e.tick(clock() + 700) is True
+    assert "新鲜事" not in d.request(1) and news == []
+
+
+def test_brain_look_never_reports(clock):
+    e, d = eyes(clock, proactive=ProactiveConfig(), replies=["描述1", "描述2\n新鲜事：下雨了"])
+    e.tick(clock())
+    e.describe_frame(frame(), clock() + 30)
+    assert "新鲜事" not in d.request(1) and e.news_got == []
+
+
+def test_busy_looks_more_often(clock):
+    e, _ = eyes(clock, proactive=ProactiveConfig(), busy=True)
+    e.tick(clock())
+    assert e.tick(clock() + 61) is True
+    e2, _ = eyes(clock, proactive=ProactiveConfig(), busy=False)
+    e2.tick(clock())
+    assert e2.tick(clock() + 61) is False and e2.tick(clock() + 181) is True
+
+
+def test_disabled_is_old_behavior(clock):
+    e, d = eyes(clock, proactive=ProactiveConfig(enabled=False), busy=True, replies=["描述1", "描述2\n新鲜事：下雨了"])
+    e.tick(clock())
+    assert e.tick(clock() + 61) is False
+    assert e.tick(clock() + 200) is True
+    assert "新鲜事" not in d.request(1) and e.news_got == []
+
+
+def test_news_callback_errors_are_swallowed(clock):
+    d = Describer(replies=["描述1", "描述2\n新鲜事：下雨了"])
+
+    def boom(text):
+        raise RuntimeError("身体没接住")
+
+    e = Eyes(BrainConfig(), d, frame, lambda: {}, lambda: False, clock=clock, proactive=ProactiveConfig(), on_news=boom)
+    e.tick(clock())
+    assert e.tick(clock() + 200) is True and e.latest[0].startswith("描述2")
+
+
+def test_parse_news_nothing_variants():
+    # 评审 #2：“无 + 补充”这类写法都当没有
+    for text in ("无明显变化", "无（和上次差不多）", "没有明显变化。", "无，画面和上次基本一样", "和上次差不多，没什么变化", "none", "暂无"):
+        assert parse_news("新鲜事：" + text) == "", text
+
+
+def test_parse_news_numbered_and_headings():
+    # 评审 #5：编号、标题、括号说明都认得；后面不带符号的“名字：…”条目不丢
+    assert parse_news("5. 新鲜事：天黑了") == "天黑了"
+    assert parse_news("**5. 新鲜事**：天黑了") == "天黑了"
+    assert parse_news("### 新鲜事\n- 天黑了") == "天黑了"
+    assert parse_news("新鲜事（和上次比）：下雨了") == "下雨了"
+    assert parse_news("新鲜事：\n小明：换了斗篷\n阿花：坐下弹琴了") == "小明：换了斗篷；阿花：坐下弹琴了"
+    assert parse_news("新鲜事：天黑了\n\n画面状态：正常") == "天黑了"
+    assert parse_news("新鲜事：天黑了\n画面状态：正常") == "天黑了"  # 下一项（已知的标题）到此为止

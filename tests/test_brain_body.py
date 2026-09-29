@@ -109,6 +109,7 @@ def body(clock, live=False, frames=None, panel_mode=None, **kw):
     cfg.reply.dry_run = not live
     cfg.reply.disclosure_prefix = ""
     cfg.sender.open_chat_key = 28
+    cfg.proactive.enabled = False  # 旧行为的测试：不管主动开口；pro_body 打开
     device = FakeDevice(frames or [scene()])
     reader = FakeReader()
     if panel_mode is not None:  # 用假面板：按 46 开关，reader 跟着它
@@ -120,8 +121,8 @@ def body(clock, live=False, frames=None, panel_mode=None, **kw):
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, "")
     sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
     events = EventQueue(clock=clock)
-    b = Body(cfg, device, reader, sender, self_filter, events, clock=clock, sleep=lambda s: None,
-             wall=lambda: 1_790_000_000.0, **kw)
+    kw.setdefault("wall", lambda: 1_790_000_000.0)
+    b = Body(cfg, device, reader, sender, self_filter, events, clock=clock, sleep=lambda s: None, **kw)
     b.panel.start(clock())
     return b, device, reader, events
 
@@ -1429,3 +1430,193 @@ def test_viewer_info_has_task_and_recent_says(clock):
     b.said[:] = ["一", "二", "三", "四"]
     b.step()
     assert Viewer.info["刚说过"] == ["四", "三", "二"]
+
+
+# ---- 看场合主动开口（spec 2026-09-29-proactive-chat §2 / §4） ----
+def pro_body(clock, near=("阿花",), **kw):
+    """好友在身边、墙钟跟着假时钟走（旧的发言限速构造时就定了 3 秒，测试里两句之间推进够时间）。"""
+    env = kw.pop("env", FakeEnv())
+    env.near = list(near)
+    b, device, reader, events = body(clock, env=env, wall=clock, **kw)
+    b.cfg.proactive.enabled = True
+    b.friend_names = lambda: ["阿花"]
+    return b, env, reader
+
+
+def test_proactive_say_blocked_when_alone(clock):
+    b, _, _ = pro_body(clock, near=())
+    with pytest.raises(ToolError, match="身边没有好友，不主动开口"):
+        b.say("好无聊")
+    assert b.said == []
+
+
+def test_reply_turn_not_limited(clock):
+    b, _, _ = pro_body(clock, near=())
+    b.brain_busy = lambda: True
+    b.say("在呢")
+    assert b.spoken[-1].proactive is False
+
+
+def test_min_gap_and_recovery(clock):
+    b, _, _ = pro_body(clock)
+    b.say("这图好黑")
+    clock.advance(10)
+    with pytest.raises(ToolError, match="刚主动说过"):
+        b.say("真的好黑")
+    clock.advance(55)
+    b.say("真的好黑")
+    assert [s.proactive for s in b.spoken] == [True, True]
+
+
+def cold(b, clock):
+    b.cfg.proactive.min_gap = 0
+    b.cfg.proactive.quota_quiet = 10
+    for text in ("一", "二", "三"):
+        b.say(text)
+        clock.advance(100)
+
+
+def test_cold_pause_then_friend_speaks(clock):
+    b, _, reader = pro_body(clock)
+    cold(b, clock)
+    with pytest.raises(ToolError, match="连着 3 句"):
+        b.say("四")
+    reader.batches = [[msg("嗯？", speaker="阿花")]]
+    b.step()
+    b.say("四")
+
+
+def test_manual_say_ignores_guard(clock):
+    b, _, _ = pro_body(clock)
+    cold(b, clock)
+    b.say("主人让说的", live=True)
+    assert len(b.spoken) == 3
+    clock.advance(5)  # 旧的发言限速（构造时定的 3 秒）
+    with pytest.raises(ToolError, match="连着 3 句"):
+        b.say("四")
+
+
+def test_dry_run_counts(clock):
+    b, _, _ = pro_body(clock)
+    b.cfg.proactive.min_gap = 0
+    b.say("一")
+    clock.advance(5)
+    b.say("二")
+    clock.advance(5)
+    with pytest.raises(ToolError, match="已经主动说了 2 句"):
+        b.say("三")
+
+
+def test_status_has_occasion(clock):
+    b, _, _ = pro_body(clock)
+    assert "场合：安静（身边 阿花" in b.status()
+    alone, _, _, _ = body(clock, wall=clock)
+    alone.cfg.proactive.enabled = True
+    assert "场合：没熟人（身边没人）" in alone.status()
+
+
+def test_disabled_keeps_old_behavior(clock):
+    b, _, _ = pro_body(clock, near=())
+    b.cfg.proactive.enabled = False
+    b.say("好无聊")
+    assert "场合" not in b.status()
+
+
+def test_viewer_info_has_occasion(clock):
+    class Viewer:
+        info = None
+
+        def update(self, frame, now, **kw):
+            Viewer.info = kw["info"]
+
+    b, _, _ = pro_body(clock, viewer=Viewer())
+    b.step()
+    assert Viewer.info["场合"] == "安静 · 还能主动说 2 句"
+
+
+def notices(events):
+    return [e.text for e in events.drain() if e.kind == "notice"]
+
+
+def test_news_becomes_notice(clock):
+    b, _, _ = pro_body(clock)
+    b.news("天黑了")
+    b.step()
+    assert notices(b.events) == ["眼睛注意到：天黑了"]
+
+
+def test_notice_min_and_duplicate(clock):
+    b, _, _ = pro_body(clock)
+    b.news("天黑了")
+    b.news("下雨了")
+    b.step()
+    assert notices(b.events) == ["眼睛注意到：天黑了"]  # 60 秒内的第二条不发
+    clock.advance(61)
+    b.news("天黑了")
+    b.step()
+    assert notices(b.events) == []  # 和上一条一样
+    b.news("下雨了")
+    b.step()
+    assert notices(b.events) == ["眼睛注意到：下雨了"]
+
+
+def test_notice_dropped_when_alone_or_no_quota(clock):
+    b, env, _ = pro_body(clock, near=())
+    b.news("天黑了")
+    b.step()
+    assert notices(b.events) == []
+    env.near = ["阿花"]
+    b.cfg.proactive.min_gap = 0
+    b.say("一")
+    clock.advance(5)
+    b.say("二")  # 安静时额度 2 句用完
+    b.news("下雨了")
+    b.step()
+    assert notices(b.events) == []
+
+
+def test_place_change(clock):
+    b, env, _ = pro_body(clock)
+    got = []
+    for place in ("", "云野", "", "雨林"):
+        env.place = place
+        b.step()
+        got += notices(b.events)
+        clock.advance(61)
+    assert got == ["看起来到了雨林"]
+
+
+def test_place_change_without_place_attribute(clock):
+    b, _, _ = pro_body(clock)
+    b.step()  # FakeEnv 没有 place：不报错
+    none, _, _, events = body(clock, wall=clock)
+    none.cfg.proactive.enabled = True
+    none.news("天黑了")
+    none.step()  # 没开 env：当成没熟人
+    assert notices(events) == []
+
+
+def test_notice_off_when_disabled(clock):
+    b, _, _ = pro_body(clock)
+    b.cfg.proactive.enabled = False
+    b.news("天黑了")
+    b.step()
+    assert notices(b.events) == []
+
+
+def test_fallback_reply_is_not_proactive(clock):
+    # 评审 #1：大脑离线时的备用回复是接话，不过主动开口的护栏、不占主动额度
+    from skydango.chat.responder import Reply
+
+    class Responder:
+        def reply(self, batch):
+            return Reply("在呢")
+
+    b, env, reader = pro_body(clock, near=(), live=True, fallback=Responder())
+    b.brain_offline = lambda now: True
+    reader.batches = [[msg("有人吗", speaker="路人")]]
+    b.step()
+    clock.advance(2)
+    b.step()
+    assert "在呢" in b.said[-1]
+    assert [s.proactive for s in b.spoken] == [False]

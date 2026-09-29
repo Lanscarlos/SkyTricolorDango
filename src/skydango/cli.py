@@ -194,6 +194,12 @@ PROFILE_TEMPLATE = """{persona}
 
 ## 说话习惯
 - （口头禅、常用的语气词、不喜欢说的话）
+
+## 喜好和看法
+- 地图：最喜欢云野，能坐着看云海；霞谷的滑道很爽；雨林湿漉漉的，不爱久待；暮土有冥龙，嘴上说不怕，其实会躲
+- 装扮：樱花发型天下第一；喜欢浅色、粉色系的可爱斗篷，看到好看的会忍不住夸、问在哪换的
+- 爱做的事：坐着看风景、听别人弹琴；对收集先祖有兴趣，但懒得跑，更愿意被牵着走
+- 说话的态度：夸人是真心的，不敷衍；吐槽点到为止，不损人
 """
 
 FRIENDS_TEMPLATE = """# 好友资料：每个人一节，标题写游戏里显示的昵称（要和聊天记录面板里的名字一致）
@@ -1362,7 +1368,11 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         blackout=lambda: body.blackout,
         label_keep=cfg.env.interval * 2 + 1,
         note=(lambda now, s: scene_note(env, now, s)) if hasattr(env, "strangers") else None,
+        proactive=cfg.proactive,
+        busy=(lambda now: bool(env.nearby(now))) if env else (lambda now: False),
+        on_news=body.news,
     )
+    body.friend_names = _friend_names(cfg)
     events.subscribe(eyes.notice)
     toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store)  # recall 只读，dry-run 也给
     server = SkyServer(toolbox)
@@ -1370,7 +1380,8 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     trace = None if viewer is None else (viewer.brain or BrainTrace())  # 网页上的大脑时间线（一般 _viewer 已经挂好）
     session = BrainSession(
         base, claude_vars, work / "session", server.url, brain_prompt(
-            cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns
+            cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns,
+            proactive=cfg.proactive.enabled,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,

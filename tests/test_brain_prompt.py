@@ -105,3 +105,25 @@ def test_prompt_explains_owner_window_for_move_emote_camera():
     text = static_prompt(ReplyConfig())
     line = next(l for l in text.splitlines() if "# 开头的命令之后半分钟内" in l)
     assert all(tool in line for tool in ("move", "emote", "camera"))
+
+
+# ---- 看场合主动开口（spec 2026-09-29-proactive-chat §3） ----
+def test_proactive_rules():
+    text = static_prompt(ReplyConfig())
+    assert "## 主动开口" in text and "不说：原因" in text and "眼睛注意到" in text
+    assert "没人理你的时候别自言自语" not in text
+    assert text.index("## 主动开口") < text.index("## 身份")
+    assert "不要说“我是真人”" in text and "老实承认是 AI" in text  # 身份底线不能丢
+
+
+def test_proactive_off_keeps_old_rules():
+    text = static_prompt(ReplyConfig(), proactive=False)
+    assert "没人理你的时候别自言自语" in text and "## 主动开口" not in text
+    full = brain_prompt(ReplyConfig(), None, proactive=False)
+    assert "没人理你的时候别自言自语" in full and "## 主动开口" not in full
+
+
+def test_proactive_rules_drop_contradiction():
+    # 评审 #7：“对方没问就别硬找话题”和“安静时偶尔抛个话头”矛盾
+    assert "对方没问就别硬找话题" not in static_prompt(ReplyConfig())
+    assert "对方没问就别硬找话题" in static_prompt(ReplyConfig(), proactive=False)

@@ -100,12 +100,32 @@ BRAIN_RULES = """
 - 常见地图：晨岛、云野、雨林、霞谷、暮土、禁阁、暴风眼、伊甸之眼；家园、遇境是休息的地方。
 """.strip()
 
+QUIET_RULE = "没人理你的时候别自言自语。"
+NO_NEW_TOPIC = "对方没问就别硬找话题。"  # 和“安静时偶尔抛个话头”矛盾：主动开口时换掉
+PROACTIVE_POINTER = "要不要主动开口，看下面“主动开口”一节。"
+PROACTIVE_RULES = """## 主动开口
+- 状态里的“场合”告诉你现在是什么场合：
+  - 热闹（好友在身边、大家在聊）：可以接梗、插一句吐槽、对眼前的事说说看法；别人聊得正起劲时别硬转话题。
+  - 安静（好友在身边、没怎么说话）：偶尔抛个话头就够了 —— 眼前的新鲜事、好友的近况（记忆里有的）、以前聊过的事（先 recall 确认）。
+  - 没熟人（只有陌生人或没人）：不主动开口。
+- 主动说的话要带你自己的看法，别播报：不说“天黑了”，说“一到晚上这图就阴森森的”；不说“小明在弹琴”，说“小明这首弹得还挺像样”。喜好照你的人设来，前后一致。
+- 身体会把眼睛注意到的新鲜事（“眼睛注意到：…”“看起来到了…”）告诉你。这不是任务：大多数不用说，只挑你真有想法的。
+- 分寸：上次主动开口没人接，就收一收，过一阵再说，别连着抛话题；一次只主动说一句；别用问句硬找话。
+- 不开口也可以用动作：好友弹琴可以鼓掌，被夸了可以害羞 —— 动作不占聊天。
+- 想了但决定不说，就在心里写一句“不说：原因”。
+- 主动开口被身体拦下（说得太勤、没人接、身边没好友），照它说的等，别换个说法再试。"""
+
 SUMMARY_REQUEST = """（身体）要下线了。用不超过 300 字写一份这次的经过，留给下次的你：在哪、和谁玩了什么、聊了什么、答应过什么、要注意的事。
 只输出这份经过本身，这次不要调用工具。"""
 
 
-def static_prompt(reply: ReplyConfig) -> str:
-    return BRAIN_RULES.format(max_chars=reply.max_chars)
+def static_prompt(reply: ReplyConfig, proactive: bool = True) -> str:
+    """proactive：看场合主动开口（[proactive] enabled）；关掉就是原来的“别自言自语”。"""
+    rules = BRAIN_RULES.format(max_chars=reply.max_chars)
+    if proactive:
+        rules = rules.replace(NO_NEW_TOPIC, "接话时别硬转话题。", 1)
+        rules = rules.replace(QUIET_RULE, PROACTIVE_POINTER, 1).replace("## 身份", PROACTIVE_RULES + "\n\n## 身份", 1)
+    return rules
 
 
 def recent_turns(store: MemoryStore, n: int, now: float | None = None) -> str:
@@ -145,13 +165,15 @@ def brain_prompt(
     panel_auto: bool = False,
     history_turns: int = 0,
     now: float | None = None,
+    proactive: bool = True,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
     quick_around：打开了感知层，look_around 是 YOLO 连续转一圈（几秒），不是眼睛看四张图（十几秒）。
     panel_auto：聊天面板按需打开（[panel] mode = "auto"），平时关着。
-    history_turns：带上 history.jsonl 最近几轮原话（重启后接得上话），0 不带。"""
-    rules = static_prompt(reply)
+    history_turns：带上 history.jsonl 最近几轮原话（重启后接得上话），0 不带。
+    proactive：看场合主动开口（[proactive] enabled）。"""
+    rules = static_prompt(reply, proactive)
     if quick_around:
         rules = rules.replace("（要十几秒，别常用）", "（几秒就好）")
     if panel_auto:

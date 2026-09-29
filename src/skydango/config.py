@@ -466,6 +466,26 @@ class BrainConfig:
 
 
 @dataclass
+class ProactiveConfig:
+    """看场合主动开口（docs/superpowers/specs/2026-09-29-proactive-chat-design.md）：眼睛挑新鲜事发 notice、场合给大脑看、主动开口的护栏。
+    数字都是估的，没在真机验证；enabled = false 完全照旧。"""
+
+    enabled: bool = True
+    notice_min: float = 60.0  # 两个 notice 事件至少隔几秒
+    prev_max_age: float = 600.0  # 上一份场景描述超过几秒就不拿来比（不要新鲜事）
+    auto_look_busy: float = 60.0  # 好友在身边时眼睛最久几秒看一次（平时是 brain.auto_look_max）
+    busy_window: float = 180.0  # 热闹：这么多秒里别人说了至少 busy_lines 句
+    busy_lines: int = 4
+    reply_window: float = 90.0  # 主动那句之后多少秒内有好友说话算有人接
+    quota_window: float = 600.0  # 主动开口额度的时间窗口（秒）
+    quota_busy: int = 4  # 热闹时窗口内最多主动说几句
+    quota_quiet: int = 2  # 安静时窗口内最多主动说几句
+    min_gap: float = 60.0  # 两句主动的话之间至少隔几秒
+    cold_after: int = 3  # 连续几句主动的话没人接就暂停主动，等有好友说话
+    self_names: list[str] = field(default_factory=lambda: ["团子", "三彩"])  # 聊天里出现这些字算“叫了你”
+
+
+@dataclass
 class ConsoleConfig:
     """管理面板（`console`，见 docs/superpowers/specs/2026-09-29-console-design.md）。启动选项由面板写进 console.toml，只影响面板启动的团子。"""
 
@@ -504,6 +524,7 @@ class Config:
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     spin: SpinConfig = field(default_factory=SpinConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
+    proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
 
 

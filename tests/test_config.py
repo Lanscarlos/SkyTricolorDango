@@ -12,6 +12,7 @@ def test_example_config_loads():
     assert cfg.reply.dry_run is True
     assert cfg.panel.mode == "always" and cfg.panel.idle_peek == 30.0  # 真机验收前默认常开
     assert cfg.device.serial.startswith("127.0.0.1")
+    assert cfg.proactive.enabled is True and cfg.proactive.quota_quiet == 2
 
 
 def test_unknown_key_rejected(tmp_path):
@@ -48,6 +49,14 @@ def test_brain_section(tmp_path):
     assert cfg.brain.image_size == [1280, 720] and cfg.brain.max_steps == 6
     assert cfg.brain.move_step == 0.3 and cfg.brain.move_min_interval == 3.0
     assert cfg.brain.owner_name == "" and cfg.brain.owner_window == 30.0
+
+
+def test_proactive_section(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[proactive]\nquota_busy = 6\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.proactive.quota_busy == 6 and cfg.proactive.enabled is True and cfg.proactive.min_gap == 60.0
+    assert cfg.proactive.self_names == ["团子", "三彩"] and cfg.proactive.cold_after == 3
 
 
 def test_spin_section(tmp_path):

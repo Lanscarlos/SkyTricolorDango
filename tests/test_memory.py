@@ -205,3 +205,9 @@ def test_consolidation_folds_inbox_into_notes_and_keeps_new_memos(tmp_path):
     assert "卡洛今天加班" in llm.calls[0][1][0]["content"]  # 随手记交给了整理
     assert store.notes() == "## 懒洋洋大王\n- 最近常加班"
     assert store.inbox() == "- 整理期间新记的"  # 整理过的清掉，新记的留着
+
+
+def test_memo_system_records_opinions():
+    from skydango.chat.memory import MEMO_SYSTEM
+
+    assert "喜好和评价" in MEMO_SYSTEM

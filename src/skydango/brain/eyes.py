@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
 
 import numpy as np
 
-from ..config import BrainConfig
+from ..config import BrainConfig, ProactiveConfig
 from .images import fit, image_block, label_note
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,44 @@ LOOK_REQUEST = """按这四项写，每项一两句：
 好友：上面列出的每个人穿什么（斗篷、发型、面具、颜色）、在干什么；没有就写“没看到”；团子自己不用描述
 陌生人：大概几个、在干什么
 画面状态：有没有弹窗、黑屏、看不懂的图标；正常就写“正常”"""
+
+# 看场合主动开口（spec 2026-09-29-proactive-chat §1）：自动看时附上上一份描述，多要一项“新鲜事”
+NEWS_ITEM = """新鲜事：和上次比，有没有值得跟朋友提一句的变化？最多两条，一条一句；没有或拿不准就写“无”。
+  值得提：天黑了 / 下雨了、到了新地方；好友换了斗篷 / 发型；好友在做有意思的事（弹琴、坐下、睡着冒 Z、放烟花、跳舞）；出现显眼的东西（篝火、先祖、冥龙、彩虹）
+  不值得：镜头角度变了、人挪了几步、陌生人来来去去"""
+LOOK_REQUEST_NEWS = LOOK_REQUEST.replace("按这四项写", "按这五项写") + "\n" + NEWS_ITEM
+NEWS_MAX = 80
+_PREFIX = r"^[\s\-•*#]*(?:\d+[.、)）][\s*]*)?"  # 列表符号、标题井号、编号（“5. ”）
+_NEWS_HEAD = re.compile(_PREFIX + r"新鲜事[\s*]*(?:[（(][^）)]*[）)])?[\s*]*(?:[：:][\s*]*(.*)|$)")
+_BULLET = re.compile(r"^\s*(?:[-•*]|\d+[.、)）])\s*")
+_NEXT_ITEM = re.compile(_PREFIX + r"(?:地点和环境|好友|陌生人|画面状态)[\s*]*[：:]")  # 请求里的别的项：新鲜事到此为止
+_NOTHING = re.compile(r"^(?:无|没有|暂无|none)(?:$|[，,。.；;（(、\s]|明显|变化|什么|新鲜)", re.IGNORECASE)
+_NOTHING_WORDS = ("没什么变化", "没啥变化", "没有变化", "无变化", "没有明显", "无明显", "和上次差不多", "跟上次差不多", "和上次基本一样")
+
+
+def parse_news(text: str) -> str:
+    """眼睛描述里的“新鲜事”一项：多行条目用“；”连起来；无 / 没有 / 找不到都返回空。"""
+    lines = text.splitlines()
+    for i, raw in enumerate(lines):
+        m = _NEWS_HEAD.match(raw.strip())
+        if m is None:
+            continue
+        items = [m.group(1) or ""]
+        for more in lines[i + 1 :]:
+            if not more.strip():
+                if any(p.strip() for p in items):
+                    break
+                continue  # 标题下面空一行再列条目
+            if _NEXT_ITEM.match(more):
+                break
+            items.append(_BULLET.sub("", more))
+        parts = [p.strip().strip("*").strip().rstrip("。.").strip() for p in items]
+        news = "；".join(p for p in parts if p)
+        if not news or _NOTHING.match(news) or any(w in news for w in _NOTHING_WORDS):
+            return ""
+        return news[:NEWS_MAX]
+    return ""
+
 
 AROUND_REQUEST = """这是原地转一圈拍的四张图（前、右、后、左）。每个方向一两句：有什么地形 / 建筑、有没有人（认不出名字，只写几个人、穿什么、在干什么）。
 最后一句总结现在在什么地方。"""
@@ -54,6 +93,9 @@ class Eyes:
         label_keep: float = 7.0,  # 名字多久内看到过才算在这张图里
         clock: Callable[[], float] = time.monotonic,
         note: Callable[[float, float], str] | None = None,  # (now, 缩放) → 位置说明；YOLO 感知层时用 scene_note，代替 labels
+        proactive: ProactiveConfig | None = None,  # 看场合主动开口；None 或 enabled = false 时照旧
+        busy: Callable[[float], bool] = lambda now: False,  # 好友在不在身边：在就看得勤一点
+        on_news: Callable[[str], None] = lambda text: None,  # 自动看时挑出了新鲜事（在眼睛线程里调）
     ) -> None:
         self.cfg = cfg
         self.describe = describe
@@ -63,6 +105,9 @@ class Eyes:
         self.label_keep = label_keep
         self.clock = clock
         self.note = note
+        self.proactive = proactive if proactive is not None and proactive.enabled else None
+        self.busy = busy
+        self.on_news = on_news
         self.latest: tuple[str, float] | None = None
         self.last_look = float("-inf")
         self.look_request = LOOK_REQUEST
@@ -77,7 +122,14 @@ class Eyes:
         if self.blackout():
             return False
         since = now - self.last_look
-        return since >= self.cfg.auto_look_max or (self._poked and since >= self.cfg.auto_look_min)
+        longest = self._longest(now)
+        return since >= longest or (self._poked and since >= self.cfg.auto_look_min)
+
+    def _longest(self, now: float) -> float:
+        """最久多久一定看一次：好友在身边时用 auto_look_busy。"""
+        if self.proactive is not None and self.busy(now):
+            return self.proactive.auto_look_busy
+        return self.cfg.auto_look_max
 
     def tick(self, now: float) -> bool:
         """后台线程每秒调一次：到了时机就看一眼。返回这次有没有去看。"""
@@ -86,12 +138,29 @@ class Eyes:
         frame = self.frame()
         if frame is None:
             return False
+        asked = self._previous(now) is not None
         try:
-            self.describe_frame(frame, now)
+            text = self.describe_frame(frame, now, news=True)
         except Exception as exc:
             log.warning("眼睛这次没看成：%s", exc)
             self.last_look = now  # 别每秒都重试，等下一个时机
+            return True
+        news = parse_news(text) if asked else ""
+        if news:
+            try:
+                self.on_news(news)
+            except Exception:
+                log.exception("新鲜事没交出去")
         return True
+
+    def _previous(self, now: float) -> str | None:
+        """要新鲜事时拿来比的上一份描述（带多久前）；没开、没有、太旧都是 None。"""
+        if self.proactive is None or self.latest is None:
+            return None
+        text, t = self.latest
+        if now - t > self.proactive.prev_max_age:
+            return None
+        return f"上次（{now - t:.0f} 秒前）看到的：\n{text}\n\n"
 
     def run(self, stop: threading.Event) -> None:
         while not stop.wait(1.0):
@@ -100,7 +169,8 @@ class Eyes:
             except Exception:
                 log.exception("眼睛出错")
 
-    def describe_frame(self, frame: np.ndarray, now: float) -> str:
+    def describe_frame(self, frame: np.ndarray, now: float, news: bool = False) -> str:
+        """news：自动看时对比上一份描述、多要一项新鲜事（大脑自己 look 不要）。"""
         view = fit(frame, tuple(self.cfg.image_size))
         scale = view.shape[1] / frame.shape[1]
         if self.note is not None:
@@ -108,7 +178,9 @@ class Eyes:
         else:
             recent = {n: v for n, v in self.labels().items() if now - v[4] <= self.label_keep}
             note = label_note(recent, scale)
-        content = [image_block(view, self.cfg.jpeg_quality), {"type": "text", "text": note + "\n\n" + self.look_request}]
+        previous = self._previous(now) if news else None
+        request = previous + LOOK_REQUEST_NEWS if previous is not None else self.look_request
+        content = [image_block(view, self.cfg.jpeg_quality), {"type": "text", "text": note + "\n\n" + request}]
         with self._lock:
             text = self.describe(content).strip()
         self._keep(text, now)

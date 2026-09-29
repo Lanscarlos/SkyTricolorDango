@@ -128,6 +128,34 @@ def test_run_brain_prompt_carries_recent_turns(tmp_path, monkeypatch):
     assert "## 上次聊到哪" in prompt and "懒洋洋大王：「明天跑暴风眼」 → 我：行啊" in prompt
 
 
+def test_run_brain_wires_proactive(tmp_path, monkeypatch):
+    import skydango.brain.eyes as eyes_mod
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    seen = {}
+    real = eyes_mod.Eyes
+
+    def spy(*a, **k):
+        seen.update(k)
+        return real(*a, **k)
+
+    monkeypatch.setattr(eyes_mod, "Eyes", spy)
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0)
+    assert seen["proactive"] is cfg.proactive and seen["busy"](0.0) is False  # 没开 env：好友永远不在身边
+    body = seen["on_news"].__self__
+    assert seen["on_news"].__func__.__name__ == "news" and body.friend_names.__name__ == "names"  # cli 的 _friend_names
+
+
+def test_profile_template_has_likes(tmp_path):
+    import argparse
+
+    assert "## 喜好和看法" in cli.PROFILE_TEMPLATE and "樱花发型天下第一" in cli.PROFILE_TEMPLATE
+    cfg = Config()
+    cfg.reply.memory_dir = str(tmp_path)
+    cli.cmd_memory(cfg, argparse.Namespace(action="init"))
+    assert "## 喜好和看法" in (tmp_path / "profile.md").read_text(encoding="utf-8")
+
+
 def test_memory_update_uses_claude(tmp_path, monkeypatch):
     import argparse
 
