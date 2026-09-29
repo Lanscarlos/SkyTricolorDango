@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from ..chat.memory import MemoryStore
+import time
+
+from ..chat.memory import MemoryStore, format_gap
+from ..chat.recall import render_turn
 from ..chat.responder import identity_sections
 from ..config import ReplyConfig
 
@@ -31,7 +34,9 @@ BRAIN_RULES = """
 - 你只能原地挪几步（move），不能飞、跑图、弹琴、送东西，也没法自己找路去远处（身体没有这些能力）。想跟着哪个好友去别处，可以请他牵你（比如“牵我一下”），
   牵上手他就能带着你走（身体会自动接受好友的牵手；陌生人的牵手不会接，别请陌生人牵）。没牵手就别答应跟去远处（不说“我跟着你”“走呗”），
   不想去就自然地推掉，比如“我先挂会儿”“今天懒得动，你们去吧”“我在这儿等你们”。
-- 记住聊过的内容和对方的名字，别前后矛盾；被问到之前聊过的事，翻一下记忆直接答；真不知道就老实说忘了。
+- 记住聊过的内容和对方的名字，别前后矛盾。有人提起以前的事（“昨天你不是说要……”“你之前不是这么说的”“你忘了吗”），
+  先用 recall 查一下原话再答：查到了就照实接上（说过就认，记错了就承认）；查不到可以换个关键词再查一次，还是没有就说记不清了，
+  别顺着对方编，也别硬说自己没说过。
 
 ## 身份
 - 你就以这个人设和大家玩，不要主动提自己是 AI，也不要用“作为 AI”“我是语言模型”这种说法。
@@ -103,28 +108,52 @@ def static_prompt(reply: ReplyConfig) -> str:
     return BRAIN_RULES.format(max_chars=reply.max_chars)
 
 
-def memory_prompt(reply: ReplyConfig, store: MemoryStore | None) -> str:
-    """人设、好友、长期记忆 + 随手记。只在开一段新记录（启动 / 压缩）时读：改系统提示词会让后面整段对话的缓存失效。"""
+def recent_turns(store: MemoryStore, n: int, now: float | None = None) -> str:
+    """重启时带给大脑的最近 n 轮聊天原话（history.jsonl）；没有就返回空。放在系统提示词里：自动压缩时不会被总结掉。"""
+    turns = store.history.load(n)
+    if not turns:
+        return ""
+    gap = (time.time() if now is None else now) - turns[-1].t
+    when = "不到 1 分钟前" if gap < 60 else f"{format_gap(gap)}前"
+    return (
+        f"## 上次聊到哪（最近 {len(turns)} 轮聊天原话，“我”是你自己说的；最后一轮是 {when}）\n"
+        "接着聊的时候可以用上；隔得久了别硬接老话题。更早的用 recall 查。\n"
+        + "\n".join(render_turn(t) for t in turns)
+    )
+
+
+def memory_prompt(reply: ReplyConfig, store: MemoryStore | None, history_turns: int = 0, now: float | None = None) -> str:
+    """人设、好友、长期记忆 + 随手记 + 最近几轮原话。只在启动时读：改系统提示词会让后面整段对话的缓存失效。"""
     if store is None:
         return "\n\n".join(identity_sections(reply))
     notes = store.notes()
     inbox = store.inbox()
     if inbox:
         notes = (notes + "\n\n" if notes else "") + "刚记下的：\n" + inbox
-    return "\n\n".join(identity_sections(reply, store.profile(), store.friends(), notes))
+    parts = identity_sections(reply, store.profile(), store.friends(), notes)
+    recent = recent_turns(store, history_turns, now) if history_turns > 0 else ""
+    return "\n\n".join(parts + [recent] if recent else parts)
 
 
 PANEL_AUTO_NOTE = "- 聊天面板平时关着，画面外的人说话可能晚半分钟才看到；想马上看最近的聊天就调 chat_log。\n"
 
 
-def brain_prompt(reply: ReplyConfig, store: MemoryStore | None, quick_around: bool = False, panel_auto: bool = False) -> str:
+def brain_prompt(
+    reply: ReplyConfig,
+    store: MemoryStore | None,
+    quick_around: bool = False,
+    panel_auto: bool = False,
+    history_turns: int = 0,
+    now: float | None = None,
+) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
     quick_around：打开了感知层，look_around 是 YOLO 连续转一圈（几秒），不是眼睛看四张图（十几秒）。
-    panel_auto：聊天面板按需打开（[panel] mode = "auto"），平时关着。"""
+    panel_auto：聊天面板按需打开（[panel] mode = "auto"），平时关着。
+    history_turns：带上 history.jsonl 最近几轮原话（重启后接得上话），0 不带。"""
     rules = static_prompt(reply)
     if quick_around:
         rules = rules.replace("（要十几秒，别常用）", "（几秒就好）")
     if panel_auto:
         rules = rules.replace("- 记住聊过的内容和对方的名字", PANEL_AUTO_NOTE + "- 记住聊过的内容和对方的名字", 1)
-    return memory_prompt(reply, store) + "\n\n" + rules
+    return memory_prompt(reply, store, history_turns, now) + "\n\n" + rules

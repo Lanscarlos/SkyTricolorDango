@@ -101,6 +101,33 @@ def test_run_brain_memory_uses_claude(tmp_path, monkeypatch):
     assert args[args.index("--system-prompt") + 1] == "你负责记笔记"
 
 
+def test_run_brain_gives_recall_the_memory_even_in_dry_run(tmp_path, monkeypatch):
+    import skydango.brain.tools as tools
+    from skydango.chat.memory import MemoryStore
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    assert cfg.reply.dry_run
+    seen = []
+    real = tools.ToolBox
+    monkeypatch.setattr(tools, "ToolBox", lambda *a, **k: seen.append(k.get("memory")) or real(*a, **k))
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert isinstance(seen[0], MemoryStore) and seen[0].dir == MemoryStore(cfg.reply.memory_dir).dir
+
+
+def test_run_brain_prompt_carries_recent_turns(tmp_path, monkeypatch):
+    import time
+
+    from skydango.chat.memory import MemoryStore
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    MemoryStore(cfg.reply.memory_dir).history.append("新的聊天消息：\n懒洋洋大王：「明天跑暴风眼」", "行啊", time.time() - 3600)
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    prompt = (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+    assert "## 上次聊到哪" in prompt and "懒洋洋大王：「明天跑暴风眼」 → 我：行啊" in prompt
+
+
 def test_memory_update_uses_claude(tmp_path, monkeypatch):
     import argparse
 
