@@ -76,8 +76,8 @@ def test_prompt_says_to_recall_before_answering_about_the_past():
 # ---- 重启时带上最近几轮聊天原话 ----
 def _history_store(tmp_path, now):
     store = MemoryStore(tmp_path)
-    for i in range(5):  # 越往后越新，最后一轮是 14 小时前
-        store.history.append(f"新的聊天消息：\n懒洋洋大王：「第{i}句」", f"回{i}", now - 14 * 3600 - (4 - i) * 60)
+    for i in range(5):  # 越往后越新，最后一轮是 14 小时（零 30 秒）前：时间戳存盘时四舍五入到 0.1 秒，正好 14 小时会变成 13 小时 59 分
+        store.history.append(f"新的聊天消息：\n懒洋洋大王：「第{i}句」", f"回{i}", now - 14 * 3600 - 30 - (4 - i) * 60)
     return store
 
 
