@@ -138,3 +138,92 @@ def test_objects_report_orders_sections():
 
 def test_protocol_version_and_system():
     assert OBJECTS_PROTOCOL.version == OBJECT_PROMPT_VERSION and OBJECTS_PROTOCOL.system == OBJECT_SYSTEM
+
+
+# ---- perception label <数据集> --objects ----
+def _dataset(tmp_path, monkeypatch):
+    """两张图的数据集：0000 有一个 player + 一个 name_tag，0001 没有标注文件。假 Claude：
+    没有候选时补一张 bench、说 P1 是先祖；有候选时照它的猜测全部认可。"""
+    import re
+
+    from skydango import cli
+    from skydango.imageio import imwrite
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "ds"
+    (root / "images" / "train").mkdir(parents=True)
+    (root / "labels" / "train").mkdir(parents=True)
+    for i in range(2):
+        imwrite(root / "images" / "train" / f"{i:04d}.jpg", np.full((H, W, 3), 40 * i, np.uint8))
+    (root / "labels" / "train" / "0000.txt").write_text("0 0.500000 0.500000 0.050000 0.200000\n1 0.500000 0.350000 0.060000 0.030000\n",
+                                                        encoding="utf-8")
+    sent = []
+
+    def run(cmd, env, cwd, content, timeout):
+        texts = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("帧 ")]
+        sent.append(cmd[cmd.index("--system-prompt") + 1])
+        out = {}
+        for t in texts:
+            stem = t.split()[1].split("：")[0]
+            hints = re.findall(r"(\d+)=\[[^\]]*\]\(猜 (\w+)\)", t)
+            if hints:
+                out[stem] = {"boxes": {i: {"cls": c} for i, c in hints}, "missing": [], "spirits": [], "unsure": ""}
+            else:
+                out[stem] = {"boxes": {}, "missing": [{"cls": "bench", "box": [100, 700, 400, 900]}], "spirits": ["P1"], "unsure": ""}
+        return {"result": json.dumps(out), "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (["claude"], {}))
+    monkeypatch.setattr("skydango.brain.claude.one_shot_message", run)
+    return root, sent
+
+
+def classes_in(path):
+    return [line.split()[0] for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_objects_mode_rewrites_labels_and_backs_up(tmp_path, monkeypatch):
+    from skydango import cli
+
+    root, sent = _dataset(tmp_path, monkeypatch)
+    cli.main(["perception", "label", str(root), "--objects"])
+    assert classes_in(root / "labels" / "train" / "0000.txt") == ["9", "1", "6"]  # player → 先祖，name_tag 不动，补一张座位
+    assert classes_in(root / "labels" / "train" / "0001.txt") == ["6"]  # 没标注文件的新图：P1 不存在，只补座位
+    (backup,) = (root / "_backup").iterdir()  # 只跑了一次：一份备份
+    assert (backup / "train" / "0000.txt").read_text(encoding="utf-8").startswith("0 0.500000")
+    assert (root / "_preview_objects" / "0000.jpg").exists()
+    report = (root / "_assist" / "objects.md").read_text(encoding="utf-8")
+    assert report.index("- 0000：P1") < report.index("Claude 补了物品框")
+    assert "9: spirit" in (root / "data.yaml").read_text(encoding="utf-8")
+    assert sent and all(s.startswith("你是游戏截图的目标检测标注员") for s in sent)
+
+
+def test_objects_mode_rerun_is_stable(tmp_path, monkeypatch):
+    from skydango import cli
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    cli.main(["perception", "label", str(root), "--objects"])
+    first = {p.name: classes_in(p) for p in (root / "labels" / "train").glob("*.txt")}
+    cli.main(["perception", "label", str(root), "--objects"])  # 已有的物品当候选再核对一遍，认可 → 不丢、不重复
+    assert {p.name: classes_in(p) for p in (root / "labels" / "train").glob("*.txt")} == first
+
+
+def test_objects_mode_rejects_other_modes(tmp_path, monkeypatch):
+    import pytest
+
+    from skydango import cli
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        cli.main(["perception", "label", str(root), "--objects", "--assist"])
+
+
+def test_objects_mode_needs_object_classes(tmp_path, monkeypatch):
+    import pytest
+
+    from skydango import cli
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    (tmp_path / "c.toml").write_text('[perception]\nclasses = ["player", "name_tag", "social_ring", "self", "player_unlit", "typing"]\n',
+                                     encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main(["-c", str(tmp_path / "c.toml"), "perception", "label", str(root), "--objects"])
