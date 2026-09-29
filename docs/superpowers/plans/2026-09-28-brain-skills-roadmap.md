@@ -396,6 +396,8 @@ def test_describe(clock): ...                          # "正在做：盯着小�
 
 ## E. `move` 工具接入 + 标定
 
+> **2026-09-29 进度**：接入已完成（`Body.move`、ToolBox / MCP 工具 `move`、提示词「移动」一节、主人命令窗口放宽 move、`run` 里接上 `Locomotion`）；**还差真机标定和验收**。
+
 按 `docs/superpowers/specs/2026-09-27-brain-move-design.md` 实现（`Body.move`、ToolBox / MCP、提示词、主人命令窗口放宽）。`brain/locomotion.py` 已经有了。
 标定：按住 W 0.1 / 0.2 / 0.3 / 0.5 s 各走多远，用 YOLO 框高的变化量记下来（F 期要用"走一步框高涨多少"），写进 game-ops §2 和 `move_step` 默认值。
 

@@ -223,7 +223,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 设计见 `docs/superpowers/specs/2026-09-27-brain-claude-code-design.md`（身体部分见 `2026-09-27-brain-design.md`）。
 - **`run` 默认就是大脑模式**；`run --no-brain` 进旧的普通 Agent（`agent.py`），只留作调试（`--brain` 保留兼容，不用加）
 - 大脑 = 常驻的无界面 Claude Code（`claude -p` stream-json，订阅登录，`--model sonnet --effort low`）；身体的工具经本机 MCP 服务（`sky`）给它，
-  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / say / emote / set_request_policy / camera / camera_reset / check_friend / stop_task / panel_read / panel_press / panel_close
+  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / say / emote / set_request_policy / camera / camera_reset / move / check_friend / stop_task / panel_read / panel_press / panel_close
 - **和用户自己的 Claude Code 隔离**：单独配置目录 `.brain-claude/` + `claude setup-token` 生成的令牌（用户环境变量 `SKYDANGO_CLAUDE_TOKEN`）。
   沿用用户登录会把用户的插件、钩子、技能一起加载进大脑（实测）。子进程里去掉 `ANTHROPIC_API_KEY`（有它时 `-p` 一定用它）
 - 眼睛 = 一次性 `claude -p --model haiku`：有人来 / 走、画面大变（隔 ≥20 秒）或 3 分钟没看时，把身体最近一帧写成文字；大脑醒来的消息里只有文字，要原图才 `look(image=true)`
@@ -235,6 +235,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   交给身体按主循环的节拍闭环做。同时最多一个技能；黑屏、超时、出错都算失败；结束时发 `task_done` / `task_failed` 事件叫醒大脑，
   状态里有"正在做：…"；`stop_task` 叫停；退出时先停技能再复原镜头。**框架有了，还没有具体技能**（track / approach / light_candle 见计划 D~G 期）。
   状态里的"画面里：小明（左边·近）…"来自感知层 `people()`（暂停中或最近一帧超过 1 秒就是空的）
+- `move(direction, steps)`：W/A/S/D 小步走（`brain/locomotion.py`，每步按住 `[brain] move_step` 秒，**步长没在真机标定**）；一次 1~3 步、两次隔 `move_min_interval` 秒，
+  牵着手要 `force=true`，走出去没有复位；卡洛的 `#` 命令后 `owner_window` 秒内一次最多 6 步、不用等间隔、牵手不拦（结果标"（主人命令模式）"）。
+  聊天记录面板开着也能走（卡片 `allows` 里有 `move`），别的面板挡着照 `clear_view` 处理；dry-run 不按键
 - 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；牵着手时 `emote` 要 `force=true`；陌生人只能接点火
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒或额度用完：聊天交给 `[llm]`（DeepSeek）备用回复，额度用完 10 分钟后再试
 - 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；额度用完时这一笔跳过，notes 下次再整理

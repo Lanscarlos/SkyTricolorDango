@@ -30,6 +30,7 @@ from ..vision.panels import UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people
 from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
+from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
 from .skills import SkillRunner
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class Body:
         social=None,  # game.social.SocialHandler：按规则秒接请求
         emotes=None,  # game.emotes.EmotePlayer
         camera=None,  # brain.camera.Camera
+        locomotion=None,  # brain.locomotion.Locomotion：W/A/S/D 小步走
         friend_checker=None,  # game.friendtree.FriendChecker：点人物看好友树
         panels=None,  # vision.panels.PanelWatcher：画面上开着哪些面板
         panel_ops=None,  # game.panels.PanelOps：关面板、按按钮
@@ -85,6 +87,7 @@ class Body:
         self.social = social
         self.emotes = emotes
         self.camera = camera
+        self.locomotion = locomotion
         self.friend_checker = friend_checker
         self.panels = panels
         self.panel_ops = panel_ops
@@ -116,6 +119,7 @@ class Body:
         self._holding_since = 0.0
         self._accepted_hand: tuple[str, float] | None = None
         self._owner_window_until = float("-inf")  # now < 这个值 = 卡洛的 # 命令还在生效
+        self._last_move = float("-inf")
         self._nearby: set[str] = set()
         self._strangers = 0  # 上次看到几个陌生人（YOLO 感知层才有）
         self._requests: set[tuple[str, str]] = set()
@@ -630,7 +634,7 @@ class Body:
             parts.append("刚说过：" + " | ".join(self.said[-3:]))
         parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
-            parts.append("dry-run（说话、动作、转视角都不会真的执行）")
+            parts.append("dry-run（说话、动作、转视角、走动都不会真的执行）")
         return " / ".join(parts)
 
     def chat_log(self, n: int = 20) -> str:
@@ -931,6 +935,36 @@ class Body:
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
         self._forget_self()
         return "镜头现在：" + result
+
+    def move(self, direction: str, steps: int = 1, force: bool = False, live: bool = False) -> str:
+        """小步走（W/A/S/D），走出去回不去、没有复位。卡洛的 # 命令生效期间：一次最多走两倍步数、不用等间隔、牵着手也不用 force，
+        真用到了放宽就在结果后面标“（主人命令模式）”。"""
+        if self.locomotion is None:
+            raise ToolError("没有移动能力")
+        if direction not in MOVE_KEYS:
+            raise ToolError(f"不认识的移动方向：{direction}（可以用 {'、'.join(MOVE_KEYS)}）")
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在走不了")
+        now = self.clock()
+        owner = now < self._owner_window_until
+        relaxed = owner and steps > MOVE_MAX_STEPS
+        if self.holding and not force:
+            if not owner:
+                raise ToolError(f"正牵着 {self.holding} 的手，走动会松手；确定要松手再走就传 force=true")
+            relaxed = True
+        wait = self.cfg.brain.move_min_interval - (now - self._last_move)
+        if wait > 0:
+            if not owner:
+                raise ToolError(f"刚走过，等 {math.ceil(wait)} 秒再走（先看看走到哪了）")
+            relaxed = True
+        max_steps = MOVE_MAX_STEPS * 2 if owner else MOVE_MAX_STEPS
+        note = self.clear_view("move", live)
+        self._last_move = now
+        if self._dry(live):
+            return f"dry-run：没真的走（{direction} ×{max(1, min(steps, max_steps))}）{note}"
+        result = self.locomotion.move(direction, steps, max_steps)
+        self._ref_thumb = None  # 自己走的，不算画面大变
+        return result + ("（主人命令模式）" if relaxed else "")
 
     def stop_task(self) -> str:
         return self.skills.cancel(self, "大脑叫停")

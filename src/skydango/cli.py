@@ -1308,6 +1308,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     from .brain.events import EventQueue
     from .brain.eyes import Eyes, eyes_command
     from .brain.images import scene_note
+    from .brain.locomotion import Locomotion
     from .brain.loop import Brain, log_brain_message
     from .brain.mcp_server import SkyServer
     from .brain.prompt import brain_prompt
@@ -1349,8 +1350,8 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     fallback = Responder(make_llm(dataclasses.replace(cfg.llm, timeout=10.0, max_retries=0)), cfg.reply)
     body = Body(
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
-        env=env, social=social, emotes=emotes, camera=camera, friend_checker=friend_checker, fallback=fallback, store=live_store, notes=notes, run=run,
-        viewer=viewer, panel=panel, panels=panels, panel_ops=panel_ops,
+        env=env, social=social, emotes=emotes, camera=camera, locomotion=Locomotion(dev, cfg.brain.move_step), friend_checker=friend_checker,
+        fallback=fallback, store=live_store, notes=notes, run=run, viewer=viewer, panel=panel, panels=panels, panel_ops=panel_ops,
     )
     work = run.path / "brain"
     eyes = Eyes(

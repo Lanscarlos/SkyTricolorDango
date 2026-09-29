@@ -166,6 +166,17 @@ def test_camera_refused_by_unverified_panel(clock):
     assert ops.closed == [] and cam.moves == []
 
 
+
+def test_move_refused_by_unverified_panel(clock):
+    from test_brain_body import FakeLocomotion
+
+    loco = FakeLocomotion()
+    b, panels, ops, _, _ = setup(clock, locomotion=loco)
+    panels.blocks["move"] = [EMOTE]
+    with pytest.raises(ToolError, match="被「动作面板（未核对）」挡着"):
+        b.move("forward", live=True)
+    assert loco.moves == []
+
 def test_unknown_panel_not_autoclosed(clock):
     b, panels, ops, _, _ = setup(clock, camera=FakeCamera())
     panels.blocks["camera"] = [DIALOG]

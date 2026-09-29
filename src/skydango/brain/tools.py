@@ -33,6 +33,11 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "steps 1~4，默认 1。转之前身体会关掉聊天记录面板，转完再打开。"
     ),
     "camera_reset": "把镜头转回原位（按之前转过的反着转回去）。",
+    "move": (
+        "小步走动，direction：forward 前进 / back 后退 / left 向左 / right 向右（相对镜头朝向）；steps 1~3，默认 1。"
+        "走完用 status / look 看看走到哪了再决定接着走不走；两次之间要隔几秒。走出去回不去（没有复位），"
+        "牵着手时会松手，确定要松手才传 force=true。"
+    ),
     "check_friend": (
         "确认画面里某个人是不是你的好友：身体点一下这个人，右边会打开好友树面板，截图给你看，看完自动关掉。"
         "x、y 是这个人身上的一点，按 15 秒内 look(image=true) 那张 1280×720 的图给。"
@@ -55,7 +60,7 @@ def descriptions(sweep: bool) -> dict[str, str]:
 
 TOOL_NAMES = list(DESCRIPTIONS)
 ACTIONS = {
-    "say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend", "stop_task", "panel_press", "panel_close"
+    "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "stop_task", "panel_press", "panel_close"
 }  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
 
@@ -179,6 +184,9 @@ class ToolBox:
             return lambda: b.camera_move(action, steps)
         if name == "camera_reset":
             return b.camera_reset
+        if name == "move":
+            direction, steps, force = _str(a, "direction"), _int(a, "steps", 1), _bool(a, "force", False)
+            return lambda: b.move(direction, steps, force)
         if name == "check_friend":
             x, y = _int(a, "x"), _int(a, "y")
             return lambda: b.check_friend(x, y)

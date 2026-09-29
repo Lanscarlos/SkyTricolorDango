@@ -213,6 +213,16 @@ def test_run_brain_panels_disabled(tmp_path, monkeypatch):
     assert seen["panels"] is None and seen["panel_ops"] is None
 
 
+
+def test_run_brain_wires_locomotion(tmp_path, monkeypatch):
+    from skydango.brain.locomotion import Locomotion
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.brain.move_step = 0.2
+    seen = spy_body(monkeypatch)
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0)
+    assert isinstance(seen["locomotion"], Locomotion) and seen["locomotion"].step == 0.2
+
 def test_brain_env_without_mcp_mentions_no_brain(monkeypatch):
     import importlib.util
 

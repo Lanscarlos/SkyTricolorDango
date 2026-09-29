@@ -28,6 +28,7 @@ def test_real_cards_load():
     assert set(cards) == {"chat_log", "emote_panel", "wheel_editor", "friend_tree", "shared_invite"}
     assert not any(c.verified for c in cards.values())
     assert cards["chat_log"].allows == ACTIONS
+    assert "move" in ACTIONS  # WASD 在聊天记录面板开着时也能走（game-ops §2）
     assert cards["shared_invite"].never == ("加入",) and cards["shared_invite"].texts[0].any == ("共享空间",)
     assert cards["shared_invite"].quick == ()
     assert cards["emote_panel"].close_ways == ("key:18",) and cards["emote_panel"].close_auto

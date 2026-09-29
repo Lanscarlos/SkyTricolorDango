@@ -503,6 +503,98 @@ def test_camera_refused_in_blackout_and_dry_run(clock):
     assert dry.camera_move("left", 1).startswith("dry-run")
 
 
+
+class FakeLocomotion:
+    def __init__(self):
+        self.moves = []
+
+    def move(self, direction, steps=1, max_steps=3):
+        self.moves.append((direction, steps, max_steps))
+        return f"前进走了 {min(steps, max_steps)} 步"
+
+
+def test_move_walks_and_refuses_while_holding_unless_forced(clock):
+    loco = FakeLocomotion()
+    b, _, _, _ = body(clock, live=True, locomotion=loco)
+    assert b.move("forward", 2) == "前进走了 2 步" and loco.moves == [("forward", 2, 3)]
+    clock.advance(10)
+    b.holding = "懒洋洋大王"
+    with pytest.raises(ToolError, match="force=true"):
+        b.move("forward")
+    assert b.move("forward", force=True) == "前进走了 1 步"
+
+
+def test_move_min_interval(clock):
+    loco = FakeLocomotion()
+    b, _, _, _ = body(clock, live=True, locomotion=loco)
+    b.cfg.brain.move_min_interval = 3.0
+    b.move("forward")
+    clock.advance(1)
+    with pytest.raises(ToolError, match="刚走过"):
+        b.move("back")
+    clock.advance(2)
+    b.move("back")
+    assert [m[0] for m in loco.moves] == ["forward", "back"]
+
+
+def test_move_refused_without_locomotion_in_blackout_and_bad_direction(clock):
+    b, _, _, _ = body(clock, live=True)
+    with pytest.raises(ToolError, match="没有移动"):
+        b.move("forward")
+    loco = FakeLocomotion()
+    b, _, _, _ = body(clock, live=True, locomotion=loco)
+    with pytest.raises(ToolError, match="不认识的移动方向"):
+        b.move("up")
+    b.blackout = True
+    with pytest.raises(ToolError, match="黑"):
+        b.move("forward")
+    assert loco.moves == []
+
+
+def test_move_dry_run_does_not_press_but_live_does(clock):
+    loco = FakeLocomotion()
+    b, _, _, _ = body(clock, locomotion=loco)  # dry-run
+    assert b.move("left", 2).startswith("dry-run：没真的走（left ×2）")
+    with pytest.raises(ToolError, match="不认识的移动方向"):
+        b.move("up")
+    assert loco.moves == []
+    clock.advance(10)
+    assert b.move("left", live=True) == "前进走了 1 步" and loco.moves == [("left", 1, 3)]
+
+
+def test_owner_window_relaxes_move(clock):
+    loco = FakeLocomotion()
+    b, _, reader, _ = body(clock, live=True, locomotion=loco)
+    b.cfg.brain.owner_name = "卡洛"
+    b.cfg.brain.owner_window = 30.0
+    b.holding = "懒洋洋大王"
+    reader.batches = [[msg("#过来", speaker="卡洛")]]
+    b.step()
+    assert b.move("forward", 6).endswith("（主人命令模式）")  # 牵着手不用 force
+    assert b.move("forward", 1) == "前进走了 1 步（主人命令模式）"  # 不用等间隔
+    assert loco.moves == [("forward", 6, 6), ("forward", 1, 6)]
+    clock.advance(31)
+    with pytest.raises(ToolError, match="force=true"):
+        b.move("forward")
+    b.holding = None
+    assert b.move("forward", 6) == "前进走了 3 步" and loco.moves[-1] == ("forward", 6, 3)
+
+
+def test_owner_note_only_when_relaxation_used(clock):
+    loco = FakeLocomotion()
+    b, _, reader, _ = body(clock, live=True, locomotion=loco)
+    b.cfg.brain.owner_name = "卡洛"
+    reader.batches = [[msg("#过来", speaker="卡洛")]]
+    b.step()
+    assert b.move("forward", 2) == "前进走了 2 步"  # 没超过平时的限制：不标
+
+
+def test_move_forgets_scene_reference(clock):
+    b, _, _, _ = body(clock, live=True, locomotion=FakeLocomotion())
+    b._ref_thumb = "旧"
+    b.move("forward")
+    assert b._ref_thumb is None  # 自己走的，不算画面大变
+
 # ---- 手动控制：live=True 时 dry-run 下也真执行，护栏照旧 ----
 def test_live_say_in_dry_run_sends_and_remembers(clock):
     b, device, _, _ = body(clock)  # dry-run

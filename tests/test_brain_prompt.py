@@ -59,3 +59,10 @@ def test_brain_prompt_panel_auto():
     line = "聊天面板平时关着，画面外的人说话可能晚半分钟才看到"
     assert line not in brain_prompt(ReplyConfig(), None)
     assert line in brain_prompt(ReplyConfig(), None, panel_auto=True)
+
+
+def test_prompt_explains_move_and_no_longer_says_cannot_walk():
+    text = static_prompt(ReplyConfig())
+    assert "## 移动（move）" in text
+    assert "你自己不能走" not in text  # 以前写死"不能走"：大脑会一直拒绝，工具形同虚设
+    assert "回不去" in text and "force=true" in text

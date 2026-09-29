@@ -68,6 +68,10 @@ class FakeBody:
     def camera_reset(self):
         raise ToolError("没有视角控制")
 
+    def move(self, direction, steps, force):
+        self.calls.append(("move", direction, steps, force))
+        return "ok"
+
 
 class FakeEyes:
     def __init__(self):
@@ -87,10 +91,11 @@ class FakeEyes:
 def test_tool_names_and_actions():
     assert TOOL_NAMES == [
         "look", "look_at", "look_person", "look_around", "status", "chat_log", "say", "emote", "set_request_policy", "camera", "camera_reset",
-        "check_friend", "stop_task", "panel_read", "panel_press", "panel_close",
+        "move", "check_friend", "stop_task", "panel_read", "panel_press", "panel_close",
     ]
     assert ACTIONS == {
-        "say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend", "stop_task", "panel_press", "panel_close"
+        "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "stop_task", "panel_press",
+        "panel_close",
     }
 
 
@@ -158,9 +163,11 @@ def test_run_dispatches_with_defaults():
     tb.run("look_person", {"name": "小明"})
     tb.begin_turn()  # 一轮最多 6 次工具
     tb.run("stop_task", {})
+    tb.run("move", {"direction": "forward"})
+    tb.run("move", {"direction": "left", "steps": 2, "force": True})
     assert body.calls == [
         ("chat_log", 20), ("emote", "鞠躬", False), ("camera", "left", 1), ("policy", "*", "hug", False), ("look_at", 1, 2, 30, 40),
-        ("look_person", "小明"), ("stop_task",),
+        ("look_person", "小明"), ("stop_task",), ("move", "forward", 1, False), ("move", "left", 2, True),
     ]
 
 
