@@ -3,7 +3,7 @@
 用在名字标签认不出的时候：点过火的陌生人外观和好友一样，只能靠头顶标签分，标签被挡住 / 太远时就不知道。
 
 面板长什么样、怎么看出"是不是好友"还没录到，所以这里不写死判断：点开后把截图原样交给大脑，让它自己看；
-身体只负责点、截图、关面板、把聊天记录面板恢复原样。关面板按 ESC（用户确认）；`close` 可以配多个办法依次试，
+身体只负责点、截图、关面板；聊天记录面板向 PanelManager 借，归还时它来恢复。关面板按 ESC（用户确认）；`close` 可以配多个办法依次试，
 每试一次截图看右侧是不是变回点之前的样子。
 """
 
@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import numpy as np
@@ -41,14 +42,12 @@ class FriendChecker:
         self,
         device,
         cfg: FriendCheckConfig,
-        panel_visible: Callable[[np.ndarray], bool] | None = None,  # 聊天记录面板开没开（点屏幕会关掉它）
-        panel_key: int = 46,
+        panel=None,  # chat.panel.PanelManager：点屏幕会关掉聊天记录面板，借着点、完了归还
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.device = device
         self.cfg = cfg
-        self.panel_visible = panel_visible
-        self.panel_key = panel_key
+        self.panel = panel
         self.sleep = sleep
 
     def _side(self, frame: np.ndarray) -> np.ndarray:
@@ -64,8 +63,7 @@ class FriendChecker:
     def check(self, x: int, y: int) -> CheckResult:
         """点 (x, y)（整张截图坐标）打开好友树，截图，再关掉。"""
         frame = self.device.screenshot()
-        panel_was_open = self.panel_visible(frame) if self.panel_visible else False
-        try:
+        with self.panel.borrow("friend_check", close=False) if self.panel is not None else nullcontext():
             if not touch_mode(frame):  # 键盘模式下第一下触摸只切到触屏模式（game-ops §1）
                 self.device.tap(x, y)
                 self.sleep(0.6)
@@ -90,9 +88,6 @@ class FriendChecker:
                 if not closed_by:
                     log.warning("好友树面板没关上（试了 %s），请手动关掉", "、".join(self.cfg.close))
             return CheckResult(before, opened, after, changed, not self.looks_open(self.change(before, after)), closed_by)
-        finally:
-            if panel_was_open:
-                self._reopen_panel()
 
     def _close(self, way: str, frame: np.ndarray) -> None:
         if way == "esc":
@@ -106,13 +101,3 @@ class FriendChecker:
             self.device.tap(round(self.cfg.close_tap[0] * w), round(self.cfg.close_tap[1] * h))
         else:
             log.warning("不认识的关面板办法：%s", way)
-
-    def _reopen_panel(self) -> None:
-        """点屏幕会关掉聊天记录面板：按键重新打开（同 SocialHandler）。"""
-        if self.panel_visible is None or not self.panel_key:
-            return
-        for _ in range(2):
-            if self.panel_visible(self.device.screenshot()) or self.device.ime_shown():
-                return
-            self.device.hw_key(self.panel_key)
-            self.sleep(1.5)

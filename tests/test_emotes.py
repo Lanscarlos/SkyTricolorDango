@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from conftest import FakeDevice
+from conftest import FakeDevice, fake_panel
 from test_wheel import icon
 
 from skydango.config import EmoteConfig, WheelConfig
@@ -48,7 +48,8 @@ def make_player(library, cfg=None, panel=True, shown=False, slots=None):
     wheel.refresh = refresh
     wheel.assign = assign
     cfg = cfg or EmoteConfig(extra=["指向"], swap_slots=[7])
-    player = EmotePlayer(device, wheel, cfg, lambda: panel, PANEL_KEY, sleep=lambda s: None, clock=lambda: t[0])
+    manager, _ = fake_panel(device, open_=panel)
+    player = EmotePlayer(device, wheel, cfg, manager, sleep=lambda s: None, clock=lambda: t[0])
     return player, device, t, state
 
 

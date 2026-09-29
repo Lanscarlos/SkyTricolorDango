@@ -7,7 +7,7 @@ from concurrent.futures import Future
 import cv2
 import numpy as np
 import pytest
-from conftest import FakeDevice, scene
+from conftest import FakeDevice, fake_panel, scene
 
 from skydango.brain.body import Body, ToolError
 from skydango.brain.events import EventQueue
@@ -84,7 +84,26 @@ def msg(text, speaker="懒洋洋大王"):
     return Message(text, Rect(0, 0, 10, 10), 0.0, speaker)
 
 
-def body(clock, live=False, frames=None, **kw):
+class SyncReader(FakeReader):
+    """面板开没开跟着假面板（fake_panel 的状态）走。"""
+
+    def __init__(self, state):
+        super().__init__()
+        self.state = state
+
+    @property
+    def panel_closed_since(self):
+        return None if self.state.open else 0.0
+
+    @panel_closed_since.setter
+    def panel_closed_since(self, value):
+        pass
+
+    def panel_visible(self, frame):
+        return self.state.open
+
+
+def body(clock, live=False, frames=None, panel_mode=None, **kw):
     cfg = Config()
     cfg.vision.mode = "log"
     cfg.reply.dry_run = not live
@@ -92,11 +111,18 @@ def body(clock, live=False, frames=None, **kw):
     cfg.sender.open_chat_key = 28
     device = FakeDevice(frames or [scene()])
     reader = FakeReader()
+    if panel_mode is not None:  # 用假面板：按 46 开关，reader 跟着它
+        cfg.panel.mode = panel_mode
+        panel, state = fake_panel(device, open_=False, mode=panel_mode)
+        panel.clock = clock
+        reader = SyncReader(state)
+        kw["panel"] = panel
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, "")
     sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
     events = EventQueue(clock=clock)
     b = Body(cfg, device, reader, sender, self_filter, events, clock=clock, sleep=lambda s: None,
              wall=lambda: 1_790_000_000.0, **kw)
+    b.panel.start(clock())
     return b, device, reader, events
 
 
@@ -1123,3 +1149,127 @@ def test_look_person_without_env_suggests_looking_yourself(clock):
     with pytest.raises(ToolError, match="look\\(image=true\\)") as err:
         b.look_person("小明")
     assert "look_around" not in str(err.value)
+
+
+# ---- 聊天面板按需打开（[panel] mode = "auto"） ----
+def auto_body(clock, live=False, **kw):
+    return body(clock, live=live, panel_mode="auto", **kw)
+
+
+def test_arrive_triggers_peek_in_auto(clock):
+    env = FakeEnv()
+    b, device, _, _ = auto_body(clock, env=env)
+    b.step()
+    env.near = ["小明"]
+    b.step()  # 发 arrive → 记下要看一眼
+    b.step()
+    assert b.panel.state == "peek" and device.calls.count(("hw_key", 46)) == 1
+
+
+def test_approach_triggers_peek(clock):
+    env = FakeEnv()
+    approaches = [["小明"]]
+    env.pop_approaches = lambda: approaches.pop() if approaches else []
+    b, device, _, _ = auto_body(clock, env=env)
+    b.step()  # 发 approach → 记下要看一眼
+    b.step()
+    assert b.panel.state == "peek"
+
+
+def test_friend_bubble_calls_bubble_seen(clock):
+    env = FakeEnv()
+    env.typing_seen = lambda now, within=1.0, strangers=False: True
+    b, _, _, _ = auto_body(clock, env=env)
+    b.step()
+    b.step()
+    assert b.panel.state == "bubble"
+
+
+def chatting_body(clock, **kw):
+    b, device, reader, events = auto_body(clock, **kw)
+    reader.state.open = True
+    reader.batches = [[msg("在吗")]]
+    b.step()
+    assert b.panel.state == "chatting"
+    return b, device, reader, events
+
+
+def test_pending_chat_event_keeps_panel_busy(clock):
+    b, _, _, events = chatting_body(clock)
+    clock.advance(50)
+    b.step()
+    assert b.panel.state == "chatting"  # 大脑还没取走这条聊天：在准备回复，不算安静
+    events.drain()
+    clock.advance(46)
+    b.step()
+    assert b.panel.state == "idle"
+
+
+def test_brain_in_turn_keeps_panel_busy(clock):
+    b, _, _, events = chatting_body(clock)
+    events.drain()
+    b.brain_busy = lambda: True
+    clock.advance(50)
+    b.step()
+    assert b.panel.state == "chatting"
+
+
+def test_say_opens_panel_before_enter_when_idle(clock):
+    b, device, _, _ = auto_body(clock, live=True)
+    b.say("你好")
+    keys = [c for c in device.calls if c[0] == "hw_key"]
+    assert keys[:2] == [("hw_key", 46), ("hw_key", 28)] and b.panel.state == "chatting"
+
+
+def test_chat_log_peeks_when_idle(clock):
+    b, _, reader, events = auto_body(clock)
+    reader.batches = [[], [msg("刚才谁在叫我")]]
+    text = b.chat_log()
+    assert "刚才谁在叫我" in text and b.panel.state == "chatting"
+    assert any(e.kind == "chat" for e in events.drain())
+
+
+def test_panel_event_only_when_should_be_open(clock):
+    b, device, reader, events = auto_body(clock)
+    device.hw_key = lambda code: device.calls.append(("hw_key", code))  # 按了也开不了
+    clock.advance(20)
+    b.step()
+    clock.advance(40)
+    b.step()
+    assert not [e for e in events.drain() if e.kind == "panel"]  # 闲着关着是正常的
+    b2, device2, reader2, events2 = chatting_body(clock)
+    device2.hw_key = lambda code: device2.calls.append(("hw_key", code))
+    reader2.state.open = False
+    b2.brain_busy = lambda: True
+    b2.step()
+    clock.advance(31)
+    b2.step()
+    assert any(e.kind == "panel" and e.text.startswith("聊天记录面板关了") for e in events2.drain())
+
+
+def test_scene_restored_triggers_peek(clock):
+    black = np.zeros((720, 1280, 3), np.uint8)
+    b, device, _, _ = auto_body(clock, frames=[black, scene(), scene()])
+    b.step()
+    assert b.blackout
+    b.step()
+    b.step()
+    assert b.panel.state == "peek"
+
+
+def test_shutdown_reopens_panel_in_auto(clock):
+    b, _, reader, _ = auto_body(clock)
+    b.shutdown()
+    assert reader.state.open is True
+
+
+def test_viewer_info_has_panel_state(clock):
+    class Viewer:
+        info = None
+
+        def update(self, frame, now, **kw):
+            Viewer.info = kw["info"]
+
+    b, _, _, _ = auto_body(clock, viewer=Viewer())
+    b.step()
+    assert Viewer.info["聊天面板"].startswith("闲着")

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from conftest import FakeDevice
+from conftest import FakeDevice, panel_manager
 
 from skydango.config import FriendCheckConfig
 from skydango.game import friendtree
@@ -88,6 +88,6 @@ def test_keyboard_mode_needs_a_wake_tap_first(monkeypatch):
 def test_reopens_chat_panel_after_tapping():
     dev = PanelDevice()
     state = iter([True, False, True])  # 点之前开着 → 点完被关了 → 按 C 后开了
-    c = FriendChecker(dev, FriendCheckConfig(), panel_visible=lambda frame: next(state), panel_key=46, sleep=lambda s: None)
+    c = FriendChecker(dev, FriendCheckConfig(), panel=panel_manager(dev, lambda: next(state)), sleep=lambda s: None)
     c.check(1500, 600)
     assert dev.calls[-1] == ("hw_key", 46)

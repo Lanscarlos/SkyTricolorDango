@@ -1300,3 +1300,29 @@ def test_people_does_not_count_self_as_unlit_stranger():  # 评审：暗图上�
     w = watcher(det)
     w.process(frame(), 0.0, panel_visible=False)
     assert w.strangers(0.0) == 0 and w.people(0.0) == []
+
+
+def test_typing_seen_counts_friends_by_default():
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110), bubble(1005, y=260)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.typing_seen(10.5) is True
+    assert w.typing_seen(11.5) is False  # 超过 within（1 秒）：气泡已经不在了
+
+
+def test_typing_seen_strangers_only_when_asked():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.typing_seen(10.0) is False
+    assert w.typing_seen(10.0, strangers=True) is True
+
+
+def test_typing_seen_ignores_self():
+    det = FakeDetector()
+    det.frames = [[Detection("self", Rect(900, 400, 90, 220), 0.9), player(905), bubble(905)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert w.typing_seen(10.0, strangers=True) is False

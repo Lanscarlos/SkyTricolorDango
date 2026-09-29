@@ -73,6 +73,21 @@ class VisionConfig:
 
 
 @dataclass
+class PanelConfig:
+    """聊天记录面板什么时候开（chat/panel.py，设计见 docs/superpowers/specs/2026-09-29-chat-panel-on-demand-design.md）。"""
+
+    # "always" = 一直开着（关久了重开）；"auto" = 平时关着，定时 / 有人来 / 冒气泡时看一眼，聊天中保持打开（真机验收前别改默认）
+    mode: str = "always"
+    idle_peek: float = 30.0  # 闲着时多久看一眼（秒）
+    quiet_close: float = 45.0  # 聊天中安静多久关面板
+    peek_cooldown: float = 5.0  # 两次看一眼至少隔多久
+    bubble_wait: float = 15.0  # 看到气泡后最多开着等多久
+    bubble_gone: float = 3.0  # 气泡消失后再等多久
+    bubble_strangers: bool = False  # 陌生人的气泡也触发（没解锁聊天的陌生人在面板里只有省略号）
+    open_timeout: float = 1.5  # 按键后最多等多久面板出现
+
+
+@dataclass
 class OcrConfig:
     engine: str = "rapidocr"
     min_score: float = 0.6
@@ -226,7 +241,7 @@ class SocialConfig:
     max_age: float = 10.0  # 请求是多久之内看到的才处理（后台每 env.interval 秒扫一次）
     cooldown: float = 15.0  # 同一个人的同一种请求处理完后隔多久才再处理
     accept_timeout: float = 6.0  # 点了之后最多等多久（团子要走过去）
-    panel_key: int = 46  # 点屏幕会关掉聊天记录面板，接受完按这个键（C）重新打开
+    panel_key: int = 46  # 已不用（面板由 chat/panel.py 统一开关，键见 vision.log_open_key）；留着免得旧配置报错
     check_delay: float = 0.6  # 每次点完等多久再看
     remember: float = 120.0  # 接受之后多久内在提示词里提一句
     error_backoff: float = 10.0  # adb 出错（比如查输入框失败）后这么久不处理请求，免得每 0.15 s 起一个 adb 进程
@@ -449,6 +464,7 @@ class BrainConfig:
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
+    panel: PanelConfig = field(default_factory=PanelConfig)
     ocr: OcrConfig = field(default_factory=OcrConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
     reply: ReplyConfig = field(default_factory=ReplyConfig)

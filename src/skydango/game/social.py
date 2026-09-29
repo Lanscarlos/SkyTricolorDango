@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -133,10 +134,10 @@ class SocialHandler:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         dry_run: bool = False,
-        panel_visible: Callable[[np.ndarray], bool] | None = None,  # 聊天记录面板开没开（点屏幕会关掉它）
+        panel=None,  # chat.panel.PanelManager：点屏幕会关掉聊天记录面板，借着点、完了归还
     ) -> None:
         self.dry_run = dry_run  # 只打印“将会接受”，不点屏幕
-        self.panel_visible = panel_visible
+        self.panel = panel
         self.device = device
         self.cfg = cfg
         self.classifier = classifier
@@ -210,8 +211,7 @@ class SocialHandler:
         if pos is None:
             log.info("%s 的%s请求已经没了", req.name, what)
             return False
-        panel_was_open = self.panel_visible(frame) if self.panel_visible else False
-        try:
+        with self.panel.borrow("social", close=False) if self.panel is not None else nullcontext():
             if not touch_mode(frame):
                 self.device.tap(*pos)  # 只切到触屏模式
                 self.sleep(self.cfg.check_delay)
@@ -223,9 +223,6 @@ class SocialHandler:
                 pos = found
             self.device.tap(*pos)
             return self._wait_done(req, pos, what)
-        finally:
-            if panel_was_open:
-                self._reopen_panel()
 
     def _wait_done(self, req: Request, pos: tuple[int, int] | None, what: str) -> bool:
         deadline = self.clock() + self.cfg.accept_timeout
@@ -237,16 +234,6 @@ class SocialHandler:
             return True
         log.warning("点了 %s 的%s请求，等了 %.0f 秒图标还在，不再补点（再点会取消）", req.name, what, self.cfg.accept_timeout)
         return False
-
-    def _reopen_panel(self) -> None:
-        """点屏幕会关掉聊天记录面板：按键重新打开。团子正在走 / 做互动时可能按了没反应，隔一会儿再试一次。"""
-        for _ in range(2):
-            if self.panel_visible(self.device.screenshot()) or self.device.ime_shown():
-                return
-            self.device.hw_key(self.cfg.panel_key)
-            self.sleep(1.5)
-        if not self.panel_visible(self.device.screenshot()):
-            log.warning("聊天记录面板没能重新打开，主循环稍后会再试")
 
     def describe(self, now: float) -> str:
         if not self.last or now - self.last[2] > self.cfg.remember:

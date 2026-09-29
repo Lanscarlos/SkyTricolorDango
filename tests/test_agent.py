@@ -572,3 +572,130 @@ def test_agent_pending_message_carries_hint(clock, tmp_path):
     agent.env = HintHoldEnv()
     agent.step()
     assert [m.text for m in agent.pending] == ["你好呀（说话的可能是右边远处那个没点火的陌生人）", "嗨"]
+
+
+# ---- 聊天面板按需打开（[panel] mode = "auto"） ----
+from types import SimpleNamespace  # noqa: E402
+
+import numpy as np  # noqa: E402
+from conftest import fake_panel  # noqa: E402
+
+
+class SyncScripted(ScriptedReader):
+    def __init__(self, batches, state):
+        super().__init__(batches)
+        self.state = state
+
+    @property
+    def panel_closed_since(self):
+        return None if self.state.open else 0.0
+
+    @panel_closed_since.setter
+    def panel_closed_since(self, value):
+        pass
+
+    def panel_visible(self, frame):
+        return self.state.open
+
+
+class PanelEnv:
+    def __init__(self):
+        self.near = []
+        self.requests = {}
+        self.typing = False
+
+    def observe(self, frame, now, panel_visible):
+        pass
+
+    def nearby(self, now):
+        return list(self.near)
+
+    def typing_seen(self, now, within=1.0, strangers=False):
+        return self.typing
+
+
+def auto_agent(clock, batches=(), env=None, frames=None, owner=""):
+    cfg = live_config()
+    cfg.vision.mode = "log"
+    cfg.panel.mode = "auto"
+    cfg.sender.open_chat = []
+    cfg.sender.open_chat_key = 28
+    cfg.reply.owner_name = owner
+    device = FakeDevice(frames or [scene()])
+    panel, state = fake_panel(device, open_=False, mode="auto")
+    panel.clock = clock
+    reader = SyncScripted(list(batches), state)
+    self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, cfg.reply.disclosure_prefix)
+    sender = ChatSender(device, cfg.sender, lambda: (1280, 720), sleep=lambda s: None)
+    agent = Agent(cfg, device, reader, Responder(EchoClient(), cfg.reply), sender, self_filter, clock=clock,
+                  sleep=lambda s: None, env=env, panel=panel)
+    panel.start(clock())
+    return agent, device, state
+
+
+def keys(device):
+    return [c for c in device.calls if c[0] == "hw_key"]
+
+
+def test_agent_opens_panel_before_type_ahead(clock):
+    agent, device, _ = auto_agent(clock, [[msg("在吗", "小明")]])
+    agent.step()
+    clock.advance(2)
+    agent.step()
+    assert keys(device)[:2] == [("hw_key", 46), ("hw_key", 28)]  # 先开面板，再按 Enter
+
+
+def test_agent_pending_keeps_panel_busy(clock):
+    agent, _, state = auto_agent(clock, [[msg("在吗", "小明")]])
+    agent.limiter = SimpleNamespace(allow=lambda now: False, record=lambda now: None)  # 限速：一直攒着没回
+    state.open = True
+    agent.step()
+    assert agent.panel.state == "chatting"
+    clock.advance(50)
+    agent.step()
+    assert agent.panel.state == "chatting"
+
+
+def test_agent_new_friend_triggers_peek(clock):
+    env = PanelEnv()
+    agent, device, _ = auto_agent(clock, env=env)
+    agent.step()
+    env.near = ["小明"]
+    agent.step()
+    agent.step()
+    assert agent.panel.state == "peek" and keys(device) == [("hw_key", 46)]
+
+
+def test_agent_bubble_triggers(clock):
+    env = PanelEnv()
+    env.typing = True
+    agent, _, _ = auto_agent(clock, env=env)
+    agent.step()
+    agent.step()
+    assert agent.panel.state == "bubble"
+
+
+def test_agent_no_peek_during_blackout(clock):
+    agent, device, _ = auto_agent(clock, frames=[np.zeros((720, 1280, 3), np.uint8)])
+    clock.advance(31)
+    agent.step()
+    assert keys(device) == []
+
+
+def test_agent_command_reply_opens_panel_first(clock):
+    agent, device, _ = auto_agent(clock, [[msg("#status", "卡洛")]], owner="卡洛")
+    agent.step()
+    assert keys(device)[:2] == [("hw_key", 46), ("hw_key", 28)]
+
+
+def test_agent_viewer_info_has_panel_state(clock):
+    class Viewer:
+        info = None
+
+        def update(self, frame, now, **kw):
+            Viewer.info = kw["info"]
+
+    agent, _, _ = auto_agent(clock)
+    agent.viewer = Viewer()
+    agent.step()
+    assert Viewer.info["聊天面板"].startswith("闲着")

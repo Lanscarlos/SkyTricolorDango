@@ -105,11 +105,17 @@ def memory_prompt(reply: ReplyConfig, store: MemoryStore | None) -> str:
     return "\n\n".join(identity_sections(reply, store.profile(), store.friends(), notes))
 
 
-def brain_prompt(reply: ReplyConfig, store: MemoryStore | None, quick_around: bool = False) -> str:
+PANEL_AUTO_NOTE = "- 聊天面板平时关着，画面外的人说话可能晚半分钟才看到；想马上看最近的聊天就调 chat_log。\n"
+
+
+def brain_prompt(reply: ReplyConfig, store: MemoryStore | None, quick_around: bool = False, panel_auto: bool = False) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
-    quick_around：打开了感知层，look_around 是 YOLO 连续转一圈（几秒），不是眼睛看四张图（十几秒）。"""
+    quick_around：打开了感知层，look_around 是 YOLO 连续转一圈（几秒），不是眼睛看四张图（十几秒）。
+    panel_auto：聊天面板按需打开（[panel] mode = "auto"），平时关着。"""
     rules = static_prompt(reply)
     if quick_around:
         rules = rules.replace("（要十几秒，别常用）", "（几秒就好）")
+    if panel_auto:
+        rules = rules.replace("- 记住聊过的内容和对方的名字", PANEL_AUTO_NOTE + "- 记住聊过的内容和对方的名字", 1)
     return memory_prompt(reply, store) + "\n\n" + rules

@@ -65,7 +65,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/chatlog.py` | 解析聊天记录面板（C）：分行、拆说话人、认自己的消息 / 被屏蔽的消息、前后帧对齐找新消息 |
 | `src/skydango/vision/icons.py` | 动作图标的剪影匹配（多尺度 matchTemplate） |
 | `src/skydango/vision/bubbles.py` | 旧方案：3D 画面里找头顶气泡（不推荐，见 game-ops） |
-| `src/skydango/chat/` | 读消息（`reader.py`）、大模型回复（`responder.py`）、发送（`sender.py`）、去重、记忆（`memory.py`，见下） |
+| `src/skydango/chat/` | 读消息（`reader.py`）、大模型回复（`responder.py`）、发送（`sender.py`）、聊天面板开关（`panel.py`，见下）、去重、记忆（`memory.py`，见下） |
 | `src/skydango/game/wheel.py` | 快捷动作轮盘：图标库、读取 / 编辑轮盘、按数字键做动作、扫描动作列表 |
 | `src/skydango/game/emotes.py` | 聊天时做动作：可用动作 + 限速、轮盘上的直接按键、白名单动作换进 swap_slots、退出恢复 |
 | `src/skydango/agent.py` | 主循环：读 → 攒一会儿 → 回复 → 限速 → 发送；默认 dry-run |
@@ -119,6 +119,17 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `spin/<时间>/` | 主人 `#spin` 转一圈的截图：转前 / 转完 / 每帧（文件名带按住后第几秒）和 `summary.json` |
 | `unknown_names/` | YOLO 感知层读得清楚、但不在 friends.md 里的名字（`names.jsonl` + 每个名字一张裁剪图）；`perception unknown-names` 汇总，**只列出，不自动写 friends.md** |
 | `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有 `--brain`）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
+
+## 聊天面板（`[panel]`，`chat/panel.py`）
+
+设计见 `docs/superpowers/specs/2026-09-29-chat-panel-on-demand-design.md`。面板开着时方向键转视角、缩放、长按 Z、Q 都没反应，还挡住画面左边三分之一，
+所以由 `PanelManager` 统一开关（一次 run 只有一个，cli 建好传给身体 / Agent、镜头、轮盘、互动、好友树、技能）：
+- `mode = "always"`（**默认**）：一直开着，关久了自动重开 —— 和以前一样
+- `mode = "auto"`：平时关着，每 30 秒按 C 看一眼；来了好友 / 有人走近 / 好友头顶冒出"正在输入"气泡 / 大脑调 `chat_log` 时提前看；
+  读到新消息就一直开着，安静 45 秒再关；团子说话前先开面板。**还没在真机验收（spec §9），验收前别改默认**
+- **新代码要关面板一律 `with panel.borrow("谁"):`**（点屏幕会顺带关面板的用 `close=False`），不许自己按 C；
+  嵌套时最外层归还才恢复，闲着时归还不重开
+- 聊天内容只从面板读；YOLO 的 `typing` 气泡只用来判断"该去看了"（这一类还没标注数据，气泡触发要等重训）
 
 ## 识别环境（`[env]`）
 

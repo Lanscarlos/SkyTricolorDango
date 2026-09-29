@@ -1,7 +1,7 @@
 """转视角 / 缩放（光遇的键盘操作，见 game-ops §2），记下净偏移，能转回原位。
 
 - 方向键 ←→ 水平转、↑ 镜头压低往上看、↓ 抬回来：按住 step 秒算一步（0.5 s 约 90°）
-- 减号拉近、加号拉远（和直觉相反）；聊天记录面板开着时缩放没反应 → 操作前先关面板，做完再打开
+- 减号拉近、加号拉远（和直觉相反）；聊天记录面板开着时转视角、缩放都没反应 → 操作时向 PanelManager 借面板（关掉），做完归还
 - 输入框开着时按键会变成打字 → 先按 BACK
 - spin：按住 → 连续转整圈、边转边按 fps 截图（`#spin` / `camera spin` / 打开感知层时的 look_around）
 """
@@ -38,7 +38,7 @@ class SpinResult:
     frames: list[tuple[float, np.ndarray]]  # (按住后第几秒, 图)
     after: np.ndarray  # 转完停稳后
     seconds: float  # 实际按住了多久
-    panel_reopened: bool  # 面板原来开着且转完重新打开了；原来就关着也算 True
+    panel_reopened: bool  # 面板回到了该有的状态（原来就关着、闲着时不重开也算 True）
     blackout: bool  # 中途有整屏黑的帧（切场景）
 
 
@@ -47,15 +47,13 @@ class Camera:
         self,
         device,
         step: float,
-        panel_visible: Callable[[], bool],
-        panel_key: int,
+        panel,  # chat.panel.PanelManager；None 表示没有面板要管
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.device = device
         self.step = step
-        self.panel_visible = panel_visible
-        self.panel_key = panel_key  # 开关聊天记录面板的键；0 表示没有面板要管
+        self.panel = panel
         self.sleep = sleep
         self.clock = clock
         self.offset = {"turn": 0, "pitch": 0, "zoom": 0}
@@ -101,7 +99,7 @@ class Camera:
         period = 1.0 / max(fps, 0.1)
         code = KEYS["right"]
         frames: list[tuple[float, np.ndarray]] = []
-        with self._ready() as was_open:
+        with self._ready():
             before = capture()
             self.device.hw_key_down(code)
             start = self.clock()
@@ -117,7 +115,7 @@ class Camera:
                 self.device.hw_key_up(code)  # 出错 / Ctrl+C 也要松开，不然镜头会一直转
             self.sleep(0.3)  # 等镜头停稳
             after = capture()
-        reopened = not was_open or bool(self.panel_visible())
+        reopened = self.panel.restored() if self.panel is not None else True
         blackout = any(is_black(f) for _, f in frames)
         return SpinResult(before, frames, after, seconds, reopened, blackout)
 
@@ -156,13 +154,8 @@ class Camera:
         if self.device.ime_shown():
             self.device.key(KEYCODE_BACK)
             self.sleep(0.3)
-        was_open = bool(self.panel_key) and self.panel_visible()
-        if was_open:
-            self.device.hw_key(self.panel_key)
-            self.sleep(0.8)
-        try:
+        if self.panel is None:
+            yield False
+            return
+        with self.panel.borrow("camera") as was_open:
             yield was_open
-        finally:
-            if was_open:
-                self.device.hw_key(self.panel_key)
-                self.sleep(0.8)

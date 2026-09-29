@@ -11,7 +11,7 @@ from contextlib import AbstractContextManager, nullcontext
 
 from .chat.commands import CommandRouter, is_command
 from .chat.memory import MemoryStore
-from .chat.panel import PanelKeeper
+from .chat.panel import PanelManager
 from .chat.reader import ChatReader, Message, with_speaker_hint
 from .chat.responder import Responder
 from .chat.sender import ChatSender
@@ -66,6 +66,7 @@ class Agent:
         store: MemoryStore | None = None,  # 主人命令（#friend/#remember）用；跟 dry_run 无关，配了就写
         viewer=None,  # vision.viewer.Viewer：网页上实时显示识别框（run --view）
         camera=None,  # brain.camera.Camera：主人的 #spin 用
+        panel: PanelManager | None = None,  # cli 建一个、和镜头 / 轮盘 / 互动共用；None = 自己建
     ) -> None:
         self.cfg = cfg
         self.env = env
@@ -88,18 +89,22 @@ class Agent:
         self.paused = False  # #pause/#resume 切换：暂停时忽略别人的消息，不进 pending
         self.camera = camera
         self._last_spin = float("-inf")
+        self._nearby: set[str] = set()  # 上一圈身边的好友：多了人就看一眼聊天
         self.commands = CommandRouter(
             store, on_pause=self._set_paused, status=self._status_line,
             spin=self._spin if camera is not None else None, max_turns=cfg.spin.max_turns,
         )
         # sleep 包一层：测试会在构造之后替换 agent.sleep
-        self.panel = PanelKeeper(cfg.vision, device, reader, lambda s: self.sleep(s))
+        self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
 
     def _show(self, frame, now: float, fresh: list[Message]) -> None:
         from .vision.viewer import panel_box
 
         info = {"模式": "dry-run" if self.cfg.reply.dry_run else "LIVE", "待回复": f"{len(self.pending)} 条",
                 "刚说过": self.sent[-3:][::-1] or "还没说话"}
+        panel = self.panel.describe(now)
+        if panel:
+            info["聊天面板"] = panel
         try:
             self.viewer.update(frame, now, env=self.env, panel=panel_box(self.cfg.vision, self.reader, frame), messages=fresh, info=info)
         except Exception:
@@ -121,10 +126,13 @@ class Agent:
             log.warning("截图失败，这一轮不读新消息: %s", str(exc).splitlines()[0])
         if frame is not None:
             fresh = self.reader.read(frame, now)
+            if self.pending:
+                self.panel.busy(now)  # 攒着没回的话：聊天面板不算安静
             if self.cfg.vision.mode == "log":
-                self.panel.maybe_reopen(now)
+                self.panel.tick(now, fresh, visible=self.reader.panel_closed_since is None, blackout=is_black(frame))
             if self.env is not None:  # 到了间隔会在后台线程里扫一次画面
                 self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
+                self._watch_panel_triggers(now)
             if self.viewer is not None:
                 self._show(frame, now, fresh)
             if self.social is not None and self.env is not None and self.env.requests:
@@ -168,6 +176,7 @@ class Agent:
         typing = not self.cfg.reply.dry_run and self.cfg.sender.type_ahead
         if typing:
             try:
+                self.panel.before_speak(self.clock())  # 先开面板再按 Enter：说完对方的回复马上读得到
                 self.sender.open()
             except Exception:
                 log.warning("提前打开输入框失败，发送时再打开", exc_info=True)
@@ -195,11 +204,22 @@ class Agent:
         if dry:
             log.info("[dry-run] 将会发送: %s", text)
         else:
+            self.panel.before_speak(self.clock())
             self.sender.send(text)
             self.self_filter.remember(text, self.clock())
         if self.run_dir:
             self.run_dir.record_reply(batch, reply.render(self.cfg.reply.disclosure_prefix), sent=not dry)
         return text
+
+    def _watch_panel_triggers(self, now: float) -> None:
+        """按需打开聊天面板：身边多了好友、好友头顶冒出"正在输入"时去看一眼。"""
+        if hasattr(self.env, "nearby"):
+            near = set(self.env.nearby(now))
+            if near - self._nearby:
+                self.panel.trigger("arrive", now)
+            self._nearby = near
+        if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
+            self.panel.bubble_seen(now)
 
     def _emote(self, name: str) -> None:
         self.emoted.append(name)
@@ -224,6 +244,7 @@ class Agent:
         if dry:
             log.info("[dry-run] 命令确认: %s", text)
         else:
+            self.panel.before_speak(self.clock())
             self.sender.send(text)
             self.self_filter.remember(text, self.clock())
         if self.run_dir:
@@ -273,7 +294,7 @@ class Agent:
 
     def ensure_log_open(self) -> bool:
         """log 模式：看不到聊天记录面板、也没在打字时，按一下打开面板的键（默认 C）。返回面板现在开没开。"""
-        return self.panel.ensure_open()
+        return self.panel.start(self.clock())
 
     def run(self, duration: float = 0.0) -> None:
         """一直跑；duration > 0 时跑这么多秒后自己退出（别在外面套 timeout：Windows 上停掉外层后 Python 会变成孤儿进程）。"""

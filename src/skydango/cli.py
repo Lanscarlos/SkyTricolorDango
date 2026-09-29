@@ -1006,16 +1006,24 @@ def _perception_label(cfg: Config, args) -> None:
           "修正错框 —— 没补全的图会教模型“这里没有人”，训出来会漏检")
 
 
-def _friend_checker(cfg: Config, dev, reader=None):
+def _panel(cfg: Config, dev, reader, mode: str | None = None):
+    """聊天记录面板的开关（只有它按 C）。一次 run 只建一个，传给身体 / Agent、镜头、轮盘、互动、好友树。
+    mode 覆盖 [panel] mode：单独的命令（camera spin、friend-check）用 "always"，做完恢复成原样。"""
+    import dataclasses
+
+    from .chat.panel import PanelManager
+
+    panel_cfg = cfg.panel if mode is None else dataclasses.replace(cfg.panel, mode=mode)
+    return PanelManager(cfg.vision, panel_cfg, dev, reader)
+
+
+def _friend_checker(cfg: Config, dev, panel=None):
     from .game.friendtree import FriendChecker
 
-    if reader is None:
+    if panel is None:
         reader, _ = _build_reader(cfg)
-    log_mode = cfg.vision.mode == "log"
-    return FriendChecker(
-        dev, cfg.friend_check, panel_visible=reader.panel_visible if log_mode else None,
-        panel_key=cfg.vision.log_open_key if log_mode else 0,
-    )
+        panel = _panel(cfg, dev, reader, mode="always")
+    return FriendChecker(dev, cfg.friend_check, panel=panel)
 
 
 def cmd_friend_check(cfg: Config, args) -> None:
@@ -1086,7 +1094,7 @@ def cmd_run(cfg: Config, args) -> None:
         run.close()
 
 
-def _build_emotes(cfg: Config, dev, reader, no_emotes: bool):
+def _build_emotes(cfg: Config, dev, panel, no_emotes: bool):
     """准备聊天时做动作：读一次轮盘。做不了（关掉了 / 图标库空 / 读轮盘失败）返回 None，聊天照常。"""
     if no_emotes or not cfg.emotes.enabled:
         log.info("这次不做动作")
@@ -1098,11 +1106,7 @@ def _build_emotes(cfg: Config, dev, reader, no_emotes: bool):
     if not library.names:
         log.warning("图标库 %s 是空的，这次不做动作（先 emotes scan，把用得上的改名放进去）", cfg.wheel.library_dir)
         return None
-    if cfg.vision.mode == "log":
-        panel_visible, panel_key = (lambda: reader.panel_visible(dev.screenshot())), cfg.vision.log_open_key
-    else:
-        panel_visible, panel_key = (lambda: False), 0
-    player = EmotePlayer(dev, Wheel(dev, cfg.wheel, library), cfg.emotes, panel_visible, panel_key)
+    player = EmotePlayer(dev, Wheel(dev, cfg.wheel, library), cfg.emotes, panel)
     try:
         player.start()
     except Exception as exc:
@@ -1122,6 +1126,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     dev = _device(cfg)
     reader, self_filter = _build_reader(cfg)
     reader.trace_path = run.rows_log
+    panel = _panel(cfg, dev, reader)
     llm = make_llm(cfg.llm)
     from .chat.memory import MemoryStore
 
@@ -1141,15 +1146,13 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     if env and icons:
         from .game.social import SocialHandler
 
-        social = SocialHandler(
-            dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel_visible=reader.panel_visible
-        )
+        social = SocialHandler(dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel=panel)
 
     def env_text() -> str:  # 现在的环境 + 刚接受的互动，每次回复前现取
         now = time.monotonic()
         return "\n".join(p for p in (env.describe(now), social.describe(now) if social else "") if p)
 
-    emotes = _build_emotes(cfg, dev, reader, no_emotes)
+    emotes = _build_emotes(cfg, dev, panel, no_emotes)
     responder = Responder(
         llm, cfg.reply, store=store, notes=notes, env=env_text if env else None,
         available_emotes=emotes.available if emotes else None,
@@ -1158,7 +1161,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
     agent = Agent(
         cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store,
-        viewer=viewer, camera=_camera(cfg, dev, reader),
+        viewer=viewer, camera=_camera(cfg, dev, panel), panel=panel,
     )
     try:
         agent.run(duration)
@@ -1171,17 +1174,17 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
                 emotes.restore()
             except Exception:
                 log.exception("恢复轮盘失败，请用 emotes wheel 检查")
+        try:
+            panel.shutdown()  # 按需模式：退出时把聊天面板恢复成开着
+        except Exception:
+            log.exception("聊天面板没恢复")
 
 
-def _camera(cfg: Config, dev, reader):
-    """视角控制：转之前关聊天记录面板（log 模式），转完再打开。普通模式（#spin）和大脑模式共用。"""
+def _camera(cfg: Config, dev, panel):
+    """视角控制：转的时候向面板管理者借面板（关掉），转完归还。普通模式（#spin）和大脑模式共用。"""
     from .brain.camera import Camera
 
-    if cfg.vision.mode == "log":
-        panel_visible, panel_key = (lambda: reader.panel_visible(dev.screenshot())), cfg.vision.log_open_key
-    else:
-        panel_visible, panel_key = (lambda: False), 0
-    return Camera(dev, cfg.brain.camera_step, panel_visible, panel_key)
+    return Camera(dev, cfg.brain.camera_step, panel)
 
 
 def cmd_camera(cfg: Config, args) -> None:
@@ -1190,7 +1193,7 @@ def cmd_camera(cfg: Config, args) -> None:
 
     dev = _device(cfg)
     reader, _ = _build_reader(cfg)
-    camera = _camera(cfg, dev, reader)
+    camera = _camera(cfg, dev, _panel(cfg, dev, reader, mode="always"))
     spin = cfg.spin
     turns = max(1, min(args.turns, spin.max_turns))
     seconds = args.seconds if args.seconds is not None else spin.seconds_per_turn
@@ -1254,6 +1257,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     dev = _device(cfg)
     reader, self_filter = _build_reader(cfg)
     reader.trace_path = run.rows_log
+    panel = _panel(cfg, dev, reader)
     store = notes = None
     if cfg.reply.memory_dir:  # dry-run 也读人设和记忆（看大脑的表现要用），但不写
         from .chat.memory import MemoryStore, NotesKeeper
@@ -1268,12 +1272,10 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     if env and icons:
         from .game.social import SocialHandler
 
-        social = SocialHandler(
-            dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel_visible=reader.panel_visible
-        )
-    emotes = _build_emotes(cfg, dev, reader, no_emotes)
-    camera = _camera(cfg, dev, reader)
-    friend_checker = _friend_checker(cfg, dev, reader) if cfg.friend_check.enabled else None
+        social = SocialHandler(dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel=panel)
+    emotes = _build_emotes(cfg, dev, panel, no_emotes)
+    camera = _camera(cfg, dev, panel)
+    friend_checker = _friend_checker(cfg, dev, panel) if cfg.friend_check.enabled else None
     panels, panel_ops = _panels(cfg, dev, reader)
     events = EventQueue()
     # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
@@ -1281,7 +1283,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     body = Body(
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
         env=env, social=social, emotes=emotes, camera=camera, friend_checker=friend_checker, fallback=fallback, store=live_store, notes=notes, run=run,
-        viewer=viewer, panels=panels, panel_ops=panel_ops,
+        viewer=viewer, panel=panel, panels=panels, panel_ops=panel_ops,
     )
     work = run.path / "brain"
     eyes = Eyes(
@@ -1299,7 +1301,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     server.start()
     trace = None if viewer is None else (viewer.brain or BrainTrace())  # 网页上的大脑时间线（一般 _viewer 已经挂好）
     session = BrainSession(
-        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep")),
+        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto"),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
     )
@@ -1320,6 +1322,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
     body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
+    body.brain_busy = lambda: brain.chat_turn
     brain_thread.start()
     eyes_thread.start()
     try:

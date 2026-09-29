@@ -1,20 +1,27 @@
 import pytest
-from conftest import FakeDevice, scene
+from conftest import FakeDevice, fake_panel, scene
 
 from skydango.brain.camera import Camera
 
 
-def cam(panel=True):
+class State(dict):
+    """state["panel"] 读写假面板的开关（老测试的写法）。"""
+
+    def __init__(self, panel_state):
+        super().__init__()
+        self.ps = panel_state
+
+    def __getitem__(self, key):
+        return self.ps.open
+
+    def __setitem__(self, key, value):
+        self.ps.open = value
+
+
+def cam(panel=True, mode="always"):
     dev = FakeDevice([scene()])
-    state = {"panel": panel}
-
-    def hw_key(code):
-        dev.calls.append(("hw_key", code))
-        if code == 46:
-            state["panel"] = not state["panel"]
-
-    dev.hw_key = hw_key
-    return Camera(dev, 0.25, lambda: state["panel"], 46, sleep=lambda s: None), dev, state
+    manager, ps = fake_panel(dev, open_=panel, mode=mode)
+    return Camera(dev, 0.25, manager, sleep=lambda s: None), dev, State(ps)
 
 
 def test_turn_closes_panel_holds_arrow_and_reopens():
@@ -97,8 +104,8 @@ def test_around_captures_four_directions_and_turns_full_circle():
 
 
 # ---- spin：转一圈、按 fps 截图 ----
-def spin_cam(panel=True):
-    c, dev, state = cam(panel)
+def spin_cam(panel=True, mode="always"):
+    c, dev, state = cam(panel, mode)
     clock = {"t": 0.0}
     c.clock = lambda: clock["t"]
     c.sleep = lambda s: clock.__setitem__("t", clock["t"] + s)
@@ -165,3 +172,21 @@ def test_spin_reports_panel_not_reopened_and_blackout():
     frames = iter([scene()] + [np.zeros((1080, 1920, 3), np.uint8)] * 50)
     r = c.spin(lambda: next(frames), seconds_per_turn=0.5, fps=10)
     assert r.panel_reopened is False and r.blackout is True
+
+
+def test_camera_without_panel_presses_nothing():
+    dev = FakeDevice([scene()])
+    Camera(dev, 0.25, None, sleep=lambda s: None).move("left")
+    assert ("hw_key", 46) not in dev.calls
+
+
+def test_camera_in_idle_auto_mode_leaves_panel_closed():
+    c, dev, state = cam(panel=False, mode="auto")  # auto：闲着时面板本来关着
+    c.move("left")
+    assert ("hw_key", 46) not in dev.calls and state["panel"] is False
+
+
+def test_spin_reports_restored_when_idle():  # 闲着不重开也算"回到该有的状态"
+    c, dev, state = spin_cam(panel=False, mode="auto")
+    r = c.spin(lambda: scene(), turns=1, seconds_per_turn=0.2, fps=10)
+    assert r.panel_reopened is True and ("hw_key", 46) not in dev.calls

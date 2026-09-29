@@ -30,6 +30,7 @@ class Skill(Protocol):
     name: str  # "track"
     goal: str  # 给大脑看的："盯着小明"
     timeout: float  # 秒
+    # needs_camera: bool = True 的技能（要转镜头）开始时向 PanelManager 借面板（关掉），结束时归还；没写就是 False
 
     def start(self, body: Any, now: float) -> None: ...
 
@@ -39,9 +40,11 @@ class Skill(Protocol):
 
 
 class SkillRunner:
-    def __init__(self, events: EventQueue, clock: Callable[[], float]) -> None:
+    def __init__(self, events: EventQueue, clock: Callable[[], float], panel=None) -> None:
         self.events = events
         self.clock = clock
+        self.panel = panel  # chat.panel.PanelManager
+        self._lease = None  # 借面板的上下文（needs_camera 的技能）
         self.active: Skill | None = None
         self._started = 0.0
         self._note = ""
@@ -55,6 +58,9 @@ class SkillRunner:
         now = self.clock()
         skill.start(body, now)
         self.active, self._started, self._note = skill, now, ""
+        if self.panel is not None and getattr(skill, "needs_camera", False):
+            self._lease = self.panel.borrow("skill")
+            self._lease.__enter__()
         log.info("开始做：%s", skill.goal)
         return f"开始{skill.goal}了，做完或做不成会告诉你"
 
@@ -103,3 +109,9 @@ class SkillRunner:
             skill.stop(body, reason)
         except Exception:  # 松键失败也要清掉，不然大脑再也开始不了新技能
             log.exception("技能 %s 收尾出错", skill.name)
+        lease, self._lease = self._lease, None
+        if lease is not None:
+            try:
+                lease.__exit__(None, None, None)
+            except Exception:
+                log.exception("技能 %s 归还聊天面板出错", skill.name)

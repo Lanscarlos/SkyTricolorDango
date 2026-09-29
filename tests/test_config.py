@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_example_config_loads():
     cfg = load_config(ROOT / "config.example.toml")
     assert cfg.reply.dry_run is True
+    assert cfg.panel.mode == "always" and cfg.panel.idle_peek == 30.0  # 真机验收前默认常开
     assert cfg.device.serial.startswith("127.0.0.1")
 
 
@@ -92,3 +93,13 @@ def test_gesture_section(tmp_path):
     g2 = load_config(p).gesture
     assert g2.labels == ["none", "wave"] and g2.names == {"wave": "招手"}
     assert load_config(ROOT / "config.example.toml").gesture.enabled is False
+
+
+def test_panel_section(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[panel]\nmode = "auto"\n', encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.panel.mode == "auto"
+    assert (cfg.panel.idle_peek, cfg.panel.quiet_close, cfg.panel.peek_cooldown) == (30.0, 45.0, 5.0)
+    assert (cfg.panel.bubble_wait, cfg.panel.bubble_gone, cfg.panel.bubble_strangers, cfg.panel.open_timeout) == (15.0, 3.0, False, 1.5)
+    assert load_config(None).panel.mode == "always"
