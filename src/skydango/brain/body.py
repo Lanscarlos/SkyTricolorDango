@@ -12,7 +12,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from typing import Any
 
 from ..agent import RateLimiter
@@ -25,6 +25,7 @@ from ..config import Config
 from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
 from ..vision.bubbles import Rect, roi_rect
+from ..vision.panels import UNKNOWN, describe_reading
 from ..vision.people import describe_people
 from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
@@ -35,6 +36,7 @@ log = logging.getLogger(__name__)
 REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "*")
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
 SCENE_EVENT_COOLDOWN = 10.0
+PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身体自己打开面板的操作：期间这个面板不算遮挡
 
 
 def _first_line(exc: BaseException) -> str:
@@ -59,6 +61,8 @@ class Body:
         emotes=None,  # game.emotes.EmotePlayer
         camera=None,  # brain.camera.Camera
         friend_checker=None,  # game.friendtree.FriendChecker：点人物看好友树
+        panels=None,  # vision.panels.PanelWatcher：画面上开着哪些面板
+        panel_ops=None,  # game.panels.PanelOps：关面板、按按钮
         viewer=None,  # vision.viewer.Viewer：网页上实时显示识别框
         fallback=None,  # chat.responder.Responder：大脑离线时的备用回复
         store=None,  # chat.memory.MemoryStore：live 时记聊天记录
@@ -79,6 +83,10 @@ class Body:
         self.emotes = emotes
         self.camera = camera
         self.friend_checker = friend_checker
+        self.panels = panels
+        self.panel_ops = panel_ops
+        self._panels_held = False
+        self._permits: list[tuple[str, float]] = []  # 主人 #允许 的按钮：(文字, 到期时间)
         self.viewer = viewer
         self._last_friend_check = float("-inf")
         self.fallback = fallback
@@ -118,10 +126,16 @@ class Body:
         self.skills = SkillRunner(events, clock)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
 
     # ---- 主循环 ----
-    def _held(self, reason: str) -> AbstractContextManager:
-        """会挡住画面的操作期间暂停感知计时（YOLO 感知层 keep 只有 5 s，不暂停会误报"走开了"）。"""
-        held = getattr(self.env, "held", None)
-        return held(reason) if held is not None else nullcontext()
+    @contextmanager
+    def _held(self, reason: str):
+        """会挡住画面的操作期间暂停感知计时（YOLO 感知层 keep 只有 5 s，不暂停会误报"走开了"）；
+        身体自己要打开面板的操作（换轮盘、看好友树），期间这个面板不算遮挡。"""
+        with ExitStack() as stack:
+            held = getattr(self.env, "held", None)
+            stack.enter_context(held(reason) if held is not None else nullcontext())
+            if self.panels is not None:
+                stack.enter_context(self.panels.expect(PANEL_FOR_HOLD.get(reason)))
+            yield
 
     def step(self) -> None:
         now = self.clock()
@@ -169,6 +183,8 @@ class Body:
             self.panel.maybe_reopen(now)
             self._watch_panel(now)
         self._watch_screen(frame, now)
+        if self.panels is not None:
+            self._watch_panels(frame, now)
         if self.env is not None:
             self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
             self._watch_people(now)
@@ -265,6 +281,8 @@ class Body:
         for m in fresh:
             if owner and m.speaker == owner and m.text.startswith("#"):
                 self._owner_window_until = now + self.cfg.brain.owner_window
+                if m.text.startswith("#允许") and m.text[3:].strip():  # 放行一个面板按钮（panel_press 用）
+                    self._permits.append((m.text[3:].strip(), now + self.cfg.panels.permit_window))
                 self.events.put("owner_command", f"卡洛的命令：{m.text}")
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
             else:
@@ -278,6 +296,45 @@ class Body:
         elif self._panel_lost and since is None:
             self.events.put("panel", "聊天记录面板又开了")
         self._panel_lost = lost
+
+    def _watch_panels(self, frame, now: float) -> None:
+        """画面上开着哪些面板：开 / 关告诉大脑（聊天记录面板不算，沿用 _watch_panel）；开着时暂停感知计时。"""
+        state = self.panels.observe(frame, now)
+        for change in self.panels.pop_changes():
+            p = change.panel
+            if p.name == "chat_log":
+                continue
+            if change.kind == "close":
+                self.events.put("panel", f"关了：{p.label}")
+            elif p.name == UNKNOWN:
+                self.events.put("panel", "出现不认识的面板：" + (describe_reading(change.reading) if change.reading else "（还没读）"))
+            elif change.reading is not None:
+                self.events.put("panel", f"开了：{p.describe()}：{describe_reading(change.reading)}")
+            else:
+                self.events.put("panel", f"开了：{p.describe()}")
+        covered = bool(state.others())
+        if covered != self._panels_held and self.env is not None and hasattr(self.env, "hold"):
+            (self.env.hold if covered else self.env.release)("panel")
+        self._panels_held = covered
+
+    def clear_view(self, action: str, live: bool = False) -> str:
+        """操作前确认画面没被面板挡着：已核对、卡片允许自动关的顺手关掉；别的拒绝（ToolError），交给大脑。
+        返回 dry-run 时要附加的说明（"真执行时会先关掉……"）。"""
+        if self.panels is None:
+            return ""
+        notes = []
+        for panel in self.panels.blocking(action):
+            card = self.panels.cards.get(panel.name) if panel.name != UNKNOWN else None
+            if not (panel.verified and card is not None and card.close_auto and self.panel_ops is not None):
+                raise ToolError(f"被「{panel.describe()}」挡着：可以 panel_read 看看，或者 panel_close 关掉")
+            if self._dry(live):
+                notes.append(f"（真执行时会先关掉{panel.label}）")
+                continue
+            if not self.panel_ops.close(panel, self.panels.readings.get(panel.name)):
+                self.events.put("error", f"{panel.label}挡着，想关没关上")
+                raise ToolError(f"被「{panel.describe()}」挡着，想关没关上：可以 panel_read 看看")
+            self.events.put("panel", f"顺手关掉了{panel.label}")
+        return "".join(notes)
 
     def _watch_screen(self, frame, now: float) -> None:
         black = is_black(frame)
@@ -336,7 +393,7 @@ class Body:
         for name, kind in sorted(current - self._requests):
             self.events.put("request", f"{name} 发起了{KIND_NAMES.get(kind, kind)}")
         self._requests = current
-        if self.social is not None and requests:
+        if self.social is not None and requests and self._social_view_clear():
             try:
                 with self._held("social"):
                     handled = self.social.handle(requests, now)
@@ -349,6 +406,14 @@ class Body:
                 if kind == "hand":
                     self._accepted_hand = (name, now)
         self._watch_holding(now)
+
+    def _social_view_clear(self) -> bool:
+        try:
+            self.clear_view("social", live=not self.cfg.reply.dry_run)
+        except ToolError as exc:
+            log.debug("互动请求这次先不接：%s", exc)
+            return False
+        return True
 
     def _watch_holding(self, now: float) -> None:
         """牵手状态靠猜：接受牵手后对方头顶圆圈消失 → 牵上了；✦ 又出现 → 松开了（game-ops §6）。"""
@@ -472,6 +537,7 @@ class Body:
         """环顾四周：转一圈，每 90° 截一张（dry-run 不转，只截当前画面；live = 手动控制，dry-run 下也真转）。"""
         if self.blackout:
             raise ToolError("画面黑着（在切场景），现在看不了")
+        self.clear_view("camera", live)
         if self.camera is None or self._dry(live):
             return [self.fresh_frame()]
         try:
@@ -487,9 +553,10 @@ class Body:
         if self.blackout:
             raise ToolError("画面黑着（在切场景），现在看不了")
         spin = self.cfg.spin
+        note = self.clear_view("camera", live)
         if self.camera is None or self._dry(live):
             result = self.env.sweep([(0.0, self.fresh_frame())], spin)
-            return "dry-run：没真的转，只看了前面。" + result.text()
+            return "dry-run：没真的转，只看了前面。" + result.text() + note
         try:
             with self._held("camera"):
                 shot = self.camera.spin(self.device.screenshot, 1, spin.seconds_per_turn, spin.fps)
@@ -508,6 +575,9 @@ class Body:
             parts.append("输入框" + ("开" if self.device.ime_shown() else "关"))
         except Exception:
             parts.append("输入框状态读不到")
+        others = self.panels.state.others() if self.panels is not None else ()
+        if others:
+            parts.append("开着的面板：" + "、".join(p.describe() for p in others))
         near = self.env.nearby(now) if self.env is not None else []
         parts.append("身边的好友：" + ("、".join(near) if near else "没看到"))
         if hasattr(self.env, "strangers"):
@@ -552,6 +622,7 @@ class Body:
             raise ToolError("这句没发：是空的、<skip>，或者说了自己是真人（不能这么说）。换个说法")
         if not self.limiter.allow(now):
             raise ToolError("说得太快了，等几秒再说")
+        note = self.clear_view("say", live)
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
         self.said.append(full)
@@ -560,7 +631,7 @@ class Body:
         if self._dry(live):
             log.info("[dry-run] 将会发送: %s", full)
             self._remember(body, full, sent=False)
-            return f"dry-run：没真的发，“{full}”"
+            return f"dry-run：没真的发，“{full}”{note}"
         self.sender.send(full)
         self.self_filter.remember(full, self.clock())
         self._remember(body, full, sent=True, manual=live)
@@ -593,11 +664,12 @@ class Body:
             raise ToolError(f"「{name}」现在做不了；能做的：{'、'.join(available) or '暂时没有（刚做过动作，要等一会儿）'}")
         if self.holding and not force:
             raise ToolError(f"正牵着 {self.holding} 的手，做动作会松手；确定要松手再做就传 force=true")
+        note = self.clear_view("emote", live)
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长
         if self._dry(live):
             self.emotes.pretend(name)
-            return f"dry-run：没真的做「{name}」"
+            return f"dry-run：没真的做「{name}」{note}"
         try:
             with self._held("wheel"):
                 self.emotes.perform(name)
@@ -659,8 +731,9 @@ class Body:
         panel = roi_rect(self.cfg.vision.log_roi, fw, fh)
         if self.reader.panel_closed_since is None and panel.x <= sx < panel.x2 and panel.y <= sy < panel.y2:
             raise ToolError("那里被聊天记录面板挡着，点不到人")
+        note = self.clear_view("check_friend", live)
         if self._dry(live):
-            return f"dry-run：没真的点（会点原图上的 ({sx}, {sy})，打开好友树看完再关掉）"
+            return f"dry-run：没真的点（会点原图上的 ({sx}, {sy})，打开好友树看完再关掉）{note}"
         self._last_friend_check = now
         try:
             with self._held("friend_tree"):
@@ -701,8 +774,9 @@ class Body:
             raise ToolError("没有视角控制")
         if self.blackout:
             raise ToolError("画面黑着（在切场景），现在转不了")
+        note = self.clear_view("camera", live)
         if self._dry(live):
-            return f"dry-run：没真的转（{action} ×{steps}）"
+            return f"dry-run：没真的转（{action} ×{steps}）{note}"
         try:
             with self._held("camera"):
                 result = self.camera.move(action, steps)
@@ -718,8 +792,9 @@ class Body:
     def camera_reset(self, live: bool = False) -> str:
         if self.camera is None:
             raise ToolError("没有视角控制")
+        note = self.clear_view("camera", live)
         if self._dry(live):
-            return "dry-run：没真的转"
+            return "dry-run：没真的转" + note
         with self._held("camera"):
             result = self.camera.reset()
         self._ref_thumb = None
