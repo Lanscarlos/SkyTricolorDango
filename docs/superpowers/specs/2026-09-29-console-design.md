@@ -9,7 +9,7 @@
 
 ## 目标
 
-**不用终端也能把团子跑起来、看清楚它在干什么。** 省掉 `setx` 设令牌、手改 `config.toml`、敲 `run --brain --live --view` 这些步骤。
+**不用终端也能把团子跑起来、看清楚它在干什么。** 省掉 `setx` 设令牌、手改 `config.toml`、敲 `run --live --view` 这些步骤。
 
 成功的样子：`python -m skydango console` → 浏览器打开面板 → 设置页填好 DeepSeek Key / Claude 令牌 → 设备页点「开始检测」全绿 →
 总览页选「大脑、只看」点「启动」→ 状态变成「运行中」，卡片上显示身边有谁，实时页能看到画面和大脑时间线 → 点「停止」，
@@ -66,7 +66,7 @@
 |---|---|
 | `config.py` | 新增 `ConsoleConfig`（§4）；`load_config` 在 `config.toml` 后叠加 `console.toml`，记下被覆盖的键；读 `secrets.toml` 写进 `os.environ` |
 | `vision/viewer.py` | 本机 Host / `X-Skydango` 头校验抽成公共函数（面板共用）；新增 `/shutdown`、`/status`；页面里 4 处 `fetch("/…")` 改成相对路径 |
-| `cli.py` | 新增 `console` 子命令；`run` 新增参数 `--viewer-port`、`--no-browser`、`--parent-pid`、`--no-brain`、`--dry-run` |
+| `cli.py` | 新增 `console` 子命令；`run` 新增参数 `--viewer-port`、`--no-browser`、`--parent-pid`、`--dry-run`（`--no-brain` 已有） |
 | `.gitignore` | 加 `console.toml`、`secrets.toml` |
 
 只用标准库，不加依赖。
@@ -75,9 +75,9 @@
 
 ### 启动
 
-- 命令行：`python -m skydango [--config …] run [--brain] [--live] [--no-emotes] [--duration N] --view --viewer-port <child_port> --no-browser --parent-pid <面板 pid>`
+- 命令行：`python -m skydango [--config …] run [--no-brain] [--live | --dry-run] [--no-emotes] [--duration N] --view --viewer-port <child_port> --no-browser --parent-pid <面板 pid>`
   （`sys.executable`，工作目录固定为仓库目录——`.pydeps`、缓存目录依赖这一点）。
-- **启动选项说了算**：模式和真发 / 只看总是显式传（`--brain` 或 `--no-brain`，`--live` 或 `--dry-run`），`config.toml` 里的 `brain.enabled`、`reply.dry_run` 不会偷偷改掉面板上的选择。
+- **启动选项说了算**：`run` 默认就是大脑模式，选普通 Agent 时加 `--no-brain`（`config.toml` 的 `brain.enabled` 已经不起作用）；真发 / 只看总是显式传（`--live` 或 `--dry-run`），`config.toml` 里的 `reply.dry_run` 不会偷偷改掉面板上的选择。
   「做动作」只能关不能开：`emotes.enabled = false` 时总览上这一项置灰并注明「config.toml 里关掉了」。
 - 子进程环境变量 = 面板的环境变量 + `secrets.toml` 的 `[env]` + `PYTHONIOENCODING=utf-8`。
 - Windows 上加 `CREATE_NEW_PROCESS_GROUP`：面板终端按 Ctrl+C 时由面板决定先停谁。
@@ -114,7 +114,7 @@
 ## 3. 子进程新增的接口（`vision/viewer.py`）
 
 - `GET /status`：只返回状态 JSON，不带图片，给总览页每 2 秒拉一次。内容是最近一帧的 `info`（身边的好友、陌生人、互动请求……）
-  加上 `run --brain` 时的牵手、正在做、最近说的话（取自 `update()` 的 `info`，大脑模式由身体填，普通模式由 Agent 填已有的「刚说过」）。
+  加上大脑模式时的牵手、正在做、最近说的话（取自 `update()` 的 `info`，大脑模式由身体填，普通模式由 Agent 填已有的「刚说过」）。
 - `POST /shutdown`：本机 Host + `X-Skydango` 头校验，通过就调中断函数，返回 `{"ok": true}`。
 - 这两个接口单独跑 `view` 时也在（`view` 收到 `/shutdown` 同样按 Ctrl+C 处理），不单独开关。
 
@@ -133,12 +133,12 @@
 ### 加载顺序
 
 默认值 → `config.toml` → `console.toml`。**终端直接敲 `run` 等命令也读 `console.toml` 和 `secrets.toml`**，面板里改的在哪儿启动都生效。
-- 启动时打一行 INFO：「console.toml 覆盖了 3 项：device.serial、llm.model、brain.enabled」。
+- 启动时打一行 INFO：「console.toml 覆盖了 3 项：device.serial、llm.model、env.enabled」。
 - `secrets.toml` 的值**覆盖**已有的环境变量（否则面板里换了 Key 还在用旧的 `setx`），打一行 INFO「用 secrets.toml 里的 DEEPSEEK_API_KEY」（不打值）。
 
 ### 设置清单
 
-**启动选项**（存在 `[console]`，下次打开面板还是上次的选择；不影响终端 `run`）：模式（普通 Agent / 统管大脑）、真发 / 只看、聊天时做动作、运行时长（空 = 一直跑）
+**启动选项**（存在 `[console]`，下次打开面板还是上次的选择；不影响终端 `run`）：模式（统管大脑，默认 / 普通 Agent，标「调试用」）、真发 / 只看、聊天时做动作、运行时长（空 = 一直跑）
 
 **连接**：`device.adb_path`、`device.serial`、`device.capture`（auto / mumu / adb）
 
@@ -146,7 +146,7 @@
 
 **大脑**：Claude 令牌（存到 `secrets[env][<brain.token_env>]`）、`brain.claude_path`、`brain.model`、`brain.eyes_model`
 
-**功能开关**：`env.enabled`、`perception.enabled` + `perception.model`、`places.enabled`、`friend_check.enabled`
+**功能开关**：`env.enabled`、`perception.enabled` + `perception.model`、`places.enabled`、`friend_check.enabled`、`panels.enabled`（面板识别，只接大脑模式）
 
 **身份**：`reply.disclosure_prefix`、主人昵称（一项，保存时同时写 `reply.owner_name` 和 `brain.owner_name`；两者在 config.toml 里不一致时显示两个值并提示）
 
@@ -161,7 +161,7 @@ child_port = 8761    # 团子子进程的 viewer 端口
 stop_timeout = 60.0  # 停止时最多等几秒，超了强杀
 log_lines = 500      # 日志尾巴保留几行
 # 上次的启动选项，面板写
-brain = false
+brain = true         # 统管大脑（run 的默认）；false = 普通 Agent（调试用）
 live = false
 emotes = true
 duration = 0.0
@@ -193,13 +193,13 @@ duration = 0.0
 
 - 启动选项 + 大号启动 / 停止按钮；选了「真发」时旁边写「会在游戏里真的说话」。
 - 启动前预检（§7）没过：按钮下直接显示原因和「去设置页」链接。
-- 运行中的状态卡片（`/live/status`，每 2 秒）：身边好友（几个、都有谁）、陌生人、互动请求、牵着手没有、正在做什么、最近说的一句话。
+- 运行中的状态卡片（`/live/status`，每 2 秒）：身边好友（几个、都有谁）、陌生人、互动请求、开着的面板（`[panels]`）、牵着手没有、正在做什么、最近说的一句话。
 - 日志尾巴：自动滚动（往上翻时暂停滚动），WARNING 黄、ERROR 红；运行目录路径。
 
 ### ② 实时
 
 - iframe 嵌 `/live/`：面板转发的就是子进程自己的 viewer 页面。viewer 页面的 fetch 改成相对路径后，放在 `/`（单独 `view`）和 `/live/`（面板）都能用；
-  画面、识别框、大脑时间线、手动控制都不重写。
+  画面、识别框（含 `[panels]` 的面板 / 按钮框）、大脑时间线、手动控制（含读面板 / 关面板）都不重写。
 - 团子没运行：显示「团子没在运行」和「去总览」按钮；团子启动后自动加载 iframe。
 
 ### ③ 设置
@@ -238,7 +238,7 @@ duration = 0.0
 
 - **启动前预检**（`POST /api/run/start` 先做，不过就不起子进程，返回原因）：
   - `load_config` 能加载（能提前发现「未知配置项」等）
-  - 大脑模式：`brain.token_env` 对应的密钥有值（secrets 或环境变量）
+  - 大脑模式：`brain.token_env` 对应的密钥有值（secrets 或环境变量），`mcp` 包装了（`importlib.util.find_spec("mcp")`，和 `run` 的检查一致）
   - 普通模式、`llm.provider != "echo"`：`llm.api_key_env` 对应的 Key 有值
   - 没有已在运行的子进程
 - 子进程一启动就退出：「崩溃（退出码 N）」，日志尾巴里有报错。
