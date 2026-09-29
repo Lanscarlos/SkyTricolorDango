@@ -62,6 +62,7 @@ class FakeDevice:
         self.frames = list(frames)
         self.calls: list[tuple] = []
         self.shown = False  # 输入框（软键盘）是否已经打开
+        self.ime_calls = 0  # ime_shown 被调了几次（它是一次 adb dumpsys，很慢）
 
     def screenshot(self):
         frame = self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
@@ -92,6 +93,7 @@ class FakeDevice:
         self.calls.append(("hw_up", code))
 
     def ime_shown(self):
+        self.ime_calls += 1
         return self.shown
 
 
