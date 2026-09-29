@@ -76,7 +76,9 @@
 1. 录像：专门去有长椅、篝火、钢琴、先祖的地方各录一段（每类至少 50 个框、2~3 张地图）；花地图（先祖多）已有录像
 2. 新录像先照旧 `perception label <录像> --assist` 标人
 3. 对整个数据集补物品：`perception label datasets/sky --objects`（第一轮没有物品模型，Claude 按网格直接框；v5 训出来后加 `--model models/sky-yolo-v5.pt` 当候选）。
-   写回前自动备份 `labels/` 到 `_backup/`；人物行除"Claude 判成先祖的"外不动；已有的物品框会当候选再核对一遍（重跑安全）。311 帧约 100 万输入 / 55 万输出 token
+   写回前自动备份 `labels/` 到 `_backup/`；人物行除"Claude 判成先祖的"外不动。重跑只核对没做过的帧（额度用完后接着做）；
+   上次做过之后**你在 X-AnyLabeling 里改过的帧会跳过**（人工优先），要让 Claude 重新核对加 `--recheck`（已有的物品框当"已标"候选，Claude 没判的留着，删 / 改的列进清单）。
+   增强图（`_blur` / `_dark`）不核对：**`perception augment` 放在补完物品之后**，已经增强过的先删掉增强图再重新 augment。311 帧约 100 万输入 / 55 万输出 token
 4. 看 `datasets/sky/_assist/objects.md`（先看"人物框改成了先祖"），用 X-AnyLabeling 修正
 5. 训练 v5（10 类）
 6. **上线门槛**：同一批录像 v4、v5 各跑一次 `perception compare`，好友认出率、远处认出率不低于 v4（花地图上陌生人误报应减少）；

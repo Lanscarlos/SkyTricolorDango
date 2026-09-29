@@ -360,9 +360,11 @@ def _scene_boxes(cfg: Config):
         log.warning("遮人用的 YOLO 跑不了（%s），只遮固定 UI", exc)
         return lambda img: []
 
+    from .vision.people import OBJECT_NAMES
+
     def boxes(img) -> list:
-        try:
-            return [d.box for d in detector.detect(img)]
+        try:  # 物品（长椅、钢琴……）是地标，不遮
+            return [d.box for d in detector.detect(img) if d.cls not in OBJECT_NAMES]
         except Exception as exc:
             log.warning("遮人用的 YOLO 出错（%s），这张只遮固定 UI", exc)
             return []
@@ -932,12 +934,15 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
 
 def _perception_label_objects(cfg: Config, args) -> None:
     """--objects：给已经标好人的数据集补标物品（座位 / 篝火 / 乐器 / 先祖），见 vision/objlabel.py。"""
+    import hashlib
+    import json
     import shutil
 
     import cv2
 
     from .brain import claude
     from .vision import assist, objlabel
+    from .vision.augment import SUFFIXES
     from .vision.track import iou
     from .vision.weaklabel import data_yaml
 
@@ -948,10 +953,14 @@ def _perception_label_objects(cfg: Config, args) -> None:
     if lacking:
         raise SystemExit(f"[perception] classes 里没有物品类别（{'、'.join(lacking)}）：要带上 bench / bonfire / instrument / spirit（加在末尾）")
     root = Path(args.source)
-    images = sorted(root.glob("images/*/*.jpg"))
-    if not images:
+    everything = sorted(root.glob("images/*/*.jpg"))
+    if not everything:
         raise SystemExit(f"{root / 'images'} 下面没有图：--objects 要对已经标好人的数据集跑（比如 datasets/sky）")
+    images = [p for p in everything if not p.stem.endswith(SUFFIXES)]
+    if len(images) < len(everything):  # 增强图是原图的副本：单独核对白花钱、标注还和原图对不上
+        print(f"跳过 {len(everything) - len(images)} 张增强图（_blur / _dark）：补完物品后先删掉它们，再重新 perception augment")
     base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错
+    (root / "data.yaml").write_text(data_yaml(root, classes), encoding="utf-8")  # 先写：中途停下时标注里已经有 6~9 类
     labels = root / "labels"
     if labels.is_dir():  # 写回前整个备份：人物标注是人工修过的
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -974,24 +983,48 @@ def _perception_label_objects(cfg: Config, args) -> None:
         lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), root / "_assist_objects", a,
         args.model or "none", protocol=objlabel.OBJECTS_PROTOCOL,
     )
-    print(f"{len(images)} 帧交给 Claude（{a.model}）补标物品：每批 {a.batch} 帧、{a.jobs} 路并发")
+    # 每帧写回后记下标注的哈希：重跑时标注没变的帧跳过（清单照样列），被人改过的帧也跳过（人工优先），--recheck 才重新核对
+    written = root / "_assist_objects" / "_written"
+    digest = lambda text: hashlib.sha1(text.encode("utf-8")).hexdigest()  # noqa: E731
+    results: list = []
+    edited: list[str] = []
+    todo = []
+    for path in images:
+        label = labels / path.parent.name / f"{path.stem}.txt"
+        text = label.read_text(encoding="utf-8") if label.is_file() else ""  # 新图还没标注：当空的
+        try:
+            state = json.loads((written / f"{path.stem}.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = None
+        if state is not None and not args.recheck:
+            if state.get("hash") == digest(text):
+                results.append((path.stem, objlabel.review_from_state(state.get("review") or {})))
+            else:
+                edited.append(path.stem)
+            continue
+        todo.append(path)
+    done = len(images) - len(todo) - len(edited)
+    print(f"{len(todo)} 帧交给 Claude（{a.model}）补标物品：每批 {a.batch} 帧、{a.jobs} 路并发"
+          + (f"；{done} 帧上次做过、{len(edited)} 帧你改过，跳过（要重新核对加 --recheck）" if done or edited else ""))
     counts: dict[str, int] = {}
     spirits = 0
-    results: list = []
-    for c0 in range(0, len(images), _ASSIST_CHUNK):
+    for c0 in range(0, len(todo), _ASSIST_CHUNK):
         frames, where = [], {}
-        for path in images[c0 : c0 + _ASSIST_CHUNK]:
+        for path in todo[c0 : c0 + _ASSIST_CHUNK]:
             label = labels / path.parent.name / f"{path.stem}.txt"
-            text = label.read_text(encoding="utf-8") if label.is_file() else ""  # 新图还没标注：当空的
+            text = label.read_text(encoding="utf-8") if label.is_file() else ""
             frame = imread(path)
             height, width = frame.shape[:2]
             # 已有的物品（重跑 / 手工修过）也当候选：写回时物品行整体替换，不交给 Claude 再核对就丢了
             cands = objlabel.objects_in_labels(text, classes, width, height)
+            hints = [objlabel.EXISTING + c for c, _ in cands]
             if detector is not None:
-                cands += [(d.cls, d.box) for d in detector.detect(frame)
-                          if d.cls in objlabel.OBJECTS and all(iou(d.box, b) < 0.6 for _, b in cands)]
+                model = [(d.cls, d.box) for d in detector.detect(frame)
+                         if d.cls in objlabel.OBJECTS and all(iou(d.box, b) < 0.6 for _, b in cands)]
+                cands += model
+                hints += [f"猜 {c}" for c, _ in model]
             people = objlabel.people_in_labels(text, classes, width, height)
-            frames.append(assist.FrameInput(path.stem, frame, [b for _, b in cands], people=people, hints=[c for c, _ in cands]))
+            frames.append(assist.FrameInput(path.stem, frame, [b for _, b in cands], people=people, hints=hints))
             where[path.stem] = (label, text)
         try:
             reviews = reviewer.review(frames)
@@ -1002,21 +1035,24 @@ def _perception_label_objects(cfg: Config, args) -> None:
             label, text = where[f.stem]
             review = reviews.get(f.stem)
             results.append((f.stem, review))
-            objects = objlabel.apply_object_review(f.candidates, review) if review else []
+            objects = objlabel.apply_object_review(f.candidates, review, f.hints) if review else []
             if review is not None:  # 没核对成的标注不动
                 label.parent.mkdir(parents=True, exist_ok=True)
-                label.write_text(objlabel.rewrite_labels(text, classes, objects, review.spirits, width, height), encoding="utf-8")
+                new = objlabel.rewrite_labels(text, classes, objects, review.spirits, width, height)
+                label.write_text(new, encoding="utf-8")
+                written.mkdir(parents=True, exist_ok=True)
+                (written / f"{f.stem}.json").write_text(json.dumps(
+                    {"hash": digest(new), "review": objlabel.review_to_state(review)}, ensure_ascii=False), encoding="utf-8")
                 spirits += len(review.spirits)
                 for c, _ in objects:
                     counts[c] = counts.get(c, 0) + 1
             (root / "_preview_objects").mkdir(parents=True, exist_ok=True)
             preview = objlabel.draw_objects_preview(f.image, objects, f.people, review.spirits if review else [], f.candidates, review)
             imwrite(root / "_preview_objects" / f"{f.stem}.jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        print(f"  {min(c0 + _ASSIST_CHUNK, len(images))}/{len(images)} 帧")
+        print(f"  {min(c0 + _ASSIST_CHUNK, len(todo))}/{len(todo)} 帧")
     (root / "_assist").mkdir(parents=True, exist_ok=True)
     report = root / "_assist" / "objects.md"
-    report.write_text(objlabel.objects_report(results), encoding="utf-8")
-    (root / "data.yaml").write_text(data_yaml(root, classes), encoding="utf-8")
+    report.write_text(objlabel.objects_report(sorted(results, key=lambda r: r[0]), edited), encoding="utf-8")
     failed = sum(1 for _, r in results if r is None)
     print("物品：" + ("、".join(f"{c}×{v}" for c, v in counts.items()) or "没有") + f"；人物框改成先祖 {spirits} 个；没核对 {failed} 帧")
     u = reviewer.usage
@@ -1773,6 +1809,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--all-frames", action="store_true", help="配 --assist：不挑帧，每一帧都核对（默认去掉和上一张差不多的帧）")
     q.add_argument("--objects", action="store_true",
                    help="物品模式：source 是已经标好人的数据集，Claude 补标座位 / 篝火 / 乐器 / 先祖（--model 的物品框当候选；写回前备份 labels/）")
+    q.add_argument("--recheck", action="store_true", help="配 --objects：上次做过的、你改过的帧也重新核对（默认跳过）")
     q = psub.add_parser("compare", help="同一批录像上对比现有的整图 OCR 和 YOLO（认出率、请求延迟、陌生人 / 走开事件、耗时）")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="模型文件（默认 perception.model）")

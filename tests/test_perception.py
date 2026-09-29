@@ -1398,3 +1398,30 @@ def test_objects_empty_with_six_class_model():
     for t in (0.0, 0.1, 0.2):
         w.process(frame(), t, panel_visible=False)
     assert w.objects(0.2) == []
+
+
+def test_place_mask_keeps_objects_visible():
+    # 评审：长椅、钢琴是认地图的地标，不遮（v4 建的图库也没遮它们）
+    det = FakeDetector()
+    det.frames = [[player(1000), obj("bench", 200, 900, 200, 100)]]
+    places = FakePlaces(["云野"])
+    w = place_watcher(det, places)
+    w.process(frame(), 0.0, panel_visible=False)
+    assert places.calls == [[Rect(1000, 400, 90, 220)]]
+
+
+def test_scene_boxes_for_places_add_skip_objects(tmp_path, monkeypatch):
+    from skydango import cli
+    from skydango.config import Config
+
+    model = tmp_path / "m.onnx"
+    model.write_bytes(b"")
+
+    class Det:
+        def detect(self, img):
+            return [player(1000), obj("instrument", 300, 500, 200, 150)]
+
+    monkeypatch.setattr("skydango.vision.detect.make_detector", lambda *a, **k: Det())
+    cfg = Config()
+    cfg.perception.model = str(model)
+    assert cli._scene_boxes(cfg)(frame()) == [Rect(1000, 400, 90, 220)]

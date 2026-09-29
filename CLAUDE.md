@@ -168,7 +168,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   跟随只做了第 1 步：提示词里说想跟谁走就请他牵手（视觉伺服 `follow` 要等 `move` 工具接好、标定）
 - **物品识别（代码已完成，见 `2026-09-29-object-recognition-design.md`；还没有数据和模型）**：类别末尾追加 `bench` 座位 / `bonfire` 篝火 / `instrument` 乐器 / `spirit` 先祖（编号 6~9，旧编号不变；用 v4 时自然为空）。
   `objects()` 给出方位和远近（按框底边，`object_near` / `object_far` **未标定**，连续 `object_min_hits` 帧才算）；状态里"画面里的东西：座位（左边·近）"、眼睛的位置说明、网页"附近的东西"都有；
-  只认出来告诉大脑，**不会走过去坐下**（F 期）。先祖单独成类后不再算陌生人。数据：`perception label datasets/sky --objects` 给已标好人的数据集补标（Claude 判成先祖的人物框自动改、列进清单）；
+  只认出来告诉大脑，**不会走过去坐下**（F 期）。先祖单独成类后不再算陌生人。数据：`perception label datasets/sky --objects` 给已标好人的数据集补标（Claude 判成先祖的人物框自动改、列进清单；重跑跳过做过的帧和你改过的帧，`--recheck` 才重核；增强图不核对，augment 放在最后）；
   烛火、光之翼等收集品不做（刷资源）。上线门槛和操作顺序见训练进度文档
 - 普通模式主人命令 `#spin [圈数]`：转一圈、截图存 `runs/<…>/spin/<时间>/`，打开感知层时回复带扫描结果；大脑模式不加
 - **2026-09-28 训到第四版 `models/sky-yolo-v4.pt`**（311 帧、3 张地图，Claude 辅助标注、用户没人工核对），进度、数据、标注规则和待办见 `docs/progress/2026-09-28-yolo-training.md`；

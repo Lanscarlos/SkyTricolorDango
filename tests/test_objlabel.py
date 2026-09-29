@@ -69,7 +69,7 @@ def test_parse_bad_spirit_ids_go_to_problems():
 def test_parse_missing_candidate_verdict_is_a_problem():
     f = frame_input(cands=[Rect(600, 700, 200, 100)])
     r = parse_object_review(reply(), [f])["f0"]
-    assert r.verdicts[1].cls == "not_object" and r.problems
+    assert r.verdicts[1].cls == "unjudged" and r.problems  # 没判 ≠ 不是物品：已有的标注要留着
 
 
 def test_apply_object_review_keeps_objects_uses_fixed_adds_missing():
@@ -165,7 +165,7 @@ def _dataset(tmp_path, monkeypatch):
         out = {}
         for t in texts:
             stem = t.split()[1].split("：")[0]
-            hints = re.findall(r"(\d+)=\[[^\]]*\]\(猜 (\w+)\)", t)
+            hints = re.findall(r"(\d+)=\[[^\]]*\]\((?:猜|已标) (\w+)\)", t)
             if hints:
                 out[stem] = {"boxes": {i: {"cls": c} for i, c in hints}, "missing": [], "spirits": [], "unsure": ""}
             else:
@@ -228,3 +228,101 @@ def test_objects_mode_needs_object_classes(tmp_path, monkeypatch):
                                      encoding="utf-8")
     with pytest.raises(SystemExit):
         cli.main(["-c", str(tmp_path / "c.toml"), "perception", "label", str(root), "--objects"])
+
+
+# ---- 评审修正：已有标注的安全 ----
+def test_parse_tolerates_non_list_fields():
+    f = frame_input(people=[Rect(0, 0, 10, 10)])
+    r = parse_object_review(reply(spirits=2, missing=3), [f])["f0"]
+    assert r.spirits == [] and r.missing == [] and len(r.problems) == 2
+
+
+def test_build_message_marks_existing_labels():
+    f = frame_input(cands=[Rect(600, 700, 200, 100), Rect(10, 10, 50, 50)], hints=["已标 bench", "猜 spirit"])
+    text = build_object_message([f], AssistConfig())[1]["text"]
+    assert "1=[600,700,800,800](已标 bench)" in text and "2=[10,10,60,60](猜 spirit)" in text
+    assert "已标" in OBJECT_RULES
+
+
+def test_apply_keeps_unjudged_existing_and_reports_changes():
+    cands = [Rect(0, 0, 10, 10), Rect(50, 50, 10, 10), Rect(90, 90, 10, 10), Rect(200, 200, 10, 10)]
+    hints = ["已标 bench", "已标 spirit", "已标 instrument", "猜 bonfire"]
+    review = ObjectReview({1: ObjectVerdict("unjudged", None, ""), 2: ObjectVerdict("not_object", None, "是玩家"),
+                           3: ObjectVerdict("instrument", Rect(88, 88, 14, 14), ""), 4: ObjectVerdict("unjudged", None, "")},
+                          [], [], "")
+    objects = apply_object_review(cands, review, hints)
+    assert objects == [("bench", Rect(0, 0, 10, 10)), ("instrument", Rect(88, 88, 14, 14))]  # 没判的已有标注留着，没判的猜测丢掉
+    assert review.changed == ["2 号已有的先祖删了（not_object：是玩家）", "3 号已有的乐器框改了"]
+    md = objects_report([("f0", review)])
+    assert "已有标注被删 / 改" in md and "- f0：2 号已有的先祖删了" in md
+
+
+def _count_calls(monkeypatch):
+    """包一层假 Claude：数调用次数。"""
+    import skydango.brain.claude as claude
+
+    real = claude.one_shot_message
+    calls = []
+
+    def run(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(claude, "one_shot_message", run)
+    return calls
+
+
+def test_objects_mode_second_run_skips_done_frames(tmp_path, monkeypatch):
+    from skydango import cli
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    cli.main(["perception", "label", str(root), "--objects"])
+    calls = _count_calls(monkeypatch)
+    cli.main(["perception", "label", str(root), "--objects"])  # 额度用完后重跑 / 再跑一次：做过的不再送
+    assert calls == []
+    report = (root / "_assist" / "objects.md").read_text(encoding="utf-8")
+    assert "- 0000：P1" in report  # 人改先祖的帧一直在清单里
+
+
+def test_objects_mode_skips_frames_you_edited(tmp_path, monkeypatch):
+    from skydango import cli
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    cli.main(["perception", "label", str(root), "--objects"])
+    label = root / "labels" / "train" / "0000.txt"
+    edited = label.read_text(encoding="utf-8") + "6 0.200000 0.900000 0.100000 0.050000\n"
+    label.write_text(edited, encoding="utf-8")  # 在 X-AnyLabeling 里改过
+    calls = _count_calls(monkeypatch)
+    cli.main(["perception", "label", str(root), "--objects"])
+    assert calls == [] and label.read_text(encoding="utf-8") == edited
+    assert "你改过" in (root / "_assist" / "objects.md").read_text(encoding="utf-8")
+    cli.main(["perception", "label", str(root), "--objects", "--recheck"])
+    assert calls  # --recheck 才重新核对
+
+
+def test_objects_mode_writes_data_yaml_first(tmp_path, monkeypatch):
+    import pytest
+
+    from skydango import cli
+    from skydango.brain.claude import ClaudeError
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+
+    def limit(*a, **k):
+        raise ClaudeError("额度", limit=True)
+
+    monkeypatch.setattr("skydango.brain.claude.one_shot_message", limit)
+    with pytest.raises(SystemExit):
+        cli.main(["perception", "label", str(root), "--objects"])
+    assert "9: spirit" in (root / "data.yaml").read_text(encoding="utf-8")
+
+
+def test_objects_mode_skips_augmented_images(tmp_path, monkeypatch):
+    from skydango import cli
+    from skydango.imageio import imwrite
+
+    root, _ = _dataset(tmp_path, monkeypatch)
+    imwrite(root / "images" / "train" / "0000_blur.jpg", np.zeros((H, W, 3), np.uint8))
+    cli.main(["perception", "label", str(root), "--objects"])
+    assert not (root / "labels" / "train" / "0000_blur.txt").exists()
+    assert not (root / "_preview_objects" / "0000_blur.jpg").exists()

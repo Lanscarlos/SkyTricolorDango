@@ -518,7 +518,8 @@ class PerceptionWatcher:
             return
         self._place_run, self._place_thumb = now, small
         try:
-            match = self.places.recognize(frame, [d.box for d in dets])
+            # 只遮人物 / 名字标签 / 圆圈 / 气泡；长椅、钢琴这些物品是地标，不遮（v4 建的图库也没遮它们）
+            match = self.places.recognize(frame, [d.box for d in dets if d.cls not in OBJECT_NAMES])
         except Exception:
             log.exception("认地图出错")
             return

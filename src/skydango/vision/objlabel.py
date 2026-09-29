@@ -22,15 +22,17 @@ from .people import OBJECT_NAMES
 from .weaklabel import yolo_line
 
 OBJECTS = tuple(OBJECT_NAMES)  # ("bench", "bonfire", "instrument", "spirit")
-OBJECT_PROMPT_VERSION = 1  # 改了提示词里的规则就加一：缓存按它失效
+OBJECT_PROMPT_VERSION = 2  # 改了提示词里的规则就加一：缓存按它失效
 PEOPLE_CLASSES = ("player", "player_unlit")  # P 编号只数这两类（团子、已经是先祖的不算）
 VERDICTS = OBJECTS + ("not_object", "duplicate")
+EXISTING = "已标 "  # 候选的 hint 以它开头 = 数据集里已有的标注（可能人工修过）；"猜 " 开头 = 检测器的猜测
 
 OBJECT_SYSTEM = "你是游戏截图的目标检测标注员。按用户给的规则逐帧标出物品、核对候选框，只输出一个 JSON 对象，不要别的文字。"
 OBJECT_RULES = """下面是游戏《光·遇》(Sky) 的截图，每帧一张，要给目标检测补标"物品"。每张图上画了：
 - 白色细网格：每 100 像素一条，边上的数字是原图像素坐标（原图 1920×1080）
 - 灰色细框 P1、P2…：已经标好的人物框（玩家）
-- 彩色框 1、2…：检测器给的物品候选框（可能没有）；每个框的精确坐标和检测器的猜测在图前面的文字里
+- 彩色框 1、2…：物品候选框（可能没有）。写着"已标"的是数据集里已有的标注（可能人工修过：对的就原样认可，不要为了几个像素给 fixed_box）；
+  写着"猜"的是检测器的猜测。每个框的精确坐标在图前面的文字里
 
 物品只有四类：
 - bench：座位。明显是给人坐的：长椅、石凳、秋千座、摆好的坐垫。台阶、石头、地面不算。
@@ -54,7 +56,7 @@ _P_ID = re.compile(r"^P(\d+)$")
 
 @dataclass
 class ObjectVerdict:
-    cls: str  # VERDICTS 之一
+    cls: str  # VERDICTS 之一；回答里没判 / 类别不认识是 "unjudged"
     fixed: Rect | None  # Claude 给的修正框（原图坐标）
     note: str
 
@@ -66,6 +68,7 @@ class ObjectReview:
     spirits: list[int]  # 判成先祖的人物框编号（P 后面的数字，从 1 起）
     unsure: str
     problems: list[str] = field(default_factory=list)  # 回答里缺编号、类别写错、P 编号不对……列进待核对清单
+    changed: list[str] = field(default_factory=list)  # 已有标注被删 / 改（apply_object_review 填），列进待核对清单
 
 
 def _draw(frame: np.ndarray, people: list[Rect], candidates: list[Rect]) -> np.ndarray:
@@ -77,14 +80,19 @@ def _draw(frame: np.ndarray, people: list[Rect], candidates: list[Rect]) -> np.n
     return draw_candidates(out, candidates)
 
 
+def _hint(hints: list[str], i: int) -> str:
+    if i - 1 >= len(hints):
+        return ""
+    h = hints[i - 1]
+    return f"({h})" if h.startswith((EXISTING, "猜 ")) else f"(猜 {h})"
+
+
 def build_object_message(frames: list[FrameInput], cfg: AssistConfig) -> list[dict]:
     """一批帧的内容块：规则 + 每帧（人物框、候选框坐标文字 + 画了网格 / P 框 / 编号候选框的图）。"""
     content: list[dict] = [{"type": "text", "text": OBJECT_RULES}]
     for f in frames:
         people = "；".join(f"P{i}={_xyxy(b)}" for i, b in enumerate(f.people, 1)) or "无"
-        cands = "；".join(
-            f"{i}={_xyxy(b)}" + (f"(猜 {f.hints[i - 1]})" if i - 1 < len(f.hints) else "") for i, b in enumerate(f.candidates, 1)
-        ) or "无，只看有没有漏掉的物品"
+        cands = "；".join(f"{i}={_xyxy(b)}" + _hint(f.hints, i) for i, b in enumerate(f.candidates, 1)) or "无，只看有没有漏掉的物品"
         content.append({"type": "text", "text": f"帧 {f.stem}：人物 {people}；候选 {cands}"})
         content.append(image_block(_draw(f.image, f.people, f.candidates), 85))
     return content
@@ -108,18 +116,25 @@ def parse_object_review(text: str, frames: list[FrameInput]) -> dict[str, Object
         for i in range(1, len(f.candidates) + 1):
             v = boxes.get(str(i))
             cls = v.get("cls") if isinstance(v, dict) else None
-            if cls not in VERDICTS:
+            if cls not in VERDICTS:  # 没判 ≠ 不是物品：已有的标注留着（apply_object_review）
                 problems.append(f"{i} 号没判" if cls is None else f"{i} 号类别 {cls!r} 不认识")
-                verdicts[i] = ObjectVerdict("not_object", None, "")
+                verdicts[i] = ObjectVerdict("unjudged", None, "")
                 continue
             fixed = _box(v.get("fixed_box"), width, height) if v.get("fixed_box") else None
             verdicts[i] = ObjectVerdict(cls, fixed, str(v.get("note") or ""))
         missing = []
-        for m in item.get("missing") or []:
+        raw_missing, raw_spirits = item.get("missing") or [], item.get("spirits") or []
+        if not isinstance(raw_missing, list):
+            problems.append(f"missing 应该是列表：{raw_missing!r}")
+            raw_missing = []
+        if not isinstance(raw_spirits, list):
+            problems.append(f"spirits 应该是列表：{raw_spirits!r}")
+            raw_spirits = []
+        for m in raw_missing:
             if isinstance(m, dict) and m.get("cls") in OBJECTS and (box := _box(m.get("box"), width, height)):
                 missing.append((m["cls"], box, str(m.get("note") or "")))
         spirits: list[int] = []
-        for s in item.get("spirits") or []:
+        for s in raw_spirits:
             hit = _P_ID.match(s) if isinstance(s, str) else None
             n = int(hit.group(1)) if hit else 0
             if 1 <= n <= len(f.people):
@@ -131,13 +146,30 @@ def parse_object_review(text: str, frames: list[FrameInput]) -> dict[str, Object
     return out
 
 
-def apply_object_review(candidates: list[Rect], review: ObjectReview) -> list[tuple[str, Rect]]:
-    """核对结果 → 物品标注框：认可的候选（有修正框用修正框）+ Claude 补的；不是物品 / 重复的丢掉。"""
+def apply_object_review(candidates: list[Rect], review: ObjectReview, hints: list[str] | None = None) -> list[tuple[str, Rect]]:
+    """核对结果 → 物品标注框：认可的候选（有修正框用修正框）+ Claude 补的；不是物品 / 重复的丢掉。
+
+    hints 以 EXISTING 开头的候选是数据集里已有的标注：Claude 没判的原样留着（不能因为回答漏了就删），
+    被删 / 改类别 / 改框的记进 review.changed，列进待核对清单。"""
+    hints = hints or []
     out = []
     for i, box in enumerate(candidates, 1):
         v = review.verdicts.get(i)
-        if v is not None and v.cls in OBJECTS:
+        hint = hints[i - 1] if i - 1 < len(hints) else ""
+        old = hint[len(EXISTING):] if hint.startswith(EXISTING) else None
+        name = OBJECT_NAMES.get(old or "", old or "")
+        if v is None or v.cls == "unjudged":
+            if old in OBJECTS:
+                out.append((old, box))
+            continue
+        if v.cls in OBJECTS:
             out.append((v.cls, v.fixed or box))
+            if old is not None and v.cls != old:
+                review.changed.append(f"{i} 号已有的{name}改成了{OBJECT_NAMES[v.cls]}")
+            elif old is not None and v.fixed is not None:
+                review.changed.append(f"{i} 号已有的{name}框改了")
+        elif old is not None:
+            review.changed.append(f"{i} 号已有的{name}删了（{v.cls}" + (f"：{v.note}）" if v.note else "）"))
     out += [(cls, box) for cls, box, _ in review.missing]
     return out
 
@@ -228,9 +260,10 @@ def draw_objects_preview(frame: np.ndarray, objects: list[tuple[str, Rect]], peo
     return out
 
 
-def objects_report(results: list[tuple[str, ObjectReview | None]]) -> str:
-    """待核对清单（Markdown）：人改先祖 → Claude 补了框 → 没核对成 → 拿不准 / 回答有问题。"""
+def objects_report(results: list[tuple[str, ObjectReview | None]], edited: list[str] | None = None) -> str:
+    """待核对清单（Markdown）：人改先祖 → 已有标注被删 / 改 → Claude 补了框 → 没核对成 → 你改过、这次跳过 → 拿不准 / 回答有问题。"""
     spirit = [(s, r) for s, r in results if r is not None and r.spirits]
+    changed = [(s, r) for s, r in results if r is not None and r.changed]
     added = [(s, r) for s, r in results if r is not None and r.missing]
     failed = [s for s, r in results if r is None]
     unsure = [(s, r) for s, r in results if r is not None and (r.unsure or r.problems)]
@@ -238,12 +271,27 @@ def objects_report(results: list[tuple[str, ObjectReview | None]]) -> str:
              "预览在 _preview_objects/：座位蓝、篝火橙、乐器粉、先祖白；虚线 = Claude 补的框；红虚线 = 人物框改成了先祖。", ""]
     lines += ["## 1. 人物框改成了先祖（确认真的是先祖）", ""]
     lines += [f"- {s}：" + "、".join(f"P{n}" for n in r.spirits) for s, r in spirit] or ["（无）"]
-    lines += ["", "## 2. Claude 补了物品框（偏松，要拉紧）", ""]
+    lines += ["", "## 2. 已有标注被删 / 改（确认删得对、改得对）", ""]
+    lines += [f"- {s}：" + "；".join(r.changed) for s, r in changed] or ["（无）"]
+    lines += ["", "## 3. Claude 补了物品框（偏松，要拉紧）", ""]
     lines += [f"- {s}：" + "；".join(f"{OBJECT_NAMES.get(c, c)} {n}".strip() for c, _, n in r.missing) for s, r in added] or ["（无）"]
-    lines += ["", "## 3. 没核对成（标注没动，物品要自己补）", ""] + ([f"- {s}" for s in failed] or ["（无）"])
-    lines += ["", "## 4. Claude 拿不准 / 回答有问题", ""]
+    lines += ["", "## 4. 没核对成（标注没动，物品要自己补）", ""] + ([f"- {s}" for s in failed] or ["（无）"])
+    lines += ["", "## 5. 你改过、这次跳过的（要重新核对加 --recheck）", ""] + ([f"- {s}" for s in edited or []] or ["（无）"])
+    lines += ["", "## 6. Claude 拿不准 / 回答有问题", ""]
     lines += [f"- {s}：" + "；".join(filter(None, [r.unsure, *r.problems])) for s, r in unsure] or ["（无）"]
     return "\n".join(lines) + "\n"
 
 
 OBJECTS_PROTOCOL = Protocol(OBJECT_PROMPT_VERSION, OBJECT_SYSTEM, build_object_message, parse_object_review)
+
+
+def review_to_state(review: ObjectReview) -> dict:
+    """写回后记下的核对结果（清单用）：重跑跳过这帧时照样列进清单。"""
+    return {"spirits": review.spirits, "missing": [[c, b.x, b.y, b.w, b.h, n] for c, b, n in review.missing],
+            "changed": review.changed, "unsure": review.unsure, "problems": review.problems}
+
+
+def review_from_state(data: dict) -> ObjectReview:
+    missing = [(m[0], Rect(*m[1:5]), m[5]) for m in data.get("missing") or []]
+    return ObjectReview({}, missing, list(data.get("spirits") or []), str(data.get("unsure") or ""),
+                        list(data.get("problems") or []), list(data.get("changed") or []))
