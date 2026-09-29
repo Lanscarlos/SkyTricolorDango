@@ -1,3 +1,4 @@
+import _thread
 import json
 import sys
 from pathlib import Path
@@ -11,7 +12,7 @@ from skydango.brain.claude import claude_env
 from skydango.brain.manual import ManualControl
 from skydango.brain.trace import BrainTrace
 from skydango.chat.tracker import SelfFilter
-from skydango.config import Config
+from skydango.config import Config, ViewerConfig
 from skydango.runlog import RunDir
 
 FAKE = [sys.executable, str(Path(__file__).parent / "fake_claude.py")]
@@ -186,3 +187,48 @@ def test_brain_env_without_mcp_mentions_no_brain(monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "mcp" else real(name, *a))
     with pytest.raises(RuntimeError, match="mcp.*--no-brain"):
         cli._brain_env(Config())
+
+
+# ---- 管理面板起子进程用的参数 ----
+@pytest.mark.parametrize("argv, dry", [(["run", "--dry-run"], True), (["run", "--live"], False)])
+def test_run_dry_run_flag_beats_config(tmp_path, monkeypatch, argv, dry):
+    (tmp_path / "config.toml").write_text("[reply]\ndry_run = false\n", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(cli, "_run_brain", lambda cfg, *a, **k: seen.append(cfg.reply.dry_run))
+    monkeypatch.chdir(tmp_path)
+    cli.main(argv)
+    assert seen == [dry]
+
+
+def test_run_live_and_dry_run_conflict():
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--live", "--dry-run"])
+
+
+def test_run_viewer_port_forces_local_and_no_browser(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli, "_viewer", lambda cfg, open_browser=True, brain=False: seen.update(
+        host=cfg.viewer.host, port=cfg.viewer.port, open=open_browser))
+    monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.toml").write_text('[viewer]\nhost = "0.0.0.0"\n', encoding="utf-8")
+    cli.main(["run", "--view", "--viewer-port", "8761", "--no-browser"])
+    assert seen == {"host": "127.0.0.1", "port": 8761, "open": False}
+
+
+def test_run_parent_pid_starts_watchdog(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr("skydango.console.watchdog.watch_parent", lambda pid, interrupt, **k: seen.append((pid, interrupt)))
+    monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    cli.main(["run", "--parent-pid", "4321"])
+    assert seen == [(4321, _thread.interrupt_main)]
+
+
+def test_viewer_hooks_shutdown_to_interrupt_main(monkeypatch):
+    monkeypatch.setattr("webbrowser.open", lambda url: None)
+    v = cli._viewer(Config(viewer=ViewerConfig(port=0)), open_browser=False)
+    try:
+        assert v.on_shutdown is _thread.interrupt_main
+    finally:
+        v.stop()

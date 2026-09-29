@@ -451,6 +451,9 @@ def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False):
     except OSError as exc:
         raise SystemExit(f"可视化网页起不来（{cfg.viewer.host}:{cfg.viewer.port}）：{exc}\n端口可能被占用了，"
                          "用 view --port 换一个，或改 config.toml 的 viewer.port") from exc
+    import _thread
+
+    viewer.on_shutdown = _thread.interrupt_main  # POST /shutdown（管理面板点停止）= Ctrl+C，走同样的收尾
     where = "只有本机能看" if cfg.viewer.host in ("127.0.0.1", "localhost", "::1") else "同一局域网的人都能看！"
     print(f"可视化：{url}（{where}）")
     if open_browser:
@@ -1069,6 +1072,16 @@ def cmd_record(cfg: Config, args) -> None:
 def cmd_run(cfg: Config, args) -> None:
     if args.live:
         cfg.reply.dry_run = False
+    if args.dry_run:  # 管理面板总是显式传 --live / --dry-run，config.toml 的 dry_run 不偷偷改掉面板上的选择
+        cfg.reply.dry_run = True
+    if args.viewer_port is not None:  # 管理面板起的子进程：viewer 固定端口、只给本机
+        cfg.viewer.port, cfg.viewer.host = args.viewer_port, "127.0.0.1"
+    if args.parent_pid is not None:
+        import _thread
+
+        from .console import watchdog
+
+        watchdog.watch_parent(args.parent_pid, _thread.interrupt_main)
     if args.echo:
         cfg.llm.provider = "echo"
     cfg.brain.enabled = not args.no_brain  # 默认接大脑；普通 Agent 只留作调试
@@ -1083,7 +1096,7 @@ def cmd_run(cfg: Config, args) -> None:
     viewer = None
     try:
         if args.view:
-            viewer = _viewer(cfg, brain=cfg.brain.enabled)
+            viewer = _viewer(cfg, open_browser=not args.no_browser, brain=cfg.brain.enabled)
         if cfg.brain.enabled:
             _run_brain(cfg, run, args.no_emotes, args.duration, viewer)
         else:
@@ -1653,13 +1666,18 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_view)
 
     p = sub.add_parser("run", help="启动团子（默认接统管大脑、dry-run；--no-brain 是调试用的普通模式）")
-    p.add_argument("--live", action="store_true", help="真的发送消息")
+    live = p.add_mutually_exclusive_group()
+    live.add_argument("--live", action="store_true", help="真的发送消息")
+    live.add_argument("--dry-run", action="store_true", help="只打印不发送（覆盖 config.toml 的 reply.dry_run）")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显（联调用）")
     p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动结束（默认一直跑）")
     p.add_argument("--no-emotes", action="store_true", help="这次不做动作（牵着手时用：做动作会松开牵手）")
     p.add_argument("--brain", action="store_true", help="接统管大脑（已是默认，保留兼容）")
     p.add_argument("--no-brain", action="store_true", help="不接大脑，用旧的普通 Agent（调试用）")
     p.add_argument("--view", action="store_true", help="开可视化网页：实时显示画面和识别框（地址见 [viewer]）")
+    p.add_argument("--viewer-port", type=int, help="可视化网页用这个端口、只给本机看（管理面板用）")
+    p.add_argument("--no-browser", action="store_true", help="开可视化网页时不打开浏览器")
+    p.add_argument("--parent-pid", type=int, help="这个进程没了就自己退出（管理面板用）")
     p.set_defaults(func=lambda cfg, args: cmd_run(cfg, args))
 
     args = parser.parse_args(argv)
