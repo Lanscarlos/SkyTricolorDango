@@ -1175,6 +1175,10 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
                 emotes.restore()
             except Exception:
                 log.exception("恢复轮盘失败，请用 emotes wheel 检查")
+        try:
+            panel.shutdown()  # 按需模式：退出时把聊天面板恢复成开着
+        except Exception:
+            log.exception("聊天面板没恢复")
 
 
 def _camera(cfg: Config, dev, panel):

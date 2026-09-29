@@ -89,6 +89,7 @@ class Agent:
         self.paused = False  # #pause/#resume 切换：暂停时忽略别人的消息，不进 pending
         self.camera = camera
         self._last_spin = float("-inf")
+        self._nearby: set[str] = set()  # 上一圈身边的好友：多了人就看一眼聊天
         self.commands = CommandRouter(
             store, on_pause=self._set_paused, status=self._status_line,
             spin=self._spin if camera is not None else None, max_turns=cfg.spin.max_turns,
@@ -101,6 +102,9 @@ class Agent:
 
         info = {"模式": "dry-run" if self.cfg.reply.dry_run else "LIVE", "待回复": f"{len(self.pending)} 条",
                 "刚说过": self.sent[-3:][::-1] or "还没说话"}
+        panel = self.panel.describe(now)
+        if panel:
+            info["聊天面板"] = panel
         try:
             self.viewer.update(frame, now, env=self.env, panel=panel_box(self.cfg.vision, self.reader, frame), messages=fresh, info=info)
         except Exception:
@@ -122,10 +126,13 @@ class Agent:
             log.warning("截图失败，这一轮不读新消息: %s", str(exc).splitlines()[0])
         if frame is not None:
             fresh = self.reader.read(frame, now)
+            if self.pending:
+                self.panel.busy(now)  # 攒着没回的话：聊天面板不算安静
             if self.cfg.vision.mode == "log":
-                self.panel.tick(now, fresh, visible=self.reader.panel_closed_since is None)
+                self.panel.tick(now, fresh, visible=self.reader.panel_closed_since is None, blackout=is_black(frame))
             if self.env is not None:  # 到了间隔会在后台线程里扫一次画面
                 self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
+                self._watch_panel_triggers(now)
             if self.viewer is not None:
                 self._show(frame, now, fresh)
             if self.social is not None and self.env is not None and self.env.requests:
@@ -169,6 +176,7 @@ class Agent:
         typing = not self.cfg.reply.dry_run and self.cfg.sender.type_ahead
         if typing:
             try:
+                self.panel.before_speak(self.clock())  # 先开面板再按 Enter：说完对方的回复马上读得到
                 self.sender.open()
             except Exception:
                 log.warning("提前打开输入框失败，发送时再打开", exc_info=True)
@@ -196,11 +204,21 @@ class Agent:
         if dry:
             log.info("[dry-run] 将会发送: %s", text)
         else:
+            self.panel.before_speak(self.clock())
             self.sender.send(text)
             self.self_filter.remember(text, self.clock())
         if self.run_dir:
             self.run_dir.record_reply(batch, reply.render(self.cfg.reply.disclosure_prefix), sent=not dry)
         return text
+
+    def _watch_panel_triggers(self, now: float) -> None:
+        """按需打开聊天面板：身边多了好友、好友头顶冒出"正在输入"时去看一眼。"""
+        near = set(self.env.nearby(now))
+        if near - self._nearby:
+            self.panel.trigger("arrive", now)
+        self._nearby = near
+        if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
+            self.panel.bubble_seen(now)
 
     def _emote(self, name: str) -> None:
         self.emoted.append(name)
@@ -225,6 +243,7 @@ class Agent:
         if dry:
             log.info("[dry-run] 命令确认: %s", text)
         else:
+            self.panel.before_speak(self.clock())
             self.sender.send(text)
             self.self_filter.remember(text, self.clock())
         if self.run_dir:

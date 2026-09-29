@@ -117,10 +117,9 @@ class PanelManager:
             return
         self._last_activity = max(self._last_activity, now)
         self._missing_since = None
-        if self.state == "chatting":
-            return
-        self._pending = None
-        self._set("chatting", "团子要说话")
+        if self.state != "chatting":
+            self._pending = None
+            self._set("chatting", "团子要说话")
         if self.lent is not None or self.visible_now() or self.device.ime_shown():
             return  # 借出中：归还时按聊天中重开；输入框开着按键会打出字母
         if not self._open_and_wait():

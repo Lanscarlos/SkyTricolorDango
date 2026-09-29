@@ -401,3 +401,11 @@ def test_before_speak_does_nothing_in_always_mode():
     m, dev = manager([False])
     m.before_speak(5.0)
     assert dev.calls == []
+
+
+def test_before_speak_reopens_panel_when_chatting_but_closed():
+    m, dev, state = auto()
+    chatting(m, state, 100.0)
+    state.open = False  # 聊天中面板被关了（点了屏幕之类）
+    m.before_speak(101.0)
+    assert state.open is True and presses(dev) == 1
