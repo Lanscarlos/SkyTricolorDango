@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -20,7 +21,7 @@ from skydango.vision.detect import Detection
 from skydango.vision.env import EnvWatcher
 from skydango.vision.ocr import OcrLine
 from skydango.vision.perception import PerceptionWatcher
-from skydango.vision.viewer import Viewer, describe_env, panel_box
+from skydango.vision.viewer import PAGE, Viewer, describe_env, is_local_host, panel_box
 
 
 def frame(w=1920, h=1080):
@@ -182,7 +183,7 @@ def test_http_server_serves_page_and_snapshot():
     try:
         assert url.startswith("http://127.0.0.1:") and not url.endswith(":0/")
         page = urllib.request.urlopen(url, timeout=5).read().decode()
-        assert "团子看到的" in page and "/snapshot" in page
+        assert "团子看到的" in page and "snapshot?after=" in page
         v.update(frame(), 0.0, panel=Rect(0, 0, 10, 10))
         with urllib.request.urlopen(url + "snapshot?after=0", timeout=5) as r:
             assert r.status == 200 and json.loads(r.read())["boxes"][0]["kind"] == "panel"
@@ -403,7 +404,7 @@ def test_page_has_typing_colour_and_legend():
 def test_page_has_brain_section():
     from skydango.vision.viewer import PAGE
 
-    for part in ('id="brain"', 'id="brain-state"', 'id="brain-turns"', 'id="brain-acted"', "/brain?after="):
+    for part in ('id="brain"', 'id="brain-state"', 'id="brain-turns"', 'id="brain-acted"', "brain?after="):
         assert part in PAGE
 
 
@@ -555,7 +556,7 @@ def test_page_has_control_section():
     from skydango.vision.viewer import PAGE
 
     for part in ('id="control"', 'id="ctl-say"', 'id="ctl-emote"', 'id="ctl-camera"', 'id="ctl-pick"', 'id="ctl-log"',
-                 "/control/options", "X-Skydango"):
+                 "control/options", "X-Skydango"):
         assert part in PAGE
 
 
@@ -628,3 +629,46 @@ def test_page_has_panel_colors_and_buttons():
     from skydango.vision.viewer import PAGE
 
     assert "panel_unknown" in PAGE and "button_never" in PAGE and 'id="ctl-panel-close"' in PAGE and 'id="ctl-panel-read"' in PAGE
+
+
+# ---- 管理面板用：/status、/shutdown、相对路径 ----
+def test_page_uses_relative_urls_so_it_works_under_live():
+    assert not re.search(r"""fetch\(\s*[`"']/""", PAGE)
+
+
+def test_status_reports_last_info_without_image():
+    v = viewer()
+    assert v.status() == {"seq": 0, "age": None, "info": {}}
+    v.update(frame(), 1.0, info={"模式": "LIVE"})
+    s = v.status()
+    assert s["seq"] == 1 and s["info"]["模式"] == "LIVE" and "image" not in s and s["age"] >= 0
+
+
+def test_shutdown_calls_hook_only_with_guards():
+    v = viewer()
+    called = []
+    v.on_shutdown = lambda: called.append(1)
+    url = v.start()
+    try:
+        assert request(url + "shutdown", b"{}", {"Content-Type": "application/json"})[0] == 403
+        assert called == []
+        status, body = request(url + "shutdown", b"{}", GOOD)
+        assert status == 200 and body["ok"] and called == [1]
+        status, body = request(url + "status")
+        assert status == 200 and body["seq"] == 0
+    finally:
+        v.stop()
+
+
+def test_shutdown_404_without_hook():
+    v = viewer()
+    url = v.start()
+    try:
+        assert request(url + "shutdown", b"{}", GOOD)[0] == 404
+    finally:
+        v.stop()
+
+
+def test_is_local_host():
+    assert is_local_host("127.0.0.1:8761", 8761) and is_local_host("[::1]:8761", 8761) and is_local_host("localhost:8761", 8761)
+    assert not is_local_host("evil.com:8761", 8761) and not is_local_host("127.0.0.1:80", 8761) and not is_local_host("", 8761)

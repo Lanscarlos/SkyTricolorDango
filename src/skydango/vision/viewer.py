@@ -41,6 +41,32 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
+def is_local_host(host_header: str, port: int) -> bool:
+    """Host 头必须是本机地址 + 这个服务的端口（防 DNS 重绑定：恶意域名解析到 127.0.0.1）。管理面板共用。"""
+    host = host_header or ""
+    if host.startswith("["):
+        name, _, rest = host[1:].partition("]")
+        got = rest.removeprefix(":")
+    else:
+        name, _, got = host.rpartition(":")
+    return name.lower() in LOCAL_HOSTS and got == str(port)
+
+
+def post_guard(headers, port: int, max_body: int) -> tuple[int, str] | None:
+    """POST 的防护：本机 Host、带 X-Skydango 头、JSON、不超过 max_body（别的网页借浏览器发不过来：要先预检，我们不应答）。
+    不通过返回 (状态码, 原因)，通过返回 None；不读请求体。管理面板共用。"""
+    ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if not is_local_host(headers.get("Host") or "", port) or headers.get("X-Skydango") != "1" or ctype != "application/json":
+        return 403, "只接受本机网页发来的请求"
+    try:
+        length = int(headers.get("Content-Length") or -1)
+    except ValueError:
+        length = -1
+    if not 0 <= length <= max_body:
+        return 413, f"请求太大（上限 {max_body} 字节）"
+    return None
+
+
 def _box(r: Rect, kind: str, label: str) -> dict:
     return {"x": int(r.x), "y": int(r.y), "w": int(r.w), "h": int(r.h), "kind": kind, "label": label}
 
@@ -75,6 +101,8 @@ class Viewer:
         self._server: ThreadingHTTPServer | None = None
         self.brain = None  # brain.trace.BrainTrace：有它网页才显示大脑时间线
         self.control = None  # brain.manual.ManualControl：有它网页才显示手动控制栏（只在本机模式挂）
+        self.on_shutdown: Callable[[], None] | None = None  # POST /shutdown 时调（cli 里设成 interrupt_main，走 Ctrl+C 的收尾）
+        self._updated: float | None = None  # 最近一帧记下时的 time.monotonic()，/status 算 age
         self.frames = 0  # 更新了多少帧（测试 / 统计用）
         self.encodes = 0  # 压了多少次 JPEG（测试用）
 
@@ -123,11 +151,18 @@ class Viewer:
         with self._cond:
             self._seq += 1
             self._frame, self._boxes, self._info = frame, boxes, state
+            self._updated = time.monotonic()
             self.frames += 1
             self._cond.notify_all()
         return True
 
     # ---- 浏览器这边 ----
+    def status(self) -> dict:
+        """只有状态、不带图（管理面板总览每 2 秒拉一次）。age：离最近一帧多少秒，没帧是 None。"""
+        with self._cond:
+            age = None if self._updated is None else max(0.0, time.monotonic() - self._updated)
+            return {"seq": self._seq, "age": age, "info": dict(self._info)}
+
     def snapshot(self, after: int = 0, timeout: float = WAIT) -> bytes | None:
         """等到有比 after 新的一帧（最多 timeout 秒），返回 JSON；没有新帧返回 None。"""
         with self._cond:
@@ -180,6 +215,11 @@ class Viewer:
                         self._send(204, "application/json", b"")
                     else:
                         self._send(200, "application/json; charset=utf-8", body)
+                elif url.path == "/status":
+                    if not self._local_host():
+                        self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                    else:
+                        self._json(200, viewer.status())
                 elif url.path == "/control/options" and viewer.control is not None:
                     if not self._local_host():
                         self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
@@ -193,23 +233,22 @@ class Viewer:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
 
             def do_POST(self) -> None:  # noqa: N802
-                """手动控制：只收本机（Host）、带 X-Skydango 头的 JSON（别的网页借浏览器发不过来：要先预检，我们不应答）。"""
-                if urlparse(self.path).path != "/control" or viewer.control is None:
+                """手动控制 / 退出：只收本机（Host）、带 X-Skydango 头的 JSON（见 post_guard）。"""
+                path = urlparse(self.path).path
+                if not ((path == "/control" and viewer.control is not None) or (path == "/shutdown" and viewer.on_shutdown is not None)):
                     self._drain()
                     self._send(404, "text/plain; charset=utf-8", b"not found")
                     return
-                ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-                if not self._local_host() or self.headers.get("X-Skydango") != "1" or ctype != "application/json":
+                refused = post_guard(self.headers, self.server.server_address[1], MAX_BODY)
+                if refused is not None:
                     self._drain()
-                    self._json(403, {"ok": False, "text": "只接受本机网页发来的请求"})
+                    self._json(refused[0], {"ok": False, "text": refused[1]})
                     return
-                try:
-                    length = int(self.headers.get("Content-Length") or -1)
-                except ValueError:
-                    length = -1
-                if not 0 <= length <= MAX_BODY:
-                    self._drain()
-                    self._json(413, {"ok": False, "text": f"请求太大（上限 {MAX_BODY} 字节）"})
+                length = int(self.headers.get("Content-Length"))
+                if path == "/shutdown":
+                    self.rfile.read(length)
+                    viewer.on_shutdown()  # interrupt_main 只是让主线程收到 KeyboardInterrupt，这里照样能回应
+                    self._json(200, {"ok": True, "text": "正在退出"})
                     return
                 try:
                     req = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -222,14 +261,7 @@ class Viewer:
                 self._json(200, result)
 
             def _local_host(self) -> bool:
-                """Host 头必须是本机地址 + 这个服务的端口（防 DNS 重绑定：恶意域名解析到 127.0.0.1）。"""
-                host = self.headers.get("Host") or ""
-                if host.startswith("["):
-                    name, _, rest = host[1:].partition("]")
-                    port = rest.removeprefix(":")
-                else:
-                    name, _, port = host.rpartition(":")
-                return name.lower() in LOCAL_HOSTS and port == str(self.server.server_address[1])
+                return is_local_host(self.headers.get("Host") or "", self.server.server_address[1])
 
             def _drain(self) -> None:
                 """没读的请求体读掉（最多 64 KB），否则直接关连接浏览器那边会报连接被重置、看不到状态码。"""
@@ -405,7 +437,7 @@ function status(t,off){const el=$("status");el.textContent=t;el.className=off?"o
 async function loop(){
   if(running)return;running=true;
   while(!paused){
-    try{const r=await fetch(`/snapshot?after=${seq}`,{cache:"no-store"});if(r.status===204)continue;if(!r.ok)throw new Error(r.status);
+    try{const r=await fetch(`snapshot?after=${seq}`,{cache:"no-store"});if(r.status===204)continue;if(!r.ok)throw new Error(r.status);
       const s=await r.json();if(paused)break;seq=s.seq;
       await new Promise((ok,bad)=>{img.onload=ok;img.onerror=bad;img.src="data:image/jpeg;base64,"+s.image});last=s;draw(s);info(s);
       const now=performance.now();times.push(now);times=times.filter(t=>now-t<2000);
@@ -446,13 +478,13 @@ function ctlCount(){const n=[...$("ctl-say-text").value.trim()].length,max=K.opt
 function ctlLog(action,args,res){const li=el("li");li.append(el("span","t",new Date().toTimeString().slice(0,8)+" "),el("span",res.ok?"ok":"bad",controlLine(action,args,res)));
   const ul=$("ctl-log");ul.prepend(li);while(ul.children.length>10)ul.lastChild.remove()}
 async function ctlOptions(retry){
-  try{const r=await fetch("/control/options",{cache:"no-store"});
+  try{const r=await fetch("control/options",{cache:"no-store"});
     if(r.status===404){if(retry)setTimeout(()=>ctlOptions(true),3000);return}  // 身体还没建好：3 秒后再试
     if(!r.ok)throw new Error(r.status);K.opts=await r.json();$("control").hidden=false;ctlApply();
   }catch(e){if(retry)setTimeout(()=>ctlOptions(true),3000)}}
 async function ctlSend(action,args){if(K.busy)return;K.busy=true;ctlLock();let res;
   $("ctl-busy").textContent=`正在做：${controlLine(action,args,{text:"…"}).split(" → ")[0]}…（身体排队执行，环视要几十秒）`;
-  try{const r=await fetch("/control",{method:"POST",headers:{"Content-Type":"application/json","X-Skydango":"1"},body:JSON.stringify({action,args})});
+  try{const r=await fetch("control",{method:"POST",headers:{"Content-Type":"application/json","X-Skydango":"1"},body:JSON.stringify({action,args})});
     res=await r.json().catch(()=>({ok:false,text:`HTTP ${r.status}`}));if(!r.ok&&res.ok===undefined)res={ok:false,text:`HTTP ${r.status}`};
   }catch(e){res={ok:false,text:"连不上（程序停了？）"}}
   ctlLog(action,args,res);$("ctl-busy").textContent="";K.busy=false;ctlLock();await ctlOptions(false);return res}
@@ -540,7 +572,7 @@ function brainMerge(d){
 $("brain-acted").onchange=e=>{B.acted=e.target.checked;for(const [id,x] of B.els)x.hidden=B.acted&&!acted(B.turns.get(id))};
 async function brainLoop(){let seen=false;
   while(true){
-    try{const r=await fetch(`/brain?after=${B.version}`,{cache:"no-store"});
+    try{const r=await fetch(`brain?after=${B.version}`,{cache:"no-store"});
       if(r.status===404&&!seen)return;if(!r.ok)throw new Error(r.status);
       const d=await r.json();seen=true;$("brain").hidden=false;brainMerge(d);
     }catch(e){if(seen){const s=$("brain-state");s.textContent="连不上（程序停了？）";s.className="bad"}await new Promise(r=>setTimeout(r,1000))}
