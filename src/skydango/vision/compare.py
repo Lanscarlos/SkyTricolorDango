@@ -10,11 +10,13 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+from .people import OBJECT_NAMES
 
 _TIME = re.compile(r"_(\d+(?:\.\d+)?)s$")  # record 录的文件名：0012_006.00s.jpg
 
@@ -44,6 +46,7 @@ class FrameResult:
     yolo_ms: float
     far: int = 0  # 这一帧远处（框高 < far_height）的 player 有几个
     far_named: int = 0  # 其中认出了是哪个好友的
+    objects: dict[str, int] = field(default_factory=dict)  # 这一帧每类物品（座位 / 篝火 / 乐器 / 先祖）几个
 
 
 def compare_frames(
@@ -79,11 +82,20 @@ def compare_frames(
             yolo_ms=yolo_ms,
             far=len(far),
             far_named=sum(bool(tr.data.get("name")) for tr in far),
+            objects=_count_objects(yolo.last_tracks),
         )
         results.append(result)
         if on_diff is not None and result.env is not None and result.env != result.yolo:
             on_diff(result, frame)
     return results
+
+
+def _count_objects(tracks) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for t in tracks:
+        if t.cls in OBJECT_NAMES:
+            out[t.cls] = out.get(t.cls, 0) + 1
+    return out
 
 
 def _leaves(sightings: list[tuple[float, set[str]]], times: list[float], keep: float) -> list[dict]:
@@ -144,6 +156,11 @@ def summarize(results: list[FrameResult], keep_env: float, keep_yolo: float) -> 
         "far": {"players": far_players, "named": far_named,
                 "rate": round(far_named / far_players, 3) if far_players else None},
         "timing": {"env_ms": mean([r.env_ms for r in scanned]), "yolo_ms": mean([r.yolo_ms for r in results])},
+        "objects": {
+            cls: {"frames": len(counts), "avg": round(sum(counts) / len(counts), 2)}
+            for cls in OBJECT_NAMES
+            if (counts := [r.objects[cls] for r in results if r.objects.get(cls)])
+        },
     }
 
 
@@ -181,6 +198,10 @@ def report_md(s: dict) -> str:
               "对比二次检测：同一批录像跑两次，`--far-crops 0` 和默认各一次，看这里的比例差多少（目标：提升 ≥ 30 个百分点）；",
               "整帧耗时看 `perception bench --far-crops …` 的 p95（目标 ≤ 66 ms）。"]
     t = s["timing"]
+    objects = s.get("objects") or {}
+    lines += ["", "## 物品", ""] + (
+        [f"- {OBJECT_NAMES.get(c, c)}：出现在 {v['frames']} 帧，平均每帧 {v['avg']:.1f} 个" for c, v in objects.items()]
+        or ["没有认出物品（模型里没有物品类别，或者录像里没有）"])
     lines += ["", "## 耗时", "",
               f"- 现有：每次扫描平均 {fmt(t['env_ms'])} ms",
               f"- YOLO：每帧平均 {fmt(t['yolo_ms'])} ms（含检测、追踪、名字 OCR、圆圈匹配）", ""]

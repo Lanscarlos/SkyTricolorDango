@@ -138,3 +138,13 @@ def test_compare_frames_counts_far_players_and_named_ones():
         results.append(compare_frames([(0.0, "0.jpg", img, False)], env, yolo)[0])
     assert (results[0].far, results[0].far_named) == (1, 1)
     assert (results[1].far, results[1].far_named) == (1, 0)
+
+
+def test_summarize_and_report_objects():
+    rs = [fr(0, None, []), fr(1, None, []), fr(2, None, [])]
+    rs[0].objects, rs[1].objects = {"bench": 2}, {"bench": 1, "spirit": 1}
+    s = summarize(rs, 5.0, 5.0)
+    assert s["objects"] == {"bench": {"frames": 2, "avg": 1.5}, "spirit": {"frames": 1, "avg": 1.0}}
+    md = report_md(s)
+    assert "## 物品" in md and "- 座位：出现在 2 帧，平均每帧 1.5 个" in md and "- 先祖：出现在 1 帧，平均每帧 1.0 个" in md
+    assert "没有认出物品（模型里没有物品类别，或者录像里没有）" in report_md(summarize([fr(0, None, [])], 5.0, 5.0))
