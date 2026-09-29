@@ -179,3 +179,47 @@ def test_screenshot_prefers_fast_capture_and_falls_back_to_adb():
     cap.fail = False
     dev.screenshot()
     assert len(rec.cmds) == 1  # 恢复后又用回快速截图
+
+
+def test_hw_key_hold_sleeps_on_device():
+    rec = ShellRunner()
+    dev = AdbDevice("emulator-5554", runner=rec)
+    dev.hw_key_hold(106, 0.05)
+    sends = [c for c in rec.cmds if "sendevent" in c[-1]]
+    assert len(sends) == 1  # 一条命令：sleep 在模拟器里，不受 adb 往返影响
+    script = sends[0][-1]
+    parts = [
+        "sendevent /dev/input/event4 1 106 0",
+        "sendevent /dev/input/event4 1 106 1",
+        "sleep 0.05",
+        "sendevent /dev/input/event4 1 106 0",
+    ]
+    pos = 0
+    for part in parts:
+        i = script.find(part, pos)
+        assert i >= 0, (part, script)
+        pos = i + len(part)
+
+
+def test_base_hw_key_hold_releases_on_error(monkeypatch):
+    """默认实现：按下 + sleep + 抬起，sleep 被打断也要抬起。"""
+    import skydango.device.base as base
+
+    calls = []
+
+    class Dev:
+        hw_key_hold = base.Device.hw_key_hold
+
+        def hw_key_down(self, code):
+            calls.append(("down", code))
+
+        def hw_key_up(self, code):
+            calls.append(("up", code))
+
+    def boom(s):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(base.time, "sleep", boom)
+    with pytest.raises(KeyboardInterrupt):
+        Dev().hw_key_hold(105, 0.03)
+    assert calls == [("down", 105), ("up", 105)]

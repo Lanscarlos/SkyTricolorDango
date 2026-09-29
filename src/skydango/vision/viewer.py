@@ -402,6 +402,8 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 <div class="row" id="ctl-camera"><b>视角</b><button data-cam="left">左转</button><button data-cam="right">右转</button><button data-cam="up">抬头</button><button data-cam="down">低头</button><button data-cam="zoom_in">拉近</button><button data-cam="zoom_out">拉远</button>
 步数<input type="number" id="ctl-steps" value="1" min="1"><button id="ctl-reset">复位</button><button id="ctl-around">环视一圈</button></div>
 <div class="row"><b>看人</b><button id="ctl-pick">在画面上选人</button><span id="ctl-pick-tip" class="n"></span></div>
+<div class="row" id="ctl-track"><b>盯人</b><input type="text" id="ctl-track-name" placeholder="好友名字"><button id="ctl-track-pick">在画面上选</button>
+秒<input type="number" id="ctl-track-sec" value="30" min="1"><button id="ctl-track-go">盯</button><button id="ctl-stop">停下</button><span id="ctl-track-tip" class="n"></span></div>
 <div class="row" id="ctl-panels" hidden><b>面板</b><button id="ctl-panel-read">读面板</button><button id="ctl-panel-close">关面板</button></div>
 <ul id="ctl-log"></ul></section>
 <section id="brain" hidden><div class="bhead"><b>大脑</b><span id="brain-state">连接中…</span>
@@ -454,12 +456,14 @@ async function loop(){
 loop();
 // ---- control ----
 const CAM={left:"左转",right:"右转",up:"抬头",down:"低头",zoom_in:"拉近",zoom_out:"拉远"};
-const K={opts:null,busy:false,picking:false,mark:null};
+const K={opts:null,busy:false,picking:false,trackPick:false,mark:null};
+function nameAt(boxes,x,y){let best=null,area=Infinity;for(const b of boxes){if(!b.label||(b.kind!=="friend"&&b.kind!=="name"))continue;const tag=b.kind==="name",x1=tag?b.x-b.w:b.x,w=tag?b.w*3:b.w,h=tag?b.h*7:b.h;/* 名字标签：人在它正下方（宽 3 倍、连标签 7 倍高，同身体 _below_tag） */if(x<x1||x>=x1+w||y<b.y||y>=b.y+h)continue;if(w*h<area){best=b.label;area=w*h}}return best}
 function toFrame(clientX,clientY,rect,width,height){return [Math.round((clientX-rect.left)*width/rect.width),Math.round((clientY-rect.top)*height/rect.height)]}
 function controlLine(action,args,res){const a=args||{};let what;
   if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」${a.force?"（松手也做）":""}`;
   else if(action==="camera")what=`${CAM[a.action]||a.action} ×${a.steps}`;else if(action==="camera_reset")what="复位";
-  else if(action==="look_around")what="环视一圈";else if(action==="panel_read")what="读面板";else if(action==="panel_close")what="关面板";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;else what=action;
+  else if(action==="look_around")what="环视一圈";else if(action==="panel_read")what="读面板";else if(action==="panel_close")what="关面板";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;
+  else if(action==="track")what=`盯着${a.name}（${a.seconds} 秒）`;else if(action==="stop_task")what="停下";else what=action;
   return `${what} → ${res.text}`}
 function drawMark(s){if(!K.mark||!s)return;const k=c.width/s.width,x=K.mark[0]*k,y=K.mark[1]*k,r=Math.max(12,c.width/60);
   ctx.strokeStyle="#f472b6";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-r,y);ctx.lineTo(x+r,y);ctx.moveTo(x,y-r);ctx.lineTo(x,y+r);ctx.stroke()}
@@ -477,6 +481,11 @@ function ctlLock(){const o=K.opts||{emotes:[],camera:[]},b=K.busy;
   const pick=$("ctl-pick");pick.disabled=b||!o.friend_check;pick.title=o.friend_check?"":"[friend_check] enabled = false";
   $("ctl-pick-tip").textContent=o.friend_check?(K.picking?"点一下画面上的人":""):"没开（[friend_check] enabled = false）";
   pick.className=K.picking?"on":"";
+  const tr=!!o.track;$("ctl-track-name").disabled=$("ctl-track-sec").disabled=$("ctl-track-pick").disabled=b||!tr;
+  $("ctl-track-go").disabled=b||!tr||!$("ctl-track-name").value.trim();$("ctl-stop").disabled=b;
+  $("ctl-track-sec").max=o.max_track_seconds||60;$("ctl-track-pick").className=K.trackPick?"on":"";
+  if(!tr)$("ctl-track-tip").textContent="要开感知层（[perception]）和镜头";
+  else if(K.trackPick)$("ctl-track-tip").textContent="点一下画面上的好友";
   $("ctl-panels").hidden=!o.panels;$("ctl-panel-read").disabled=$("ctl-panel-close").disabled=b||!o.panels}
 function ctlCount(){const n=[...$("ctl-say-text").value.trim()].length,max=K.opts?K.opts.max_chars:0;
   $("ctl-count").textContent=`${n} / ${max}`;ctlLock()}
@@ -505,7 +514,17 @@ $("ctl-reset").onclick=()=>ctlSend("camera_reset",{});
 $("ctl-around").onclick=()=>ctlSend("look_around",{});
 $("ctl-panel-read").onclick=()=>ctlSend("panel_read",{});
 $("ctl-panel-close").onclick=()=>ctlSend("panel_close",{});
-$("ctl-pick").onclick=()=>{K.picking=!K.picking;K.mark=null;ctlLock();if(last)draw(last)};
+$("ctl-pick").onclick=()=>{K.picking=!K.picking;K.trackPick=false;K.mark=null;ctlLock();if(last)draw(last)};
+$("ctl-track-name").oninput=ctlLock;
+$("ctl-track-pick").onclick=()=>{K.trackPick=!K.trackPick;K.picking=false;$("ctl-track-tip").textContent="";ctlLock()};
+$("ctl-track-go").onclick=()=>{const name=$("ctl-track-name").value.trim();if(!name)return;
+  const max=K.opts&&K.opts.max_track_seconds||60,n=Math.min(max,Math.max(1,parseInt($("ctl-track-sec").value,10)||30));
+  $("ctl-track-sec").value=n;ctlSend("track",{name,seconds:n})};
+$("ctl-stop").onclick=()=>ctlSend("stop_task",{});
+c.addEventListener("click",e=>{if(!K.trackPick||!last)return;  // 盯人：按快照里的框认出点的是谁，填进名字
+  const [x,y]=toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height),name=nameAt(last.boxes||[],x,y);
+  K.trackPick=false;$("ctl-track-tip").textContent=name?"":"那里没认出好友的名字，换个地方点，或者直接输入";
+  if(name)$("ctl-track-name").value=name;ctlLock()});
 c.addEventListener("click",e=>{if(!K.picking||!last)return;
   const [x,y]=toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height);K.mark=[x,y];draw(last);
   setTimeout(async()=>{const go=confirm(`点 (${x}, ${y}) 这个人？`);K.picking=false;ctlLock();

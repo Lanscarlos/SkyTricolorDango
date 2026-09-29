@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Protocol
 
 import numpy as np
@@ -35,6 +36,18 @@ class Device(Protocol):
         """按住实体键盘的一个键（长按用），之后要 hw_key_up。"""
 
     def hw_key_up(self, code: int) -> None: ...
+
+    def hw_key_hold(self, code: int, seconds: float) -> None:
+        """按住实体键盘的一个键指定秒数再松开（转视角的短按用）。
+
+        默认实现：按下、在本机 sleep、抬起（sleep 被打断也会抬起）；
+        AdbDevice 覆盖成一条 shell 命令，sleep 在模拟器里，时长不受 adb 往返影响。
+        """
+        self.hw_key_down(code)
+        try:
+            time.sleep(seconds)
+        finally:
+            self.hw_key_up(code)
 
     def ime_shown(self) -> bool:
         """软键盘 / 输入框当前是否打开。"""

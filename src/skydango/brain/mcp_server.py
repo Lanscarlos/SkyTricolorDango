@@ -101,6 +101,10 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     def check_friend(x: int, y: int):
         return call("check_friend", x=x, y=y)
 
+    @srv.tool(name="track", description=DESCRIPTIONS["track"])
+    def track(name: str, seconds: int = 30):
+        return call("track", name=name, seconds=seconds)
+
     @srv.tool(name="stop_task", description=DESCRIPTIONS["stop_task"])
     def stop_task():
         return call("stop_task")

@@ -505,14 +505,20 @@ class FakeCamera:
         self.resets = 0
         self.arounds = 0
         self.spins = 0
+        self.reset_args = []  # 每次 reset 的 refine_seconds
+        self.forgets = 0
 
     def move(self, action, steps, max_steps=4):
         self.moves.append((action, steps))
         return "左转了 1 步"
 
-    def reset(self):
+    def reset(self, refine_seconds=None):
         self.resets += 1
+        self.reset_args.append(refine_seconds)
         return "镜头转回原位了"
+
+    def forget_reference(self):
+        self.forgets += 1
 
     def around(self, capture):
         self.arounds += 1
@@ -1279,7 +1285,7 @@ def test_shutdown_cancels_skill_before_resetting_camera(clock):
 
     order = []
     camera = FakeCamera()
-    camera.reset = lambda: order.append("reset") or "复原了"
+    camera.reset = lambda **kw: order.append("reset") or "复原了"
     b, _, _, _ = body(clock, camera=camera)
     skill = FakeSkill()
     skill.stop = lambda body, reason: order.append("stop")
@@ -1695,3 +1701,257 @@ def test_status_lists_things(clock):
     assert "画面里的东西：座位（左边·近）、先祖（前面·远）" in b.status()
     plain, _, _, _ = body(clock, env=FakeEnv())
     assert "画面里的东西" not in plain.status()
+
+
+# ---- 技能 track：找目标位置、跟踪期间不报人来人走（plan 2026-09-29-brain-track Task 3） ----
+def test_target_x_prefers_body_box(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "friend", "懒洋洋大王", Rect(900, 400, 100, 300), "前面", "近")]
+    env.labels = {"懒洋洋大王": (1200, 300, 160, 50, clock())}
+    b, _, _, _ = body(clock, env=env)
+    assert b.target_x("懒洋洋大王", clock()) == (950.0, "body")
+
+
+def test_target_x_falls_back_to_fresh_tag(clock):
+    env = FakeEnv()
+    env.labels = {"懒洋洋大王": (1200, 300, 160, 50, clock() - 0.2)}
+    b, _, _, _ = body(clock, env=env)
+    assert b.target_x("懒洋洋大王", clock()) == (1280.0, "tag")
+    env.labels = {"懒洋洋大王": (1200, 300, 160, 50, clock() - 0.8)}  # 超过 max_age = 0.5 s：不算
+    assert b.target_x("懒洋洋大王", clock()) is None
+
+
+def test_target_x_tolerates_ocr_typo(clock):
+    env = FakeEnv()
+    env.labels = {"懒洋洋大玉": (1200, 300, 160, 50, clock())}
+    b, _, _, _ = body(clock, env=env)
+    assert b.target_x("懒洋洋大王", clock()) == (1280.0, "tag")
+
+
+def test_target_x_ignores_strangers_and_missing_env(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "stranger", None, Rect(900, 400, 100, 300), "前面", "近")]
+    b, _, _, _ = body(clock, env=env)
+    assert b.target_x("懒洋洋大王", clock()) is None
+    plain, _, _, _ = body(clock)
+    assert plain.target_x("懒洋洋大王", clock()) is None
+
+
+def test_frame_width(clock):
+    b, _, _, _ = body(clock, frames=[np.zeros((720, 1280, 3), np.uint8)])
+    assert b.frame_width == 1920  # 还没截过图
+    b.step()
+    assert b.frame_width == 1280
+
+
+def quiet_skill():
+    from test_brain_skills import FakeSkill
+
+    skill = FakeSkill()
+    skill.quiet_people = True  # 跟踪中：转镜头时人进出画面是自己转的
+    return skill
+
+
+def test_no_people_events_while_quiet_skill_runs(clock):
+    env = FakeEnv()
+    b, _, _, events = body(clock, env=env)
+    env.near = ["懒洋洋大王"]
+    b.step()
+    assert [e.kind for e in events.drain()] == ["arrive"]
+    b.skills.start(b, quiet_skill())
+    env.near = []
+    b.step()
+    assert "leave" not in [e.kind for e in events.drain()]
+    b.stop_task()
+    b.step()
+    assert "leave" in [e.kind for e in events.drain()]
+
+
+def test_approaches_during_quiet_skill_are_dropped(clock):
+    env = ApproachEnv(["懒洋洋大王"])  # 转镜头时框变大，被当成"走过来"
+    b, _, _, events = body(clock, env=env)
+    b.skills.start(b, quiet_skill())
+    b.step()
+    b.stop_task()
+    b.step()  # 跟踪结束后也不冒出过时的 approach
+    assert not [e for e in events.drain() if e.kind == "approach"]
+
+
+# ---- track 工具（Task 5） ----
+def track_body(clock, live=True, visible=True, **kw):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    if visible:
+        env.people_list = [Person(1, "friend", "懒洋洋大王", Rect(1300, 400, 100, 300), "右边", "中")]
+    kw.setdefault("camera", FakeCamera())
+    b, device, reader, events = body(clock, live=live, env=env, **kw)
+    return b, env, events
+
+
+def test_track_starts_skill_when_target_visible(clock):
+    b, _, _ = track_body(clock)
+    out = b.track("懒洋洋大王", 20)
+    assert out.startswith("开始盯着懒洋洋大王了")
+    assert b.skills.active.name == "track" and b.skills.active.timeout == 25
+    assert "正在做：盯着懒洋洋大王" in b.status()
+
+
+def test_track_refused_in_dry_run(clock):
+    b, _, _ = track_body(clock, live=False)
+    with pytest.raises(ToolError, match="dry-run"):
+        b.track("懒洋洋大王")
+    assert b.skills.active is None
+    assert b.track("懒洋洋大王", live=True).startswith("开始盯着")  # 手动控制照做
+
+
+def test_track_refused_when_target_not_visible(clock):
+    from skydango.vision.people import Person
+
+    b, env, _ = track_body(clock, visible=False)
+    env.people_list = [Person(1, "friend", "阿白", Rect(400, 200, 120, 300), "左边", "近")]
+    with pytest.raises(ToolError, match="没看到") as info:
+        b.track("懒洋洋大王")
+    assert "阿白" in str(info.value) and "look_around" in str(info.value)
+    assert b.skills.active is None
+
+
+def test_track_refused_without_camera_or_perception(clock):
+    b, _, _ = track_body(clock, camera=None)
+    with pytest.raises(ToolError, match="视角"):
+        b.track("懒洋洋大王")
+
+    class OcrEnv:  # 整图 OCR 的 env：只有名字标签，没有 people()
+        labels = {"懒洋洋大王": (1200, 300, 160, 50, clock())}
+        requests = {}
+
+    plain, _, _, _ = body(clock, live=True, env=OcrEnv(), camera=FakeCamera())
+    with pytest.raises(ToolError, match="感知层"):
+        plain.track("懒洋洋大王")
+    with pytest.raises(ToolError, match="感知层"):
+        body(clock, live=True, camera=FakeCamera())[0].track("懒洋洋大王")
+
+
+def test_track_clamps_seconds(clock):
+    b, _, _ = track_body(clock)
+    b.track("懒洋洋大王", 999)
+    assert b.skills.active.timeout == 60 + 5
+    b.stop_task()
+    b.track("懒洋洋大王", 0)
+    assert b.skills.active.timeout == 1 + 5
+
+
+def test_track_refused_while_another_task_runs(clock):
+    b, _, _ = track_body(clock)
+    b.track("懒洋洋大王")
+    with pytest.raises(ToolError, match="stop_task"):
+        b.track("懒洋洋大王")
+
+
+def test_no_scene_change_while_skill_turns_camera(clock):
+    b, device, _, events = body(clock)
+    b.step()
+    b.skills.start(b, quiet_skill())  # FakeSkill 没写 needs_camera；quiet_skill 补上
+    b.skills.active.needs_camera = True
+    device.frames = [np.full((720, 1280, 3), 230, np.uint8)]  # 自己转镜头：画面大变
+    clock.advance(1.5)
+    b.step()
+    assert "scene_change" not in [e.kind for e in events.drain()]
+    b.stop_task()
+    device.frames = [scene()]
+    clock.advance(1.5)
+    b.step()  # 技能结束后重新拿参照，第一圈不比
+    clock.advance(1.5)
+    b.step()
+    assert "scene_change" not in [e.kind for e in events.drain()]
+
+
+# ---- 评审修正（I3 / I4 / I5 / M3） ----
+def camera_skill():
+    skill = quiet_skill()
+    skill.needs_camera = True
+    return skill
+
+
+def test_requests_still_accepted_while_quiet_skill_runs(clock):
+    env, social = FakeEnv(), FakeSocial()
+    b, _, _, events = body(clock, live=True, env=env, social=social)
+    env.near = ["懒洋洋大王"]
+    b.step()
+    events.drain()
+    b.skills.start(b, quiet_skill())
+    env.requests = {"懒洋洋大王": Request("懒洋洋大王", "hand", (0, 0), 100.0)}
+    social.to_handle = ["懒洋洋大王:hand"]
+    b.step()
+    kinds = [e.kind for e in events.drain()]
+    assert "request" in kinds and "accepted" in kinds  # 盯人时好友伸手照样接
+
+
+def test_shutdown_restores_wheel_before_resetting_camera_with_time_limit(clock):
+    order = []
+    camera, emotes = FakeCamera(), FakeEmotes()
+    camera.reset = lambda **kw: order.append(("reset", kw)) or "复原了"
+    emotes.restore = lambda: order.append(("restore", {}))
+    b, _, _, _ = body(clock, camera=camera, emotes=emotes)
+    b.shutdown()
+    assert [o[0] for o in order] == ["restore", "reset"]  # 轮盘先恢复：复位可能要好几秒
+    assert 0 < order[1][1]["refine_seconds"] <= 8
+
+
+@pytest.mark.parametrize("call", [
+    lambda b: b.camera_reset(live=True),
+    lambda b: b.camera_move("left", 1, live=True),
+    lambda b: b.capture_around(live=True),
+])
+def test_camera_tools_stop_camera_skill_first(clock, call):
+    cam = FakeCamera()
+    b, _, _, _ = body(clock, live=True, camera=cam)
+    skill = camera_skill()
+    b.skills.start(b, skill)
+    out = call(b)
+    assert b.skills.active is None and skill.stops  # 技能先停下
+    assert cam.resets + len(cam.moves) + cam.arounds == 1  # 然后照做
+    if isinstance(out, str):
+        assert "先停下了盯着小明" in out
+
+
+def test_check_friend_stops_camera_skill_first(clock):
+    b, checker, _, _ = friend_body(clock, live=False)
+    skill = camera_skill()
+    b.skills.start(b, skill)
+    out = b.check_friend_at(1200, 450, live=True)
+    assert b.skills.active is None and checker.calls == [(1200, 450)]
+    assert "先停下了盯着小明" in out[-1]["text"]
+
+
+def test_sweep_around_stops_camera_skill_first(clock):
+    b, _, _, _ = body(clock, live=True, env=SweepEnv(), camera=SpinCamera())
+    skill = camera_skill()
+    b.skills.start(b, skill)
+    out = b.sweep_around(live=True)
+    assert b.skills.active is None and "先停下了盯着小明" in out
+
+
+def test_camera_tools_leave_other_skills_alone(clock):
+    cam = FakeCamera()
+    b, _, _, _ = body(clock, live=True, camera=cam)
+    skill = quiet_skill()  # 不转镜头的技能
+    b.skills.start(b, skill)
+    out = b.camera_reset(live=True)
+    assert b.skills.active is skill and "先停下" not in out
+
+
+def test_move_and_blackout_forget_camera_reference(clock):
+    cam = FakeCamera()
+    b, device, _, _ = body(clock, live=True, camera=cam, locomotion=FakeLocomotion())
+    b.move("forward")
+    assert cam.forgets == 1  # 走过之后镜头参照图对不上了：复位时只粗转
+    b.step()
+    device.frames = [np.zeros((720, 1280, 3), np.uint8)]
+    clock.advance(1.5)
+    b.step()
+    assert cam.forgets == 2

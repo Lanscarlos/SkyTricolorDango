@@ -92,6 +92,9 @@ class FakeDevice:
     def hw_key_up(self, code):
         self.calls.append(("hw_up", code))
 
+    def hw_key_hold(self, code, seconds):
+        self.calls.append(("hw_hold", code, seconds))
+
     def ime_shown(self):
         self.ime_calls += 1
         return self.shown

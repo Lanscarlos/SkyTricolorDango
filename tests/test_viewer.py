@@ -573,6 +573,32 @@ def test_click_maps_to_frame_pixels():
     assert json.loads(out) == [1200, 600]
 
 
+def test_page_has_track_controls():
+    from skydango.vision.viewer import PAGE
+
+    for part in ('id="ctl-track"', 'id="ctl-track-name"', 'id="ctl-track-sec"', 'id="ctl-track-pick"', 'id="ctl-track-go"',
+                 'id="ctl-stop"'):
+        assert part in PAGE
+    script = _control_script()
+    assert 'ctlSend("track"' in script and 'ctlSend("stop_task"' in script
+
+
+def test_click_picks_friend_name():
+    # 盯人：在画面上点人，按快照里的框找名字（好友框，或名字标签往下一块）
+    from skydango.vision.viewer import PAGE
+
+    [fn] = [line for line in PAGE.splitlines() if line.startswith("function nameAt(")]
+    boxes = [  # 好友框、互动圆圈（不算）、名字标签（往下一块也算）、陌生人（不算）
+        {"x": 100, "y": 100, "w": 200, "h": 500, "kind": "friend", "label": "ming"},
+        {"x": 120, "y": 150, "w": 60, "h": 60, "kind": "ring", "label": "✦"},
+        {"x": 900, "y": 300, "w": 160, "h": 40, "kind": "name", "label": "bai"},
+        {"x": 1500, "y": 300, "w": 100, "h": 300, "kind": "stranger", "label": "陌生人"},
+    ]
+    script = fn + f"\nconst B={json.dumps(boxes, ensure_ascii=False)};" + \
+        "console.log(JSON.stringify([nameAt(B,150,300),nameAt(B,980,450),nameAt(B,1550,400),nameAt(B,600,600)]));"
+    assert json.loads(_node(script)) == ["ming", "bai", None, None]  # 标签用英文：node 输出在 Windows 上按 GBK 解码
+
+
 def test_page_retries_control_options():
     # 控制对象要等身体建好才挂上：拿到 404 过 3 秒再试，不能像时间线那样就此放弃
     script = _control_script()

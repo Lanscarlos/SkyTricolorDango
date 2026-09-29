@@ -158,6 +158,16 @@ class AdbDevice:
         dev, code = self._key_device(), int(code)
         self.shell(f"sendevent {dev} 1 {code} 0; sendevent {dev} 0 0 0")
 
+    def hw_key_hold(self, code: int, seconds: float) -> None:
+        # 一条命令：按下、在模拟器里 sleep、抬起。时长不受 adb 往返影响（D0 实测就是这么按的）。
+        # 先补一个抬起，同 hw_key。
+        dev, code = self._key_device(), int(code)
+        self.shell(
+            f"sendevent {dev} 1 {code} 0; sendevent {dev} 0 0 0; "
+            f"sendevent {dev} 1 {code} 1; sendevent {dev} 0 0 0; sleep {max(0.0, float(seconds)):.3f}; "
+            f"sendevent {dev} 1 {code} 0; sendevent {dev} 0 0 0"
+        )
+
     def hw_key(self, code: int) -> None:
         # adb shell 属于 input 组，可以直接写 /dev/input/eventX，游戏会当成实体键盘。
         # 先补一个抬起：之前的按键如果漏了抬起事件，按下会被当成重复而没反应。

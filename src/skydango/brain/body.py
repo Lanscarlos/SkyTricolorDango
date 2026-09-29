@@ -28,18 +28,20 @@ from ..imageio import imwrite
 from ..vision.bubbles import Rect, roi_rect
 from ..vision.panels import UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people, describe_things
-from .camera import MAX_STEPS as CAMERA_MAX_STEPS
+from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
 from .skills import SkillRunner
+from .track import TrackSkill
 
 log = logging.getLogger(__name__)
 
 REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "*")
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
 SCENE_EVENT_COOLDOWN = 10.0
+SHUTDOWN_REFINE = 8.0  # 退出时镜头闭环复位的细调最多花几秒（粗转照做）；控制台 stop_timeout 60 秒
 BUTTON_NOTES = {"retreat": "可以按", "allow": "可以按", "other": "要主人放行", "never": "不能按"}
 OWNER_NOTE = "（主人命令模式）"  # 真用到了主人命令窗口的放宽，结果后面标上（brain.jsonl 里看得出来）
 PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身体自己打开面板的操作：期间这个面板不算遮挡
@@ -258,16 +260,16 @@ class Body:
                 break
             if fut.set_running_or_notify_cancel():
                 fut.set_exception(ToolError("身体已经停了"))
-        if self.camera is not None:  # dry-run 下手动（live）也可能转过：总是复原，没动过就什么都不做
-            try:
-                log.info(self.camera.reset())
-            except Exception:
-                log.exception("镜头没转回原位")
-        if self.emotes is not None:
+        if self.emotes is not None:  # 轮盘先恢复：镜头闭环复位可能要好几秒，被强杀时轮盘更要紧
             try:
                 self.emotes.restore()
             except Exception:
                 log.exception("恢复轮盘失败，请用 emotes wheel 检查")
+        if self.camera is not None:  # dry-run 下手动（live）也可能转过：总是复原，没动过就什么都不做
+            try:
+                log.info(self.camera.reset(refine_seconds=SHUTDOWN_REFINE))
+            except Exception:
+                log.exception("镜头没转回原位")
         try:
             self.panel.shutdown()  # 按需模式：退出时把聊天面板恢复成开着
         except Exception:
@@ -416,8 +418,13 @@ class Body:
                 (self.env.hold if black else self.env.release)("blackout")
             self.events.put("scene_change", "画面整屏黑了（可能在切场景）" if black else "画面恢复了")
             self._ref_thumb = None
+            if black:  # 可能换了场景：镜头的参照图不作数了
+                self._forget_camera_reference()
             if not black:  # 黑屏时没看聊天：恢复后补看一眼
                 self.panel.trigger("scene", now)
+        if getattr(self.skills.active, "needs_camera", False):  # 技能在转镜头：画面大变是自己转的，结束后重新拿参照
+            self._ref_thumb = None
+            return
         if black or now - self._ref_at < 1.0:
             return
         t = thumb(frame)
@@ -431,6 +438,21 @@ class Body:
         self._ref_thumb, self._ref_at = t, now
 
     def _watch_people(self, now: float) -> None:
+        if getattr(self.skills.active, "quiet_people", False):
+            # 跟踪中转镜头：人进出画面是自己转的，不是人来了 / 走了。不发人来人走的事件、不更新比较基准，技能结束后下一圈照常比较。
+            # 转镜头时框变大变小会被当成"走过来"、动作也认不准：攒着的丢掉，免得跟踪结束后冒出过时的事件。
+            # 互动请求、自动接受、牵手状态照常（下面）
+            for pop in ("pop_approaches", "pop_gestures"):
+                if hasattr(self.env, pop):
+                    getattr(self.env, pop)()
+            if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
+                self.panel.bubble_seen(now)
+        else:
+            self._watch_comings(now)
+        self._watch_requests(now)
+
+    def _watch_comings(self, now: float) -> None:
+        """人来人走：身边有谁、陌生人、正在输入的气泡、有人走过来、对团子做动作。"""
         near = set(self.env.nearby(now))
         if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
             self.panel.trigger("arrive", now)
@@ -471,6 +493,8 @@ class Body:
                     continue
                 self.events.put("gesture", f"{who}对你{names.get(label, label)}")
 
+    def _watch_requests(self, now: float) -> None:
+        """互动请求、按规则自动接受、牵手状态（跟踪中也照常）。"""
         requests = dict(self.env.requests)
         current = {(r.name, r.kind) for r in requests.values()}
         for name, kind in sorted(current - self._requests):
@@ -566,6 +590,30 @@ class Body:
                     return self._below_tag(label[:4]), True
         return None
 
+    def target_x(self, name: str, now: float) -> tuple[float, str] | None:
+        """技能 track 用：(这个好友在画面上的中心 x 像素, 来源 "body" / "tag")；看不到返回 None。
+
+        人物框优先（感知层 people() 本来就只给 ≤ 1 s 的）；框时有时无（人挨着团子时 v4 只框住 67%）就用
+        名字标签的 x 接上，但标签要 track.max_age 秒内的。名字先找一模一样的，再容忍 OCR 错一两个字（同 _locate）。
+        """
+        if self.env is None:
+            return None
+        people = [p for p in self.env.people(now) if p.kind == "friend" and p.name] if hasattr(self.env, "people") else []
+        max_age = self.cfg.track.max_age
+        labels = {n: v for n, v in dict(self.env.labels).items() if now - v[4] <= max_age}  # 后台线程会改：先拍快照
+        for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
+            for p in people:
+                if same(p.name):
+                    return p.box.x + p.box.w / 2, "body"
+            for n, (x, _y, w, _h, _t) in labels.items():
+                if same(n):
+                    return x + w / 2, "tag"
+        return None
+
+    @property
+    def frame_width(self) -> int:
+        return int(self.last_frame.shape[1]) if self.last_frame is not None else 1920
+
     def _below_tag(self, tag: tuple[int, int, int, int]) -> Rect:
         """人在名字标签正下方：宽 3 倍标签宽、高 6 倍标签高（估计值，没在真机核对）。"""
         x, y, w, h = tag
@@ -623,6 +671,9 @@ class Body:
         self.clear_view("camera", live)
         if self.camera is None or self._dry(live):
             return [self.fresh_frame()]
+        stopped = self._stop_camera_task("要环顾四周")
+        if stopped:
+            log.info("环顾四周%s", stopped)
         try:
             with self._held("camera"):
                 frames = self.camera.around(self.device.screenshot)
@@ -640,6 +691,7 @@ class Body:
         if self.camera is None or self._dry(live):
             result = self.env.sweep([(0.0, self.fresh_frame())], spin)
             return "dry-run：没真的转，只看了前面。" + result.text() + note
+        stopped = self._stop_camera_task("要环顾四周")
         try:
             with self._held("camera"):
                 shot = self.camera.spin(self.device.screenshot, 1, spin.seconds_per_turn, spin.fps)
@@ -649,7 +701,7 @@ class Body:
         self.last_frame = shot.after
         if not shot.panel_reopened:
             self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
-        return result.text() + ("（中途画面黑了，可能在切场景，这一圈不准）" if shot.blackout else "")
+        return result.text() + ("（中途画面黑了，可能在切场景，这一圈不准）" if shot.blackout else "") + stopped
 
     def status(self) -> str:
         now = self.clock()
@@ -865,6 +917,7 @@ class Body:
         if self._dry(live):
             return f"dry-run：没真的点（会点原图上的 ({sx}, {sy})，打开好友树看完再关掉）{note}"
         self._last_friend_check = now
+        stopped = self._stop_camera_task("要点人看好友树")
         try:
             with self._held("friend_tree"):
                 result = self.friend_checker.check(sx, sy)
@@ -883,7 +936,7 @@ class Body:
         if not self.friend_checker.looks_open(result.changed):
             note = (f"点了原图上的 ({sx}, {sy})，右边没什么变化：可能没点中人（人走开了？），或者面板没出来。"
                     "图是点完之后的样子；要再试先重新 look(image=true)。")
-            return [image_block(fit(result.opened, tuple(brain.image_size)), brain.jpeg_quality), {"type": "text", "text": note}]
+            return [image_block(fit(result.opened, tuple(brain.image_size)), brain.jpeg_quality), {"type": "text", "text": note + stopped}]
         left = round(result.opened.shape[1] * self.friend_checker.cfg.panel_left)
         side = fit(result.opened[:, left:], (brain.look_at_max, brain.look_at_max))
         note = (f"点了原图上的 ({sx}, {sy})，右边打开了面板（第一张是整个画面，第二张是右边放大）。"
@@ -896,7 +949,7 @@ class Body:
         return [
             image_block(fit(result.opened, tuple(brain.image_size)), brain.jpeg_quality),
             image_block(side, brain.jpeg_quality),
-            {"type": "text", "text": note},
+            {"type": "text", "text": note + stopped},
         ]
 
     # ---- 面板 ----
@@ -1010,6 +1063,9 @@ class Body:
         note = self.clear_view("camera", live)
         if self._dry(live):
             return f"dry-run：没真的转（{action} ×{steps}）{note}"
+        if action not in CAMERA_KEYS:  # 先认参数：参数不对别把正在盯的人停了
+            raise ToolError(f"不认识的视角操作：{action}（可以用 {'、'.join(CAMERA_KEYS)}）")
+        stopped = self._stop_camera_task("要自己转镜头")
         try:
             with self._held("camera"):
                 result = self.camera.move(action, steps, CAMERA_MAX_STEPS * 2 if owner else CAMERA_MAX_STEPS)
@@ -1017,7 +1073,7 @@ class Body:
             raise ToolError(str(exc)) from None
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
         self._forget_self()
-        return "镜头现在：" + result + (OWNER_NOTE if owner and steps > CAMERA_MAX_STEPS else "")
+        return "镜头现在：" + result + (OWNER_NOTE if owner and steps > CAMERA_MAX_STEPS else "") + stopped
 
     def move(self, direction: str, steps: int = 1, force: bool = False, live: bool = False) -> str:
         """小步走（W/A/S/D），走出去回不去、没有复位。卡洛的 # 命令生效期间：一次最多走两倍步数、不用等间隔、牵着手也不用 force，
@@ -1047,10 +1103,41 @@ class Body:
             return f"dry-run：没真的走（{direction} ×{max(1, min(steps, max_steps))}）{note}"
         result = self.locomotion.move(direction, steps, max_steps)
         self._ref_thumb = None  # 自己走的，不算画面大变
+        self._forget_camera_reference()  # 走过之后转之前那张参照图对不上了：复位时只粗转
         return result + (OWNER_NOTE if relaxed else "")
 
     def stop_task(self) -> str:
         return self.skills.cancel(self, "大脑叫停")
+
+    def _stop_camera_task(self, why: str) -> str:
+        """要自己转镜头 / 点人之前：正在跑要转镜头的技能（track）就先停下，返回给结果用的说明（没停返回空串）。"""
+        skill = self.skills.active
+        if skill is None or not getattr(skill, "needs_camera", False):
+            return ""
+        goal = skill.goal
+        self.skills.cancel(self, why)
+        return f"（先停下了{goal}）"
+
+    def track(self, name: str, seconds: int = 30, live: bool = False) -> str:
+        """开始技能 track：小步转镜头把这个好友保持在画面中间，做完 / 跟丢发 task_done / task_failed。
+
+        跟踪期间不调 env.held()（要靠感知层一直看着他）；镜头不自动复原，交给 camera_reset。"""
+        if self._dry(live):
+            raise ToolError("dry-run 不转镜头盯人")
+        if self.camera is None:
+            raise ToolError("没有视角控制，盯不了人")
+        if self.env is None or not hasattr(self.env, "people"):
+            raise ToolError("没开感知层（[perception]），认不准人在画面哪里，盯不了")
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在盯不了")
+        seconds = max(1, min(int(seconds), self.cfg.track.max_seconds))
+        now = self.clock()
+        if self.target_x(name, now) is None:
+            known = self._recognized(now)
+            where = f"现在认得出：{'、'.join(known)}" if known else "现在一个名字都没认出来"
+            raise ToolError(f"画面里没看到 {name}（{where}）；先 look_around 找找")
+        note = self.clear_view("camera", live)
+        return self.skills.start(self, TrackSkill(name, seconds)) + note
 
     def camera_reset(self, live: bool = False) -> str:
         if self.camera is None:
@@ -1058,11 +1145,12 @@ class Body:
         note = self.clear_view("camera", live)
         if self._dry(live):
             return "dry-run：没真的转" + note
+        stopped = self._stop_camera_task("要把镜头复位")
         with self._held("camera"):
             result = self.camera.reset()
         self._ref_thumb = None
         self._forget_self()
-        return result
+        return result + stopped
 
     def _owner(self, now: float) -> bool:
         """卡洛的 # 命令还在生效：move / emote / camera 放宽限制（设计见 2026-09-27-brain-move-design.md）。"""
@@ -1071,6 +1159,11 @@ class Body:
     def _dry(self, live: bool) -> bool:
         """只打印不执行：dry-run 且不是手动控制（live）。"""
         return self.cfg.reply.dry_run and not live
+
+    def _forget_camera_reference(self) -> None:
+        forget = getattr(self.camera, "forget_reference", None)
+        if forget is not None:
+            forget()
 
     def _forget_self(self) -> None:
         """镜头拉近拉远、俯仰变了：转圈认出的团子框（位置、大小）不准了，下次转圈再认。"""

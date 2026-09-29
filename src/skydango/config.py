@@ -433,6 +433,22 @@ class SpinConfig:
 
 
 @dataclass
+class TrackConfig:
+    """技能 track（盯着好友）：小步转镜头把目标保持在画面中间。实测数据见 game-ops §2「转视角实测（D0）」。"""
+
+    deadband: float = 0.15  # 目标中心离画面中线不到半屏宽的这么多就不转（0.15 × 960 ≈ 144 px，大于最小修正量）
+    gain: float = 0.1  # 按键秒数 = gain × 偏差（半屏宽为 1）；估的，真机验收后调
+    nudge_min: float = 0.02  # 最短按键（秒）：2026-09-29 D0 实测一下就移 35~40 px
+    nudge_max: float = 0.1  # 最长按键（秒）：技能在身体线程里跑，不能按太久
+    settle: float = 0.6  # 按完等画面停稳（秒）：D0 实测松手 0.3~0.6 s 后位置才稳定；开始后也先等这么久
+    lost_after: float = 3.0  # 这么多秒看不到目标算跟丢
+    max_age: float = 0.5  # 名字标签超过这么多秒没更新就不用
+    stall_nudges: int = 3  # 同方向连续按这么多次……
+    stall_px: float = 20.0  # ……误差缩小不到这么多像素 = 离得太近转不动了，停手
+    max_seconds: int = 60  # 一次最多盯多久
+
+
+@dataclass
 class BrainConfig:
     """统管大脑（brain/）：常驻的 Claude Code（订阅）收事件、调身体的工具；眼睛（Haiku）把画面写成文字。`run --brain` 打开。
 
@@ -531,6 +547,7 @@ class Config:
     panels: PanelsConfig = field(default_factory=PanelsConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     spin: SpinConfig = field(default_factory=SpinConfig)
+    track: TrackConfig = field(default_factory=TrackConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)

@@ -1,4 +1,4 @@
-"""手动控制：可视化网页上直接让身体说话、做动作、转视角 / 环视、看人（`run --brain --view`），手动试身体的功能用。
+"""手动控制：可视化网页上直接让身体说话、做动作、转视角 / 环视、看人、盯人 / 停下（`run --brain --view`），手动试身体的功能用。
 
 - 手动的总是真执行（身体方法传 live=True）：大脑 dry-run 时也一样；身体的护栏照旧（不能自称真人、限速、牵手要 force……）
 - 经 Body.call 交给身体线程，和大脑的工具排队执行
@@ -12,7 +12,7 @@ import json
 import logging
 
 from .camera import KEYS, MAX_STEPS
-from .tools import AROUND_TIMEOUT, ToolError
+from .tools import AROUND_TIMEOUT, RESET_TIMEOUT, ToolError
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,9 @@ class ManualControl:
             "max_chars": cfg.reply.max_chars,
             "dry_run": cfg.reply.dry_run,
             "panels": getattr(b, "panels", None) is not None,
+            # 盯人要镜头 + 感知层（people()）；认不出这个人等身体回话
+            "track": b.camera is not None and hasattr(getattr(b, "env", None), "people"),
+            "max_track_seconds": cfg.track.max_seconds,
         }
 
     def run(self, action: str, args: dict) -> dict:
@@ -95,7 +98,7 @@ class ManualControl:
                 raise ValueError(f"步数要在 1～{MAX_STEPS} 之间")
             return (lambda: b.camera_move(move, steps, live=True)), f"转了视角（{CAMERA_NAMES[move]} ×{steps}）", None
         if action == "camera_reset":
-            return (lambda: b.camera_reset(live=True)), "把视角复位", None
+            return (lambda: b.camera_reset(live=True)), "把视角复位", RESET_TIMEOUT
         if action == "look_around":
             if hasattr(getattr(b, "env", None), "sweep"):  # 打开了感知层：转一圈交给 YOLO
                 return (lambda: b.sweep_around(live=True)), "环视了一圈", AROUND_TIMEOUT
@@ -103,6 +106,14 @@ class ManualControl:
         if action == "check_friend":
             x, y = _int(a, "x"), _int(a, "y")
             return (lambda: b.check_friend_at(x, y, live=True)), f"点了画面上 ({x}, {y}) 的人", None
+        if action == "track":
+            name, seconds = _text(a, "name"), _int(a, "seconds", 30)
+            top = b.cfg.track.max_seconds
+            if not 1 <= seconds <= top:
+                raise ValueError(f"秒数要在 1～{top} 之间")
+            return (lambda: b.track(name, seconds, live=True)), f"盯着{name}（{seconds} 秒）", None
+        if action == "stop_task":
+            return b.stop_task, "停下正在做的事", None
         if action == "panel_read":
             return (lambda: b.panel_read()), "读了面板", None
         if action == "panel_close":

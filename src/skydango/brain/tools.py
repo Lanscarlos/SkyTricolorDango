@@ -36,7 +36,7 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         f"转视角 / 缩放，action：{' / '.join(KEYS)}（left、right 左右转，每步约 45°；up 往上看、down 往下看；zoom_in 拉近、zoom_out 拉远）。"
         "steps 1~4，默认 1。转之前身体会关掉聊天记录面板，转完再打开。"
     ),
-    "camera_reset": "把镜头转回原位（按之前转过的反着转回去）。",
+    "camera_reset": "把镜头转回原位（按之前转过的反着转回去，再和转之前的画面比对着对准）。",
     "move": (
         "小步走动，direction：forward 前进 / back 后退 / left 向左 / right 向右（相对镜头朝向）；steps 1~3，默认 1。"
         "走完用 status / look 看看走到哪了再决定接着走不走；两次之间要隔几秒。走出去回不去（没有复位），"
@@ -47,6 +47,9 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "x、y 是这个人身上的一点，按 15 秒内 look(image=true) 那张 1280×720 的图给。"
         "只在名字标签认不出、又确实需要知道时用（点过火的陌生人和好友长得一样）；点屏幕会暂时关掉聊天记录面板，别常用。"
     ),
+    "track": "转镜头一直盯着某个好友（让他留在画面中间），做完或跟丢了会用 task_done / task_failed 告诉你。"
+             "离你很近的人本来就在画面里，不用盯。name 是好友名字，seconds 盯多久（1~60，默认 30）；看完用 camera_reset 转回来。"
+             "想提前结束就 stop_task，或者直接 camera_reset（会自动停下）；盯着的时候转视角、环顾、点人也会先停下。",
     "stop_task": "停下身体正在做的事（状态里“正在做：…”那件）。没在做也没关系，会告诉你。",
     "panel_read": "读现在开着的面板（弹框、动作面板、好友树……）：名字、标题、正文和编了号的按钮，按钮后面写着能不能按。"
                   "image=true 时附上面板原图。被面板挡着、或者收到面板事件时先读再决定。",
@@ -64,9 +67,11 @@ def descriptions(sweep: bool) -> dict[str, str]:
 
 TOOL_NAMES = list(DESCRIPTIONS)
 ACTIONS = {
-    "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "stop_task", "panel_press", "panel_close"
+    "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task", "panel_press",
+    "panel_close",
 }  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
+RESET_TIMEOUT = 60.0  # 镜头闭环复位：粗转 + 细调最多 60 下、每下等 0.4 s 画面停稳，最坏三十多秒（一般几秒）
 
 _MISSING = object()
 
@@ -168,6 +173,8 @@ class ToolBox:
                 raise ToolError("没开眼睛，看不了四周")
             frames = b.call(b.capture_around, timeout=AROUND_TIMEOUT)
             return self.eyes.describe_around(frames, b.clock())
+        if name == "camera_reset":
+            return b.call(b.camera_reset, timeout=RESET_TIMEOUT)
         return b.call(self._bind(name, a))
 
     def _bind(self, name: str, a: dict) -> Callable[[], object]:
@@ -203,6 +210,9 @@ class ToolBox:
         if name == "check_friend":
             x, y = _int(a, "x"), _int(a, "y")
             return lambda: b.check_friend(x, y)
+        if name == "track":
+            who, seconds = _str(a, "name"), _int(a, "seconds", 30)
+            return lambda: b.track(who, seconds)
         if name == "stop_task":
             return b.stop_task
         if name == "panel_read":
