@@ -54,12 +54,19 @@ def parse_news(text: str) -> str:
         if m is None:
             continue
         items = [m.group(1) or ""]
+        # 后面的行算不算新鲜事：冒号后面已经有内容时只收列表条目；标题式（冒号后面空着）按第一条的格式，
+        # 列表就只收列表、“名字：…”就只收带冒号的行 —— 格式不一样的（比如最后一句总结）到此为止
+        bullets = bool(items[0].strip())
         for more in lines[i + 1 :]:
             if not more.strip():
                 if any(p.strip() for p in items):
                     break
                 continue  # 标题下面空一行再列条目
             if _NEXT_ITEM.match(more):
+                break
+            if len(items) == 1 and not items[0].strip():
+                bullets = bool(_BULLET.match(more))
+            elif bullets and not _BULLET.match(more) or not bullets and not re.search(r"[：:]", more):
                 break
             items.append(_BULLET.sub("", more))
         parts = [p.strip().strip("*").strip().rstrip("。.").strip() for p in items]

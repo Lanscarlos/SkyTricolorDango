@@ -130,3 +130,9 @@ def test_pasted_secret_is_stripped(tmp_path):
     assert s.save({"secret.llm": "  sk-x\n"})["ok"]
     assert s.secret("llm") == "sk-x"
     assert s.save({"secret.llm": "   "})["ok"] and s.secret("llm") == "sk-x"  # 只有空白 = 不改
+
+
+def test_quota_help_does_not_hardcode_window():
+    helps = {f.key: f.help for f in FIELDS}
+    for key in ("proactive.quota_busy", "proactive.quota_quiet"):
+        assert "10 分钟" not in helps[key] and "quota_window" in helps[key]

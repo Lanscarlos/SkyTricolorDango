@@ -127,3 +127,13 @@ def test_proactive_rules_drop_contradiction():
     # 评审 #7：“对方没问就别硬找话题”和“安静时偶尔抛个话头”矛盾
     assert "对方没问就别硬找话题" not in static_prompt(ReplyConfig())
     assert "对方没问就别硬找话题" in static_prompt(ReplyConfig(), proactive=False)
+
+
+def test_what_you_do_mentions_news():
+    # 「你在做什么」列举事件时也提到新鲜事
+    def intro(text):
+        start = text.index("## 你在做什么")
+        return text[start : text.index("\n## ", start + 1)]
+
+    assert "新鲜事" in intro(static_prompt(ReplyConfig()))
+    assert "新鲜事" not in intro(static_prompt(ReplyConfig(), proactive=False))

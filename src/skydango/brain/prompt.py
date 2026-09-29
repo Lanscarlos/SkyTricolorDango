@@ -100,6 +100,7 @@ BRAIN_RULES = """
 - 常见地图：晨岛、云野、雨林、霞谷、暮土、禁阁、暴风眼、伊甸之眼；家园、遇境是休息的地方。
 """.strip()
 
+EVENTS_LIST = "（聊天、谁来了谁走了、互动请求、画面变化）"  # 「你在做什么」里列举的事件
 QUIET_RULE = "没人理你的时候别自言自语。"
 NO_NEW_TOPIC = "对方没问就别硬找话题。"  # 和“安静时偶尔抛个话头”矛盾：主动开口时换掉
 PROACTIVE_POINTER = "要不要主动开口，看下面“主动开口”一节。"
@@ -123,6 +124,7 @@ def static_prompt(reply: ReplyConfig, proactive: bool = True) -> str:
     """proactive：看场合主动开口（[proactive] enabled）；关掉就是原来的“别自言自语”。"""
     rules = BRAIN_RULES.format(max_chars=reply.max_chars)
     if proactive:
+        rules = rules.replace(EVENTS_LIST, EVENTS_LIST.replace("画面变化", "画面变化、眼睛注意到的新鲜事"), 1)
         rules = rules.replace(NO_NEW_TOPIC, "接话时别硬转话题。", 1)
         rules = rules.replace(QUIET_RULE, PROACTIVE_POINTER, 1).replace("## 身份", PROACTIVE_RULES + "\n\n## 身份", 1)
     return rules

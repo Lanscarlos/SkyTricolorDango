@@ -199,8 +199,12 @@ class Body:
         info["正在做"] = self.skills.describe(now).removeprefix("正在做：")
         info["刚说过"] = self.said[-3:][::-1] or "还没说话"
         if self.cfg.proactive.enabled:
-            o = self.occasion()
-            info["场合"] = f"{LEVEL_NAMES[o.level]} · " + ("不主动" if o.blocked else f"还能主动说 {o.left} 句")
+            try:
+                o = self.occasion()
+                info["场合"] = f"{LEVEL_NAMES[o.level]} · " + ("不主动" if o.blocked else f"还能主动说 {o.left} 句")
+            except Exception:
+                log.debug("算场合出错", exc_info=True)
+                info["场合"] = "算不出来"
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
             self.viewer.update(
@@ -676,7 +680,11 @@ class Body:
         if self.said:
             parts.append("刚说过：" + " | ".join(self.said[-3:]))
         if self.cfg.proactive.enabled:
-            parts.append("场合：" + self.occasion().line(self.wall()))
+            try:
+                parts.append("场合：" + self.occasion().line(self.wall()))
+            except Exception:
+                log.exception("算场合出错")
+                parts.append("场合：算不出来（详见日志）")
         parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
             parts.append("dry-run（说话、动作、转视角、走动都不会真的执行）")

@@ -204,3 +204,11 @@ def test_parse_news_numbered_and_headings():
     assert parse_news("新鲜事：\n小明：换了斗篷\n阿花：坐下弹琴了") == "小明：换了斗篷；阿花：坐下弹琴了"
     assert parse_news("新鲜事：天黑了\n\n画面状态：正常") == "天黑了"
     assert parse_news("新鲜事：天黑了\n画面状态：正常") == "天黑了"  # 下一项（已知的标题）到此为止
+
+
+def test_parse_news_ignores_trailing_summary():
+    # 新鲜事后面不空行接一句总结，不拼进去
+    assert parse_news("新鲜事：天黑了\n总之挺安静的") == "天黑了"
+    assert parse_news("新鲜事：\n- 天黑了\n- 下雨了\n总之挺安静的") == "天黑了；下雨了"
+    assert parse_news("新鲜事：\n小明：换了斗篷\n阿花：坐下弹琴了\n总之挺热闹") == "小明：换了斗篷；阿花：坐下弹琴了"
+    assert parse_news("新鲜事：天黑了\n- 下雨了") == "天黑了；下雨了"

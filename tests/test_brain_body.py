@@ -1620,3 +1620,24 @@ def test_fallback_reply_is_not_proactive(clock):
     b.step()
     assert "在呢" in b.said[-1]
     assert [s.proactive for s in b.spoken] == [False]
+
+
+def test_occasion_errors_do_not_break_the_loop(clock):
+    # 算场合出错（env / friends.md）：网页和 status 显示算不出来，这一圈照常跑完命令
+    class Viewer:
+        info = None
+
+        def update(self, frame, now, **kw):
+            Viewer.info = kw["info"]
+
+    b, _, _ = pro_body(clock, viewer=Viewer())
+
+    def broken():
+        raise OSError("friends.md 读不了")
+
+    b.friend_names = broken
+    ran = []
+    b._commands.put((lambda: ran.append(1), __import__("concurrent.futures").futures.Future()))
+    b.step()
+    assert Viewer.info["场合"] == "算不出来" and ran == [1]
+    assert "场合：算不出来（详见日志）" in b.status()
