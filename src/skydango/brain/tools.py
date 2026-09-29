@@ -7,6 +7,7 @@ import logging
 import threading
 from collections.abc import Callable
 
+from ..chat.recall import recall
 from .body import REQUEST_KINDS, ToolError
 from .camera import KEYS
 
@@ -21,6 +22,9 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
     "look_around": "环顾四周：原地转一圈（每 90° 看一次），眼睛描述前 / 右 / 后 / 左各有什么，最后转回原来的朝向。要十几秒，别常用。",
     "status": "看身体现在的状态：面板和输入框开没开、身边有谁、是不是牵着手、镜头、能做的动作、互动规则、刚说过的话。",
     "chat_log": "看最近 n 条聊天记录（含你自己说的，标成“我”），n 1~50，默认 20。",
+    "recall": "翻以前的聊天：在聊天记录（这次和以前几次运行，只记你开口的那几轮）里找原话，附上笔记里相关的几行。"
+              "query 给空格分开的几个关键词（中一个就算），who 只看某个人说的 / 对他说的（名字写一部分也行），"
+              "days 往前查几天（1~90，默认 14）；query 和 who 至少给一个。有人提起以前的事，先查再答；没找到可以换个说法再查一次。",
     "say": "在游戏里发一句话。一次一句，口语，短。",
     "emote": "做一个动作（只能用 status 里“能做的动作”列出的）。牵着手时会被拦下，确定要松手才传 force=true。",
     "set_request_policy": (
@@ -84,9 +88,10 @@ def _bool(args: dict, key: str, default=_MISSING) -> bool:
 
 
 class ToolBox:
-    def __init__(self, body, eyes=None, max_steps: int = 6, max_says: int = 2) -> None:
+    def __init__(self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None) -> None:
         self.body = body
         self.eyes = eyes
+        self.memory = memory  # chat.memory.MemoryStore：recall 用（只读，dry-run 也给）
         self.max_steps = max_steps
         self.max_says = max_says
         self._lock = threading.Lock()  # Claude Code 可能并行调工具：计数要加锁
@@ -143,6 +148,14 @@ class ToolBox:
             if self.eyes.latest is not None and now - self.eyes.last_look < b.cfg.brain.look_min_interval:
                 return self.eyes.summary(now)
             return self.eyes.describe_frame(b.call(b.fresh_frame), now)
+        if name == "recall":  # 只读 memory/ 里的文件，不占身体线程
+            if self.memory is None:
+                raise ToolError("这次没开记忆（reply.memory_dir 为空），翻不了以前的聊天")
+            query, who, days = _str(a, "query", ""), _str(a, "who", ""), _int(a, "days", 14)
+            try:
+                return recall(self.memory, query, who, days)
+            except ValueError as exc:
+                raise ToolError(str(exc)) from None
         if name == "look_around":
             if hasattr(getattr(b, "env", None), "sweep"):  # 打开了感知层：转一圈交给 YOLO，不叫眼睛
                 return b.call(b.sweep_around, timeout=AROUND_TIMEOUT)

@@ -59,3 +59,8 @@ def test_brain_prompt_panel_auto():
     line = "聊天面板平时关着，画面外的人说话可能晚半分钟才看到"
     assert line not in brain_prompt(ReplyConfig(), None)
     assert line in brain_prompt(ReplyConfig(), None, panel_auto=True)
+
+
+def test_prompt_says_to_recall_before_answering_about_the_past():
+    text = static_prompt(ReplyConfig())
+    assert "recall" in text and "别顺着" in text and "你之前不是这么说的" in text

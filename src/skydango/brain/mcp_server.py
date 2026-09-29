@@ -69,6 +69,10 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     def chat_log(n: int = 20):
         return call("chat_log", n=n)
 
+    @srv.tool(name="recall", description=DESCRIPTIONS["recall"])
+    def recall(query: str = "", who: str = "", days: int = 14):
+        return call("recall", query=query, who=who, days=days)
+
     @srv.tool(name="say", description=DESCRIPTIONS["say"])
     def say(text: str):
         return call("say", text=text)

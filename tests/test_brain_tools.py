@@ -1,4 +1,5 @@
 import threading
+import time
 
 import pytest
 
@@ -86,8 +87,8 @@ class FakeEyes:
 
 def test_tool_names_and_actions():
     assert TOOL_NAMES == [
-        "look", "look_at", "look_person", "look_around", "status", "chat_log", "say", "emote", "set_request_policy", "camera", "camera_reset",
-        "check_friend", "stop_task", "panel_read", "panel_press", "panel_close",
+        "look", "look_at", "look_person", "look_around", "status", "chat_log", "recall", "say", "emote", "set_request_policy", "camera",
+        "camera_reset", "check_friend", "stop_task", "panel_read", "panel_press", "panel_close",
     ]
     assert ACTIONS == {
         "say", "emote", "set_request_policy", "camera", "camera_reset", "check_friend", "stop_task", "panel_press", "panel_close"
@@ -204,3 +205,29 @@ def test_look_around_description_switches():
 
     assert "几秒就好" in descriptions(True)["look_around"] and "十几秒" in descriptions(False)["look_around"]
     assert DESCRIPTIONS == descriptions(False) and list(descriptions(True)) == TOOL_NAMES
+
+
+# ---- recall：翻以前的聊天（只读 memory/，不走身体线程） ----
+def test_recall_searches_memory(tmp_path):
+    from skydango.chat.memory import MemoryStore
+
+    store = MemoryStore(tmp_path)
+    store.history.append("新的聊天消息：\n懒洋洋大王：「明天跑暴风眼吗」", "行啊", time.time() - 86400)
+    body = FakeBody()
+    tb = ToolBox(body, memory=store)
+    out, err = tb.run("recall", {"query": "暴风眼", "days": 3})
+    assert not err and "懒洋洋大王：「明天跑暴风眼吗」 → 我：行啊" in out
+    assert body.timeouts == [] and not tb.acted  # 不占身体线程、不算做了事
+    out, err = tb.run("recall", {"who": "懒洋洋"})
+    assert not err and "暴风眼" in out
+
+
+def test_recall_errors_go_back_to_the_brain(tmp_path):
+    from skydango.chat.memory import MemoryStore
+
+    tb = ToolBox(FakeBody(), memory=MemoryStore(tmp_path))
+    out, err = tb.run("recall", {})
+    assert err and "关键词" in out
+    assert tb.run("recall", {"query": "x", "days": "三天"})[1] is True
+    out, err = ToolBox(FakeBody()).run("recall", {"query": "x"})
+    assert err and "记忆" in out

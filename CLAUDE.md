@@ -223,12 +223,15 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 设计见 `docs/superpowers/specs/2026-09-27-brain-claude-code-design.md`（身体部分见 `2026-09-27-brain-design.md`）。
 - **`run` 默认就是大脑模式**；`run --no-brain` 进旧的普通 Agent（`agent.py`），只留作调试（`--brain` 保留兼容，不用加）
 - 大脑 = 常驻的无界面 Claude Code（`claude -p` stream-json，订阅登录，`--model sonnet --effort low`）；身体的工具经本机 MCP 服务（`sky`）给它，
-  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / say / emote / set_request_policy / camera / camera_reset / check_friend / stop_task / panel_read / panel_press / panel_close
+  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / check_friend / stop_task / panel_read / panel_press / panel_close
 - **和用户自己的 Claude Code 隔离**：单独配置目录 `.brain-claude/` + `claude setup-token` 生成的令牌（用户环境变量 `SKYDANGO_CLAUDE_TOKEN`）。
   沿用用户登录会把用户的插件、钩子、技能一起加载进大脑（实测）。子进程里去掉 `ANTHROPIC_API_KEY`（有它时 `-p` 一定用它）
 - 眼睛 = 一次性 `claude -p --model haiku`：有人来 / 走、画面大变（隔 ≥20 秒）或 3 分钟没看时，把身体最近一帧写成文字；大脑醒来的消息里只有文字，要原图才 `look(image=true)`
 - `check_friend(x, y)`：点一下人物打开右侧好友树面板，截图交给大脑自己判断是不是好友，再按 ESC 关掉（用户确认）、恢复聊天面板（`game/friendtree.py`）。
   面板样子、好友和陌生人的面板怎么区分**未核对**，`[friend_check] enabled` 默认关；先用 `friend-check X Y` 手动核对，截图在 `runs/<…>/friend-check/`
+- `recall(query, who, days)`：翻以前的聊天（`chat/recall.py`）：在 `history.jsonl` 里按关键词（中一个就算，中得多的排前）/ 人名 / 往前几天（默认 14，最多 90）找原话，
+  最多 8 轮、每轮 200 字，附上 notes.md / inbox.md 里相关的行；只读、不调模型、不占身体线程，dry-run 也能查。提示词要求有人提起以前的事时先查再答，查不到就说记不清、别顺着编。
+  history 只记团子开口的那几轮（那句话 + 之前听到的），团子没接话时别人聊的不在里面
 - `look_person(名字)`：按名字（容忍 OCR 错一两个字）找到这个人、裁出来给大脑看原图（"看我衣服好看吗"）；打开感知层用 YOLO 的框，
   否则按名字标签往下估一块（宽 3 倍、高 6 倍标签高，**未在真机核对**）；和 look 共用频率限制；找不到时告诉大脑现在认得出谁
 - **技能层**（`brain/skills.py`，计划见 `docs/superpowers/plans/2026-09-28-brain-skills-roadmap.md`）：大脑一轮几秒到十几秒，盯人 / 走过去 / 点火这种要每秒修正的事来不及做，
