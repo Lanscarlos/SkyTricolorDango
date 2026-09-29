@@ -28,6 +28,7 @@ from ..imageio import imwrite
 from ..vision.bubbles import Rect, roi_rect
 from ..vision.panels import UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people
+from .camera import MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
@@ -39,6 +40,7 @@ REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "*")
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
 SCENE_EVENT_COOLDOWN = 10.0
 BUTTON_NOTES = {"retreat": "可以按", "allow": "可以按", "other": "要主人放行", "never": "不能按"}
+OWNER_NOTE = "（主人命令模式）"  # 真用到了主人命令窗口的放宽，结果后面标上（brain.jsonl 里看得出来）
 PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身体自己打开面板的操作：期间这个面板不算遮挡
 
 
@@ -627,7 +629,7 @@ class Body:
             parts.append("镜头：" + self.camera.describe())
         parts.append("上次看图：" + (f"{now - self.last_look:.0f} 秒前" if self.last_look > float("-inf") else "还没看过"))
         if self.emotes is not None:
-            parts.append("能做的动作：" + ("、".join(self.emotes.available()) or "暂时没有（刚做过，要等一会儿）"))
+            parts.append("能做的动作：" + ("、".join(self.emotes.available(self._owner(now))) or "暂时没有（刚做过，要等一会儿）"))
         if self.social is not None:
             parts.append("互动规则：" + self.social.describe_policy())
         if self.said:
@@ -707,11 +709,15 @@ class Body:
     def emote(self, name: str, force: bool = False, live: bool = False) -> str:
         if self.emotes is None:
             raise ToolError("这次没开动作（--no-emotes 或者图标库是空的）")
-        available = self.emotes.available()
+        owner = self._owner(self.clock())
+        available = self.emotes.available(owner)
         if name not in available:
             raise ToolError(f"「{name}」现在做不了；能做的：{'、'.join(available) or '暂时没有（刚做过动作，要等一会儿）'}")
+        relaxed = owner and name not in self.emotes.available()  # 平时这会儿还在动作限速里
         if self.holding and not force:
-            raise ToolError(f"正牵着 {self.holding} 的手，做动作会松手；确定要松手再做就传 force=true")
+            if not owner:
+                raise ToolError(f"正牵着 {self.holding} 的手，做动作会松手；确定要松手再做就传 force=true")
+            relaxed = True
         note = self.clear_view("emote", live)
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长
@@ -723,7 +729,7 @@ class Body:
                 self.emotes.perform(name)
         except Exception as exc:
             raise ToolError(f"「{name}」没做成：{exc}") from None
-        return f"做了「{name}」"
+        return f"做了「{name}」" + (OWNER_NOTE if relaxed else "")
 
     def set_policy(self, who: str, kind: str, accept: bool) -> str:
         if self.social is None:
@@ -924,17 +930,18 @@ class Body:
             raise ToolError("没有视角控制")
         if self.blackout:
             raise ToolError("画面黑着（在切场景），现在转不了")
+        owner = self._owner(self.clock())
         note = self.clear_view("camera", live)
         if self._dry(live):
             return f"dry-run：没真的转（{action} ×{steps}）{note}"
         try:
             with self._held("camera"):
-                result = self.camera.move(action, steps)
+                result = self.camera.move(action, steps, CAMERA_MAX_STEPS * 2 if owner else CAMERA_MAX_STEPS)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
         self._forget_self()
-        return "镜头现在：" + result
+        return "镜头现在：" + result + (OWNER_NOTE if owner and steps > CAMERA_MAX_STEPS else "")
 
     def move(self, direction: str, steps: int = 1, force: bool = False, live: bool = False) -> str:
         """小步走（W/A/S/D），走出去回不去、没有复位。卡洛的 # 命令生效期间：一次最多走两倍步数、不用等间隔、牵着手也不用 force，
@@ -946,7 +953,7 @@ class Body:
         if self.blackout:
             raise ToolError("画面黑着（在切场景），现在走不了")
         now = self.clock()
-        owner = now < self._owner_window_until
+        owner = self._owner(now)
         relaxed = owner and steps > MOVE_MAX_STEPS
         if self.holding and not force:
             if not owner:
@@ -964,7 +971,7 @@ class Body:
             return f"dry-run：没真的走（{direction} ×{max(1, min(steps, max_steps))}）{note}"
         result = self.locomotion.move(direction, steps, max_steps)
         self._ref_thumb = None  # 自己走的，不算画面大变
-        return result + ("（主人命令模式）" if relaxed else "")
+        return result + (OWNER_NOTE if relaxed else "")
 
     def stop_task(self) -> str:
         return self.skills.cancel(self, "大脑叫停")
@@ -980,6 +987,10 @@ class Body:
         self._ref_thumb = None
         self._forget_self()
         return result
+
+    def _owner(self, now: float) -> bool:
+        """卡洛的 # 命令还在生效：move / emote / camera 放宽限制（设计见 2026-09-27-brain-move-design.md）。"""
+        return now < self._owner_window_until
 
     def _dry(self, live: bool) -> bool:
         """只打印不执行：dry-run 且不是手动控制（live）。"""

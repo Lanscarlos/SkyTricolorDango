@@ -241,7 +241,10 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   状态里有"正在做：…"；`stop_task` 叫停；退出时先停技能再复原镜头。**框架有了，还没有具体技能**（track / approach / light_candle 见计划 D~G 期）。
   状态里的"画面里：小明（左边·近）…"来自感知层 `people()`（暂停中或最近一帧超过 1 秒就是空的）
 - `move(direction, steps)`：W/A/S/D 小步走（`brain/locomotion.py`，每步按住 `[brain] move_step` 秒，**步长没在真机标定**）；一次 1~3 步、两次隔 `move_min_interval` 秒，
-  牵着手要 `force=true`，走出去没有复位；卡洛的 `#` 命令后 `owner_window` 秒内一次最多 6 步、不用等间隔、牵手不拦（结果标"（主人命令模式）"）。
+  牵着手要 `force=true`，走出去没有复位
+- **主人命令窗口**：卡洛（`[brain] owner_name`，精确匹配）发 `#` 开头的消息后 `owner_window` 秒内放宽：`move` 一次最多 6 步、不用等间隔；
+  `emote` 不管动作冷却（`emotes.min_interval`，换轮盘的冷却照旧）；`camera` 一次最多 8 步；牵着手 `move` / `emote` 不用 `force`。
+  真用到放宽时工具结果标"（主人命令模式）"。底线、身份规则不受影响
   聊天记录面板开着也能走（卡片 `allows` 里有 `move`），别的面板挡着照 `clear_view` 处理；dry-run 不按键
 - 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；牵着手时 `emote` 要 `force=true`；陌生人只能接点火
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒或额度用完：聊天交给 `[llm]`（DeepSeek）备用回复，额度用完 10 分钟后再试

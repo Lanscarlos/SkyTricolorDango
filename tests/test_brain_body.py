@@ -419,9 +419,10 @@ def test_run_dir_marks_manual_replies(tmp_path):
 class FakeEmotes:
     def __init__(self):
         self.done = []
+        self.cooling = False  # 动作限速中
 
-    def available(self):
-        return ["鞠躬"]
+    def available(self, ignore_interval=False):
+        return [] if self.cooling and not ignore_interval else ["鞠躬"]
 
     def perform(self, name):
         self.done.append(name)
@@ -469,7 +470,7 @@ class FakeCamera:
         self.arounds = 0
         self.spins = 0
 
-    def move(self, action, steps):
+    def move(self, action, steps, max_steps=4):
         self.moves.append((action, steps))
         return "左转了 1 步"
 
@@ -594,6 +595,53 @@ def test_move_forgets_scene_reference(clock):
     b._ref_thumb = "旧"
     b.move("forward")
     assert b._ref_thumb is None  # 自己走的，不算画面大变
+
+
+def owner_says(b, reader, text="#过来"):
+    b.cfg.brain.owner_name = "卡洛"
+    b.cfg.brain.owner_window = 30.0
+    reader.batches = [[msg(text, speaker="卡洛")]]
+    b.step()
+
+
+def test_owner_window_relaxes_emote(clock):
+    emotes = FakeEmotes()
+    b, _, reader, _ = body(clock, live=True, emotes=emotes)
+    emotes.cooling = True
+    b.holding = "懒洋洋大王"
+    with pytest.raises(ToolError, match="现在做不了"):
+        b.emote("鞠躬")
+    owner_says(b, reader)
+    assert b.emote("鞠躬") == "做了「鞠躬」（主人命令模式）"  # 限速中、牵着手都不拦
+    assert "能做的动作：鞠躬" in b.status()
+    emotes.cooling = False
+    b.holding = None
+    assert b.emote("鞠躬") == "做了「鞠躬」"  # 没用到放宽：不标
+    with pytest.raises(ToolError, match="能做的：鞠躬"):
+        b.emote("跳舞")  # 不在轮盘 / 白名单上的照样做不了
+    clock.advance(31)
+    emotes.cooling = True
+    with pytest.raises(ToolError, match="现在做不了"):
+        b.emote("鞠躬")
+    assert emotes.done == ["鞠躬", "鞠躬"]
+
+
+class StepCamera(FakeCamera):
+    def move(self, action, steps, max_steps=4):
+        self.moves.append((action, steps, max_steps))
+        return "原位"
+
+
+def test_owner_window_relaxes_camera_steps(clock):
+    cam = StepCamera()
+    b, _, reader, _ = body(clock, live=True, camera=cam)
+    assert b.camera_move("left", 8) == "镜头现在：原位" and cam.moves[-1] == ("left", 8, 4)
+    owner_says(b, reader)
+    assert b.camera_move("left", 8) == "镜头现在：原位（主人命令模式）" and cam.moves[-1] == ("left", 8, 8)
+    assert b.camera_move("left", 2) == "镜头现在：原位"
+    clock.advance(31)
+    b.camera_move("left", 8)
+    assert cam.moves[-1] == ("left", 8, 4)
 
 # ---- 手动控制：live=True 时 dry-run 下也真执行，护栏照旧 ----
 def test_live_say_in_dry_run_sends_and_remembers(clock):

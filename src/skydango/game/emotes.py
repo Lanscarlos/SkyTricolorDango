@@ -64,10 +64,10 @@ class EmotePlayer:
         locked = self.wheel.cfg.locked_slots
         return [name for slot, name in sorted(self.wheel.slots.items()) if name and slot not in locked]
 
-    def available(self) -> list[str]:
-        """这一轮能给模型用的动作：动作限速中为空；换轮盘限速中只有轮盘上现有的。"""
+    def available(self, ignore_interval: bool = False) -> list[str]:
+        """这一轮能给模型用的动作：动作限速中为空（ignore_interval = 主人命令窗口，不管动作限速）；换轮盘限速中只有轮盘上现有的。"""
         now = self.clock()
-        if now - self.last_emote < self.cfg.min_interval:
+        if not ignore_interval and now - self.last_emote < self.cfg.min_interval:
             return []
         names = self.on_wheel()
         if self.swap_slots and now - self.last_swap >= self.cfg.swap_min_interval:

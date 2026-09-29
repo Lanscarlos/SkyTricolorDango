@@ -134,6 +134,14 @@ def test_available_respects_intervals(library):
     assert player.available() == ["鞠躬", "指向"]  # 欢呼不在白名单，换下来就没了
 
 
+
+def test_available_can_ignore_emote_interval_but_not_swap_interval(library):
+    player, _, t, _ = make_player(library)
+    player.start()
+    player.perform("指向")  # 换掉了 7 号格的欢呼
+    assert player.available() == []
+    assert player.available(ignore_interval=True) == ["鞠躬", "指向"]  # 动作限速不管；换轮盘限速照旧
+
 def test_pretend_counts_for_intervals_without_touching_device(library):
     player, device, t, _ = make_player(library)
     player.start()

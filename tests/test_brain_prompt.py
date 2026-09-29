@@ -99,3 +99,9 @@ def test_no_recent_turns_section_when_off_or_empty(tmp_path):
     assert "上次聊到哪" not in brain_prompt(ReplyConfig(), _history_store(tmp_path / "a", now), history_turns=0, now=now)
     assert "上次聊到哪" not in brain_prompt(ReplyConfig(), MemoryStore(tmp_path / "b"), history_turns=20, now=now)
     assert "上次聊到哪" not in brain_prompt(ReplyConfig(), None, history_turns=20, now=now)
+
+
+def test_prompt_explains_owner_window_for_move_emote_camera():
+    text = static_prompt(ReplyConfig())
+    line = next(l for l in text.splitlines() if "# 开头的命令之后半分钟内" in l)
+    assert all(tool in line for tool in ("move", "emote", "camera"))
