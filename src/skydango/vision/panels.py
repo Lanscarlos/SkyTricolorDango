@@ -525,7 +525,8 @@ class PanelWatcher:
             self._executor = None
 
     # ---- 内部 ----
-    def _panel(self, card: Card, width: int, height: int) -> Panel:
+    def panel_for(self, card: Card, width: int, height: int) -> Panel:
+        """这张卡开着时的 Panel（框 = 卡片 region）。"""
         return Panel(card.name, card.label, roi_rect(list(card.region), width, height), card.verified, card.layer, card.allows)
 
     def _step(self, card: Card, hit: bool, width: int, height: int) -> None:
@@ -533,7 +534,7 @@ class PanelWatcher:
         streak = max(streak, 0) + 1 if hit else min(streak, 0) - 1
         self._streak[card.name] = streak
         if card.name not in self._open and streak >= card.confirm_frames:
-            panel = self._open[card.name] = self._panel(card, width, height)
+            panel = self._open[card.name] = self.panel_for(card, width, height)
             self._emit("open", panel)
         elif card.name in self._open and -streak >= card.confirm_frames:
             self._emit("close", self._open.pop(card.name))

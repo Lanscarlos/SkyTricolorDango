@@ -1270,13 +1270,14 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     emotes = _build_emotes(cfg, dev, reader, no_emotes)
     camera = _camera(cfg, dev, reader)
     friend_checker = _friend_checker(cfg, dev, reader) if cfg.friend_check.enabled else None
+    panels, panel_ops = _panels(cfg, dev, reader)
     events = EventQueue()
     # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
     fallback = Responder(make_llm(dataclasses.replace(cfg.llm, timeout=10.0, max_retries=0)), cfg.reply)
     body = Body(
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
         env=env, social=social, emotes=emotes, camera=camera, friend_checker=friend_checker, fallback=fallback, store=live_store, notes=notes, run=run,
-        viewer=viewer,
+        viewer=viewer, panels=panels, panel_ops=panel_ops,
     )
     work = run.path / "brain"
     eyes = Eyes(
@@ -1324,6 +1325,8 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     finally:
         stop.set()
         _stop_scene(env)
+        if panels is not None:
+            panels.close()
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
         brain_thread.join(timeout=5)
         if live_store is not None and not brain_thread.is_alive():
@@ -1333,6 +1336,100 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
                 log.exception("退出前写经过失败")
         session.close()
         server.stop()
+
+
+def _panels(cfg: Config, dev, reader):
+    """面板识别：(PanelWatcher, PanelOps)；[panels] enabled = false 时 (None, None)。"""
+    if not cfg.panels.enabled:
+        return None, None
+    from .game.panels import PanelOps
+    from .vision.ocr import make_ocr
+    from .vision.panels import PanelWatcher, load_cards
+
+    watcher = PanelWatcher(
+        cfg.panels, load_cards(cfg.panels.cards_dir), make_ocr(cfg.ocr.engine, cfg.panels.ocr_threads),
+        {"chat_input": reader.panel_visible},
+    )
+    return watcher, PanelOps(dev, watcher, cfg.panels)
+
+
+def _feature_note(feature, hit: bool, score: float) -> str:
+    mark = "✓" if hit else "✗"
+    if feature.kind == "template":
+        if feature.template is None:
+            return f"template {feature.image} 没有模板图 ✗"
+        return f"template {feature.image} {score:.2f}{'≥' if hit else '<'}{feature.threshold:.2f} {mark}"
+    if feature.kind == "dark":
+        return f"dark 中位 {score:.0f}{'≤' if hit else '>'}{feature.max_value} {mark}"
+    return f"{feature.kind} {feature.name} {mark}"
+
+
+def cmd_panels(cfg: Config, args) -> None:
+    """面板识别的核对工具：scan 逐张看每张卡的特征分数、read 细读、cut 裁模板。都不往游戏里发输入。"""
+    import cv2
+
+    from .vision.bubbles import roi_rect
+    from .vision.panels import UNKNOWN, PanelWatcher, describe_reading, load_cards
+
+    if args.action == "cut":
+        folder = Path(cfg.panels.cards_dir) / args.card
+        if not folder.is_dir():
+            raise SystemExit(f"没有卡片 {args.card}（{folder} 不存在）")
+        roi = [float(v) for v in args.roi.split(",")]
+        if len(roi) != 4:
+            raise SystemExit("--roi 要 4 个数：x1,y1,x2,y2（0~1 归一化）")
+        img = imread(args.image)
+        height, width = img.shape[:2]
+        out = folder / args.name
+        imwrite(out, roi_rect(roi, width, height).crop(img))
+        print(f"存到 {out}；改 card.toml 引用它，再用 panels scan 看分数")
+        return
+
+    from .vision.ocr import make_ocr
+
+    cards = load_cards(cfg.panels.cards_dir)
+    ocr = make_ocr(cfg.ocr.engine, cfg.panels.ocr_threads)
+    reader = _build_reader(cfg)[0]
+    builtins = {"chat_input": reader.panel_visible}
+    if args.source:
+        shots = [(p.name, imread(p)) for p in _images(args.source)]
+    else:
+        shots = [("screenshot.png", _device(cfg).screenshot())]
+    out_dir = Path("tmp") / "panels"
+    for name, frame in shots:
+        watcher = PanelWatcher(cfg.panels, cards, ocr, builtins, background=False)
+        watcher.observe(frame, 0.0)  # 第一次 observe 一定会跑一次通用兜底
+        found = [p for p in watcher.state.others() if p.name == UNKNOWN or watcher.cards[p.name].texts]
+        checks = watcher.explain(frame)
+        if args.action == "read":
+            print(f"== {name}")
+            height, width = frame.shape[:2]
+            panels = [watcher.panel_for(c.card, width, height) for c in checks if c.open and c.card.name != "chat_log"]
+            readings = [watcher.read(frame, p, 0.0) for p in panels] + [watcher.readings[p.name] for p in found]
+            if not readings:
+                print("  没有开着的面板")
+            for r in readings:
+                print(f"  {r.panel.describe()}：{describe_reading(r)}")
+                for b in r.buttons:
+                    print(f"    {b.text}  {b.kind}")
+            continue
+        print(f"== {name}")
+        view = frame.copy()
+        height, width = frame.shape[:2]
+        for check in checks:
+            card = check.card
+            state = "开着" if check.open else ("没开（靠文字认，见通用兜底）" if not card.quick else "没开")
+            notes = " | ".join(_feature_note(f, hit, score) for f, hit, score in check.hits)
+            print(f"  {card.name} {card.label}{'' if card.verified else '（未核对）'}：{state}  {notes}".rstrip())
+            r = roi_rect(list(card.region), width, height)
+            cv2.rectangle(view, (r.x, r.y), (r.x2, r.y2), (0, 200, 0) if check.open else (128, 128, 128), 2)
+        for p in found:
+            print(f"  通用兜底：{p.describe()} {describe_reading(watcher.readings[p.name])}")
+            cv2.rectangle(view, (p.box.x, p.box.y), (p.box.x2, p.box.y2), (0, 0, 255), 3)
+        if not found:
+            print("  通用兜底：没认出面板")
+        imwrite(out_dir / (Path(name).stem + ".png"), view)
+    watcher.close()
 
 
 def cmd_look(cfg: Config, args) -> None:
@@ -1527,6 +1624,19 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("bench", help="图库上留一法：每个模型认对 / 认错 / 不说多少、多快")
     q.add_argument("--model", action="append", help="特征模型，可以给多个（默认 places.model）")
     p.set_defaults(func=cmd_places)
+
+    p = sub.add_parser("panels", help="面板识别的核对工具：逐张看特征分数、细读面板、裁模板（不往游戏里发输入）")
+    psub = p.add_subparsers(dest="action", required=True)
+    q = psub.add_parser("scan", help="逐张快看：每张卡开没开、每个特征的分数，外加通用兜底；标注图存 tmp/panels/")
+    q.add_argument("source", nargs="?", help="图片目录 / 图片；不填则截当前画面")
+    q = psub.add_parser("read", help="细读开着的面板：标题、正文、按钮和按钮类别")
+    q.add_argument("source", nargs="?", help="图片目录 / 图片；不填则截当前画面")
+    q = psub.add_parser("cut", help="从截图里裁一块，存成某张卡片的模板图")
+    q.add_argument("image", help="截图（1920×1080）")
+    q.add_argument("card", help="卡片目录名，比如 emote_panel")
+    q.add_argument("name", help="模板文件名，比如 pencil.png")
+    q.add_argument("--roi", required=True, help="x1,y1,x2,y2（0~1 归一化）")
+    p.set_defaults(func=cmd_panels)
 
     p = sub.add_parser("view", help="只看不动：实时截图 → 认人 / 读聊天 → 网页上画识别框（不操作游戏）")
     p.add_argument("--images", help="回放这个目录 / 这张图（比如 record 录的），不用连模拟器")

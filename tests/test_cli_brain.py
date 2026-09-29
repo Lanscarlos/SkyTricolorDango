@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import FakeDevice, scene
+from conftest import FakeDevice, FakeOcr, scene
 from test_brain_body import FakeReader
 
 from skydango import cli
@@ -25,7 +25,9 @@ def fake_brain_run(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_brain_env", lambda cfg: (FAKE, env))
     monkeypatch.setattr(cli, "_device", lambda cfg: FakeDevice([scene()]))
     monkeypatch.setattr(cli, "_build_reader", lambda cfg: (FakeReader(), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda engine, threads=8: FakeOcr())
     cfg = Config()
+    cfg.panels.cards_dir = str(Path(__file__).resolve().parents[1] / "assets" / "panels")
     cfg.run.dir = str(tmp_path / "runs")
     cfg.llm.provider = "echo"
     cfg.env.enabled = False
@@ -142,3 +144,36 @@ def test_run_brain_reuses_the_viewers_trace(tmp_path, monkeypatch):
     v.brain = trace = BrainTrace()
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
     assert v.brain is trace and trace.since(0, 0.0)["turns"]
+
+
+def spy_body(monkeypatch):
+    import skydango.brain.body as body_module
+
+    seen = {}
+    real = body_module.Body
+
+    def make(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(body_module, "Body", make)
+    return seen
+
+
+def test_run_brain_wires_panels(tmp_path, monkeypatch):
+    from skydango.game.panels import PanelOps
+    from skydango.vision.panels import PanelWatcher
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    seen = spy_body(monkeypatch)
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0)
+    assert isinstance(seen["panels"], PanelWatcher) and isinstance(seen["panel_ops"], PanelOps)
+    assert set(seen["panels"].cards) >= {"chat_log", "shared_invite"}
+
+
+def test_run_brain_panels_disabled(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.panels.enabled = False
+    seen = spy_body(monkeypatch)
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0)
+    assert seen["panels"] is None and seen["panel_ops"] is None
