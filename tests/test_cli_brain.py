@@ -91,11 +91,28 @@ def test_brain_env_needs_token(monkeypatch):
 
 def test_run_and_look_arguments(monkeypatch):
     seen = {}
-    monkeypatch.setattr(cli, "cmd_run", lambda cfg, args: seen.update(brain=args.brain))
+    monkeypatch.setattr(cli, "cmd_run", lambda cfg, args: seen.update(brain=args.brain, no_brain=args.no_brain))
     monkeypatch.setattr(cli, "cmd_look", lambda cfg, args: seen.update(prompt=args.prompt))
     cli.main(["run", "--brain"])
     cli.main(["look", "--prompt", "q.txt"])
-    assert seen == {"brain": True, "prompt": "q.txt"}
+    assert seen == {"brain": True, "no_brain": False, "prompt": "q.txt"}
+
+
+@pytest.mark.parametrize("argv, mode", [(["run"], "brain"), (["run", "--brain"], "brain"), (["run", "--no-brain"], "agent")])
+def test_run_defaults_to_brain(tmp_path, monkeypatch, argv, mode):
+    seen = []
+    monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: seen.append("brain"))
+    monkeypatch.setattr(cli, "_run_agent", lambda *a, **k: seen.append("agent"))
+    monkeypatch.chdir(tmp_path)  # runs/ 建在临时目录
+    cli.main(argv)
+    assert seen == [mode]
+
+
+def test_brain_env_error_mentions_no_brain(monkeypatch):
+    monkeypatch.delenv("SKYDANGO_CLAUDE_TOKEN", raising=False)
+    monkeypatch.setattr("skydango.chat.llm._user_env", lambda name: "")
+    with pytest.raises(RuntimeError, match="--no-brain"):
+        cli._brain_env(Config())
 
 
 def test_viewer_serves_brain_before_browser_opens(monkeypatch):

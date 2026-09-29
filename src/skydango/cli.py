@@ -1063,8 +1063,7 @@ def cmd_run(cfg: Config, args) -> None:
         cfg.reply.dry_run = False
     if args.echo:
         cfg.llm.provider = "echo"
-    if args.brain:
-        cfg.brain.enabled = True
+    cfg.brain.enabled = not args.no_brain  # 默认接大脑；普通 Agent 只留作调试
     if cfg.vision.debug_dir:
         log.warning("vision.debug_dir 已废弃，改用 [run] dir；这次先把它当 run.dir 用")
         cfg.run.dir = cfg.vision.debug_dir
@@ -1222,6 +1221,7 @@ def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
     except RuntimeError:
         raise RuntimeError(
             f"没有找到大脑用的 Claude 令牌：先运行 claude setup-token，再 setx {cfg.brain.token_env} \"<令牌>\""
+            "；不想接大脑可以用 --no-brain（调试用的普通模式）"
         ) from None
     return resolve_claude(cfg.brain.claude_path), claude_env(token, cfg.brain.config_dir)
 
@@ -1535,12 +1535,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     p.set_defaults(func=cmd_view)
 
-    p = sub.add_parser("run", help="启动 Agent（默认 dry-run）")
+    p = sub.add_parser("run", help="启动团子（默认接统管大脑、dry-run；--no-brain 是调试用的普通模式）")
     p.add_argument("--live", action="store_true", help="真的发送消息")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显（联调用）")
     p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动结束（默认一直跑）")
     p.add_argument("--no-emotes", action="store_true", help="这次不做动作（牵着手时用：做动作会松开牵手）")
-    p.add_argument("--brain", action="store_true", help="用统管大脑（Claude Code）指挥：看画面、决定说什么做什么")
+    p.add_argument("--brain", action="store_true", help="接统管大脑（已是默认，保留兼容）")
+    p.add_argument("--no-brain", action="store_true", help="不接大脑，用旧的普通 Agent（调试用）")
     p.add_argument("--view", action="store_true", help="开可视化网页：实时显示画面和识别框（地址见 [viewer]）")
     p.set_defaults(func=lambda cfg, args: cmd_run(cfg, args))
 
