@@ -40,7 +40,7 @@ from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
 from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
-from .people import Person, side_of
+from .people import OBJECT_NAMES, Person, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import Track, Tracker, iou
 
@@ -889,6 +889,8 @@ class PerceptionWatcher:
             elif t.cls == "name_tag":
                 kind = "name" if d.get("name") else "tag"
                 label = d.get("name") or (f"?{d['text']}" if d.get("text") else "?")
+            elif t.cls in OBJECT_NAMES:
+                kind, label = t.cls, OBJECT_NAMES[t.cls]
             elif t.cls == "social_ring":
                 ring = d.get("kind")
                 kind = "request" if is_request(ring) else "ring"
@@ -898,6 +900,23 @@ class PerceptionWatcher:
             b = t.box
             out.append({"x": b.x, "y": b.y, "w": b.w, "h": b.h, "kind": kind, "label": label, "score": round(t.score, 2)})
         return out
+
+    def objects(self, now: float) -> list[Thing]:
+        """最近一帧里的物品（座位 / 篝火 / 乐器 / 先祖），左到右、同一边近的在前。
+
+        连续看到 object_min_hits 帧才算；暂停中、或者这一帧已经过时返回空（同 people()）。
+        """
+        if self.paused:
+            return []
+        out = []
+        for t in list(self.last_tracks):
+            if t.cls not in OBJECT_NAMES or now - t.last > PEOPLE_STALE or t.hits < self.cfg.object_min_hits:
+                continue
+            side = side_of(t.box.x + t.box.w / 2, self._frame_w)
+            out.append(Thing(t.id, t.cls, t.box, side,
+                             object_distance(t.box.y2, self._frame_h, self.cfg.object_near, self.cfg.object_far)))
+        order = {"左边": 0, "前面": 1, "右边": 2}
+        return sorted(out, key=lambda o: (order[o.side], -o.box.y2))
 
     # ---- 给身体 / 提示词用的（和 EnvWatcher 一样） ----
     def nearby(self, now: float) -> list[str]:

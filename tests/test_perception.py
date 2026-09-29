@@ -1338,3 +1338,63 @@ def test_object_distance_and_describe_things():
     things = [Thing(1, "bench", Rect(0, 0, 1, 1), "左边", "近"), Thing(2, "spirit", Rect(0, 0, 1, 1), "前面", "远")]
     assert describe_things(things) == "座位（左边·近）、先祖（前面·远）"
     assert describe_things([]) == ""
+
+
+def obj(cls, x, y, w, h):
+    return Detection(cls, Rect(x, y, w, h), 0.9)
+
+
+def three_objects():
+    return [obj("bench", 200, 900, 200, 100), obj("spirit", 900, 300, 80, 200), obj("bonfire", 1500, 700, 120, 100)]
+
+
+def test_objects_need_hits_and_sort():
+    det = FakeDetector()
+    det.frames = [three_objects()]
+    w = watcher(det)
+    for t in (0.0, 0.1):
+        w.process(frame(), t, panel_visible=False)
+    assert w.objects(0.1) == []  # 才看到两帧
+    w.process(frame(), 0.2, panel_visible=False)
+    assert [(o.kind, o.side, o.distance) for o in w.objects(0.2)] == [
+        ("bench", "左边", "近"), ("spirit", "前面", "远"), ("bonfire", "右边", "中")]
+
+
+def test_objects_empty_when_stale_or_paused():
+    det = FakeDetector()
+    det.frames = [three_objects()]
+    w = watcher(det)
+    for t in (0.0, 0.1, 0.2):
+        w.process(frame(), t, panel_visible=False)
+    assert w.objects(2.2) == []  # 最近一帧过时了
+    w.hold("x")
+    assert w.objects(0.2) == []
+
+
+def test_spirit_among_people_not_counted_as_stranger():
+    det = FakeDetector()
+    det.frames = [[player(1000, y=400, h=220), obj("spirit", 1045, 400, 90, 220)]]
+    w = watcher(det)
+    for t in (0.0, 0.1, 0.2):
+        w.process(frame(), t, panel_visible=False)
+    things, people = w.objects(0.2), w.people(0.2)
+    assert [o.kind for o in things] == ["spirit"]
+    assert all(p.track_id != things[0].track_id for p in people) and len(w.last_tracks) == 2
+
+
+def test_overlay_has_object_labels():
+    det = FakeDetector()
+    det.frames = [three_objects()]
+    w = watcher(det)
+    w.process(frame(), 0.0, panel_visible=False)
+    bench = next(b for b in w.overlay(0.0) if b["kind"] == "bench")
+    assert bench["label"] == "座位"
+
+
+def test_objects_empty_with_six_class_model():
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110)]]
+    w = watcher(det)
+    for t in (0.0, 0.1, 0.2):
+        w.process(frame(), t, panel_visible=False)
+    assert w.objects(0.2) == []
