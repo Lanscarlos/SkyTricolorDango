@@ -505,14 +505,20 @@ class FakeCamera:
         self.resets = 0
         self.arounds = 0
         self.spins = 0
+        self.reset_args = []  # 每次 reset 的 refine_seconds
+        self.forgets = 0
 
     def move(self, action, steps, max_steps=4):
         self.moves.append((action, steps))
         return "左转了 1 步"
 
-    def reset(self):
+    def reset(self, refine_seconds=None):
         self.resets += 1
+        self.reset_args.append(refine_seconds)
         return "镜头转回原位了"
+
+    def forget_reference(self):
+        self.forgets += 1
 
     def around(self, capture):
         self.arounds += 1
@@ -1279,7 +1285,7 @@ def test_shutdown_cancels_skill_before_resetting_camera(clock):
 
     order = []
     camera = FakeCamera()
-    camera.reset = lambda: order.append("reset") or "复原了"
+    camera.reset = lambda **kw: order.append("reset") or "复原了"
     b, _, _, _ = body(clock, camera=camera)
     skill = FakeSkill()
     skill.stop = lambda body, reason: order.append("stop")
@@ -1862,3 +1868,90 @@ def test_no_scene_change_while_skill_turns_camera(clock):
     clock.advance(1.5)
     b.step()
     assert "scene_change" not in [e.kind for e in events.drain()]
+
+
+# ---- 评审修正（I3 / I4 / I5 / M3） ----
+def camera_skill():
+    skill = quiet_skill()
+    skill.needs_camera = True
+    return skill
+
+
+def test_requests_still_accepted_while_quiet_skill_runs(clock):
+    env, social = FakeEnv(), FakeSocial()
+    b, _, _, events = body(clock, live=True, env=env, social=social)
+    env.near = ["懒洋洋大王"]
+    b.step()
+    events.drain()
+    b.skills.start(b, quiet_skill())
+    env.requests = {"懒洋洋大王": Request("懒洋洋大王", "hand", (0, 0), 100.0)}
+    social.to_handle = ["懒洋洋大王:hand"]
+    b.step()
+    kinds = [e.kind for e in events.drain()]
+    assert "request" in kinds and "accepted" in kinds  # 盯人时好友伸手照样接
+
+
+def test_shutdown_restores_wheel_before_resetting_camera_with_time_limit(clock):
+    order = []
+    camera, emotes = FakeCamera(), FakeEmotes()
+    camera.reset = lambda **kw: order.append(("reset", kw)) or "复原了"
+    emotes.restore = lambda: order.append(("restore", {}))
+    b, _, _, _ = body(clock, camera=camera, emotes=emotes)
+    b.shutdown()
+    assert [o[0] for o in order] == ["restore", "reset"]  # 轮盘先恢复：复位可能要好几秒
+    assert 0 < order[1][1]["refine_seconds"] <= 8
+
+
+@pytest.mark.parametrize("call", [
+    lambda b: b.camera_reset(live=True),
+    lambda b: b.camera_move("left", 1, live=True),
+    lambda b: b.capture_around(live=True),
+])
+def test_camera_tools_stop_camera_skill_first(clock, call):
+    cam = FakeCamera()
+    b, _, _, _ = body(clock, live=True, camera=cam)
+    skill = camera_skill()
+    b.skills.start(b, skill)
+    out = call(b)
+    assert b.skills.active is None and skill.stops  # 技能先停下
+    assert cam.resets + len(cam.moves) + cam.arounds == 1  # 然后照做
+    if isinstance(out, str):
+        assert "先停下了盯着小明" in out
+
+
+def test_check_friend_stops_camera_skill_first(clock):
+    b, checker, _, _ = friend_body(clock, live=False)
+    skill = camera_skill()
+    b.skills.start(b, skill)
+    out = b.check_friend_at(1200, 450, live=True)
+    assert b.skills.active is None and checker.calls == [(1200, 450)]
+    assert "先停下了盯着小明" in out[-1]["text"]
+
+
+def test_sweep_around_stops_camera_skill_first(clock):
+    b, _, _, _ = body(clock, live=True, env=SweepEnv(), camera=SpinCamera())
+    skill = camera_skill()
+    b.skills.start(b, skill)
+    out = b.sweep_around(live=True)
+    assert b.skills.active is None and "先停下了盯着小明" in out
+
+
+def test_camera_tools_leave_other_skills_alone(clock):
+    cam = FakeCamera()
+    b, _, _, _ = body(clock, live=True, camera=cam)
+    skill = quiet_skill()  # 不转镜头的技能
+    b.skills.start(b, skill)
+    out = b.camera_reset(live=True)
+    assert b.skills.active is skill and "先停下" not in out
+
+
+def test_move_and_blackout_forget_camera_reference(clock):
+    cam = FakeCamera()
+    b, device, _, _ = body(clock, live=True, camera=cam, locomotion=FakeLocomotion())
+    b.move("forward")
+    assert cam.forgets == 1  # 走过之后镜头参照图对不上了：复位时只粗转
+    b.step()
+    device.frames = [np.zeros((720, 1280, 3), np.uint8)]
+    clock.advance(1.5)
+    b.step()
+    assert cam.forgets == 2

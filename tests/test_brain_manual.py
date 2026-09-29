@@ -91,6 +91,13 @@ def test_look_around_uses_sweep_or_eyes(clock):
     assert ManualControl(here(b)).run("look_around", {})["text"].startswith("转完了")
 
 
+def test_camera_reset_gets_longer_timeout(clock):
+    from skydango.brain.tools import RESET_TIMEOUT
+
+    b, _, _, _ = body(clock, camera=FakeCamera())
+    assert ManualControl(b)._bind("camera_reset", {})[2] == RESET_TIMEOUT
+
+
 def test_check_friend_returns_text_only(clock):
     b, checker, _, events = friend_body(clock, live=False)
     out = ManualControl(here(b), events=events).run("check_friend", {"x": 1200, "y": 450})

@@ -12,7 +12,7 @@ import json
 import logging
 
 from .camera import KEYS, MAX_STEPS
-from .tools import AROUND_TIMEOUT, ToolError
+from .tools import AROUND_TIMEOUT, RESET_TIMEOUT, ToolError
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ class ManualControl:
                 raise ValueError(f"步数要在 1～{MAX_STEPS} 之间")
             return (lambda: b.camera_move(move, steps, live=True)), f"转了视角（{CAMERA_NAMES[move]} ×{steps}）", None
         if action == "camera_reset":
-            return (lambda: b.camera_reset(live=True)), "把视角复位", None
+            return (lambda: b.camera_reset(live=True)), "把视角复位", RESET_TIMEOUT
         if action == "look_around":
             if hasattr(getattr(b, "env", None), "sweep"):  # 打开了感知层：转一圈交给 YOLO
                 return (lambda: b.sweep_around(live=True)), "环视了一圈", AROUND_TIMEOUT

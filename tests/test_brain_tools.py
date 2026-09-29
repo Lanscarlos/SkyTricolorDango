@@ -132,6 +132,14 @@ def test_look_around_gets_longer_timeout():
     assert ToolBox(body).run("look_around", {})[1] is True  # 没开眼睛
 
 
+def test_camera_reset_gets_longer_timeout():
+    from skydango.brain.tools import RESET_TIMEOUT
+
+    body = FakeBody()
+    ToolBox(body).run("camera_reset", {})
+    assert body.timeouts[-1] == RESET_TIMEOUT and RESET_TIMEOUT >= 45  # 闭环细调最多 60 下，每下要等画面停稳
+
+
 def test_per_turn_limits():
     tb = ToolBox(FakeBody(), FakeEyes(), max_steps=3, max_says=1)
     assert tb.run("say", {"text": "a"}) == ("说了a", False)
