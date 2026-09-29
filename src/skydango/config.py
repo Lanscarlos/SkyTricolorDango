@@ -73,6 +73,21 @@ class VisionConfig:
 
 
 @dataclass
+class PanelConfig:
+    """聊天记录面板什么时候开（chat/panel.py，设计见 docs/superpowers/specs/2026-09-29-chat-panel-on-demand-design.md）。"""
+
+    # "always" = 一直开着（关久了重开）；"auto" = 平时关着，定时 / 有人来 / 冒气泡时看一眼，聊天中保持打开（真机验收前别改默认）
+    mode: str = "always"
+    idle_peek: float = 30.0  # 闲着时多久看一眼（秒）
+    quiet_close: float = 45.0  # 聊天中安静多久关面板
+    peek_cooldown: float = 5.0  # 两次看一眼至少隔多久
+    bubble_wait: float = 15.0  # 看到气泡后最多开着等多久
+    bubble_gone: float = 3.0  # 气泡消失后再等多久
+    bubble_strangers: bool = False  # 陌生人的气泡也触发（没解锁聊天的陌生人在面板里只有省略号）
+    open_timeout: float = 1.5  # 按键后最多等多久面板出现
+
+
+@dataclass
 class OcrConfig:
     engine: str = "rapidocr"
     min_score: float = 0.6
@@ -418,6 +433,7 @@ class BrainConfig:
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
+    panel: PanelConfig = field(default_factory=PanelConfig)
     ocr: OcrConfig = field(default_factory=OcrConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
     reply: ReplyConfig = field(default_factory=ReplyConfig)

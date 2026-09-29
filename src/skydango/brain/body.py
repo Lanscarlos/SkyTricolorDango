@@ -17,7 +17,7 @@ from typing import Any
 
 from ..agent import RateLimiter
 from ..chat.memory import Turn
-from ..chat.panel import PanelKeeper
+from ..chat.panel import PanelManager
 from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
 from ..chat.tracker import similar
@@ -64,6 +64,7 @@ class Body:
         store=None,  # chat.memory.MemoryStore：live 时记聊天记录
         notes=None,  # chat.memory.NotesKeeper
         run=None,  # runlog.RunDir
+        panel=None,  # chat.panel.PanelManager：cli 建一个、和镜头 / 轮盘 / 互动共用；None = 自己建
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
@@ -88,7 +89,7 @@ class Body:
         self.clock = clock
         self.sleep = sleep
         self.wall = wall
-        self.panel = PanelKeeper(cfg.vision, device, reader, lambda s: self.sleep(s))
+        self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
         self.brain_offline: Callable[[float], bool] = lambda now: False
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
@@ -138,7 +139,7 @@ class Body:
             except Exception:
                 log.exception("读聊天出错")
             try:
-                self._sense(frame, now)
+                self._sense(frame, now, fresh)
             except Exception:
                 log.exception("感知出错，这一圈跳过")
                 self.events.put("error", "身体感知出错了（详见日志）")
@@ -164,9 +165,9 @@ class Body:
         except Exception:
             log.debug("可视化更新出错", exc_info=True)
 
-    def _sense(self, frame, now: float) -> None:
+    def _sense(self, frame, now: float, fresh: list[Message]) -> None:
         if self.cfg.vision.mode == "log":
-            self.panel.maybe_reopen(now)
+            self.panel.tick(now, fresh, visible=self.reader.panel_closed_since is None, blackout=self.blackout)
             self._watch_panel(now)
         self._watch_screen(frame, now)
         if self.env is not None:
@@ -178,7 +179,7 @@ class Body:
         self._thread = threading.get_ident()
         mode = "dry-run（只打印不执行）" if self.cfg.reply.dry_run else "LIVE（会真的说话、做动作）"
         log.info("身体启动，模式：%s；Ctrl+C 退出%s", mode, f"；{duration:.0f} 秒后自动结束" if duration > 0 else "")
-        self.panel.ensure_open()
+        self.panel.start(self.clock())
         deadline = self.clock() + duration if duration > 0 else float("inf")
         while self.clock() < deadline and not (stop is not None and stop.is_set()):
             started = self.clock()

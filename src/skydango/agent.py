@@ -11,7 +11,7 @@ from contextlib import AbstractContextManager, nullcontext
 
 from .chat.commands import CommandRouter, is_command
 from .chat.memory import MemoryStore
-from .chat.panel import PanelKeeper
+from .chat.panel import PanelManager
 from .chat.reader import ChatReader, Message, with_speaker_hint
 from .chat.responder import Responder
 from .chat.sender import ChatSender
@@ -66,6 +66,7 @@ class Agent:
         store: MemoryStore | None = None,  # 主人命令（#friend/#remember）用；跟 dry_run 无关，配了就写
         viewer=None,  # vision.viewer.Viewer：网页上实时显示识别框（run --view）
         camera=None,  # brain.camera.Camera：主人的 #spin 用
+        panel: PanelManager | None = None,  # cli 建一个、和镜头 / 轮盘 / 互动共用；None = 自己建
     ) -> None:
         self.cfg = cfg
         self.env = env
@@ -93,7 +94,7 @@ class Agent:
             spin=self._spin if camera is not None else None, max_turns=cfg.spin.max_turns,
         )
         # sleep 包一层：测试会在构造之后替换 agent.sleep
-        self.panel = PanelKeeper(cfg.vision, device, reader, lambda s: self.sleep(s))
+        self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
 
     def _show(self, frame, now: float, fresh: list[Message]) -> None:
         from .vision.viewer import panel_box
@@ -122,7 +123,7 @@ class Agent:
         if frame is not None:
             fresh = self.reader.read(frame, now)
             if self.cfg.vision.mode == "log":
-                self.panel.maybe_reopen(now)
+                self.panel.tick(now, fresh, visible=self.reader.panel_closed_since is None)
             if self.env is not None:  # 到了间隔会在后台线程里扫一次画面
                 self.env.observe(frame, now, panel_visible=self.reader.panel_closed_since is None)
             if self.viewer is not None:
@@ -273,7 +274,7 @@ class Agent:
 
     def ensure_log_open(self) -> bool:
         """log 模式：看不到聊天记录面板、也没在打字时，按一下打开面板的键（默认 C）。返回面板现在开没开。"""
-        return self.panel.ensure_open()
+        return self.panel.start(self.clock())
 
     def run(self, duration: float = 0.0) -> None:
         """一直跑；duration > 0 时跑这么多秒后自己退出（别在外面套 timeout：Windows 上停掉外层后 Python 会变成孤儿进程）。"""
