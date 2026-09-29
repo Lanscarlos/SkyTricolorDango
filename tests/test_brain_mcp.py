@@ -45,3 +45,15 @@ def test_tools_over_mcp():
     assert [c.type for c in look.content] == ["image", "text"]
     assert not emote.is_error and tb.body.calls[-1] == ("emote", "鞠躬", False)
     assert bad.is_error and bad.content[0].text == "说得太快了"
+
+
+def test_mcp_lists_track():
+    tb = ToolBox(FakeBody(), FakeEyes())
+    server = SkyServer(tb)
+    server.start()
+    try:
+        names, (track,) = asyncio.run(talk(server.url, [("track", {"name": "小明", "seconds": 10})]))
+    finally:
+        server.stop()
+    assert "track" in names
+    assert not track.is_error and tb.body.calls[-1] == ("track", "小明", 10)

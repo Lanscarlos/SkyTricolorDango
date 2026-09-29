@@ -34,6 +34,7 @@ from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
 from .skills import SkillRunner
+from .track import TrackSkill
 
 log = logging.getLogger(__name__)
 
@@ -418,6 +419,9 @@ class Body:
             self._ref_thumb = None
             if not black:  # 黑屏时没看聊天：恢复后补看一眼
                 self.panel.trigger("scene", now)
+        if getattr(self.skills.active, "needs_camera", False):  # 技能在转镜头：画面大变是自己转的，结束后重新拿参照
+            self._ref_thumb = None
+            return
         if black or now - self._ref_at < 1.0:
             return
         t = thumb(frame)
@@ -1082,6 +1086,27 @@ class Body:
 
     def stop_task(self) -> str:
         return self.skills.cancel(self, "大脑叫停")
+
+    def track(self, name: str, seconds: int = 30, live: bool = False) -> str:
+        """开始技能 track：小步转镜头把这个好友保持在画面中间，做完 / 跟丢发 task_done / task_failed。
+
+        跟踪期间不调 env.held()（要靠感知层一直看着他）；镜头不自动复原，交给 camera_reset。"""
+        if self._dry(live):
+            raise ToolError("dry-run 不转镜头盯人")
+        if self.camera is None:
+            raise ToolError("没有视角控制，盯不了人")
+        if self.env is None or not hasattr(self.env, "people"):
+            raise ToolError("没开感知层（[perception]），认不准人在画面哪里，盯不了")
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在盯不了")
+        seconds = max(1, min(int(seconds), self.cfg.track.max_seconds))
+        now = self.clock()
+        if self.target_x(name, now) is None:
+            known = self._recognized(now)
+            where = f"现在认得出：{'、'.join(known)}" if known else "现在一个名字都没认出来"
+            raise ToolError(f"画面里没看到 {name}（{where}）；先 look_around 找找")
+        note = self.clear_view("camera", live)
+        return self.skills.start(self, TrackSkill(name, seconds)) + note
 
     def camera_reset(self, live: bool = False) -> str:
         if self.camera is None:

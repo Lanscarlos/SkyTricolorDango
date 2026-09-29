@@ -228,7 +228,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 设计见 `docs/superpowers/specs/2026-09-27-brain-claude-code-design.md`（身体部分见 `2026-09-27-brain-design.md`）。
 - **`run` 默认就是大脑模式**；`run --no-brain` 进旧的普通 Agent（`agent.py`），只留作调试（`--brain` 保留兼容，不用加）
 - 大脑 = 常驻的无界面 Claude Code（`claude -p` stream-json，订阅登录，`--model sonnet --effort low`）；身体的工具经本机 MCP 服务（`sky`）给它，
-  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / move / check_friend / stop_task / panel_read / panel_press / panel_close
+  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / move / check_friend / track / stop_task / panel_read / panel_press / panel_close
 - **和用户自己的 Claude Code 隔离**：单独配置目录 `.brain-claude/` + `claude setup-token` 生成的令牌（用户环境变量 `SKYDANGO_CLAUDE_TOKEN`）。
   沿用用户登录会把用户的插件、钩子、技能一起加载进大脑（实测）。子进程里去掉 `ANTHROPIC_API_KEY`（有它时 `-p` 一定用它）
 - 眼睛 = 一次性 `claude -p --model haiku`：有人来 / 走、画面大变（隔 ≥20 秒）或 3 分钟没看时，把身体最近一帧写成文字；大脑醒来的消息里只有文字，要原图才 `look(image=true)`
@@ -243,8 +243,13 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   否则按名字标签往下估一块（宽 3 倍、高 6 倍标签高，**未在真机核对**）；和 look 共用频率限制；找不到时告诉大脑现在认得出谁
 - **技能层**（`brain/skills.py`，计划见 `docs/superpowers/plans/2026-09-28-brain-skills-roadmap.md`）：大脑一轮几秒到十几秒，盯人 / 走过去 / 点火这种要每秒修正的事来不及做，
   交给身体按主循环的节拍闭环做。同时最多一个技能；黑屏、超时、出错都算失败；结束时发 `task_done` / `task_failed` 事件叫醒大脑，
-  状态里有"正在做：…"；`stop_task` 叫停；退出时先停技能再复原镜头。**框架有了，还没有具体技能**（track / approach / light_candle 见计划 D~G 期）。
+  状态里有"正在做：…"；`stop_task` 叫停；退出时先停技能再复原镜头。approach / light_candle 见计划 E~G 期。
   状态里的"画面里：小明（左边·近）…"来自感知层 `people()`（暂停中或最近一帧超过 1 秒就是空的）
+- **`track(名字, 秒)`**（技能 D，`brain/track.py`，计划 `docs/superpowers/plans/2026-09-29-brain-track.md`；**代码已完成，待真机验收**）：要打开感知层、有镜头、开始时画面里认得出这个人，dry-run 拒绝（手动控制照做）；秒数夹到 1~60。
+  每圈按名字找目标（人物框优先，框不稳用 `max_age` 秒内的名字标签 x），偏出死区就 `Camera.nudge` 短按 0.02~0.1 s（`hw_key_hold`：一条 adb 命令、sleep 在模拟器里），按完等 `settle` 秒；
+  离得太近转不动（同方向按 3 次误差没缩小 20 px）就停手；`lost_after` 秒看不到算跟丢。跟踪期间身体不发 `arrive` / `leave` / `stranger`、丢掉攒着的 `approach` / `gesture`、不报画面大变，也不调 `env.held()`。
+  数字在 `[track]`（`gain` 是估的）。**`camera_reset` 现在是闭环**：离开原位前存一张参照缩略图（画面上半、避开聊天面板），复位时先按记账粗转回去，
+  再左右 0.02 s 小步比相似度（最多 30 步），最高相似度 < 0.5 就退回粗转位置、结果里说"没对准"
 - `move(direction, steps)`：W/A/S/D 小步走（`brain/locomotion.py`，每步按住 `[brain] move_step` 秒，**步长没在真机标定**）；一次 1~3 步、两次隔 `move_min_interval` 秒，
   牵着手要 `force=true`，走出去没有复位
 - **主人命令窗口**：卡洛（`[brain] owner_name`，精确匹配）发 `#` 开头的消息后 `owner_window` 秒内放宽：`move` 一次最多 6 步、不用等间隔；

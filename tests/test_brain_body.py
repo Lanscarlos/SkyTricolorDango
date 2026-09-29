@@ -1773,3 +1773,92 @@ def test_approaches_during_quiet_skill_are_dropped(clock):
     b.stop_task()
     b.step()  # 跟踪结束后也不冒出过时的 approach
     assert not [e for e in events.drain() if e.kind == "approach"]
+
+
+# ---- track 工具（Task 5） ----
+def track_body(clock, live=True, visible=True, **kw):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    if visible:
+        env.people_list = [Person(1, "friend", "懒洋洋大王", Rect(1300, 400, 100, 300), "右边", "中")]
+    kw.setdefault("camera", FakeCamera())
+    b, device, reader, events = body(clock, live=live, env=env, **kw)
+    return b, env, events
+
+
+def test_track_starts_skill_when_target_visible(clock):
+    b, _, _ = track_body(clock)
+    out = b.track("懒洋洋大王", 20)
+    assert out.startswith("开始盯着懒洋洋大王了")
+    assert b.skills.active.name == "track" and b.skills.active.timeout == 25
+    assert "正在做：盯着懒洋洋大王" in b.status()
+
+
+def test_track_refused_in_dry_run(clock):
+    b, _, _ = track_body(clock, live=False)
+    with pytest.raises(ToolError, match="dry-run"):
+        b.track("懒洋洋大王")
+    assert b.skills.active is None
+    assert b.track("懒洋洋大王", live=True).startswith("开始盯着")  # 手动控制照做
+
+
+def test_track_refused_when_target_not_visible(clock):
+    from skydango.vision.people import Person
+
+    b, env, _ = track_body(clock, visible=False)
+    env.people_list = [Person(1, "friend", "阿白", Rect(400, 200, 120, 300), "左边", "近")]
+    with pytest.raises(ToolError, match="没看到") as info:
+        b.track("懒洋洋大王")
+    assert "阿白" in str(info.value) and "look_around" in str(info.value)
+    assert b.skills.active is None
+
+
+def test_track_refused_without_camera_or_perception(clock):
+    b, _, _ = track_body(clock, camera=None)
+    with pytest.raises(ToolError, match="视角"):
+        b.track("懒洋洋大王")
+
+    class OcrEnv:  # 整图 OCR 的 env：只有名字标签，没有 people()
+        labels = {"懒洋洋大王": (1200, 300, 160, 50, clock())}
+        requests = {}
+
+    plain, _, _, _ = body(clock, live=True, env=OcrEnv(), camera=FakeCamera())
+    with pytest.raises(ToolError, match="感知层"):
+        plain.track("懒洋洋大王")
+    with pytest.raises(ToolError, match="感知层"):
+        body(clock, live=True, camera=FakeCamera())[0].track("懒洋洋大王")
+
+
+def test_track_clamps_seconds(clock):
+    b, _, _ = track_body(clock)
+    b.track("懒洋洋大王", 999)
+    assert b.skills.active.timeout == 60 + 5
+    b.stop_task()
+    b.track("懒洋洋大王", 0)
+    assert b.skills.active.timeout == 1 + 5
+
+
+def test_track_refused_while_another_task_runs(clock):
+    b, _, _ = track_body(clock)
+    b.track("懒洋洋大王")
+    with pytest.raises(ToolError, match="stop_task"):
+        b.track("懒洋洋大王")
+
+
+def test_no_scene_change_while_skill_turns_camera(clock):
+    b, device, _, events = body(clock)
+    b.step()
+    b.skills.start(b, quiet_skill())  # FakeSkill 没写 needs_camera；quiet_skill 补上
+    b.skills.active.needs_camera = True
+    device.frames = [np.full((720, 1280, 3), 230, np.uint8)]  # 自己转镜头：画面大变
+    clock.advance(1.5)
+    b.step()
+    assert "scene_change" not in [e.kind for e in events.drain()]
+    b.stop_task()
+    device.frames = [scene()]
+    clock.advance(1.5)
+    b.step()  # 技能结束后重新拿参照，第一圈不比
+    clock.advance(1.5)
+    b.step()
+    assert "scene_change" not in [e.kind for e in events.drain()]

@@ -45,6 +45,10 @@ class FakeBody:
         self.calls.append(("stop_task",))
         return "停下了"
 
+    def track(self, name, seconds):
+        self.calls.append(("track", name, seconds))
+        return f"开始盯着{name}了"
+
     def chat_log(self, n):
         self.calls.append(("chat_log", n))
         return "log"
@@ -92,12 +96,24 @@ class FakeEyes:
 def test_tool_names_and_actions():
     assert TOOL_NAMES == [
         "look", "look_at", "look_person", "look_around", "status", "chat_log", "recall", "say", "emote", "set_request_policy", "camera",
-        "camera_reset", "move", "check_friend", "stop_task", "panel_read", "panel_press", "panel_close",
+        "camera_reset", "move", "check_friend", "track", "stop_task", "panel_read", "panel_press", "panel_close",
     ]
     assert ACTIONS == {
-        "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "stop_task", "panel_press",
-        "panel_close",
+        "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task",
+        "panel_press", "panel_close",
     }
+
+
+def test_tools_track_passes_args():
+    body = FakeBody()
+    tb = ToolBox(body)
+    out, err = tb.run("track", {"name": "小明", "seconds": 10})
+    assert not err and out == "开始盯着小明了" and tb.acted
+    tb.run("track", {"name": "阿白"})
+    assert body.calls == [("track", "小明", 10), ("track", "阿白", 30)]
+    assert "track" in ACTIONS
+    out, err = tb.run("track", {})
+    assert err and "name" in out
 
 
 def test_look_uses_eyes_unless_image_requested():
