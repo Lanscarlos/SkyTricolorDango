@@ -68,6 +68,20 @@
 
 辅助标注每帧约 3k 输入 + 1.8k 输出 token（修掉 CLAUDE.md 加载之后）；89 帧一批约 27 万输入 / 16 万输出，147 帧约 48 万 / 26 万。
 
+## 物品识别（v5 起，spec `docs/superpowers/specs/2026-09-29-object-recognition-design.md`）
+
+类别追加了 `bench`（座位）/ `bonfire`（篝火）/ `instrument`（乐器）/ `spirit`（先祖），编号 6~9，旧的 0~5 不变。代码已完成，**还没有数据和模型**。
+
+操作顺序：
+1. 录像：专门去有长椅、篝火、钢琴、先祖的地方各录一段（每类至少 50 个框、2~3 张地图）；花地图（先祖多）已有录像
+2. 新录像先照旧 `perception label <录像> --assist` 标人
+3. 对整个数据集补物品：`perception label datasets/sky --objects`（第一轮没有物品模型，Claude 按网格直接框；v5 训出来后加 `--model models/sky-yolo-v5.pt` 当候选）。
+   写回前自动备份 `labels/` 到 `_backup/`；人物行除"Claude 判成先祖的"外不动；已有的物品框会当候选再核对一遍（重跑安全）。311 帧约 100 万输入 / 55 万输出 token
+4. 看 `datasets/sky/_assist/objects.md`（先看"人物框改成了先祖"），用 X-AnyLabeling 修正
+5. 训练 v5（10 类）
+6. **上线门槛**：同一批录像 v4、v5 各跑一次 `perception compare`，好友认出率、远处认出率不低于 v4（花地图上陌生人误报应减少）；
+   训练输出里每类物品验证集 mAP50 ≥ 0.6；`view --model models/sky-yolo-v5.pt` 真机看一圈没有明显误认。都满足再把 `[perception] model` 换成 v5
+
 ## 没做完 / 待办（按建议顺序）
 
 1. **用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，
