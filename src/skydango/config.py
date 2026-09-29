@@ -452,6 +452,8 @@ class BrainConfig:
     history_turns: int = 20  # 启动时把 history.jsonl 最近几轮原话放进大脑的系统提示词（重启后接得上话），0 不带
     turn_timeout: float = 120.0  # 大脑一轮最多等多久（秒），超了结束进程、下次用 --resume 接回
     heartbeat: list[float] = field(default_factory=lambda: [45.0, 90.0, 180.0])  # 没事件时隔多久醒一次，闲着就退到下一档
+    background_wait: float = 20.0  # 背景事件（陌生人来去、好友走开、已处理的互动请求…）自己不叫醒大脑，攒了这么久还没醒才叫醒一次
+    rejoin: float = 60.0  # 好友走开后这么久内又出现算"回来了"（背景事件），不再当成来到身边叫醒大脑打招呼
     max_steps: int = 6  # 每次醒来最多调几次工具
     max_says: int = 2  # 每次醒来最多说几句
     look_min_interval: float = 5.0  # look 最多几秒一次（再调给缓存的描述）

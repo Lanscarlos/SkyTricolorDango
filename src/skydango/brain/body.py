@@ -130,6 +130,7 @@ class Body:
         self._owner_window_until = float("-inf")  # now < 这个值 = 卡洛的 # 命令还在生效
         self._last_move = float("-inf")
         self._nearby: set[str] = set()
+        self._left_at: dict[str, float] = {}  # 好友上次走开的时间：brain.rejoin 秒内又出现算"回来了"
         self._strangers = 0  # 上次看到几个陌生人（YOLO 感知层才有）
         self._requests: set[tuple[str, str]] = set()
         self._ref_thumb = None
@@ -434,10 +435,14 @@ class Body:
         if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
             self.panel.trigger("arrive", now)
         for name in sorted(near - self._nearby):
-            self.events.put("arrive", f"{name} 来到身边")
+            if now - self._left_at.get(name, float("-inf")) <= self.cfg.brain.rejoin:  # 走出画面又回来：不用再打招呼
+                self.events.put("return", f"{name} 回来了", who=name)
+            else:
+                self.events.put("arrive", f"{name} 来到身边", who=name)
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
-            self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）")
+            self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
+            self._left_at[name] = now
             if name == self.holding:  # 人都走开了，肯定没牵着了
                 self.events.put("released", f"（推测）和 {name} 分开了")
                 self.holding = None

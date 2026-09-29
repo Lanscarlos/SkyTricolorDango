@@ -513,7 +513,7 @@ c.addEventListener("click",e=>{if(!K.picking||!last)return;
 ctlOptions(true);
 // ---- brain ----
 const B={turns:new Map(),els:new Map(),version:0,boot:null,want:new Map(),acted:false};
-const REASONS={events:"新消息 / 事件",heartbeat:"心跳",farewell:"退出前总结",outside:"轮外"};
+const REASONS={events:"新消息 / 事件",background:"周围的变化",heartbeat:"心跳",farewell:"退出前总结",outside:"轮外"};
 const ICONS={thinking:"💭 思考",text:"💬 说",tool:"🔧 调用",result:"↩ 返回"};
 const FOLD=10;
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}

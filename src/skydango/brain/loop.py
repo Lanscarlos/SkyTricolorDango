@@ -81,8 +81,11 @@ class Brain:
     def due(self, now: float) -> str | None:
         if now < self.backoff_until:
             return None
-        if len(self.events) and now - self.events.last_put >= self.chat.debounce:
+        if self.events.urgent() and now - self.events.last_put >= self.chat.debounce:
             return "events"
+        oldest = self.events.oldest_background()  # 背景事件不单独叫醒，攒太久才兜底叫醒一次
+        if oldest is not None and now - oldest >= self.cfg.background_wait:
+            return "background"
         if now - self.last_wake >= self.heartbeat(now):
             return "heartbeat"
         return None

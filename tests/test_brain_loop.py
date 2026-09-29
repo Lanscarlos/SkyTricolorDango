@@ -258,3 +258,37 @@ def test_chat_turn_only_while_answering_chat(clock):  # I4：只有取走了聊�
     with pytest.raises(RuntimeError):
         brain.wake(clock(), "events")
     assert seen == [False, False, True] and brain.chat_turn is False
+
+
+# ---- 背景事件（events.BACKGROUND）：自己不叫醒，攒够 background_wait 秒兜底叫醒一次 ----
+
+
+def test_background_events_alone_do_not_wake_right_away(clock):
+    brain, events, _, _ = make(clock, FakeSession(), background_wait=20.0)
+    brain.last_wake = clock()
+    events.put("stranger", "身边来了陌生人（1 个，头顶没有名字）")
+    events.put("leave", "懒懒 走开了（5 秒没看到名字）", who="懒懒")
+    assert brain.due(clock() + 1.0) is None
+    assert brain.due(clock() + 19.0) is None
+    assert brain.due(clock() + 20.0) == "background"
+
+
+def test_urgent_event_wakes_and_takes_background_along(clock):
+    session = FakeSession()
+    brain, events, _, _ = make(clock, session, background_wait=20.0)
+    brain.last_wake = clock()
+    events.put("stranger", "身边来了陌生人（1 个，头顶没有名字）")
+    clock.advance(5)
+    events.put("arrive", "懒懒 来到身边", who="懒懒")
+    assert brain.due(clock() + 0.3) is None  # 照旧攒 debounce
+    assert brain.due(clock() + 1.0) == "events"
+    brain.wake(clock() + 1.0, "events")
+    assert "- 身边来了陌生人" in session.sent[0] and "- 懒懒 来到身边" in session.sent[0]
+
+
+def test_background_wake_does_not_reset_idle_heartbeat(clock):
+    brain, events, _, _ = make(clock, FakeSession(), background_wait=20.0)
+    brain._idle = 2
+    events.put("stranger", "陌生人都走开了")
+    brain.wake(clock() + 20.0, "background")
+    assert brain._idle == 3  # 只是周围在变、大脑也没做事：心跳照样往后退
