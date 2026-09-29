@@ -42,6 +42,22 @@ class FakeWatcher:
         return self.reading
 
 
+@pytest.fixture(autouse=True)
+def modes(monkeypatch):
+    """touch_mode 依次返回设好的值（用完一直返回最后一个）；默认先键盘模式、唤醒之后切到触屏模式。"""
+    seq = [False, True]
+
+    def fake(frame):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    monkeypatch.setattr("skydango.game.panels.touch_mode", fake)
+
+    def set_modes(*values):
+        seq[:] = list(values)
+
+    return set_modes
+
+
 def ops(watcher, frames=None):
     device = FakeDevice(frames or [scene()])
     return PanelOps(device, watcher, PanelsConfig(), sleep=lambda s: None, clock=lambda: 100.0), device
@@ -132,3 +148,29 @@ def test_press_refuses_never():
     with pytest.raises(ValueError):
         o.press(reading(JOIN), JOIN)
     assert device.calls == []
+
+
+def test_no_retap_when_first_tap_changed_panel(modes):
+    # 第一下其实生效了（面板上的内容变了，比如出了下一步确认框），面板还在：不能再点第二下
+    other = scene()
+    other[150:550, 250:950] = 255
+    w = FakeWatcher(present=[True, True])
+    o, device = ops(w, frames=[scene(), scene(), other])
+    o.press(reading(OK), OK)
+    assert taps(device) == [("tap", 530, 415)]
+
+
+def test_no_retap_when_still_keyboard_mode(modes):
+    modes(False, False)
+    w = FakeWatcher(present=[True, True])
+    o, device = ops(w)
+    o.press(reading(OK), OK)
+    assert taps(device) == [("tap", 530, 415)]
+
+
+def test_touch_mode_taps_once(modes):
+    modes(True)
+    w = FakeWatcher(present=[True])
+    o, device = ops(w)
+    o.press(reading(OK), OK)
+    assert taps(device) == [("tap", 530, 415)]

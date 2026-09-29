@@ -370,6 +370,7 @@ class PanelsConfig:
     unknown_min_chars: int = 6  # 除按钮外至少这么多字才算面板（名字标签、"2级"这类零星字不算）
     unknown_pad: float = 0.02  # 不认识的面板框：文字外接框往外扩（相对截图宽）
     unknown_ttl: float = 30.0  # 这么久没再确认过就当它关了（防止一直挡着）
+    unknown_blocks: bool = False  # 不认识的面板挡不挡操作；没在真机核对误报率之前只报告、不拦（头顶气泡、告示牌可能误认）
     change: float = 0.25  # 画面变化触发阈值（和 brain.scene_change 同一种度量，实测后调）
     button_max_chars: int = 6  # 按钮最多几个字
     button_words: list[str] = field(

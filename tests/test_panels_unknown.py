@@ -1,3 +1,4 @@
+import threading
 import time
 
 import numpy as np
@@ -163,5 +164,106 @@ def test_background_scan_merges_next_observe(clock):
             if got:
                 break
         assert names(got) == [("open", UNKNOWN)]
+    finally:
+        w.close()
+
+
+# ---- 评审修复 ----
+def test_chat_panel_lines_ignored(clock):
+    # 聊天记录面板开着：团子自己的「好的」和别人消息都在面板里（x < 429），不能凑成"不认识的面板"
+    lines = [line("我们一起去雨林跑图吧", 0, 350, w=220), line("好的", 150, 400)]
+    w = PanelWatcher(PanelsConfig(), load_cards(CARDS), ListOcr(lines), {"chat_input": lambda f: True}, background=False)
+    w.observe(scene(), clock())
+    assert [p.name for p in w.state.panels] == ["chat_log"]
+
+
+def test_button_word_inside_sentence_is_not_a_button():
+    cfg = PanelsConfig()
+    assert not looks_like_panel([line("好的，走吧", 10, 10), line("懒洋洋大王今天好开心", 10, 60)], cfg)
+    assert not looks_like_panel([line("知道了吗", 10, 10), line("一段足够长的正文文字", 10, 60)], cfg)
+    assert looks_like_panel([line("确定！", 10, 10), line("一段足够长的正文文字", 10, 60)], cfg)
+
+
+def test_unknown_panel_does_not_block_by_default(clock):
+    w = watcher(ListOcr(DIALOG))
+    w.observe(scene(), clock())
+    assert w.state.top().name == UNKNOWN and w.blocking("say") == [] and w.blocking("camera") == []
+    cfg = PanelsConfig(unknown_blocks=True)
+    strict = PanelWatcher(cfg, load_cards(CARDS), ListOcr(DIALOG), {"chat_input": lambda f: False}, background=False)
+    strict.observe(scene(), clock())
+    assert [p.name for p in strict.blocking("say")] == [UNKNOWN]
+
+
+class GateOcr:
+    """第一次马上返回 DIALOG；之后等 gate 放行才返回 DIALOG（模拟关面板时还在跑的后台扫描）。"""
+
+    def __init__(self):
+        self.gate = threading.Event()
+        self.calls = 0
+        self.finished = threading.Event()
+
+    def recognize(self, img):
+        self.calls += 1
+        if self.calls > 1:
+            self.gate.wait(2)
+            self.finished.set()
+        return list(DIALOG)
+
+
+def wait_for(cond, timeout=2.0):
+    end = time.monotonic() + timeout
+    while not cond() and time.monotonic() < end:
+        time.sleep(0.01)
+
+
+def test_stale_scan_does_not_revive_closed_panel(clock):
+    ocr = GateOcr()
+    w = watcher(ocr, background=True)
+    try:
+        w.observe(scene(), clock())
+        wait_for(lambda: w._future is not None and w._future.done())
+        w.observe(scene(), clock())
+        assert names(w.pop_changes()) == [("open", UNKNOWN)]
+        clock.advance(5)
+        w.observe(scene(), clock())  # 提交第二次扫描（卡在 gate 上）
+        w.mark_closed(UNKNOWN)
+        assert names(w.pop_changes()) == [("close", UNKNOWN)]
+        ocr.gate.set()
+        ocr.finished.wait(2)
+        wait_for(lambda: w._future is None or w._future.done())
+        w.observe(scene(), clock())
+        assert w.pop_changes() == [] and w.state.others() == ()
+    finally:
+        w.close()
+
+
+class SlowOcr:
+    def __init__(self):
+        self.active = 0
+        self.most = 0
+        self.lock = threading.Lock()
+
+    def recognize(self, img):
+        with self.lock:
+            self.active += 1
+            self.most = max(self.most, self.active)
+        time.sleep(0.05)
+        with self.lock:
+            self.active -= 1
+        return list(DIALOG)
+
+
+def test_ocr_not_used_from_two_threads_at_once(clock):
+    from skydango.vision.bubbles import Rect
+    from skydango.vision.panels import Panel
+
+    ocr = SlowOcr()
+    w = watcher(ocr, background=True)
+    try:
+        w.observe(scene(), clock())  # 后台开始扫描
+        time.sleep(0.01)
+        w.read(scene(), Panel(UNKNOWN, "不认识的面板", Rect(200, 100, 800, 500), False, 100), clock())
+        wait_for(lambda: w._future is None or w._future.done())
+        assert ocr.most == 1
     finally:
         w.close()

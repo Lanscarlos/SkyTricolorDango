@@ -111,10 +111,21 @@ class PanelOps:
         return True
 
     def _tap(self, x: int, y: int, panel: Panel) -> None:
-        """点屏幕。键盘模式下第一下只切到触屏模式：切完面板还在才再点一下（不在说明第一下已经生效了，别再点）。"""
-        if not touch_mode(self.device.screenshot()):
+        """点屏幕。键盘模式下第一下只切到触屏模式（game-ops §1）：只有确认切过去了、面板还在、面板上的内容也没变，
+        才补点第二下。拿不准第一下有没有生效就不补点 —— 宁可没点中（调用方会看到"画面没变"），也别连点两下
+        落到新弹出的东西上（第二个弹框的按钮没过安全规则）。"""
+        first = self.device.screenshot()
+        if touch_mode(first):
             self.device.tap(x, y)
-            self.sleep(WAKE_DELAY)
-            if not self.watcher.present(self.device.screenshot(), panel):
-                return
+            return
+        self.device.tap(x, y)
+        self.sleep(WAKE_DELAY)
+        after = self.device.screenshot()
+        if not touch_mode(after):
+            log.info("点了一下还没切到触屏模式：不确定这一下有没有生效，不补点")
+            return
+        if not self.watcher.present(after, panel):
+            return  # 第一下已经把面板关了
+        if difference(thumb(panel.box.crop(first)), thumb(panel.box.crop(after))) >= PRESS_CHANGED:
+            return  # 面板上的内容变了：第一下已经生效
         self.device.tap(x, y)

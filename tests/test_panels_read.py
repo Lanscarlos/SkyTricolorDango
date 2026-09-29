@@ -20,7 +20,9 @@ def watcher(ocr, cards=CARDS):
 
 
 @pytest.mark.parametrize(
-    "text, kind", [("退出并删除", "never"), ("取消邀请", "retreat"), ("×", "retreat"), ("确定", "other"), ("购买", "never")]
+    "text, kind",
+    [("退出并删除", "never"), ("取消邀请", "other"), ("返回遇境", "other"), ("关闭好友申请", "other"), ("取消。", "retreat"),
+     ("关闭", "retreat"), ("×", "retreat"), ("确定", "other"), ("购买", "never")],
 )
 def test_classify(text, kind):
     assert classify(text, PanelsConfig()) == kind

@@ -821,8 +821,15 @@ class Body:
             listed = "、".join(f"[{i}] {b.text}" for i, (_, b) in enumerate(self._buttons, 1)) or "没有"
             raise ToolError(f"没有这个按钮；现在的按钮：{listed}")
         reading, target = picked
-        if reading.panel.name not in {p.name for p in self.panels.state.panels}:
+        current = next((p for p in self.panels.state.panels if p.name == reading.panel.name), None)
+        if current is None:
             raise ToolError(f"{reading.panel.label}已经关了，重新 panel_read 看看")
+        # 按之前再读一次（画面没变时用缓存）：不认识的面板都叫 unknown，读完之后可能已经换了一个弹框
+        reading = self.panels.read(self.fresh_frame(), current, now)
+        fresh = next((b for b in reading.buttons if b.text == target.text), None)
+        if fresh is None or fresh.kind != target.kind:
+            raise ToolError("面板变了，重新 panel_read 看看")
+        target = fresh
         if target.kind == "never":
             raise ToolError(f"「{target.text}」不能按（花钱、删好友、退出这类按钮，主人放行也不按）")
         permit = None

@@ -400,3 +400,22 @@ def test_prompt_has_panel_rules():
     from skydango.config import ReplyConfig
 
     assert "## 面板（panel_read / panel_press / panel_close）" in static_prompt(ReplyConfig())
+
+
+def test_panel_press_rechecks_panel_before_tapping(clock):
+    # 读完之后弹框换了（都叫 unknown）：原来「取消」的位置现在是别的按钮 → 不按，要求重新读
+    b, panels, ops, _ = dialog(clock)
+    b.panel_read()
+    panels.readings[UNKNOWN] = replace(DIALOG_READING, buttons=(Button("加入", CANCEL.box, "never"), OK))
+    with pytest.raises(ToolError, match="面板变了，重新 panel_read"):
+        b.panel_press("取消")
+    assert ops.pressed == []
+
+
+def test_panel_press_uses_fresh_button_box(clock):
+    b, panels, ops, _ = dialog(clock)
+    b.panel_read()
+    moved = Button("取消", Rect(310, 420, 60, 30), "retreat")
+    panels.readings[UNKNOWN] = replace(DIALOG_READING, buttons=(moved, JOIN, OK))
+    b.panel_press("取消")
+    assert ops.last is moved

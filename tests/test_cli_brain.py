@@ -177,3 +177,12 @@ def test_run_brain_panels_disabled(tmp_path, monkeypatch):
     seen = spy_body(monkeypatch)
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0)
     assert seen["panels"] is None and seen["panel_ops"] is None
+
+
+def test_brain_env_without_mcp_mentions_no_brain(monkeypatch):
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "mcp" else real(name, *a))
+    with pytest.raises(RuntimeError, match="mcp.*--no-brain"):
+        cli._brain_env(Config())

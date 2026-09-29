@@ -1213,9 +1213,13 @@ def cmd_camera(cfg: Config, args) -> None:
 
 def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
     """大脑和眼睛的 Claude Code：命令 + 隔离的环境（单独配置目录 + claude setup-token 令牌）。"""
+    import importlib.util
+
     from .brain.claude import claude_env, resolve_claude
     from .chat.llm import read_key
 
+    if importlib.util.find_spec("mcp") is None:
+        raise RuntimeError("大脑要用 mcp：先 pip install --user mcp；不想接大脑可以用 --no-brain（调试用的普通模式）")
     try:
         token = read_key(cfg.brain.token_env)
     except RuntimeError:
