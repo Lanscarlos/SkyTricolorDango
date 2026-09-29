@@ -1,0 +1,17 @@
+# 未核对：位置 / 阈值按 game-ops 估的，录样本后用 panels scan 核对（见 docs/game-ops.md「面板」）
+label = "共享空间邀请"
+verified = false
+layer = 90
+region = [0.15, 0.08, 0.85, 0.92]
+confirm_frames = 1
+
+[[features]]
+kind = "text"
+any = ["共享空间"]  # "这位旅人正在共享空间内，你想一起加入吗？"
+
+[close]
+ways = ["button:取消"]
+auto = true
+
+[buttons]
+never = ["加入"]  # 绝不能加入别人的共享空间

@@ -355,6 +355,36 @@ class FriendCheckConfig:
 
 
 @dataclass
+class PanelsConfig:
+    """面板识别（vision/panels.py）：画面上开着哪些面板（特征卡 assets/panels/ + 通用 OCR 兜底），身体的遮挡护栏和大脑的面板工具用它。
+
+    设计见 docs/superpowers/specs/2026-09-29-panels-design.md。只接大脑模式。
+    """
+
+    enabled: bool = True  # 大脑模式默认开；false = 退回原来的行为（不看面板、不加工具、不做护栏）
+    cards_dir: str = "assets/panels"
+    ocr_threads: int = 2  # 细读 / 通用兜底单独用的 OCR 线程数，别和读聊天抢 CPU
+    scan_interval: float = 5.0  # 通用兜底：没有别的触发时，隔多久看一次屏幕中部
+    unknown_cooldown: float = 2.0  # 两次通用兜底扫描至少隔这么久
+    unknown_roi: list[float] = field(default_factory=lambda: [0.15, 0.08, 0.85, 0.92])  # 通用兜底 OCR 的区域（避开左边聊天面板、底部输入栏）
+    unknown_min_chars: int = 6  # 除按钮外至少这么多字才算面板（名字标签、"2级"这类零星字不算）
+    unknown_pad: float = 0.02  # 不认识的面板框：文字外接框往外扩（相对截图宽）
+    unknown_ttl: float = 30.0  # 这么久没再确认过就当它关了（防止一直挡着）
+    change: float = 0.25  # 画面变化触发阈值（和 brain.scene_change 同一种度量，实测后调）
+    button_max_chars: int = 6  # 按钮最多几个字
+    button_words: list[str] = field(
+        default_factory=lambda: ["确定", "取消", "关闭", "加入", "同意", "好的", "知道了", "返回", "拒绝", "稍后", "以后再说", "确认"]
+    )
+    retreat: list[str] = field(default_factory=lambda: ["关闭", "取消", "返回", "拒绝", "稍后", "知道了", "以后再说"])  # 撤退类：大脑可以直接按
+    never: list[str] = field(
+        default_factory=lambda: ["购买", "充值", "支付", "兑换", "删除", "屏蔽", "举报", "退出", "注销"]
+    )  # 永远不按，主人 #允许 也不按
+    permit_window: float = 60.0  # 主人 #允许 之后多久内能按一次
+    read_ttl: float = 15.0  # panel_press 要求 panel_read 在这么久以内
+    ui_delay: float = 0.8  # 关面板 / 按按钮后等界面动画
+
+
+@dataclass
 class ViewerConfig:
     """识别过程可视化：本机网页实时显示画面 + 识别框（`run --view` 或 `python -m skydango view`）。"""
 
@@ -433,6 +463,7 @@ class Config:
     assist: AssistConfig = field(default_factory=AssistConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
+    panels: PanelsConfig = field(default_factory=PanelsConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     spin: SpinConfig = field(default_factory=SpinConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)

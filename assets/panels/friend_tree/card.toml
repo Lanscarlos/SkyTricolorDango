@@ -1,0 +1,16 @@
+# 未核对：位置 / 阈值按 game-ops 估的，录样本后用 panels scan 核对（见 docs/game-ops.md「面板」）
+label = "好友树"
+verified = false
+layer = 40
+region = [0.55, 0.0, 1.0, 1.0]  # 同 [friend_check] panel_left
+confirm_frames = 2
+
+[[features]]
+kind = "dark"
+roi = [0.60, 0.10, 0.98, 0.90]
+max_value = 70
+max_std = 40
+
+[close]
+ways = ["esc"]  # 用户确认 ESC 能关
+auto = true

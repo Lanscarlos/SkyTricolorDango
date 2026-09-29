@@ -1,0 +1,22 @@
+# 未核对：位置 / 阈值按 game-ops 估的，录样本后用 panels scan 核对（见 docs/game-ops.md「面板」）
+label = "轮盘编辑界面"
+verified = false
+layer = 30
+region = [0.0, 0.0, 1.0, 1.0]
+confirm_frames = 2
+
+[[features]]
+kind = "template"
+image = "close.png"  # 右上角 ×（1888, 32）
+roi = [0.95, 0.0, 1.0, 0.07]
+threshold = 0.8
+
+[[features]]
+kind = "template"
+image = "check.png"  # 轮盘中心的 ✓（643, 540）
+roi = [0.30, 0.45, 0.37, 0.55]
+threshold = 0.8
+
+[close]
+ways = ["tap:0.983,0.03"]  # 点右上角 ×（✓ 只有改过东西才能关）
+auto = true

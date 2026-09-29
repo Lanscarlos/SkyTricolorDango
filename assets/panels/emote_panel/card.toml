@@ -1,0 +1,22 @@
+# 未核对：位置 / 阈值按 game-ops 估的，录样本后用 panels scan 核对（见 docs/game-ops.md「面板」）
+label = "动作面板"
+verified = false
+layer = 20
+region = [0.69, 0.0, 0.94, 1.0]  # game-ops §4：右侧 x 约 1330~1800
+confirm_frames = 2
+
+[[features]]
+kind = "template"
+image = "pencil.png"  # 编辑用的铅笔图标（还没截）
+roi = [0.69, 0.30, 0.94, 0.45]
+threshold = 0.8
+
+[[features]]
+kind = "dark"
+roi = [0.70, 0.05, 0.93, 0.95]
+max_value = 70
+max_std = 40
+
+[close]
+ways = ["key:18"]  # E
+auto = true

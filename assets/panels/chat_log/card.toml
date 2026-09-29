@@ -1,0 +1,15 @@
+# 未核对：位置 / 阈值按 game-ops 估的，录样本后用 panels scan 核对（见 docs/game-ops.md「面板」）
+label = "聊天记录面板"
+verified = false
+layer = 10
+region = [0.0, 0.0, 0.335, 0.855]
+confirm_frames = 1
+allows = ["say", "emote", "camera", "check_friend", "social"]  # 它本来就该开着，不算遮挡
+
+[[features]]
+kind = "builtin"
+name = "chat_input"  # ChatReader.panel_visible：看面板底部的胶囊输入框
+
+[close]
+ways = ["key:46"]  # C
+auto = false
