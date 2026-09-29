@@ -59,6 +59,15 @@ def test_proactive_section(tmp_path):
     assert cfg.proactive.self_names == ["团子", "三彩"] and cfg.proactive.cold_after == 3
 
 
+def test_track_section(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[track]\ngain = 0.2\n", encoding="utf-8")
+    t = load_config(p).track
+    assert t.gain == 0.2
+    assert (t.deadband, t.nudge_min, t.nudge_max, t.settle, t.lost_after, t.max_age) == (0.15, 0.02, 0.1, 0.6, 3.0, 0.5)
+    assert (t.stall_nudges, t.stall_px, t.max_seconds) == (3, 20.0, 60)
+
+
 def test_spin_section(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text("[spin]\nhfov = 75.0\n", encoding="utf-8")

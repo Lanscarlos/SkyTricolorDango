@@ -431,6 +431,13 @@ class Body:
         self._ref_thumb, self._ref_at = t, now
 
     def _watch_people(self, now: float) -> None:
+        if getattr(self.skills.active, "quiet_people", False):
+            # 跟踪中转镜头：人进出画面是自己转的，不是人来了 / 走了。不发事件、不更新比较基准，技能结束后下一圈照常比较。
+            # 转镜头时框变大变小会被当成"走过来"、动作也认不准：攒着的丢掉，免得跟踪结束后冒出过时的事件
+            for pop in ("pop_approaches", "pop_gestures"):
+                if hasattr(self.env, pop):
+                    getattr(self.env, pop)()
+            return
         near = set(self.env.nearby(now))
         if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
             self.panel.trigger("arrive", now)
@@ -565,6 +572,30 @@ class Body:
                 if same(n):
                     return self._below_tag(label[:4]), True
         return None
+
+    def target_x(self, name: str, now: float) -> tuple[float, str] | None:
+        """技能 track 用：(这个好友在画面上的中心 x 像素, 来源 "body" / "tag")；看不到返回 None。
+
+        人物框优先（感知层 people() 本来就只给 ≤ 1 s 的）；框时有时无（人挨着团子时 v4 只框住 67%）就用
+        名字标签的 x 接上，但标签要 track.max_age 秒内的。名字先找一模一样的，再容忍 OCR 错一两个字（同 _locate）。
+        """
+        if self.env is None:
+            return None
+        people = [p for p in self.env.people(now) if p.kind == "friend" and p.name] if hasattr(self.env, "people") else []
+        max_age = self.cfg.track.max_age
+        labels = {n: v for n, v in dict(self.env.labels).items() if now - v[4] <= max_age}  # 后台线程会改：先拍快照
+        for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
+            for p in people:
+                if same(p.name):
+                    return p.box.x + p.box.w / 2, "body"
+            for n, (x, _y, w, _h, _t) in labels.items():
+                if same(n):
+                    return x + w / 2, "tag"
+        return None
+
+    @property
+    def frame_width(self) -> int:
+        return int(self.last_frame.shape[1]) if self.last_frame is not None else 1920
 
     def _below_tag(self, tag: tuple[int, int, int, int]) -> Rect:
         """人在名字标签正下方：宽 3 倍标签宽、高 6 倍标签高（估计值，没在真机核对）。"""

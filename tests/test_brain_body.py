@@ -1695,3 +1695,81 @@ def test_status_lists_things(clock):
     assert "画面里的东西：座位（左边·近）、先祖（前面·远）" in b.status()
     plain, _, _, _ = body(clock, env=FakeEnv())
     assert "画面里的东西" not in plain.status()
+
+
+# ---- 技能 track：找目标位置、跟踪期间不报人来人走（plan 2026-09-29-brain-track Task 3） ----
+def test_target_x_prefers_body_box(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "friend", "懒洋洋大王", Rect(900, 400, 100, 300), "前面", "近")]
+    env.labels = {"懒洋洋大王": (1200, 300, 160, 50, clock())}
+    b, _, _, _ = body(clock, env=env)
+    assert b.target_x("懒洋洋大王", clock()) == (950.0, "body")
+
+
+def test_target_x_falls_back_to_fresh_tag(clock):
+    env = FakeEnv()
+    env.labels = {"懒洋洋大王": (1200, 300, 160, 50, clock() - 0.2)}
+    b, _, _, _ = body(clock, env=env)
+    assert b.target_x("懒洋洋大王", clock()) == (1280.0, "tag")
+    env.labels = {"懒洋洋大王": (1200, 300, 160, 50, clock() - 0.8)}  # 超过 max_age = 0.5 s：不算
+    assert b.target_x("懒洋洋大王", clock()) is None
+
+
+def test_target_x_tolerates_ocr_typo(clock):
+    env = FakeEnv()
+    env.labels = {"懒洋洋大玉": (1200, 300, 160, 50, clock())}
+    b, _, _, _ = body(clock, env=env)
+    assert b.target_x("懒洋洋大王", clock()) == (1280.0, "tag")
+
+
+def test_target_x_ignores_strangers_and_missing_env(clock):
+    from skydango.vision.people import Person
+
+    env = FakeEnv()
+    env.people_list = [Person(1, "stranger", None, Rect(900, 400, 100, 300), "前面", "近")]
+    b, _, _, _ = body(clock, env=env)
+    assert b.target_x("懒洋洋大王", clock()) is None
+    plain, _, _, _ = body(clock)
+    assert plain.target_x("懒洋洋大王", clock()) is None
+
+
+def test_frame_width(clock):
+    b, _, _, _ = body(clock, frames=[np.zeros((720, 1280, 3), np.uint8)])
+    assert b.frame_width == 1920  # 还没截过图
+    b.step()
+    assert b.frame_width == 1280
+
+
+def quiet_skill():
+    from test_brain_skills import FakeSkill
+
+    skill = FakeSkill()
+    skill.quiet_people = True  # 跟踪中：转镜头时人进出画面是自己转的
+    return skill
+
+
+def test_no_people_events_while_quiet_skill_runs(clock):
+    env = FakeEnv()
+    b, _, _, events = body(clock, env=env)
+    env.near = ["懒洋洋大王"]
+    b.step()
+    assert [e.kind for e in events.drain()] == ["arrive"]
+    b.skills.start(b, quiet_skill())
+    env.near = []
+    b.step()
+    assert "leave" not in [e.kind for e in events.drain()]
+    b.stop_task()
+    b.step()
+    assert "leave" in [e.kind for e in events.drain()]
+
+
+def test_approaches_during_quiet_skill_are_dropped(clock):
+    env = ApproachEnv(["懒洋洋大王"])  # 转镜头时框变大，被当成"走过来"
+    b, _, _, events = body(clock, env=env)
+    b.skills.start(b, quiet_skill())
+    b.step()
+    b.stop_task()
+    b.step()  # 跟踪结束后也不冒出过时的 approach
+    assert not [e for e in events.drain() if e.kind == "approach"]
