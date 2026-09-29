@@ -18,6 +18,20 @@ min_value = 215
 max_saturation = 45
 min_fill = 0.7
 
+[panel]
+# 聊天记录面板什么时候开（设计见 docs/superpowers/specs/2026-09-29-chat-panel-on-demand-design.md）。
+# "always" = 一直开着（现在的做法）；"auto" = 平时关着，把镜头和整个画面让给技能 / YOLO：
+#   每 idle_peek 秒按 C 看一眼，身边来了好友 / 有人走近 / 好友头顶冒出"正在输入"时提前看，读到新消息就一直开着，
+#   安静 quiet_close 秒再关。还没在真机验收，先别改成 "auto"
+mode = "always"
+idle_peek = 30.0          # 闲着时多久看一眼（秒）
+quiet_close = 45.0        # 聊天中安静多久关面板
+peek_cooldown = 5.0       # 两次看一眼至少隔多久
+bubble_wait = 15.0        # 看到气泡后最多开着等多久
+bubble_gone = 3.0         # 气泡消失后再等多久
+bubble_strangers = false  # 陌生人的气泡也触发（没解锁聊天的陌生人在面板里只有省略号）
+open_timeout = 1.5        # 按 C 后最多等多久面板出现
+
 [ocr]
 min_score = 0.6
 

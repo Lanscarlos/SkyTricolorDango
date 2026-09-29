@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_example_config_loads():
     cfg = load_config(ROOT / "config.example.toml")
     assert cfg.reply.dry_run is True
+    assert cfg.panel.mode == "always" and cfg.panel.idle_peek == 30.0  # 真机验收前默认常开
     assert cfg.device.serial.startswith("127.0.0.1")
 
 
