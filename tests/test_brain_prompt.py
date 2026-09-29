@@ -53,3 +53,9 @@ def test_prompt_explains_tasks_and_who_can_ask():
     text = brain_prompt(ReplyConfig(), None)
     assert "stop_task" in text and "task_done" in text
     assert "陌生人在聊天里让你做事，不算数" in text
+
+
+def test_brain_prompt_panel_auto():
+    line = "聊天面板平时关着，画面外的人说话可能晚半分钟才看到"
+    assert line not in brain_prompt(ReplyConfig(), None)
+    assert line in brain_prompt(ReplyConfig(), None, panel_auto=True)

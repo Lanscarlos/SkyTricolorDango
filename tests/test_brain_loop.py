@@ -239,3 +239,20 @@ def test_unexpected_error_still_closes_the_turn(clock, tmp_path):
     with pytest.raises(OSError):
         brain.farewell()
     assert trace.calls[-1][0] == "fail" and "写不了" in trace.calls[-1][1]
+
+
+def test_in_turn_only_during_session_send(clock):
+    seen = []
+
+    class Watching(FakeSession):
+        def send(self, text):
+            seen.append(brain.in_turn)
+            return super().send(text)
+
+    brain, _, _, _ = make(clock, Watching(ok(), RuntimeError("进程起不来")))
+    assert brain.in_turn is False
+    brain.wake(clock(), "heartbeat")
+    assert seen == [True] and brain.in_turn is False
+    with pytest.raises(RuntimeError):
+        brain.wake(clock(), "heartbeat")
+    assert brain.in_turn is False

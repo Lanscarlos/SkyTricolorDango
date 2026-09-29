@@ -133,3 +133,40 @@ def test_describe(clock):
     clock.advance(6)
     runner.tick(body, FRAME, clock())
     assert runner.describe(clock()) == "正在做：盯着小明（第 6 秒）：已对准"
+
+
+class CameraSkill(FakeSkill):
+    needs_camera = True
+
+
+def test_skill_that_needs_camera_borrows_panel(clock):
+    from conftest import FakeDevice, fake_panel, scene
+
+    panel, state = fake_panel(FakeDevice([scene()]))
+    events = EventQueue(clock=clock)
+    runner = SkillRunner(events, clock, panel=panel)
+    body = SimpleNamespace(blackout=False)
+    runner.start(body, CameraSkill([SkillStep("running", ""), SkillStep("done", "好了")]))
+    assert panel.lent == "skill" and state.open is False
+    runner.tick(body, FRAME, clock())
+    runner.tick(body, FRAME, clock())
+    assert panel.lent is None and state.open is True
+
+
+def test_skill_cancel_returns_panel(clock):
+    from conftest import FakeDevice, fake_panel, scene
+
+    panel, _ = fake_panel(FakeDevice([scene()]))
+    runner = SkillRunner(EventQueue(clock=clock), clock, panel=panel)
+    runner.start(SimpleNamespace(blackout=False), CameraSkill())
+    runner.cancel(SimpleNamespace(blackout=False), "大脑叫停")
+    assert panel.lent is None
+
+
+def test_skill_without_camera_does_not_borrow(clock):
+    from conftest import FakeDevice, fake_panel, scene
+
+    panel, _ = fake_panel(FakeDevice([scene()]))
+    runner = SkillRunner(EventQueue(clock=clock), clock, panel=panel)
+    runner.start(SimpleNamespace(blackout=False), FakeSkill())
+    assert panel.lent is None

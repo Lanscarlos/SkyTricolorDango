@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import threading
 import time
@@ -91,6 +92,7 @@ class Body:
         self.wall = wall
         self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
         self.brain_offline: Callable[[float], bool] = lambda now: False
+        self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在想（一轮还没结束）：聊天面板别因为安静关掉
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
         self.said: list[str] = []  # 说过（含 dry-run）的话
@@ -116,7 +118,7 @@ class Body:
         self._fallback_pending: list[Message] = []
         self._fallback_last_new = 0.0
         self.stopped = False  # shutdown 之后不再接大脑的命令
-        self.skills = SkillRunner(events, clock)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
+        self.skills = SkillRunner(events, clock, panel=self.panel)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
 
     # ---- 主循环 ----
     def _held(self, reason: str) -> AbstractContextManager:
@@ -126,6 +128,8 @@ class Body:
 
     def step(self) -> None:
         now = self.clock()
+        if self.events.has("chat") or self.events.has("owner_command") or self.brain_busy():
+            self.panel.busy(now)  # 还有没回的话 / 大脑在想：聊天面板不算安静
         frame = None
         try:
             frame = self.device.screenshot()
@@ -159,6 +163,9 @@ class Body:
         info: dict = {"模式": "dry-run" if self.cfg.reply.dry_run else "LIVE", "牵着手": f"{self.holding}（推测）" if self.holding else "没有"}
         if self.blackout:
             info["画面"] = "黑着（切场景？）"
+        panel = self.panel.describe(now)
+        if panel:
+            info["聊天面板"] = panel
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
             self.viewer.update(frame, now, env=self.env, panel=panel_box(self.cfg.vision, self.reader, frame), messages=fresh, info=info)
@@ -214,6 +221,10 @@ class Body:
                 self.emotes.restore()
             except Exception:
                 log.exception("恢复轮盘失败，请用 emotes wheel 检查")
+        try:
+            self.panel.shutdown()  # 按需模式：退出时把聊天面板恢复成开着
+        except Exception:
+            log.exception("聊天面板没恢复")
 
     # ---- 命令队列：大脑的工具在身体线程里执行 ----
     def call(self, fn: Callable[[], Any], timeout: float | None = None) -> Any:
@@ -272,11 +283,11 @@ class Body:
                 self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」")
 
     def _watch_panel(self, now: float) -> None:
-        since = self.reader.panel_closed_since
-        lost = since is not None and now - since >= PANEL_LOST_AFTER
+        """只在面板该开着（常开模式 / 聊天中）却没开时告诉大脑；按需模式闲着时关着是正常的。"""
+        lost = self.panel.missing_for(now) >= PANEL_LOST_AFTER
         if lost and not self._panel_lost:
             self.events.put("panel", "聊天记录面板关了半分钟，自动重开没成功，现在读不到聊天")
-        elif self._panel_lost and since is None:
+        elif self._panel_lost and self.reader.panel_closed_since is None:
             self.events.put("panel", "聊天记录面板又开了")
         self._panel_lost = lost
 
@@ -288,6 +299,8 @@ class Body:
                 (self.env.hold if black else self.env.release)("blackout")
             self.events.put("scene_change", "画面整屏黑了（可能在切场景）" if black else "画面恢复了")
             self._ref_thumb = None
+            if not black:  # 黑屏时没看聊天：恢复后补看一眼
+                self.panel.trigger("scene", now)
         if black or now - self._ref_at < 1.0:
             return
         t = thumb(frame)
@@ -302,6 +315,8 @@ class Body:
 
     def _watch_people(self, now: float) -> None:
         near = set(self.env.nearby(now))
+        if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
+            self.panel.trigger("arrive", now)
         for name in sorted(near - self._nearby):
             self.events.put("arrive", f"{name} 来到身边")
         for name in sorted(self._nearby - near):
@@ -320,8 +335,11 @@ class Body:
             elif not n and self._strangers:
                 self.events.put("stranger", "陌生人都走开了")
             self._strangers = n
+        if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
+            self.panel.bubble_seen(now)  # 好友头顶冒出"正在输入"：开着面板等他发出来
         if hasattr(self.env, "pop_approaches"):  # 有人朝团子走过来（眼睛不因此自动看，省额度）
             for who in self.env.pop_approaches():
+                self.panel.trigger("approach", now)
                 if who == self.holding:
                     continue
                 self.events.put("approach", "有个陌生人朝你走过来了" if who == "陌生人" else f"{who} 朝你走过来了")
@@ -538,12 +556,28 @@ class Body:
         return " / ".join(parts)
 
     def chat_log(self, n: int = 20) -> str:
+        if self.panel.auto and self.panel.state == "idle":
+            self._peek_now()
         rows = list(self.chat)[-max(1, min(n, 50)) :]
         if not rows:
             return "还没有聊天"
         return "\n".join(
             f"{time.strftime('%H:%M:%S', time.localtime(t))} {who or '（看不出是谁）'}：{text}" for t, who, text in rows
         )
+
+    def _peek_now(self) -> None:
+        """聊天面板关着（闲着）时大脑要看聊天：马上打开看一眼，读到的照常变成事件。冷却中 / 黑屏打不开就算了。"""
+        self.panel.trigger("chat_log", self.clock())
+        wait = self.panel.cfg.open_timeout + 1.0
+        for _ in range(math.ceil(wait / max(self.cfg.vision.poll_interval, 0.05)) + 1):
+            now = self.clock()
+            frame = self.device.screenshot()
+            fresh = self.reader.read(frame, now)
+            self.panel.tick(now, fresh, visible=self.reader.panel_closed_since is None, blackout=self.blackout)
+            self._heard(fresh, frame, now)
+            if self.panel.state != "peek":  # 看完了（关上 / 读到新消息 / 等气泡），或者这会儿开不了
+                return
+            self.sleep(self.cfg.vision.poll_interval)
 
     def say(self, text: str, live: bool = False) -> str:
         """live = 手动控制：dry-run 下也真的发（护栏照旧）。"""
@@ -562,6 +596,7 @@ class Body:
             log.info("[dry-run] 将会发送: %s", full)
             self._remember(body, full, sent=False)
             return f"dry-run：没真的发，“{full}”"
+        self.panel.before_speak(now)  # 先开面板再按 Enter：说完对方的回复马上读得到
         self.sender.send(full)
         self.self_filter.remember(full, self.clock())
         self._remember(body, full, sent=True, manual=live)

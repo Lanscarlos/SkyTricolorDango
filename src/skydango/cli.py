@@ -1292,7 +1292,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     server.start()
     trace = None if viewer is None else (viewer.brain or BrainTrace())  # 网页上的大脑时间线（一般 _viewer 已经挂好）
     session = BrainSession(
-        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep")),
+        base, claude_vars, work / "session", server.url, brain_prompt(cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto"),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
     )
@@ -1313,6 +1313,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
     body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
+    body.brain_busy = lambda: brain.in_turn
     brain_thread.start()
     eyes_thread.start()
     try:
