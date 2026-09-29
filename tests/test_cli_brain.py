@@ -85,6 +85,39 @@ def test_run_brain_wires_everything(tmp_path, monkeypatch):
     assert mcp["mcpServers"]["sky"]["url"].startswith("http://127.0.0.1:")
 
 
+def test_run_brain_memory_uses_claude(tmp_path, monkeypatch):
+    import skydango.chat.memory as memory
+
+    cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False  # live 才整理记忆
+    seen = []
+    real = memory.NotesKeeper
+    monkeypatch.setattr(memory, "NotesKeeper", lambda llm, *a, **k: seen.append(llm) or real(llm, *a, **k))
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert seen[0].complete("你负责记笔记", [{"role": "user", "content": "整理"}]) == "收到：整理"
+    args = [json.loads(l)["args"] for l in log.read_text(encoding="utf-8").splitlines() if "args" in l][-1]
+    assert args[args.index("--model") + 1] == cfg.brain.memory_model
+    assert args[args.index("--system-prompt") + 1] == "你负责记笔记"
+
+
+def test_memory_update_uses_claude(tmp_path, monkeypatch):
+    import argparse
+
+    from skydango.chat.memory import MemoryStore
+
+    monkeypatch.chdir(tmp_path)
+    env = claude_env("tok", tmp_path / "cfg")
+    env.update(FAKE_CLAUDE_MODE="ok", FAKE_CLAUDE_LOG=str(tmp_path / "claude.jsonl"))
+    monkeypatch.setattr(cli, "_claude_base", lambda cfg, hint="": (FAKE, env))
+    cfg = Config()
+    cfg.llm.provider = "nope"  # 用到 DeepSeek（make_llm）就会报错
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    MemoryStore(cfg.reply.memory_dir).history.append("懒洋洋大王：「我加班」", "辛苦啦", 1.0)
+    cli.cmd_memory(cfg, argparse.Namespace(action="update"))
+    assert "我加班" in MemoryStore(cfg.reply.memory_dir).notes()  # 假 claude 把收到的内容原样写回
+
+
 def test_brain_env_needs_token(monkeypatch):
     monkeypatch.delenv("SKYDANGO_CLAUDE_TOKEN", raising=False)
     monkeypatch.setattr("skydango.chat.llm._user_env", lambda name: "")

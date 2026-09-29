@@ -160,3 +160,28 @@ def one_shot_message(cmd: list[str], env: dict[str, str], cwd: Path, content, ti
 def one_shot(cmd: list[str], env: dict[str, str], cwd: Path, content, timeout: float) -> str:
     """眼睛用：起一个进程，发一条消息，拿到结果就关。"""
     return check_result(one_shot_message(cmd, env, cwd, content, timeout))
+
+
+class ClaudeLlm:
+    """记忆整理（随手记 inbox.md、整理 notes.md）用：和 chat.llm 的 LlmClient 同一个接口，每次起一个一次性 claude -p。
+
+    令牌、配置目录同大脑（订阅，不花 API 钱）；不给任何工具。Claude Code 没有 max_tokens 参数，忽略。
+    """
+
+    def __init__(self, base: list[str], env: dict[str, str], model: str, cwd: Path, timeout: float = 120.0) -> None:
+        self.base = base
+        self.env = env
+        self.model = model
+        self.cwd = cwd
+        self.timeout = timeout
+
+    def command(self, system: str) -> list[str]:
+        return [
+            *self.base, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--model", self.model, "--effort", "low", "--tools", "", "--strict-mcp-config",
+            "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", system,
+        ]
+
+    def complete(self, system: str, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
+        content = "\n\n".join(m["content"] for m in messages)  # NotesKeeper 只发一条 user 消息
+        return one_shot(self.command(system), self.env, self.cwd, content, self.timeout)

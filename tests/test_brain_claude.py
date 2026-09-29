@@ -79,3 +79,24 @@ def test_one_shot_message_returns_full_result(tmp_path):
 
     m = one_shot_message(FAKE, fake_env(tmp_path), tmp_path / "w", [{"type": "text", "text": "描述"}], 10)
     assert m["result"] == "收到：描述" and m["usage"]["input_tokens"] == 10
+
+
+# ---- 记忆整理用的 Claude（和 DeepSeek 的 LlmClient 同一个接口） ----
+def test_claude_llm_complete(tmp_path):
+    from skydango.brain.claude import ClaudeLlm
+
+    llm = ClaudeLlm(FAKE, fake_env(tmp_path), "sonnet", tmp_path / "w", timeout=10)
+    assert llm.complete("你负责记笔记", [{"role": "user", "content": "整理一下"}], max_tokens=200) == "收到：整理一下"
+    args = log_lines(tmp_path)[0]["args"]
+    assert args[args.index("--system-prompt") + 1] == "你负责记笔记"
+    assert args[args.index("--model") + 1] == "sonnet"
+    assert args[args.index("--tools") + 1] == ""  # 不给任何内置工具
+
+
+def test_claude_llm_raises_on_limit(tmp_path):
+    from skydango.brain.claude import ClaudeLlm
+
+    llm = ClaudeLlm(FAKE, fake_env(tmp_path, "limit"), "sonnet", tmp_path / "w", timeout=10)
+    with pytest.raises(ClaudeError) as err:
+        llm.complete("s", [{"role": "user", "content": "x"}])
+    assert err.value.limit

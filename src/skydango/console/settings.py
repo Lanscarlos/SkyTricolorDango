@@ -44,6 +44,7 @@ FIELDS: tuple[Field, ...] = (
     Field("brain.claude_path", "claude 路径", "命令行里 claude 能用就不用改", "exe", "brain"),
     Field("brain.model", "大脑模型", "默认 sonnet", "str", "brain"),
     Field("brain.eyes_model", "眼睛模型", "把画面写成文字的模型，默认 haiku", "str", "brain"),
+    Field("brain.memory_model", "记忆整理模型", "随手记 inbox.md、整理 notes.md 用的模型（live 时），默认 sonnet", "str", "brain"),
     Field("env.enabled", "识别环境", "后台 OCR 画面：身边有谁、在哪", "bool", "features"),
     Field("perception.enabled", "YOLO 感知层", "开发中；打开后替换定时整图 OCR，要先训练模型", "bool", "features"),
     Field("perception.model", "YOLO 模型", "模型文件路径", "file", "features"),

@@ -239,9 +239,11 @@ def cmd_memory(cfg: Config, args) -> None:
             print(f"\n===== {title} =====\n{text or '（空）'}")
         print(f"\n聊天记录 {len(store.history.all())} 轮，其中 {len(store.pending_turns())} 轮还没整理进长期记忆")
     elif args.action == "update":
-        from .chat.llm import make_llm
+        from .brain.claude import ClaudeLlm
 
-        keeper = NotesKeeper(make_llm(cfg.llm), store, cfg.reply.persona, background=False)
+        base, claude_vars = _claude_base(cfg)
+        llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, Path("tmp/memory-claude"), cfg.brain.memory_timeout)
+        keeper = NotesKeeper(llm, store, cfg.reply.persona, background=False)
         print("长期记忆已更新" if keeper.update_now() else "没有需要整理的内容（或整理失败，见日志）")
 
 
@@ -1272,23 +1274,28 @@ def cmd_camera(cfg: Config, args) -> None:
             print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}")
 
 
-def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
-    """大脑和眼睛的 Claude Code：命令 + 隔离的环境（单独配置目录 + claude setup-token 令牌）。"""
-    import importlib.util
-
+def _claude_base(cfg: Config, hint: str = "") -> tuple[list[str], dict[str, str]]:
+    """隔离的 Claude Code（单独配置目录 + claude setup-token 令牌）：命令 + 环境。大脑、眼睛、记忆整理共用。"""
     from .brain.claude import claude_env, resolve_claude
     from .chat.llm import read_key
 
-    if importlib.util.find_spec("mcp") is None:
-        raise RuntimeError("大脑要用 mcp：先 pip install --user mcp；不想接大脑可以用 --no-brain（调试用的普通模式）")
     try:
         token = read_key(cfg.brain.token_env)
     except RuntimeError:
         raise RuntimeError(
-            f"没有找到大脑用的 Claude 令牌：先运行 claude setup-token，再 setx {cfg.brain.token_env} \"<令牌>\""
-            "；不想接大脑可以用 --no-brain（调试用的普通模式）"
+            f"没有找到大脑用的 Claude 令牌：先运行 claude setup-token，再 setx {cfg.brain.token_env} \"<令牌>\"" + hint
         ) from None
     return resolve_claude(cfg.brain.claude_path), claude_env(token, cfg.brain.config_dir)
+
+
+def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
+    """大脑和眼睛的 Claude Code：先检查 mcp，再 _claude_base。"""
+    import importlib.util
+
+    hint = "；不想接大脑可以用 --no-brain（调试用的普通模式）"
+    if importlib.util.find_spec("mcp") is None:
+        raise RuntimeError("大脑要用 mcp：先 pip install --user mcp" + hint)
+    return _claude_base(cfg, hint)
 
 
 def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0, viewer=None) -> None:
@@ -1297,7 +1304,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     import threading
 
     from .brain.body import Body
-    from .brain.claude import one_shot
+    from .brain.claude import ClaudeLlm, one_shot
     from .brain.events import EventQueue
     from .brain.eyes import Eyes, eyes_command
     from .brain.images import scene_note
@@ -1322,7 +1329,9 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
 
         store = MemoryStore(cfg.reply.memory_dir)
         if not cfg.reply.dry_run:
-            notes = NotesKeeper(make_llm(cfg.llm), store, cfg.reply.persona, cfg.reply.notes_every)
+            # 记忆整理也走 Claude（订阅）：随手记、整理 notes.md 各起一次性 claude -p，在记忆后台线程里跑
+            memory_llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout)
+            notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every)
     live_store = None if cfg.reply.dry_run else store
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
     env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
