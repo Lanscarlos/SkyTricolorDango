@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import tomllib
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -461,6 +463,21 @@ class BrainConfig:
 
 
 @dataclass
+class ConsoleConfig:
+    """管理面板（`console`，见 docs/superpowers/specs/2026-09-29-console-design.md）。启动选项由面板写进 console.toml，只影响面板启动的团子。"""
+
+    port: int = 8760  # 面板端口；和 view 的 8765 错开，可以同时开
+    child_port: int = 8761  # 面板起的团子子进程的 viewer 端口
+    stop_timeout: float = 60.0  # 停止时最多等几秒（live 大脑退出前要写记忆），超了强杀
+    log_lines: int = 500  # 日志尾巴保留几行
+    # 上次的启动选项，面板写
+    brain: bool = True  # 统管大脑（run 的默认）；false = 普通 Agent（调试用）
+    live: bool = False
+    emotes: bool = True
+    duration: float = 0.0  # 0 = 一直跑
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
@@ -484,6 +501,7 @@ class Config:
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     spin: SpinConfig = field(default_factory=SpinConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
+    console: ConsoleConfig = field(default_factory=ConsoleConfig)
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:
@@ -501,13 +519,81 @@ def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:
     return obj
 
 
-def load_config(path: str | Path | None) -> Config:
+def _read_toml(path: Path) -> dict[str, Any]:
+    with path.open("rb") as fh:
+        return tomllib.load(fh)
+
+
+def load_config(path: str | Path | None, overlay: str | Path | None = None) -> Config:
+    """默认值 → path（config.toml）→ overlay（面板写的 console.toml）。"""
     config = Config()
-    if path is None:
-        return config
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"找不到配置文件: {p}")
-    with p.open("rb") as fh:
-        data = tomllib.load(fh)
-    return _merge(config, data)
+    if path is not None:
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"找不到配置文件: {p}")
+        _merge(config, _read_toml(p))
+    if overlay is not None:
+        o = Path(overlay)
+        try:
+            _merge(config, _read_toml(o))
+        except (ValueError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(f"{o.name}：{exc}") from exc
+    return config
+
+
+def overlay_keys(data: dict[str, Any], prefix: str = "") -> list[str]:
+    """console.toml 里所有叶子键的点路径（不含面板自己的 [console]），启动时打日志用。"""
+    out: list[str] = []
+    for key, value in data.items():
+        dotted = f"{prefix}{key}"
+        if isinstance(value, dict):
+            out += overlay_keys(value, dotted + ".")
+        elif not dotted.startswith("console."):
+            out.append(dotted)
+    return sorted(out)
+
+
+def console_paths(config_path: Path) -> tuple[Path, Path]:
+    """面板写的两个文件和 config.toml 放在一起：(console.toml, secrets.toml)。"""
+    folder = Path(config_path).parent
+    return folder / "console.toml", folder / "secrets.toml"
+
+
+def read_secrets(path: Path) -> dict[str, str]:
+    """secrets.toml 的 [env] 表：环境变量名 → 值。不存在返回 {}。"""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    try:
+        env = _read_toml(path).get("env", {})
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{path.name} 读不出来：{exc}") from exc
+    if not isinstance(env, dict):
+        raise ValueError(f"{path.name} 的 env 应该是一个表")
+    for name, value in env.items():
+        if not isinstance(value, str):
+            raise ValueError(f"{path.name} 里的 {name} 应该是字符串")
+    return dict(env)
+
+
+def apply_secrets(path: Path, environ: MutableMapping[str, str]) -> list[str]:
+    """secrets.toml 的值覆盖已有环境变量（否则面板里换了 Key 还在用旧的 setx）。返回写了哪些名字。"""
+    secrets = read_secrets(path)
+    environ.update(secrets)
+    return list(secrets)
+
+
+@dataclass
+class Loaded:
+    cfg: Config
+    overridden: list[str]  # console.toml 覆盖了哪些配置项
+    secrets: list[str]  # 从 secrets.toml 写进环境变量的名字（不含值）
+
+
+def load_all(config_path: Path, environ: MutableMapping[str, str] = os.environ) -> Loaded:
+    """命令行入口用：config.toml（可以没有）+ console.toml + secrets.toml。"""
+    config_path = Path(config_path)
+    overlay, secrets = console_paths(config_path)
+    cfg = load_config(config_path if config_path.exists() else None, overlay if overlay.exists() else None)
+    overridden = overlay_keys(_read_toml(overlay)) if overlay.exists() else []
+    return Loaded(cfg, overridden, apply_secrets(secrets, environ))

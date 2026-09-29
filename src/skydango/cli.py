@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import Config, load_config
+from .config import Config, load_all
 from .imageio import imread, imwrite
 from .runlog import RunDir
 
@@ -1672,9 +1672,14 @@ def main(argv: list[str] | None = None) -> None:
     if not cfg_path.exists() and args.config != "config.toml":
         parser.error(f"找不到配置文件 {cfg_path}")
     try:
-        cfg = load_config(cfg_path if cfg_path.exists() else None)
+        loaded = load_all(cfg_path)
     except ValueError as exc:
         parser.error(str(exc))
+    cfg = loaded.cfg
+    if loaded.overridden:
+        log.info("console.toml 覆盖了 %d 项：%s", len(loaded.overridden), "、".join(loaded.overridden))
+    if loaded.secrets:
+        log.info("用 secrets.toml 里的 %s", "、".join(loaded.secrets))
     try:
         args.func(cfg, args)
     except (RuntimeError, ImportError, ValueError, FileNotFoundError) as exc:

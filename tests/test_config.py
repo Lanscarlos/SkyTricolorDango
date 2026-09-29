@@ -103,3 +103,54 @@ def test_panel_section(tmp_path):
     assert (cfg.panel.idle_peek, cfg.panel.quiet_close, cfg.panel.peek_cooldown) == (30.0, 45.0, 5.0)
     assert (cfg.panel.bubble_wait, cfg.panel.bubble_gone, cfg.panel.bubble_strangers, cfg.panel.open_timeout) == (15.0, 3.0, False, 1.5)
     assert load_config(None).panel.mode == "always"
+
+
+# ---- 管理面板：console.toml 叠加、secrets.toml ----
+def test_console_defaults():
+    from skydango.config import Config
+
+    c = Config().console
+    assert (c.port, c.child_port, c.stop_timeout, c.log_lines) == (8760, 8761, 60.0, 500)
+    assert (c.brain, c.live, c.emotes, c.duration) == (True, False, True, 0.0)
+
+
+def test_console_toml_overrides_config_toml(tmp_path):
+    from skydango.config import load_all
+
+    (tmp_path / "config.toml").write_text('[device]\nserial = "a"\nadb_path = "x"\n', encoding="utf-8")
+    (tmp_path / "console.toml").write_text('[device]\nserial = "b"\n[console]\nlive = true\n', encoding="utf-8")
+    loaded = load_all(tmp_path / "config.toml", environ={})
+    assert loaded.cfg.device.serial == "b" and loaded.cfg.device.adb_path == "x" and loaded.cfg.console.live is True
+    assert loaded.overridden == ["device.serial"]
+
+
+def test_console_toml_without_config_toml(tmp_path):
+    from skydango.config import load_all
+
+    (tmp_path / "console.toml").write_text('[llm]\nmodel = "m"\n', encoding="utf-8")
+    assert load_all(tmp_path / "config.toml", environ={}).cfg.llm.model == "m"
+
+
+def test_console_toml_unknown_key_names_the_file(tmp_path):
+    from skydango.config import load_all
+
+    (tmp_path / "console.toml").write_text("[device]\nserail = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="console.toml.*device.serail"):
+        load_all(tmp_path / "config.toml", environ={})
+
+
+def test_secrets_override_environment(tmp_path):
+    from skydango.config import load_all
+
+    (tmp_path / "secrets.toml").write_text('[env]\nDEEPSEEK_API_KEY = "sk-new"\n', encoding="utf-8")
+    env = {"DEEPSEEK_API_KEY": "sk-old"}
+    loaded = load_all(tmp_path / "config.toml", environ=env)
+    assert env["DEEPSEEK_API_KEY"] == "sk-new" and loaded.secrets == ["DEEPSEEK_API_KEY"]
+
+
+def test_secret_must_be_string(tmp_path):
+    from skydango.config import load_all
+
+    (tmp_path / "secrets.toml").write_text("[env]\nX = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="X"):
+        load_all(tmp_path / "config.toml", environ={})
