@@ -12,6 +12,7 @@ import re
 import time
 import tomllib
 from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ import numpy as np
 
 from ..config import PanelsConfig
 from ..imageio import imread
-from ..brain.images import difference, thumb
+from ..brain.images import difference, is_black, thumb
 from .bubbles import Rect, roi_rect
 from .icons import best_match, silhouette, trim
 from .ocr import OcrEngine, OcrLine
@@ -317,6 +318,20 @@ def describe_reading(reading: PanelReading) -> str:
     return f"{head}{text[:40]}，按钮：{buttons}"
 
 
+def looks_like_panel(lines: list[OcrLine], cfg: PanelsConfig) -> bool:
+    """通用兜底的判定：至少一个按钮词（确定 / 取消……）+ 其余文字够一段正文。只有名字标签、零星字的不算。"""
+    words = (*cfg.button_words, *cfg.retreat, *cfg.never)
+    has_button = False
+    chars = 0
+    for ln in lines:
+        text = ln.text.strip()
+        if len(text) <= cfg.button_max_chars and (text in CLOSE_MARKS or any(w in text for w in words)):
+            has_button = True
+        else:
+            chars += len(text)
+    return has_button and chars >= cfg.unknown_min_chars
+
+
 # ---- 快看 ----
 TEMPLATE_SCALES = (0.9, 1.0, 1.1)  # 模板按 1080 高裁的；再乘上 截图高 / 1080
 
@@ -352,8 +367,17 @@ class CardCheck:
     open: bool
 
 
+_FAILED = object()  # 通用兜底扫描出错：这次没结论
+CLOSE_AREA = (0.9, 0.0, 1.0, 0.1)  # 右上角：找通用的 × 模板
+UNKNOWN_LAYER = 100
+
+
 class PanelWatcher:
-    """身体每圈调 observe(frame, now)：哪些面板开着（去抖后），开 / 关的变化用 pop_changes() 取走。"""
+    """身体每圈调 observe(frame, now)：哪些面板开着（去抖后），开 / 关的变化用 pop_changes() 取走。
+
+    特征卡每帧判断；不认识的面板（和只靠文字认的卡）由通用兜底在画面大变 / 右上角出现 × / 每 scan_interval 秒时
+    OCR 屏幕中部认出来（background=True 时在后台线程里做，结果下一次 observe 合并）。
+    """
 
     def __init__(
         self,
@@ -381,14 +405,25 @@ class PanelWatcher:
         self._changes: list[PanelChange] = []
         self._expect: Counter[str] = Counter()
         self._read_cache: dict[str, tuple[Rect, np.ndarray, PanelReading]] = {}
+        self._close_mark = Feature("template", CLOSE_AREA, "close.png", load_template(Path(cfg.cards_dir) / "_common" / "close.png"))
+        self._clean: np.ndarray | None = None  # 没开面板时的画面缩略图（通用兜底比较用）
+        self._last_scan = float("-inf")
+        self._found: Panel | None = None  # 通用兜底认出的面板（不认识的，或文字卡）
+        self._found_thumb: np.ndarray | None = None
+        self._confirmed_at = float("-inf")
+        self._executor: ThreadPoolExecutor | None = None
+        self._future: Future | None = None
+        self._future_thumb: np.ndarray | None = None
 
     # ---- 身体线程 ----
     def observe(self, frame: np.ndarray, now: float) -> PanelState:
         height, width = frame.shape[:2]
-        for card in self.cards.values():
-            if card.quick:
-                hit = all(check_feature(frame, f, self.builtins)[0] for f in card.quick)
-                self._step(card, hit, width, height)
+        if not is_black(frame):  # 整屏黑（切场景）什么面板都看不出来：别把黑当成暗底面板，状态先不动
+            for card in self.cards.values():
+                if card.quick:
+                    hit = all(check_feature(frame, f, self.builtins)[0] for f in card.quick)
+                    self._step(card, hit, width, height)
+        self._unknown(frame, now)
         self._rebuild()
         return self.state
 
@@ -417,14 +452,32 @@ class PanelWatcher:
         return reading
 
     def present(self, frame: np.ndarray, panel: Panel) -> bool:
-        """单帧判断这个面板还在不在（不去抖；PanelOps 关面板、按按钮后确认用）。"""
+        """单帧判断这个面板还在不在（不去抖；PanelOps 关面板、按按钮后确认用）。靠文字认的面板要同步 OCR 一次。"""
         card = self.cards.get(panel.name)
+        if panel.name == UNKNOWN or (card is not None and card.texts):
+            return looks_like_panel(self.ocr.recognize(panel.box.crop(frame)), self.cfg)
         if card is None or not card.quick:
             return False
         return all(check_feature(frame, f, self.builtins)[0] for f in card.quick)
 
+    def find_close(self, frame: np.ndarray) -> tuple[int, int] | None:
+        """右上角的通用 ×（assets/panels/_common/close.png，没录就一直是 None）在哪，整张图坐标。"""
+        tpl = self._close_mark.template
+        if tpl is None:
+            return None
+        height, width = frame.shape[:2]
+        area = roi_rect(list(CLOSE_AREA), width, height)
+        k = height / 1080
+        match = best_match(silhouette(area.crop(frame)), tpl, [k * s for s in TEMPLATE_SCALES])
+        return (area.x + match.x, area.y + match.y) if match.score >= self._close_mark.threshold else None
+
     def mark_closed(self, name: str) -> None:
         """PanelOps 确认关掉了：马上从状态里去掉，排一个 close 变化。"""
+        if self._found is not None and self._found.name == name:
+            self._emit("close", self._found)
+            self._found = None
+            self._rebuild()
+            return
         panel = self._open.pop(name, None)
         if panel is None:
             return
@@ -467,6 +520,9 @@ class PanelWatcher:
 
     def close(self) -> None:
         """停后台线程（通用兜底）。"""
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
 
     # ---- 内部 ----
     def _panel(self, card: Card, width: int, height: int) -> Panel:
@@ -487,5 +543,92 @@ class PanelWatcher:
             self._changes.append(PanelChange(kind, panel, reading))
 
     def _rebuild(self) -> None:
-        panels = sorted(self._open.values(), key=lambda p: -p.layer)
-        self.state = PanelState(tuple(panels))
+        panels = list(self._open.values()) + ([self._found] if self._found is not None else [])
+        self.state = PanelState(tuple(sorted(panels, key=lambda p: -p.layer)))
+
+    # ---- 通用兜底 ----
+    def _unknown(self, frame: np.ndarray, now: float) -> None:
+        if self._future is not None and self._future.done():
+            future, self._future = self._future, None
+            self._apply(future.result(), self._future_thumb, now)
+        if self._found is not None and now - self._confirmed_at > self.cfg.unknown_ttl:
+            self._emit("close", self._found)  # 太久没再确认：当它关了，免得一直挡着
+            self._found = None
+        if is_black(frame):
+            return
+        small = thumb(frame)
+        if self._future is None and self._should_scan(frame, small, now):
+            self._last_scan = now
+            if self.background:
+                if self._executor is None:
+                    self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="panels")
+                self._future, self._future_thumb = self._executor.submit(self._scan, frame.copy(), now), small
+            else:
+                self._apply(self._scan(frame, now), small, now)
+        clean = not any(p.name != CHAT for p in self._open.values()) and self._found is None
+        if clean and (self._clean is None or difference(self._clean, small) < self.cfg.change):
+            self._clean = small
+
+    def _should_scan(self, frame: np.ndarray, small: np.ndarray, now: float) -> bool:
+        cfg = self.cfg
+        if now - self._last_scan < cfg.unknown_cooldown:
+            return False
+        if now - self._last_scan >= cfg.scan_interval:
+            return True
+        if self._clean is not None and difference(self._clean, small) >= cfg.change:
+            return True
+        if self._found is not None and self._found_thumb is not None:
+            if difference(self._found_thumb, thumb(self._found.box.crop(frame))) >= cfg.change:
+                return True
+        return check_feature(frame, self._close_mark, {})[0]
+
+    def _scan(self, frame: np.ndarray, now: float):
+        """OCR 屏幕中部，认出面板返回 (Panel, PanelReading, 面板区域缩略图)，没有返回 None，出错返回 _FAILED。"""
+        try:
+            height, width = frame.shape[:2]
+            area = roi_rect(self.cfg.unknown_roi, width, height)
+            lines = [
+                OcrLine(ln.text, ln.score, Rect(ln.box.x + area.x, ln.box.y + area.y, ln.box.w, ln.box.h))
+                for ln in self.ocr.recognize(area.crop(frame))
+                if ln.text.strip()
+            ]
+            if not looks_like_panel(lines, self.cfg):
+                return None
+            pad = round(self.cfg.unknown_pad * width)
+            x1 = max(0, min(ln.box.x for ln in lines) - pad)
+            y1 = max(0, min(ln.box.y for ln in lines) - pad)
+            x2 = min(width, max(ln.box.x2 for ln in lines) + pad)
+            y2 = min(height, max(ln.box.y2 for ln in lines) + pad)
+            box = Rect(x1, y1, x2 - x1, y2 - y1)
+            panel = Panel(UNKNOWN, "不认识的面板", box, False, UNKNOWN_LAYER)
+            reading = split_reading(lines, panel, None, self.cfg, width, height, now)
+            blob = " ".join([reading.title, reading.text, *(b.text for b in reading.buttons)])
+            for card in sorted(self.cards.values(), key=lambda c: -c.layer):
+                if not card.texts or not any(k in blob for f in card.texts for k in f.any):
+                    continue
+                if all(check_feature(frame, f, self.builtins)[0] for f in card.quick):
+                    panel = Panel(card.name, card.label, box, card.verified, card.layer, card.allows)
+                    reading = split_reading(lines, panel, card, self.cfg, width, height, now)
+                    break
+            return panel, reading, thumb(box.crop(frame))
+        except Exception:
+            log.exception("通用兜底认面板出错，这次当没结论")
+            return _FAILED
+
+    def _apply(self, result, small: np.ndarray | None, now: float) -> None:
+        if result is _FAILED:
+            return
+        if result is None:
+            if self._found is not None:
+                self._emit("close", self._found)
+                self._found = None
+            if small is not None:
+                self._clean = small  # 扫过了没有面板：这就是新的干净画面（换地方、转了镜头）
+            return
+        panel, reading, box_thumb = result
+        if self._found is None or self._found.name != panel.name:
+            if self._found is not None:
+                self._emit("close", self._found)
+            self._emit("open", panel, reading)
+        self._found, self._found_thumb, self._confirmed_at = panel, box_thumb, now
+        self.readings[panel.name] = reading

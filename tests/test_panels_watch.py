@@ -197,3 +197,26 @@ def test_observe_is_fast():
     for i in range(20):
         w.observe(frame, 0.1 * i)
     assert (time.perf_counter() - started) / 20 < 0.02
+
+
+def test_black_frame_skips_cards(tmp_path, clock):
+    write_card(tmp_path, "darkish", '''
+label = "暗面板"
+verified = true
+region = [0.5, 0.0, 1.0, 1.0]
+confirm_frames = 1
+[[features]]
+kind = "dark"
+roi = [0.6, 0.1, 0.9, 0.9]
+''')
+    w = watcher(tmp_path)
+    w.observe(np.zeros((720, 1280, 3), np.uint8), clock())
+    assert w.pop_changes() == [] and w.state.panels == ()
+
+
+def test_real_cards_do_not_open_on_dark_scene(clock):
+    w = PanelWatcher(PanelsConfig(), load_cards(CARDS), ListOcr(), {"chat_input": lambda f: False}, background=False)
+    dark = np.full((720, 1280, 3), 35, np.uint8)  # 暗色地图：整体偏暗但不是黑屏
+    for _ in range(3):
+        w.observe(dark, clock())
+    assert w.state.panels == ()

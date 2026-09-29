@@ -6,6 +6,12 @@ region = [0.55, 0.0, 1.0, 1.0]  # 同 [friend_check] panel_left
 confirm_frames = 2
 
 [[features]]
+kind = "template"
+image = "title.png"  # 面板上固定的图标 / 标题（还没截）；只靠"右侧偏暗"在暗色地图、黑屏时会误认
+roi = [0.60, 0.0, 0.98, 0.15]
+threshold = 0.8
+
+[[features]]
 kind = "dark"
 roi = [0.60, 0.10, 0.98, 0.90]
 max_value = 70
