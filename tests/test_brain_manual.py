@@ -91,6 +91,40 @@ def test_look_around_uses_sweep_or_eyes(clock):
     assert ManualControl(here(b)).run("look_around", {})["text"].startswith("转完了")
 
 
+def test_track_and_stop_from_panel(clock):
+    from test_brain_body import track_body
+
+    b, _, events = track_body(clock, live=False)  # 大脑 dry-run：手动的照样真做
+    m = ManualControl(here(b), events=events)
+    out = m.run("track", {"name": "懒洋洋大王", "seconds": 20})
+    assert out["ok"] is True and out["text"].startswith("开始盯着懒洋洋大王")
+    assert b.skills.active.name == "track" and b.skills.active.timeout == 25
+    assert m.run("stop_task", {}) == {"ok": True, "text": "停下了：盯着懒洋洋大王"}
+    assert b.skills.active is None
+    texts = [e.text for e in manual_events(events)]
+    assert any("盯着懒洋洋大王（20 秒）" in t for t in texts) and any("停下" in t for t in texts)
+    out = m.run("track", {"name": "阿白"})  # 画面里没有：身体的护栏照旧
+    assert out["ok"] is False and "没看到" in out["text"]
+
+
+@pytest.mark.parametrize("args", [{}, {"name": " "}, {"name": "小明", "seconds": 0}, {"name": "小明", "seconds": 61},
+                                  {"name": "小明", "seconds": "30"}])
+def test_track_bad_arguments(clock, args):
+    b, _, _, _ = body(clock, camera=FakeCamera())
+    with pytest.raises(ValueError):
+        ManualControl(here(b)).run("track", args)
+
+
+def test_options_track(clock):
+    from test_brain_body import track_body
+
+    b, _, _ = track_body(clock)
+    opts = ManualControl(b).options()
+    assert opts["track"] is True and opts["max_track_seconds"] == 60
+    bare, _, _, _ = body(clock, camera=FakeCamera())  # 没开感知层
+    assert ManualControl(bare).options()["track"] is False
+
+
 def test_camera_reset_gets_longer_timeout(clock):
     from skydango.brain.tools import RESET_TIMEOUT
 
@@ -116,6 +150,8 @@ def test_options(clock):
         "max_chars": 40,
         "dry_run": True,
         "panels": False,
+        "track": False,
+        "max_track_seconds": 60,
     }
     bare, _, _, _ = body(clock)
     opts = ManualControl(bare).options()

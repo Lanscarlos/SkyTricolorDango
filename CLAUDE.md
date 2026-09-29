@@ -187,7 +187,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - `run --view`（大脑模式）时画面下方多一栏**大脑时间线**（设计见 `docs/superpowers/specs/2026-09-28-viewer-brain-trace-design.md`）：最近 50 轮，
   每轮点开看叫醒原因、收到的消息、说的话 / 思考、工具调用和返回、耗时和 tokens；能只看做了事的轮次、复制一整轮。数据在 `brain/trace.py`（只在内存里），走 `/brain` 长轮询
 - `run --view`（大脑模式）时还有一栏**手动控制**（设计见 `docs/superpowers/specs/2026-09-28-viewer-manual-control-design.md`）：直接让身体说话、做动作、转视角 / 复位 / 环视、
-  看人（点画面上的人）、读面板 / 关面板，**总是真执行**（大脑 dry-run 也一样），照样过身体的护栏；做成后放 `manual` 事件告诉大脑。`brain/manual.py` + `POST /control`；
+  看人（点画面上的人）、盯人（输入名字或在画面上点好友，调 `track`）/ 停下（`stop_task`）、读面板 / 关面板，**总是真执行**（大脑 dry-run 也一样），照样过身体的护栏；做成后放 `manual` 事件告诉大脑。`brain/manual.py` + `POST /control`；
   只在本机模式挂（`viewer.host` 是局域网时关掉），请求要带 `X-Skydango` 头、`Host` 必须是本机（防别的网页 / DNS 重绑定）
 
 ## 面板识别（`[panels]`，大脑模式）
@@ -247,9 +247,12 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   状态里的"画面里：小明（左边·近）…"来自感知层 `people()`（暂停中或最近一帧超过 1 秒就是空的）
 - **`track(名字, 秒)`**（技能 D，`brain/track.py`，计划 `docs/superpowers/plans/2026-09-29-brain-track.md`；**代码已完成，待真机验收**）：要打开感知层、有镜头、开始时画面里认得出这个人，dry-run 拒绝（手动控制照做）；秒数夹到 1~60。
   每圈按名字找目标（人物框优先，框不稳用 `max_age` 秒内的名字标签 x），偏出死区就 `Camera.nudge` 短按 0.02~0.1 s（`hw_key_hold`：一条 adb 命令、sleep 在模拟器里），按完等 `settle` 秒；
-  离得太近转不动（同方向按 3 次误差没缩小 20 px）就停手；`lost_after` 秒看不到算跟丢。跟踪期间身体不发 `arrive` / `leave` / `stranger`、丢掉攒着的 `approach` / `gesture`、不报画面大变，也不调 `env.held()`。
-  数字在 `[track]`（`gain` 是估的）。**`camera_reset` 现在是闭环**：离开原位前存一张参照缩略图（画面上半、避开聊天面板），复位时先按记账粗转回去，
-  再左右 0.02 s 小步比相似度（最多 30 步），最高相似度 < 0.5 就退回粗转位置、结果里说"没对准"
+  离得太近转不动（同方向按 3 次误差没缩小 20 px）就停手；`lost_after` 秒看不到算跟丢；聊天记录面板开着时只等（不按键、不算转不动 / 跟丢）。
+  跟踪期间身体不发 `arrive` / `leave` / `stranger`、丢掉攒着的 `approach` / `gesture`、不报画面大变，也不调 `env.held()`；互动请求、自动接受、牵手状态照常。
+  跟踪中调 `camera` / `camera_reset` / `look_around` / `check_friend` 会先停下 track（结果里写"先停下了盯着…"）。数字在 `[track]`（`gain` 是估的）。
+  **`camera_reset` 现在是闭环**：每次离开原位前只拍一张参照缩略图（画面上半、避开聊天面板）；nudge 按时长分别记净次数（转动和时长不成比例、左右对称，D0），
+  复位时按同样的时长逐次反向重放，再左右 0.02 s 小步比相似度（最多 30 步），最高相似度 < 0.5 就退回粗转位置、结果里说"没对准"。
+  身体走动过、黑屏过之后参照图作废（只粗转）。工具 / 手动控制的 `camera_reset` 等 60 秒（`RESET_TIMEOUT`）；退出时先恢复轮盘、再复位镜头，细调限 8 秒
 - `move(direction, steps)`：W/A/S/D 小步走（`brain/locomotion.py`，每步按住 `[brain] move_step` 秒，**步长没在真机标定**）；一次 1~3 步、两次隔 `move_min_interval` 秒，
   牵着手要 `force=true`，走出去没有复位
 - **主人命令窗口**：卡洛（`[brain] owner_name`，精确匹配）发 `#` 开头的消息后 `owner_window` 秒内放宽：`move` 一次最多 6 步、不用等间隔；
@@ -263,7 +266,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；牵着手时 `emote` 要 `force=true`；陌生人只能接点火
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒或额度用完：聊天交给 `[llm]`（DeepSeek）备用回复，额度用完 10 分钟后再试
 - 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；额度用完时这一笔跳过，notes 下次再整理
-- 退出：身体先复原镜头、恢复轮盘（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code
+- 退出：身体先恢复轮盘、再复原镜头（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code
 - 调提示词时加 `--view`：网页上的大脑时间线能看到每一轮它收到了什么、调了什么工具、工具返回了什么（见「识别可视化」）；
   手动控制栏能绕过大脑直接试身体的工具（身体方法的 `live=True`），大脑会收到 `manual` 事件
 - 前提：`pip install --user mcp`；运行一次 `claude setup-token` 并 `setx SKYDANGO_CLAUDE_TOKEN "<令牌>"`
