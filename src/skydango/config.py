@@ -572,6 +572,14 @@ class InnerConfig:
     wants_max: int = 3  # 心愿 / 惦记的事最多几条
     want_days: float = 7.0  # 心愿几天后过期
     diary_prompt: int = 1  # 「日子」带几篇日记
+    # 第 3 期：性格（docs/superpowers/specs/2026-09-30-inner-phase3-design.md）
+    persona: bool = True  # 性格总开关（口头禅、老梗、看法，提示词「脾气」，收着点）；false = 第 2 期原样
+    fade_days: float = 14.0  # 多少天没用的条目淡出
+    catchphrases_max: int = 5
+    jokes_per_friend: int = 3
+    jokes_max: int = 20
+    opinions_max: int = 10
+    soft_minutes: float = 30.0  # 好友说难过后多久内对他收着点
 
 
 @dataclass

@@ -97,9 +97,13 @@ def show_lines(cfg: InnerConfig, directory: str | Path, friends: list[str], now:
     return lines
 
 
-def finish_reflection(result: dict | None, mind, store, memory, cards: dict, friends: list[str], persist: bool, now: float, cfg: InnerConfig) -> str:
+def finish_reflection(
+    result: dict | None, mind, store, memory, cards: dict, friends: list[str], persist: bool, now: float, cfg: InnerConfig,
+    persona=None, soft: set[str] = frozenset(),
+) -> str:
     """下线前的最终反思（第 2 期 §7）：套进心情、写日记和 mind.json、要点记进 inbox.md。返回存进 days.jsonl 的经过。
-    persist = False（dry-run）时只套进内存里的 Mind，什么都不写。"""
+    persona（第 3 期）：顺带套进性格档案、写 persona.json（soft = 收着点的好友，不给他们记新老梗）。
+    persist = False（dry-run）时只套进内存里的 Mind / Persona，什么都不写。"""
     from ..chat.memory import format_date
 
     if not result:
@@ -108,12 +112,19 @@ def finish_reflection(result: dict | None, mind, store, memory, cards: dict, fri
         mind.apply(result, cards, friends, now, cfg)
     except Exception:
         log.exception("最终反思的结果套不进心情")
+    if persona is not None:
+        try:
+            for why in persona.apply(result, cards, friends, now, cfg, soft=soft):
+                log.info("性格：%s", why)
+        except Exception:
+            log.exception("最终反思的结果套不进性格档案")
     diary = result.get("diary") if isinstance(result.get("diary"), str) else ""
     raw_memos = result.get("memos") if isinstance(result.get("memos"), list) else []
     memos = [str(m).strip() for m in raw_memos if str(m).strip()]
     if persist:
         for write in (
             lambda: store.write_mind(mind) if store is not None else None,
+            lambda: store.write_persona(persona) if store is not None and persona is not None else None,
             lambda: store.append_diary(diary, now) if store is not None and diary.strip() else None,
             lambda: memory.add_memos([f"{format_date(now)} 的要点：{m}" for m in memos]) if memory is not None and memos else None,
         ):

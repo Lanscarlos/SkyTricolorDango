@@ -90,6 +90,7 @@ class Body:
         ledger=None,  # inner.ledger.Ledger：内心账本（好友关系卡、这次上线）；None = 不记
         mind=None,  # inner.mind.Mind：心情、别扭、心愿（内心层第 2 期）；None = 没有
         reflector=None,  # inner.reflect.Reflector：反思；None = 不反思
+        persona=None,  # inner.persona.Persona：性格档案（内心层第 3 期）；None = 性格关着（不沉淀、不记收着点）
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
@@ -122,7 +123,9 @@ class Body:
         self.ledger = ledger
         self.mind = mind
         self.reflector = reflector
-        self.persona: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
+        self.persona = persona
+        self._soft_until: dict[str, tuple[float, str]] = {}  # 说了难过的好友 → (收着点到什么时候, 他的原话)
+        self.profile_text: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
         self.memory_notes: Callable[[], str] = lambda: ""  # 反思用的笔记（cli 设成 notes.md + inbox.md）
         self._energy: Energy | None = None  # 这一圈的精力（每圈算一次）
         self._born_wall = wall()
@@ -377,6 +380,8 @@ class Body:
                     self._inner_call(self._save_mind)
                 if self.reflector is not None:
                     self.reflector.heard(who is not None, now)
+        if self.persona is not None:
+            self._inner_call(lambda: self._watch_upset(fresh))
         self.heard = (self.heard + fresh)[-20:]
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
@@ -672,7 +677,8 @@ class Body:
                 self.events.put("return", f"{name} 回来了", who=name)
             else:
                 want = self._inner_call(lambda: self.mind.want_note(name), default="") if self.mind is not None else ""
-                text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}"
+                joke = self._inner_call(lambda: self.persona.joke_note(name), default="") if self.persona is not None else ""
+                text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}{joke or ''}"
                 self.events.put("arrive", text, who=name)
                 self._reflect_note(f"{name} 来到身边")
         for name in sorted(self._nearby - near):
@@ -1139,6 +1145,9 @@ class Body:
             heart = self._inner_call(lambda: self.mind.line(self.wall(), self._energy))
             if heart:
                 parts.append("心里：" + heart)
+        soft = self._inner_call(lambda: self._soft_line(self.wall()), default="") if self.persona is not None else ""
+        if soft:
+            parts.append(soft)
         parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
             parts.append("dry-run（说话、动作、转视角、走动都不会真的执行）")
@@ -1653,8 +1662,14 @@ class Body:
         chat, comings = (self._session_chat, self._session_comings) if final else (self._reflect_chat, self._reflect_comings)
         return reflect_materials_text(
             wall, self._energy.note if self._energy is not None else "", mind_line, list(chat), list(comings), cards, notes,
-            self.persona() or "", final,
+            self.profile_text() or "", final, self._traits(),
         )
+
+    def _traits(self) -> str | None:
+        """反思材料里的「你攒下的性格」：性格关着 / 拼出错 → None（不写这一段）。"""
+        if self.persona is None:
+            return None
+        return self._inner_call(self.persona.section)
 
     def apply_reflection(self, result: dict) -> None:
         """反思结果套进 Mind（身体线程里）；live 时写 mind.json。"""
@@ -1666,6 +1681,38 @@ class Body:
             log.info("反思：%s", why)
         log.info("反思完了，心里：%s", self.mind.line(self.wall(), self._energy))
         self._save_mind()
+        if self.persona is not None:
+            self._inner_call(lambda: self._apply_persona(result, cards))
+
+    # ---- 内心层第 3 期：性格、收着点（spec 2026-09-30-inner-phase3）----
+    def _apply_persona(self, result: dict, cards) -> None:
+        """反思结果套进性格档案；live 时写 persona.json。"""
+        wall = self.wall()
+        for why in self.persona.apply(result, cards, self._safe_friends(), wall, self.cfg.inner, soft=self.soft_names(wall)):
+            log.info("性格：%s", why)
+        if self.ledger is not None and self.ledger.persist and self.ledger.store is not None:
+            self.ledger.store.write_persona(self.persona)
+
+    def _watch_upset(self, fresh: list[Message]) -> None:
+        """好友说难过 / 不舒服……：接下来 soft_minutes 分钟对他收着点（不损、不唱反调、不拒绝）。"""
+        friends, wall = self._safe_friends(), self.wall()
+        for m in fresh:
+            who = match_friend(m.speaker, friends)
+            if who is not None and sounds_upset(m.text):
+                self._soft_until[who] = (wall + self.cfg.inner.soft_minutes * 60, m.text[:20])
+                log.info("%s 说「%s」：接下来对他收着点", who, m.text)
+
+    def soft_names(self, wall: float) -> set[str]:
+        """现在要收着点的好友。"""
+        return {who for who, (until, _) in self._soft_until.items() if wall < until}
+
+    def _soft_line(self, wall: float) -> str:
+        live = [(who, text) for who, (until, text) in self._soft_until.items() if wall < until]
+        if not live:
+            return ""
+        if len(live) == 1:
+            return f"对{live[0][0]}收着点（他刚说「{live[0][1]}」）"
+        return "对" + "、".join(who for who, _ in live) + "收着点（他们刚说难过）"
 
     def _save_mind(self) -> None:
         """live 时写 mind.json。"""

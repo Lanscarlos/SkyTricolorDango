@@ -205,3 +205,43 @@ def test_mind_rules_after_inner_rules():
     assert "别扭立刻作废" in MIND_RULES and "牵手" in MIND_RULES
     assert brain_prompt(ReplyConfig(), None, inner=True) == brain_prompt(ReplyConfig(), None, inner=True, mind=False)
     assert MIND_RULES not in brain_prompt(ReplyConfig(), None, inner=True)
+
+
+# ---- 内心层第 3 期：脾气、你攒下的性格 ----
+def test_temper_rules_and_loosened_line():
+    from skydango.brain.prompt import GO_ON_NEW, GO_ON_OLD, MIND_RULES, TEMPER_RULES
+
+    text = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True)
+    assert text.index(MIND_RULES) < text.index(TEMPER_RULES) < text.index("- 记住聊过的内容和对方的名字")
+    assert GO_ON_NEW in text and GO_ON_OLD not in text
+    for s in ("有立场", "损事不损人", "不要，懒", "收着点", "# 命令"):
+        assert s in TEMPER_RULES
+
+
+def test_temper_loosened_line_without_proactive():
+    from skydango.brain.prompt import GO_ON_NEW, NO_NEW_TOPIC
+
+    text = brain_prompt(ReplyConfig(), None, proactive=False, temper=True)
+    assert GO_ON_NEW + NO_NEW_TOPIC in text
+
+
+def test_temper_off_identical_to_phase2():  # Review Focus 5
+    assert brain_prompt(ReplyConfig(), None, inner=True, mind=True) == brain_prompt(
+        ReplyConfig(), None, inner=True, mind=True, temper=False, persona_text="")
+
+
+def test_bottom_lines_untouched():
+    on = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True)
+    off = brain_prompt(ReplyConfig(), None, inner=True, mind=True)
+    for head in ("## 身份", "## 底线"):
+        seg = lambda t: t[t.index(head): t.index("\n## ", t.index(head) + 1)]  # noqa: E731
+        assert seg(on) == seg(off)
+
+
+def test_persona_section_before_days(tmp_path):
+    text = brain_prompt(ReplyConfig(), None, days="## 日子\n今天……", persona_text="## 你攒下的性格（…）\n口头禅：害", temper=True)
+    assert text.index("## 你攒下的性格") < text.index("## 日子")
+    store = MemoryStore(tmp_path)
+    (tmp_path / "profile.md").write_text("我是团子", encoding="utf-8")
+    text = memory_prompt(ReplyConfig(), store, days="## 日子\n今天……", persona_text="## 你攒下的性格（…）\n口头禅：害")
+    assert text.index("我是团子") < text.index("## 你攒下的性格") < text.index("## 日子")
