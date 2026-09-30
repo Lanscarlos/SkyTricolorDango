@@ -1622,7 +1622,7 @@ def _run_brain(
             if not cfg.reply.dry_run:
                 # 记忆整理也走 Claude（订阅）：随手记、整理 notes.md 各起一次性 claude -p，在记忆后台线程里跑
                 memory_llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout)
-                notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every)
+                notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every, wall=wall)
         live_store = None if cfg.reply.dry_run else store
         ledger = _inner_ledger(cfg, store, wall())
         mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run, wall(), clock)

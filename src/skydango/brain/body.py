@@ -289,8 +289,9 @@ class Body:
         mode = "dry-run（只打印不执行）" if self.cfg.reply.dry_run else "LIVE（会真的说话、做动作）"
         log.info("身体启动，模式：%s；Ctrl+C 退出%s", mode, f"；{duration:.0f} 秒后自动结束" if duration > 0 else "")
         self.panel.start(self.clock())
-        deadline = self.clock() + duration if duration > 0 else float("inf")
-        while self.clock() < deadline and not (stop is not None and stop.is_set()):
+        # --duration 按真实时间：沙盒快进拨的是模拟时钟，不该让它提前下线
+        deadline = time.monotonic() + duration if duration > 0 else float("inf")
+        while time.monotonic() < deadline and not (stop is not None and stop.is_set()):
             started = self.clock()
             try:
                 self.step()

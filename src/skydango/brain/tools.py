@@ -180,8 +180,9 @@ class ToolBox:
             if self.memory is None:
                 raise ToolError("这次没开记忆（reply.memory_dir 为空），翻不了以前的聊天")
             query, who, days = _str(a, "query", ""), _str(a, "who", ""), _int(a, "days", 14)
+            wall = getattr(b, "wall", None)  # 身体的墙上时间：沙盒快进之后"往前几天"按沙盒时间算
             try:
-                return recall(self.memory, query, who, days)
+                return recall(self.memory, query, who, days, now=wall() if callable(wall) else None)
             except ValueError as exc:
                 raise ToolError(str(exc)) from None
         if name == "look_around":
