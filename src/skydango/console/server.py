@@ -219,6 +219,8 @@ class ConsoleServer:
         state = self.runner.status()["state"]
         if state in ("starting", "stopping"):  # 两边可能同时改 persona.json
             return 409, {"ok": False, "error": BUSY_ERROR}
+        inner_dir, _ = self._inner_dir_and_friends()
+        alive = self.store._fallback().inner.save_every * 3
         if state == "running":
             code, _, raw = self.proxy("POST", "inner/forget", "", json.dumps(body, ensure_ascii=False).encode())
             try:
@@ -229,10 +231,18 @@ class ConsoleServer:
                 return 503, {"ok": False, "error": "团子没回应，稍后再试"}
             if not data.get("ok") and "error" not in data:
                 data["error"] = data.get("text") or "团子没删成"
+            options = self.runner.status().get("options") or {}
+            if data.get("ok") and options.get("live") is False:
+                # dry-run 的团子只删了内存里的（它从不写 persona.json）：面板顺手把文件也改了，停掉之后不会回来
+                try:
+                    forget_offline(inner_dir, body, time.time(), alive)
+                except Exception:
+                    log.exception("dry-run 时顺手改 persona.json 出错")
             return code, data
-        inner_dir, _ = self._inner_dir_and_friends()
+        if probe_status(self.child_port):  # 上次留下的团子还占着端口：它会把性格档案写回去
+            return 409, {"ok": False, "error": "上次留下的团子还在跑（占着子进程端口），先在总览让它退出再删"}
         try:
-            return 200, forget_offline(inner_dir, body, time.time())
+            return 200, forget_offline(inner_dir, body, time.time(), alive)
         except ValueError as exc:
             return 400, {"ok": False, "error": str(exc)}
 

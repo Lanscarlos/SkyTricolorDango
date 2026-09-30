@@ -149,18 +149,18 @@ def read(path: Path | str, since: float) -> list[dict]:
     """读文件里 t >= since 的记录（旧到新）；文件不在返回 []，读不了的行跳过（上次被强杀写到一半）。"""
     path = Path(path)
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except FileNotFoundError:
         return []
     except OSError as exc:
         log.warning("内心流水账读不了：%s", exc)
         return []
     out = []
-    for line in text.splitlines():
-        if not line.strip():
+    for chunk in raw.splitlines():
+        if not chunk.strip():
             continue
         try:
-            row = json.loads(line)
+            row = json.loads(chunk.decode("utf-8"))  # 按行解码：截在中文字符中间的那半行单独跳过（UnicodeDecodeError 是 ValueError）
             t = float(row["t"])
         except (ValueError, TypeError, KeyError):
             continue

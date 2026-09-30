@@ -1,9 +1,10 @@
 """管理面板的内心页数据（spec 2026-09-30-inner-viewer §2 §5）：读 memory/inner/ 的文件、在跑时合并实时、删性格条目。"""
 
 import json
+import os
 
 import pytest
-from test_console_server import GOOD, make_server, request, upstream  # noqa: F401  (upstream 是 fixture)
+from test_console_server import GOOD, free_port, make_server, request, upstream  # noqa: F401  (upstream 是 fixture)
 
 from skydango.console.inner_view import forget_offline, inner_state
 from skydango.inner.ledger import Card
@@ -114,7 +115,7 @@ def srv(tmp_path, upstream):  # noqa: F811
     mem = tmp_path / "memory"
     (tmp_path / "config.toml").write_text(f'[reply]\nmemory_dir = "{mem.as_posix()}"\nfriends = ["阿花"]\n', encoding="utf-8")
     fill(mem / "inner")
-    s = make_server(tmp_path, upstream)
+    s = make_server(tmp_path, upstream, child_port=free_port())  # 子进程端口上没人：不算有孤儿团子
     s.inner_dir = mem / "inner"
     yield s
     s.stop()
@@ -172,3 +173,38 @@ def test_api_forget_refused_while_starting_or_stopping(srv, state):  # Review Fo
     body = json.dumps({"kind": "catchphrase", "text": "害"}).encode()
     assert request(srv.url + "api/inner/forget", body, GOOD)[1] == {"ok": False, "error": "团子正在启动 / 停止，稍等再删"}
     assert calls == [] and json.loads((srv.inner_dir / "persona.json").read_text("utf-8"))["catchphrases"] != []
+
+
+# ---- 终审修正 ----
+def test_forget_offline_refused_when_someone_else_runs(tmp_path):  # I3：终端里跑着 run --live
+    fill(tmp_path)
+    cur = tmp_path / "current.json"
+    cur.write_text("{}", encoding="utf-8")
+    os.utime(cur, (NOW - 30, NOW - 30))
+    r = forget_offline(tmp_path, {"kind": "catchphrase", "text": "害"}, NOW)
+    assert r["ok"] is False and "在别处跑着" in r["error"]
+    assert json.loads((tmp_path / "persona.json").read_text("utf-8"))["catchphrases"] != []
+    os.utime(cur, (NOW - 3600, NOW - 3600))  # 上次被强杀留下的旧 current.json：不算
+    assert forget_offline(tmp_path, {"kind": "catchphrase", "text": "害"}, NOW) == {"ok": True}
+
+
+def test_api_forget_refused_with_orphan(tmp_path, upstream):  # noqa: F811  I3：上次留下的团子还占着端口
+    mem = tmp_path / "memory"
+    (tmp_path / "config.toml").write_text(f'[reply]\nmemory_dir = "{mem.as_posix()}"\n', encoding="utf-8")
+    fill(mem / "inner")
+    s = make_server(tmp_path, upstream)  # 子进程端口 = 假 viewer，/status 有响应
+    try:
+        code, data = request(s.url + "api/inner/forget", json.dumps({"kind": "catchphrase", "text": "害"}).encode(), GOOD)
+        assert code == 409 and "上次留下的团子" in data["error"]
+        assert json.loads((mem / "inner" / "persona.json").read_text("utf-8"))["catchphrases"] != []
+    finally:
+        s.stop()
+
+
+def test_api_forget_dry_run_child_also_changes_file(srv):  # I4：dry-run 子进程只删内存，面板顺手改文件
+    status = srv.fake_runner.status()
+    srv.fake_runner.status = lambda: {**status, "state": "running", "options": {"brain": True, "live": False, "emotes": True, "duration": 0}}
+    calls = fake_proxy(srv, {("POST", "inner/forget"): (200, {"ok": True})})
+    body = json.dumps({"kind": "catchphrase", "text": "害"}).encode()
+    assert request(srv.url + "api/inner/forget", body, GOOD) == (200, {"ok": True})
+    assert calls and json.loads((srv.inner_dir / "persona.json").read_text("utf-8"))["catchphrases"] == []

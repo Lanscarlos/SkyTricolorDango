@@ -82,6 +82,18 @@ def test_read_missing_and_dry_trim(tmp_path):
     assert len(read(p, 0)) == 1
 
 
+def test_half_multibyte_char_skipped(tmp_path):  # 终审 I1：截在一个中文字符中间
+    p = tmp_path / "mind_log.jsonl"
+    good = '{"t": 100, "kind": "energy"}\n'.encode()
+    half = '{"t": 200, "kind": "reflect", "changes": ["新心愿：想看日落"]}'.encode()[:-4]
+    p.write_bytes(good + half)
+    assert [r["t"] for r in read(p, 0)] == [100]
+    log = MindLog(p, persist=True)
+    log.trim(now=150)
+    log.energy(300.0, None)
+    assert [r["t"] for r in read(p, 0)] == [100, 300.0]  # trim 把坏行清掉了，新行照常追加
+
+
 def test_append_after_half_line_starts_new_line(tmp_path):
     p = tmp_path / "mind_log.jsonl"
     p.write_text('{"t": 1, "kind": "energy"}\n{"t": 2, "kind": "ene', encoding="utf-8")

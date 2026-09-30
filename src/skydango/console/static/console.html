@@ -747,15 +747,17 @@ for(const b of $("inner-range").querySelectorAll("button"))b.onclick=()=>{IN.hou
   for(const x of $("inner-range").querySelectorAll("button"))x.setAttribute("aria-pressed",String(x===b));
   if(IN.data)renderInnerCurve($("inner-curve"),IN.data.log||[],IN.data)};
 window.addEventListener("resize",()=>{if(IN.data&&!$("tab-inner").hidden)renderInnerCurve($("inner-curve"),IN.data.log||[],IN.data)});
-function pullInner(){  // 团子醒着时每 5 秒；别的时候只在打开和点「刷新」时读
-  const r=S.state&&S.state.run;
-  if(!$("tab-inner").hidden&&r&&r.state==="running")loadInner(IN.source);
+function pullInner(){  // 团子醒着时每 5 秒；状态一变（开始停止、停完了）也重读一次；别的时候只在打开和点「刷新」时读
+  const r=S.state&&S.state.run,st=r?r.state:null,changed=st!==IN.lastState;
+  IN.lastState=st;
+  if($("tab-inner").hidden||!r)return;
+  if(st==="running"||changed)loadInner(IN.source);
 }
 
 /* ---- 轮询 ---- */
 showTab(location.hash.slice(1));
 renderCards();
 refresh();pullLogs();
-setInterval(refresh,1000);setInterval(pullLogs,1000);setInterval(pullStatus,2000);setInterval(pullInner,5000);
+setInterval(refresh,1000);setInterval(pullLogs,1000);setInterval(pullStatus,2000);setInterval(pullInner,5000);setInterval(()=>{const r=S.state&&S.state.run;if(r&&r.state!==IN.lastState)pullInner()},1000);
 </script>
 </body></html>

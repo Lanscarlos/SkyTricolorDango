@@ -105,10 +105,20 @@ def inner_state(inner_dir: Path, friends: list[str], state: str, live: Callable[
     }
 
 
-def forget_offline(inner_dir: Path, req: dict, now: float) -> dict:
-    """团子没在跑：直接改 persona.json（原子写）+ 流水账记一条 forget。请求不对抛 ValueError。"""
+ELSEWHERE_ERROR = "团子好像在别处跑着（current.json 刚更新过，可能是终端里的 run --live），先停掉它再删"
+
+
+def forget_offline(inner_dir: Path, req: dict, now: float, alive_within: float = 180.0) -> dict:
+    """团子没在跑：直接改 persona.json（原子写）+ 流水账记一条 forget。请求不对抛 ValueError。
+    current.json 在 alive_within 秒内更新过 = 别处有 live 团子在跑（它每 save_every 秒写一次）：不改，
+    否则它下次反思会把内存里的性格档案整个写回去，删掉的又回来了。"""
     kind, text, who, topic = parse_forget(req)
     store = InnerStore(inner_dir)
+    try:
+        if alive_within > 0 and now - store.current_path.stat().st_mtime < alive_within:
+            return forget_result(ELSEWHERE_ERROR)
+    except OSError:
+        pass  # 没有 current.json：没有别的团子在跑
     if not store.persona_path.is_file():
         return forget_result("找不到这条（可能已经淡出了）")
     persona = store.load_persona(quarantine=False)  # 读不了就是空的：删不到，也不会把坏文件覆盖掉

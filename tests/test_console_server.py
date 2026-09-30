@@ -286,6 +286,7 @@ def test_page_has_inner_tab():  # spec 2026-09-30-inner-viewer §3
         assert fn in page
     for text in ("（没开反思）", "实时取不到，显示的是上次保存的", "团子正在启动 / 停止，稍等再删", "只看有改动的"):
         assert text in page
+    assert "IN.lastState" in page  # 终审 I2：团子状态一变就重读一次（停止中按钮置灰、来源标签跟着变）
 
 
 def test_page_script_parses(tmp_path):

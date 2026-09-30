@@ -230,7 +230,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **「内心」页**（设计见 `docs/superpowers/specs/2026-09-30-inner-viewer-design.md`；**代码已完成，还没在真机上用过**）：现在（心情 / 精力 / 别扭 / 收着点 / 心愿）、精力曲线 + 心情色带（24 小时 / 7 天，圆点 = 一次反思，点了跳到记录）、
   反思记录（`changes` 逐行、没收下的折叠、下线那次标出）、性格档案（每条能「删」）、关系卡、最近 10 次上线和日记。
   `GET /api/inner` 读 `memory/inner/`（团子不在跑也能复盘），团子 `running` 时再取子进程 viewer 的 `/inner`（`Body.inner_snapshot`，经身体线程、3 秒超时），现在 / 性格以实时为准，取不到标"实时取不到"；
-  `POST /api/inner/forget`：在跑转发 `/inner/forget`（`Body.forget`，live 才写 `persona.json`，dry-run 只删内存里的），没在跑直接改 `persona.json`，启动 / 停止中拒绝。
+  `POST /api/inner/forget`：在跑转发 `/inner/forget`（`Body.forget`，live 才写 `persona.json`；dry-run 的团子只删内存里的，面板顺手把文件也改了），没在跑直接改 `persona.json`，启动 / 停止中拒绝；别处有团子在跑（孤儿端口有响应、或 `current.json` 在 3×`save_every` 内更新过 = 终端里的 `run --live`）也拒绝，免得它把删掉的写回去。
   团子醒着时每 5 秒刷新，别的时候打开时读一次 + 「刷新」。流水账只在开了反思时记（`[inner] reflect`），live 写盘、dry-run 只在内存里
 
 ## 统管大脑（`[brain]`，`run` 默认）
