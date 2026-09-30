@@ -38,6 +38,21 @@ def test_classifier_finds_icon_near_expected_position():
     assert clf.find(scene("hug", (1460, 430)), "hand", (1400, 400)) is None
 
 
+def test_numbered_template_counts_as_the_same_kind():
+    """同一种图标可以录好几张（candle.png、candle-2.png……）：认出来都算 candle。"""
+    clf = IconClassifier({"hug": ICONS["hug"], "hand-2": ICONS["hand"]})
+    assert clf.classify(scene("hand")[344:456, 1344:1456])[0] == "hand"
+    found = clf.find(scene("hand", (1460, 430)), "hand", (1400, 400))
+    assert found is not None and abs(found[0] - 1460) <= 3
+
+
+def test_candle_over_bright_hair_is_recognized():
+    """实测（2026-09-30 live）：陌生人举着蜡烛凑到团子跟前，火焰圈叠在团子发光的头发上，旧模板只有 0.72（门槛 0.75）→ 没去点。
+    这张图和录 candle-2.png 用的不是同一帧。"""
+    region = cv2.imread("tests/data/candle_on_bright_hair.png")
+    assert IconClassifier(ICONS).classify(region)[0] == "candle"
+
+
 def draw_ring(frame):
     """触屏模式时左下角的摇杆圈（实测中心约 (230, 847)，半径约 40）。"""
     cv2.circle(frame, (230, 847), 40, (150, 150, 150), 4)
@@ -155,6 +170,30 @@ def test_stale_requests_are_ignored():
     device = AcceptDevice()
     h, _ = handler(device)
     assert h.handle({"懒洋洋大王": Request("懒洋洋大王", "hand", (1400, 400), 0.0)}, now=30.0) == []
+
+
+class LateIconDevice(AcceptDevice):
+    """感知层认出了请求，但身体去点之前那一帧图标没认出来（被挡 / 背景太亮）；之后又认得出了。"""
+
+    def __init__(self, missing=1):
+        super().__init__(touch=True)
+        self.missing = missing
+
+    def screenshot(self):
+        if self.missing > 0:
+            self.missing -= 1
+            return draw_ring(scene())
+        return super().screenshot()
+
+
+def test_request_not_found_at_click_time_is_retried_soon():
+    """实测：第一次去点时图标没认出来 → "请求已经没了"，然后整整 15 秒冷却不再试，陌生人的点火就错过了。"""
+    device = LateIconDevice()
+    h, _ = handler(device, accept_strangers=["hand"])
+    req = {"stranger": Request("stranger", "hand", (1400, 400), 0.0)}
+    assert h.handle(req, now=0.5) == [] and taps(device) == []
+    assert h.handle(req, now=1.5) == []  # 别每帧都截图重找
+    assert h.handle(req, now=3.0) == ["stranger:hand"] and device.hits == 1
 
 
 class BrokenImeDevice(FakeDevice):

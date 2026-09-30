@@ -42,6 +42,7 @@ def is_request(kind: str | None) -> bool:
     """圆圈里的图标是不是在请求团子做什么（牵手、拥抱、点火……）。"""
     return kind is not None and kind not in PASSIVE
 SCALES = [0.8, 0.9, 1.0, 1.1, 1.2]
+RETRY = 2.0  # 去点之前那一帧没认出图标：隔这么久再试（不进整段冷却）
 
 
 def cream(img: np.ndarray) -> np.ndarray:
@@ -51,7 +52,8 @@ def cream(img: np.ndarray) -> np.ndarray:
 
 
 def load_icons(directory: str | Path) -> dict[str, np.ndarray]:
-    """目录下每张 png 是一种圆圈图标，文件名就是类型（star / hand / hug / highfive / candle……）。"""
+    """目录下每张 png 是一种圆圈图标，文件名就是类型（star / hand / hug / highfive / candle……）。
+    同一种可以录好几张，编号接在减号后面（candle.png、candle-2.png）：认出来都算 candle（见 kind_of）。"""
     icons = {}
     for path in sorted(Path(directory).glob("*.png")):
         mask = trim(cream(imread(path)))
@@ -85,6 +87,11 @@ def touch_mode(frame: np.ndarray) -> bool:
     return ring.size > 0 and side.size > 0 and ring.mean() - side.mean() > 15
 
 
+def kind_of(name: str) -> str:
+    """模板名 → 图标类型：candle-2 → candle。"""
+    return name.split("-", 1)[0]
+
+
 def _moved(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return abs(a[0] - b[0]) >= 25 or abs(a[1] - b[1]) >= 25
 
@@ -103,18 +110,19 @@ class IconClassifier:
         for kind, icon in self.icons.items():
             s = best_match(mask, icon, SCALES).score
             if s > score:
-                best, score = kind, s
+                best, score = kind_of(kind), s
         return (best, score) if score >= self.min_score else (None, score)
 
     def find(self, frame: np.ndarray, kind: str, near: tuple[int, int], radius: int = 150) -> tuple[int, int] | None:
         """在 near 附近找某种图标（人可能走动了一点），返回中心；找不到返回 None。"""
-        icon = self.icons.get(kind)
-        if icon is None:
+        icons = [icon for name, icon in self.icons.items() if kind_of(name) == kind]
+        if not icons:
             return None
         height, width = frame.shape[:2]
         x1, y1 = max(0, near[0] - radius), max(0, near[1] - radius)
         x2, y2 = min(width, near[0] + radius), min(height, near[1] + radius)
-        match = best_match(cream(frame[y1:y2, x1:x2]), icon, SCALES)
+        mask = cream(frame[y1:y2, x1:x2])
+        match = max((best_match(mask, icon, SCALES) for icon in icons), key=lambda m: m.score)
         if match.score < self.min_score:
             return None
         # 同一个位置别的图标更像：说明认错了（比如拥抱被当成牵手）
@@ -190,7 +198,10 @@ class SocialHandler:
                 if self.dry_run:
                     log.info("[dry-run] 将会接受 %s 的%s", req.name, KIND_NAMES.get(req.kind, req.kind))
                     continue
-                if self.accept(req):
+                result = self.accept(req)
+                if result is None:  # 没点：别进整段冷却，过 RETRY 秒还在就再试（实测亮背景上时认时不认，陌生人的点火就这么错过了）
+                    self._done[key] = now - self.cfg.cooldown + RETRY
+                elif result:
                     self.last = (req.name, req.kind, now)
                     handled.append(f"{req.name}:{req.kind}")
             except Exception:  # 实测 adb 会连续失败一阵：退避，别每帧都起一个 adb 进程
@@ -199,8 +210,8 @@ class SocialHandler:
                 return handled
         return handled
 
-    def accept(self, req: Request) -> bool:
-        """点圆圈接受请求。真正生效的点击永远只有一下：牵上之后再点就会松手（实测断手）。
+    def accept(self, req: Request) -> bool | None:
+        """点圆圈接受请求；点之前这一帧就没认出图标返回 None（没点，handle 过 RETRY 秒再试）。真正生效的点击永远只有一下：牵上之后再点就会松手（实测断手）。
 
         键盘模式下（左下角没有摇杆圈）第一下触摸只会切到触屏模式、顺带关掉聊天面板 → 先点一下"唤醒"，
         再点一下真正的；点完只等不补点，图标消失就是完成（团子会自己走过去，站得近时图标可能原地停一会儿）。
@@ -209,8 +220,8 @@ class SocialHandler:
         frame = self.device.screenshot()
         pos = self.classifier.find(frame, req.kind, req.pos)
         if pos is None:
-            log.info("%s 的%s请求已经没了", req.name, what)
-            return False
+            log.info("%s 的%s请求已经没了（这一帧没认出图标，%.0f 秒后再看）", req.name, what, RETRY)
+            return None
         with self.panel.borrow("social", close=False) if self.panel is not None else nullcontext():
             if not touch_mode(frame):
                 self.device.tap(*pos)  # 只切到触屏模式
