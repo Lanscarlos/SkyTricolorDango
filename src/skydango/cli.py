@@ -1577,6 +1577,9 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
 
         if cfg.viewer.host in LOCAL_HOSTS:  # 手动控制：网页上直接让身体说话 / 做动作 / 转视角，只给本机
             viewer.control = ManualControl(body, eyes, events)
+            # 内心页（spec 2026-09-30-inner-viewer §2）：都在身体线程里做，等 3 秒
+            viewer.inner = lambda: body.call(body.inner_snapshot, timeout=3)
+            viewer.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
         else:
             log.warning("可视化网页开在局域网（%s）：局域网模式下关掉了手动控制", cfg.viewer.host)
     stop = threading.Event()
