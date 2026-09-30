@@ -126,7 +126,97 @@ h2{font-size:17px;font-weight:600;margin:0 0 12px}
 .checks img{max-width:100%;width:480px;border-radius:6px;border:1px solid var(--line);margin-top:6px}
 .devlist{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
 
+/* 内心（spec 2026-09-30-inner-viewer §3）：心情档位色点和曲线色带共用一套颜色 */
+:root{--m-happy:var(--sakura);--m-plain:var(--rice);--m-low:#7aa2d6;--m-cross:var(--warn);--serif:"Songti SC","STSong","SimSun","Noto Serif SC",serif}
+.inner-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.inner-top h2{margin:0;font-size:20px;letter-spacing:.08em}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;border:1px solid var(--line);font-size:13px;color:var(--muted)}
+.chip::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.chip.live{color:var(--matcha);border-color:#3e5a3d}
+.chip.fallback{color:var(--warn);border-color:#6b5427}
+.inner-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:18px;align-items:start}
+.inner-col{display:flex;flex-direction:column;gap:18px;min-width:0}
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;min-width:0}
+.pane>h3{margin:0 0 12px;font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.12em;display:flex;align-items:center;gap:10px}
+.pane>h3 .grow{flex:1}
+.pane .none{color:var(--muted);font-size:14px;margin:0}
+/* 现在 */
+.now-mood{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 16px;align-items:center}
+.orb{grid-row:span 2;width:54px;height:54px;border-radius:50%;background:var(--mc,var(--rice));box-shadow:0 0 0 6px color-mix(in srgb,var(--mc,var(--rice)) 16%,transparent),inset 0 -6px 0 rgba(0,0,0,.18)}
+.now-level{font-size:24px;font-weight:600;letter-spacing:.06em;line-height:1.2}
+.now-level small{font-size:13px;font-weight:400;color:var(--muted);margin-left:8px;letter-spacing:0}
+.now-text{font-family:var(--serif);font-size:16px;color:#d9d4ca}
+.now-rows{display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px 12px;margin-top:16px;padding-top:14px;border-top:1px dashed var(--line);font-size:14px;align-items:center}
+.now-rows dt{color:var(--muted);font-size:13px}
+.now-rows dd{margin:0;min-width:0}
+.ebar{display:flex;align-items:center;gap:10px}
+.ebar .track{position:relative;flex:1;height:8px;border-radius:4px;background:#262b35;overflow:hidden}
+.ebar .track i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--ec,var(--matcha));transition:width .5s}
+.ebar .track::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent 29.6%,var(--panel) 29.6% 30.4%,transparent 30.4% 49.6%,var(--panel) 49.6% 50.4%,transparent 50.4% 69.6%,var(--panel) 69.6% 70.4%,transparent 70.4%)}
+.ebar b{font-weight:600;min-width:4.5em}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{padding:1px 9px;border-radius:6px;background:var(--raise);border:1px solid var(--line);font-size:13px}
+.tag em{font-style:normal;color:var(--muted);margin-right:4px}
+.tag.grudge{border-color:#6b5427;color:#f3d49b}
+.tag.soft{border-color:#34507a;color:#b9d1f2}
+/* 曲线 */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg button{background:none;border:0;padding:1px 10px;font-size:12px;color:var(--muted);cursor:pointer;letter-spacing:0}
+.seg button[aria-pressed=true]{background:var(--raise);color:var(--text)}
+#inner-curve svg{display:block;width:100%;height:190px;overflow:visible}
+#inner-curve .axis{fill:var(--muted);font-size:11px}
+#inner-curve .grid{stroke:#262b35;stroke-dasharray:3 4}
+#inner-curve .dot{cursor:pointer;stroke:var(--panel);stroke-width:2}
+#inner-curve .dot:hover{stroke:var(--text)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)}
+.legend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px;background:var(--lc)}
+/* 反思记录 */
+.tl{list-style:none;margin:0;padding:0;max-height:620px;overflow:auto;scrollbar-color:#3a404d transparent;scrollbar-width:thin}
+.tl>li{position:relative;padding:4px 4px 14px 30px;scroll-margin:40px;border-radius:8px}
+.tl>li::after{content:"";position:absolute;left:11px;top:0;bottom:0;width:1px;background:var(--line)}
+.tl>li:first-child::after{top:14px}
+.tl>li:last-child::after{bottom:auto;height:14px}
+.tl>li::before{content:"";position:absolute;z-index:1;left:6px;top:10px;width:11px;height:11px;border-radius:50%;background:var(--mc,#3a404d);box-shadow:0 0 0 3px var(--panel)}
+.tl>li.flash{animation:flash 1.6s}
+@keyframes flash{0%,40%{background:#232a1f}100%{background:transparent}}
+.tl .when{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}
+.tl .final{color:#1b1216;background:var(--sakura);border-radius:4px;padding:0 6px;font-size:11px}
+.tl .forgot{color:var(--bad);border:1px solid #6e2e2e;border-radius:4px;padding:0 6px;font-size:11px}
+.tl .head{margin:2px 0 4px}
+.tl .head b{font-weight:600;margin-right:6px}
+.tl .head span{font-family:var(--serif);color:#d9d4ca}
+.tl ul{margin:0;padding-left:16px;font-size:14px}
+.tl details{margin-top:4px;font-size:12px;color:#6f7686}
+.tl details summary{cursor:pointer}
+.tl .quiet{color:var(--muted);font-size:13px}
+/* 性格档案 */
+.pgroup+.pgroup{margin-top:14px}
+.pgroup h4{margin:0 0 6px;font-size:13px;font-weight:500;color:var(--rice)}
+.trait{display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid #20242d}
+.trait:first-of-type{border-top:0}
+.trait .body{flex:1;min-width:0}
+.trait .t{word-break:break-all}
+.trait .t i{font-style:normal;color:var(--muted)}
+.trait .meta{font-size:12px;color:var(--muted)}
+.trait .btn{flex:none}
+/* 关系卡 */
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.tbl th{font-weight:500;color:var(--muted);text-align:left;font-size:12px;padding:0 8px 6px 0;white-space:nowrap}
+.tbl td{padding:6px 8px 6px 0;border-top:1px solid #20242d;white-space:nowrap}
+.tbl td:first-child{white-space:normal;font-weight:500;min-width:6.5em;word-break:break-all}
+.tbl td .note{font-weight:400;font-size:11.5px}
+.tbl tr.stranger td{color:#6f7686}
+.tbl-wrap{overflow-x:auto}
+/* 日子和日记 */
+.days{list-style:none;margin:0 0 14px;padding:0;font-size:13px}
+.days li{padding:4px 0;border-top:1px solid #20242d;color:#c9ced9;word-break:break-all}
+.days li:first-child{border-top:0}
+.diary{margin:0;padding:10px 0 10px 14px;border-left:2px solid #3a332a;font-family:var(--serif);font-size:15px;line-height:1.8;color:#ddd6c9}
+.diary+.diary{margin-top:10px}
+.diary b{display:block;font-family:var(--font);font-size:12px;font-weight:500;color:var(--muted)}
+
 @media (max-width:860px){
+  .inner-grid{grid-template-columns:minmax(0,1fr)}
   .overview{grid-template-columns:minmax(0,1fr)}
   .row{grid-template-columns:minmax(0,1fr)}
   .strip,nav,main{padding-left:16px;padding-right:16px}
@@ -144,6 +234,7 @@ h2{font-size:17px;font-weight:600;margin:0 0 12px}
   <nav role="tablist">
     <button role="tab" data-tab="overview">总览</button>
     <button role="tab" data-tab="live">实时画面</button>
+    <button role="tab" data-tab="inner">内心</button>
     <button role="tab" data-tab="settings">设置</button>
     <button role="tab" data-tab="device">设备</button>
   </nav>
@@ -189,6 +280,33 @@ h2{font-size:17px;font-weight:600;margin:0 0 12px}
       <button class="btn" data-go="overview">去总览</button></div>
   </section>
 
+  <section id="tab-inner" role="tabpanel" hidden>
+    <div class="inner-top">
+      <h2>团子的内心</h2>
+      <span class="chip" id="inner-source">读取中…</span>
+      <span class="spacer" style="flex:1"></span>
+      <button class="btn small" id="inner-refresh">刷新</button>
+    </div>
+    <div class="inner-grid">
+      <div class="inner-col">
+        <section class="pane" id="inner-now" aria-label="现在"></section>
+        <section class="pane">
+          <h3>曲线<span class="grow"></span><span class="seg" id="inner-range"><button data-h="24" aria-pressed="true">最近 24 小时</button><button data-h="168" aria-pressed="false">7 天</button></span></h3>
+          <div id="inner-curve"></div>
+        </section>
+        <section class="pane">
+          <h3>反思记录<span class="grow"></span><label class="choice" style="font-size:12px;letter-spacing:0;padding:0"><input type="checkbox" id="inner-changed"> 只看有改动的</label></h3>
+          <div id="inner-log"></div>
+        </section>
+      </div>
+      <div class="inner-col">
+        <section class="pane"><h3>性格档案</h3><div id="inner-persona"></div></section>
+        <section class="pane"><h3>关系卡</h3><div id="inner-cards"></div></section>
+        <section class="pane"><h3>日子和日记</h3><div id="inner-days"></div></section>
+      </div>
+    </div>
+  </section>
+
   <section id="tab-settings" role="tabpanel" hidden>
     <div class="settings">
       <div class="banner bad" id="settings-error" hidden></div>
@@ -225,13 +343,14 @@ const BUSY=["starting","running","stopping"];
 const STATE_TEXT={idle:"还没叫醒",starting:"正在醒来",running:"醒着",stopping:"正在睡下（复原镜头、换回轮盘…）",exited:"睡了",crashed:"出错停下了"};
 
 /* ---- 页签 ---- */
-const TABS=["overview","live","settings","device"];
+const TABS=["overview","live","inner","settings","device"];
 function showTab(name){
   if(!TABS.includes(name))name="overview";
   for(const t of TABS){$("tab-"+t).hidden=t!==name}
   for(const b of document.querySelectorAll("nav button"))b.setAttribute("aria-selected",String(b.dataset.tab===name));
   if(location.hash!=="#"+name)history.replaceState(null,"","#"+name);
   if(name==="settings"&&!S.settings)loadSettings();
+  if(name==="inner")loadInner("dango");
 }
 for(const b of document.querySelectorAll("nav button"))b.onclick=()=>showTab(b.dataset.tab);
 document.addEventListener("click",e=>{const go=e.target.closest("[data-go]");if(go){e.preventDefault();showTab(go.dataset.go)}});
@@ -424,10 +543,219 @@ $("check").onclick=async()=>{
     li.append(el("span","mark "+c.status,MARKS[c.status]||"?"),body);ul.append(li)}
 };
 
+/* ---- 内心（spec 2026-09-30-inner-viewer §3）：这些函数都放顶层、只靠参数和 IN，沙盒页复用 ---- */
+const IN={data:null,source:"dango",hours:24,loading:false};
+const MOOD_COLOR={"开心":"var(--m-happy)","平常":"var(--m-plain)","低落":"var(--m-low)","烦":"var(--m-cross)"};
+const ENERGY_COLOR={"精神":"var(--matcha)","还行":"var(--rice)","有点累":"var(--warn)","困":"var(--m-low)"};
+const KIND_LABEL={catchphrase:"口头禅",joke:"老梗",opinion:"看法"};
+const WANT_LABEL={"惦记":"惦记","想做":"想","小心思":"小心思"};
+const SVGNS="http:\/\/www.w3.org/2000/svg";
+function svg(tag,attrs){const e=document.createElementNS(SVGNS,tag);for(const k in attrs||{})e.setAttribute(k,attrs[k]);return e}
+function pad2(n){return String(n).padStart(2,"0")}
+function hhmm(t){const d=new Date(t*1000);return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`}
+function dayTime(t){const d=new Date(t*1000);return `${d.getMonth()+1}月${d.getDate()}日 ${hhmm(t)}`}
+function span(sec){sec=Math.max(0,sec);if(sec<90)return"不到 1 分钟";const m=Math.round(sec/60);if(m<60)return`${m} 分钟`;
+  const h=Math.round(sec/3600);if(h<48)return`${h} 小时`;return`${Math.round(sec/86400)} 天`}
+function nowSec(){return (IN.data&&IN.data.clock)||Date.now()/1000}
+function innerBusy(){const r=S.state&&S.state.run;return !!r&&(r.state==="starting"||r.state==="stopping")}
+function innerOff(d){return d.source==="live"?"（没开反思）":"（还没有）"}
+
+function innerUrl(source){return source&&source!=="dango"?`api/inner?source=${encodeURIComponent(source)}`:"api/inner"}
+async function loadInner(source){
+  IN.source=source||"dango";if(IN.loading)return;IN.loading=true;
+  try{const d=await getJSON(innerUrl(IN.source));d.clock=Date.now()/1000;IN.data=d;renderInner(d)}
+  catch(e){const c=$("inner-source");c.className="chip fallback";c.textContent="读不到内心数据（面板停了？）"}
+  finally{IN.loading=false}
+}
+function renderInner(d){
+  const c=$("inner-source");
+  if(d.source==="live"){c.className="chip live";c.textContent="实时"}
+  else if(d.source==="files_fallback"){c.className="chip fallback";c.textContent="实时取不到，显示的是上次保存的"}
+  else{c.className="chip";c.textContent=d.saved_at?`上次保存于 ${hhmm(d.saved_at)}`:"上次保存的（还没有保存过）"}
+  renderInnerNow($("inner-now"),d.now,d);
+  renderInnerCurve($("inner-curve"),d.log||[],d);
+  renderInnerLog($("inner-log"),d.log||[]);
+  renderInnerPersona($("inner-persona"),d.persona,d);
+  renderInnerCards($("inner-cards"),d.cards||[]);
+  renderInnerDays($("inner-days"),d.days||[],d.diaries||[]);
+}
+
+/* 1. 现在 */
+function renderInnerNow(container,now,d){
+  container.textContent="";container.append(el("h3","","现在"));
+  now=now||{};d=d||{source:"files"};
+  if(!now.mood){container.append(el("p","none",innerOff(d)));return}
+  const t=nowSec(),m=now.mood,box=el("div","now-mood"),orb=el("span","orb");
+  orb.style.setProperty("--mc",MOOD_COLOR[m.level]||"var(--rice)");
+  const lv=el("div","now-level",m.level);
+  if(m.since)lv.append(el("small","",`这样有 ${span(t-m.since)}了`));
+  box.append(orb,lv,el("div","now-text",m.text||"（没说为什么）"));container.append(box);
+  const dl=el("dl","now-rows");
+  const row=(k,v)=>{const dd=el("dd");if(typeof v==="string")dd.textContent=v;else dd.append(v);dl.append(el("dt","",k),dd)};
+  const e=now.energy;
+  if(e&&e.score!=null){const bar=el("div","ebar"),tr=el("span","track"),fill=el("i");
+    fill.style.width=Math.max(0,Math.min(100,e.score))+"%";tr.style.setProperty("--ec",ENERGY_COLOR[e.level]||"var(--matcha)");
+    tr.append(fill);bar.append(el("b","",e.level),tr,el("span","note",String(e.score)));row("精力",bar);
+    if(e.note&&e.note!==e.level)row("",el("span","note",e.note));
+  }else row("精力",el("span","note","算不出来"));
+  const g=now.grudge;
+  row("别扭",g?el("span","tag grudge",`跟${g.who}${g.why?"（"+g.why+"）":""} · 还有 ${span(g.until-t)}消气`):el("span","note","没有"));
+  const soft=now.soft||[];
+  if(soft.length){const tags=el("div","tags");for(const s of soft)tags.append(el("span","tag soft",`${s.who}「${s.text}」· 还剩 ${span(s.until-t)}`));row("收着点",tags)}
+  else row("收着点",el("span","note","没有"));
+  const wants=now.wants||[];
+  if(wants.length){const tags=el("div","tags");for(const w of wants){const x=el("span","tag");
+      x.append(el("em","",(WANT_LABEL[w.kind]||w.kind)+(w.who?" "+w.who:"")),w.text);tags.append(x)}row("心愿",tags)}
+  else row("心愿",el("span","note","没有"));
+  container.append(dl);
+}
+
+/* 2. 曲线：精力折线 + 心情色带，反思点点了跳到时间线 */
+function moodSpans(log,from,to){
+  const out=[];let cur=null;
+  for(const r of log){if(r.kind!=="reflect"||!r.mood)continue;
+    if(cur)out.push([cur.t,r.t,cur.level]);cur={t:r.t,level:r.mood.level}}
+  if(cur)out.push([cur.t,to,cur.level]);
+  return out.map(([a,b,l])=>[Math.max(a,from),Math.min(b,to),l]).filter(([a,b])=>b>a);
+}
+function renderInnerCurve(container,log,d){
+  container.textContent="";
+  if(d&&d.source==="live"&&!(d.now&&d.now.mood)&&!log.length){container.append(el("p","none","（没开反思）"));return}
+  const to=nowSec(),from=to-IN.hours*3600,rows=log.filter(r=>r.t>=from&&r.t<=to);
+  const energy=rows.filter(r=>r.kind==="energy"&&r.score!=null),reflects=rows.filter(r=>r.kind==="reflect");
+  if(!energy.length&&!reflects.length){container.append(el("p","none","（这段时间还没有记录）"));return}
+  const W=Math.max(320,container.clientWidth||600),H=190,L=6,R=46,T=8,B=24,iw=W-L-R,ih=H-T-B;
+  const x=t=>L+(t-from)/(to-from)*iw,y=s=>T+(1-s/100)*ih;
+  const s=svg("svg",{viewBox:`0 0 ${W} ${H}`,role:"img","aria-label":"精力和心情曲线"});
+  for(const [a,b,l] of moodSpans(log,from,to)){const r=svg("rect",{x:x(a),y:T,width:Math.max(1,x(b)-x(a)),height:ih});
+    r.style.fill=MOOD_COLOR[l]||"var(--rice)";r.style.opacity=".13";s.append(r)}
+  for(const [v,name] of [[70,"精神"],[50,"还行"],[30,"有点累"]]){
+    s.append(svg("line",{class:"grid",x1:L,x2:L+iw,y1:y(v),y2:y(v)}));
+    const tx=svg("text",{class:"axis",x:L+iw+6,y:y(v)+4});tx.textContent=name;s.append(tx)}
+  const tc=svg("text",{class:"axis",x:L+iw+6,y:y(10)+4});tc.textContent="困";s.append(tc);
+  const step=IN.hours<=24?6*3600:86400,first=Math.ceil(from/step)*step;
+  for(let t=first;t<=to;t+=step){const d0=new Date(t*1000),tx=svg("text",{class:"axis",x:x(t),y:H-6,"text-anchor":"middle"});
+    tx.textContent=IN.hours<=24?hhmm(t):`${d0.getMonth()+1}/${d0.getDate()}`;s.append(tx)}
+  if(energy.length){const pts=energy.map(r=>`${x(r.t).toFixed(1)},${y(r.score).toFixed(1)}`).join(" ");
+    const pl=svg("polyline",{points:pts,fill:"none","stroke-width":"2","stroke-linejoin":"round","stroke-linecap":"round"});
+    pl.style.stroke="var(--matcha)";s.append(pl);
+    const last=energy[energy.length-1],c=svg("circle",{cx:x(last.t),cy:y(last.score),r:3});c.style.fill="var(--matcha)";s.append(c)}
+  for(const r of reflects){const c=svg("circle",{class:"dot",cx:x(r.t),cy:T+ih-7,r:r.final?7:5});
+    c.style.fill=MOOD_COLOR[r.mood&&r.mood.level]||"var(--rice)";
+    const tip=svg("title");tip.textContent=`${dayTime(r.t)} 反思${r.final?"（下线）":""}：${(r.changes||[]).length} 处改动`;c.append(tip);
+    c.onclick=()=>jumpToLog(r.t);s.append(c)}
+  container.append(s);
+  const lg=el("div","legend");
+  for(const [k,v] of Object.entries(MOOD_COLOR)){const x0=el("span","",k);x0.style.setProperty("--lc",v);lg.append(x0)}
+  const e0=el("span","","精力（线）");e0.style.setProperty("--lc","var(--matcha)");lg.append(e0,el("span","note","圆点 = 一次反思，点它看改了什么"));
+  container.append(lg);
+}
+function jumpToLog(t){
+  let li=document.querySelector(`#inner-log li[data-t="${t}"]`);
+  if(!li&&$("inner-changed").checked){$("inner-changed").checked=false;renderInnerLog($("inner-log"),(IN.data&&IN.data.log)||[]);
+    li=document.querySelector(`#inner-log li[data-t="${t}"]`)}
+  if(!li)return;li.scrollIntoView({block:"nearest",behavior:"smooth"});li.classList.remove("flash");void li.offsetWidth;li.classList.add("flash");
+}
+
+/* 3. 反思记录（新的在上） */
+function renderInnerLog(container,log){
+  container.textContent="";
+  const only=$("inner-changed").checked;
+  const items=log.filter(r=>r.kind==="reflect"||r.kind==="forget").filter(r=>!only||r.kind==="forget"||(r.changes||[]).length).reverse();
+  if(!items.length){container.append(el("p","none",only?"（最近没有改动）":"（还没有反思过）"));return}
+  const ul=el("ul","tl");
+  for(const r of items){const li=el("li");li.dataset.t=String(r.t);const when=el("div","when",dayTime(r.t));
+    if(r.kind==="forget"){when.append(el("span","forgot","网页上删的"));li.append(when,
+      el("div","head",`删了${KIND_LABEL[r.what]||r.what||"条目"}：${r.topic?r.topic+"——":r.who?r.who+"——":""}${r.text||""}`));ul.append(li);continue}
+    if(r.final)when.append(el("span","final","下线"));
+    const m=r.mood||{};li.style.setProperty("--mc",MOOD_COLOR[m.level]||"#3a404d");
+    const head=el("div","head");head.append(el("b","",m.level||"？"),el("span","",m.text||""));li.append(when,head);
+    const ch=r.changes||[];
+    if(ch.length){const u=el("ul");for(const c of ch)u.append(el("li","",c));li.append(u)}
+    else li.append(el("div","quiet","没改什么"));
+    const dr=r.dropped||[];
+    if(dr.length){const det=el("details");det.append(el("summary","",`没收下的 ${dr.length} 条`));
+      const u=el("ul");for(const c of dr)u.append(el("li","",c));det.append(u);li.append(det)}
+    ul.append(li)}
+  container.append(ul);
+}
+
+/* 4. 性格档案：能删 */
+function traitRow(kind,t,label){
+  const row=el("div","trait"),body=el("div","body"),line=el("div","t");
+  if(label){line.append(el("i","",label+"——"))}line.append(t.text||t.stance||"");
+  const now=nowSec(),used=t.last_used?`上次 ${span(now-t.last_used)}前`:t.since?`记下 ${span(now-t.since)}了`:"";
+  body.append(line,el("div","meta",`用过 ${t.hits||0} 次${used?" · "+used:""}`));
+  const b=el("button","btn small halt","删");b.type="button";
+  if(innerBusy()){b.disabled=true;b.title="团子正在启动 / 停止，稍等再删"}
+  b.onclick=()=>forgetTrait(kind,t,b);
+  row.append(body,b);return row;
+}
+async function forgetTrait(kind,t,btn){
+  const what=kind==="opinion"?`${t.topic}——${t.stance}`:kind==="joke"?`${t.who}——${t.text}`:t.text;
+  if(!confirm(`删掉这条${KIND_LABEL[kind]}？\n${what}\n\n删了团子就不会再用它（不能撤销）。`))return;
+  btn.disabled=true;
+  const body={kind,text:kind==="opinion"?t.stance:t.text,who:t.who||"",topic:t.topic||""};
+  const r=await post("api/inner/forget",body);
+  if(!r.data.ok)alert(r.data.error||r.data.text||"没删成");
+  loadInner(IN.source);
+}
+function renderInnerPersona(container,p,d){
+  container.textContent="";
+  if(!p){container.append(el("p","none",d&&d.source==="live"?"（没开反思 / 性格档案）":"（还没有）"));return}
+  const groups=[["口头禅","catchphrase",p.catchphrases||[],null],["看法","opinion",p.opinions||[],t=>t.topic]];
+  let any=false;
+  for(const [title,kind,list,label] of groups){if(!list.length)continue;any=true;const g=el("div","pgroup");g.append(el("h4","",title));
+    for(const t of list)g.append(traitRow(kind,t,label&&label(t)));container.append(g)}
+  const jokes=p.jokes||[],who=[...new Set(jokes.map(j=>j.who))];
+  for(const w of who){any=true;const g=el("div","pgroup");g.append(el("h4","",`和${w}的老梗`));
+    for(const t of jokes.filter(j=>j.who===w))g.append(traitRow("joke",t,null));container.append(g)}
+  if(!any)container.append(el("p","none","（还是空的：反思时慢慢攒）"));
+  if(innerBusy())container.append(el("p","note","团子正在启动 / 停止，稍等再删"));
+}
+
+/* 5. 关系卡 */
+function renderInnerCards(container,cards){
+  container.textContent="";
+  if(!cards.length){container.append(el("p","none","（还没有）"));return}
+  const wrap=el("div","tbl-wrap"),tb=el("table","tbl"),head=el("tr"),now=nowSec();
+  for(const h of ["名字","认识","一起玩过","见过","上次在身边","说过 / 跟你"])head.append(el("th","",h));
+  tb.append(head);
+  for(const c of cards){const tr=el("tr",c.friend?"":"stranger");
+    const who=el("td","",c.name);if(!c.friend)who.append(el("div","note","不在好友名单里"));
+    tr.append(who,el("td","",`${Math.max(1,Math.ceil((now-c.first_met)/86400))} 天`),
+      el("td","",`${c.days} 天`),el("td","",`${c.visits} 次`),el("td","",c.last_seen?`${span(now-c.last_seen)}前`:"还没见过"),
+      el("td","",`${c.said} / ${c.to_me}`));tb.append(tr)}
+  wrap.append(tb);container.append(wrap);
+}
+
+/* 6. 日子和日记 */
+function renderInnerDays(container,days,diaries){
+  container.textContent="";
+  container.append(el("h4","note","最近 10 次上线"));
+  if(days.length){const ul=el("ul","days");for(const x of days)ul.append(el("li","",x));container.append(ul)}
+  else container.append(el("p","none","（还没有）"));
+  container.append(el("h4","note","日记"));
+  if(!diaries.length){container.append(el("p","none","（还没有）"));return}
+  for(const x of diaries){const i=x.indexOf("："),p=el("p","diary");
+    if(i>0&&i<8){p.append(el("b","",x.slice(0,i)),x.slice(i+1))}else p.textContent=x;container.append(p)}
+}
+
+$("inner-refresh").onclick=()=>loadInner(IN.source);
+$("inner-changed").onchange=()=>renderInnerLog($("inner-log"),(IN.data&&IN.data.log)||[]);
+for(const b of $("inner-range").querySelectorAll("button"))b.onclick=()=>{IN.hours=Number(b.dataset.h);
+  for(const x of $("inner-range").querySelectorAll("button"))x.setAttribute("aria-pressed",String(x===b));
+  if(IN.data)renderInnerCurve($("inner-curve"),IN.data.log||[],IN.data)};
+window.addEventListener("resize",()=>{if(IN.data&&!$("tab-inner").hidden)renderInnerCurve($("inner-curve"),IN.data.log||[],IN.data)});
+function pullInner(){  // 团子醒着时每 5 秒；别的时候只在打开和点「刷新」时读
+  const r=S.state&&S.state.run;
+  if(!$("tab-inner").hidden&&r&&r.state==="running")loadInner(IN.source);
+}
+
 /* ---- 轮询 ---- */
 showTab(location.hash.slice(1));
 renderCards();
 refresh();pullLogs();
-setInterval(refresh,1000);setInterval(pullLogs,1000);setInterval(pullStatus,2000);
+setInterval(refresh,1000);setInterval(pullLogs,1000);setInterval(pullStatus,2000);setInterval(pullInner,5000);
 </script>
 </body></html>
