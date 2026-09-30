@@ -1538,7 +1538,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     session = BrainSession(
         base, claude_vars, work / "session", server.url, brain_prompt(
             cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns,
-            proactive=cfg.proactive.enabled,
+            proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
@@ -1561,6 +1561,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
     body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
     body.brain_busy = lambda: brain.chat_turn
+    body.brain_turn = lambda: brain.last_turn  # 替大脑开的输入框：开框之后的那一轮结束了没说话就关
     brain_thread.start()
     eyes_thread.start()
     try:

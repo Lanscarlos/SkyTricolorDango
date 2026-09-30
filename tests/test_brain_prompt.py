@@ -165,3 +165,11 @@ def test_prompt_explains_background_events_and_return():
     text = static_prompt(ReplyConfig(max_chars=40))
     assert "下次醒来时一起告诉你" in text  # 背景事件不马上叫醒（events.BACKGROUND）
     assert "回来了" in text and "不用再打招呼" in text
+
+
+BUBBLE = "有人跟你说话时，身体已经替你冒了输入气泡"
+
+
+def test_bubble_note_only_when_enabled():
+    assert BUBBLE in brain_prompt(ReplyConfig(), None, bubble=True)
+    assert BUBBLE not in brain_prompt(ReplyConfig(), None)
