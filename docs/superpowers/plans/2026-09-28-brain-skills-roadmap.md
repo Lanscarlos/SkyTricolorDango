@@ -49,7 +49,7 @@
 | A | 上下文：环境变化写进历史；画面里的人（方位 / 远近）进大脑状态 | 无 | 任务级（Task 1~2） |
 | B | `look_person(name)`：按名字裁出这个人给主脑看 | 无（有感知层更准） | 任务级（Task 3~4） |
 | C | 技能框架：SkillRunner、`task_done` / `task_failed`、`stop_task`、谁能请团子做事 | 无 | 任务级（Task 5~6） |
-| D | `track(name)`：只转镜头，把好友保持在画面中间 | C；真机核对 D0 | **代码已完成，待真机验收**（任务级计划 `2026-09-29-brain-track.md`） |
+| D | `track(name)`：只转镜头，把好友保持在画面中间 | C；真机核对 D0 | **2026-09-30 真机验收通过**（修了名字挂错、转不动误判、出画面接着找、`gain` / `chase_max` 0.15；见 game-ops §2「盯人真机验收」） |
 | E | `move` 工具接进 Body / ToolBox，真机标定步长 | 已有设计文档 | 接口 + 验收 |
 | F | `approach(name)` / `follow(name)`：走到某人旁边 / 跟着走 | D、E | 接口 + 验收 |
 | G | `light_candle(target)`：给陌生人点火并核实 | C、F；真机核对 G0 | 接口 + 验收 |
