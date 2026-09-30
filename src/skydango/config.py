@@ -549,6 +549,19 @@ class ReflexConfig:
 
 
 @dataclass
+class InnerConfig:
+    """内心层第 1 期（见 docs/superpowers/specs/2026-09-30-inner-phase1-design.md）：给好友记关系卡、每次上线记一行，
+    写在 memory/inner/，只在 --live 时写盘。数字都是估的"""
+
+    enabled: bool = True  # false = 完全照旧（不记账、不回填、提示词和 status 不变）
+    visit_gap: float = 1800.0  # 离上次在场超过这么多秒再出现，算新的一次见面
+    session_gap: float = 7200.0  # 回填 history.jsonl 时，相邻两轮隔这么多秒算两次上线
+    long_gap: float = 7.0  # 超过这么多天没见算“好久没见”
+    save_every: float = 60.0  # live 时每隔多少秒存一次 people.json / current.json
+    max_step: float = 5.0  # 算在一起待了多久时，单圈最多算几秒（卡顿时不一下加一大截）
+
+
+@dataclass
 class ConsoleConfig:
     """管理面板（`console`，见 docs/superpowers/specs/2026-09-29-console-design.md）。启动选项由面板写进 console.toml，只影响面板启动的团子。"""
 
@@ -591,6 +604,7 @@ class Config:
     brain: BrainConfig = field(default_factory=BrainConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     reflex: ReflexConfig = field(default_factory=ReflexConfig)
+    inner: InnerConfig = field(default_factory=InnerConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
 
 
