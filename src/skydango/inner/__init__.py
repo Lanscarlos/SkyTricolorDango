@@ -16,7 +16,7 @@ from .backfill import backfill
 from .ledger import Card, Ledger, Session
 from .store import InnerStore
 
-log = logging.getLogger(__name__)
+_log = logging.getLogger(__name__)  # 不叫 log：子模块 inner/log.py 导入后会占掉包里的 log 这个名字
 
 
 def open_ledger(
@@ -41,7 +41,7 @@ def open_ledger(
             if persist:
                 store.append_day(crash)
     except Exception:
-        log.exception("内心账本：补上次意外结束的记录出错")
+        _log.exception("内心账本：补上次意外结束的记录出错")
 
     cards: dict[str, Card] = {}
     backfilled: float | None = None
@@ -56,9 +56,9 @@ def open_ledger(
                 store.write_people(cards, backfilled)
                 if not store.days():
                     store.append_days(filled)
-            log.info("内心账本：从聊天记录回填了 %d 个好友、%d 次上线", len(cards), len(filled))
+            _log.info("内心账本：从聊天记录回填了 %d 个好友、%d 次上线", len(cards), len(filled))
     except Exception:
-        log.exception("内心账本：读关系卡 / 回填出错，从空卡开始")
+        _log.exception("内心账本：读关系卡 / 回填出错，从空卡开始")
         cards, backfilled, filled = {}, None, []
 
     history: list[Session] = []
@@ -70,8 +70,8 @@ def open_ledger(
             if crash is not None:
                 history = [*history, crash]
     except Exception:
-        log.exception("内心账本：读上线记录出错")
-    log.info("内心账本：%d 个好友的关系卡、以前上线 %d 次%s", len(cards), len(history), "" if persist else "（dry-run，不写盘）")
+        _log.exception("内心账本：读上线记录出错")
+    _log.info("内心账本：%d 个好友的关系卡、以前上线 %d 次%s", len(cards), len(history), "" if persist else "（dry-run，不写盘）")
     return Ledger(cfg, friends, now, cards, history, store, persist, backfilled)
 
 
@@ -99,25 +99,38 @@ def show_lines(cfg: InnerConfig, directory: str | Path, friends: list[str], now:
 
 def finish_reflection(
     result: dict | None, mind, store, memory, cards: dict, friends: list[str], persist: bool, now: float, cfg: InnerConfig,
-    persona=None, soft: set[str] = frozenset(),
+    persona=None, soft: set[str] = frozenset(), mind_log=None, energy=None,
 ) -> str:
     """下线前的最终反思（第 2 期 §7）：套进心情、写日记和 mind.json、要点记进 inbox.md。返回存进 days.jsonl 的经过。
     persona（第 3 期）：顺带套进性格档案、写 persona.json（soft = 收着点的好友，不给他们记新老梗）。
-    persist = False（dry-run）时只套进内存里的 Mind / Persona，什么都不写。"""
+    persist = False（dry-run）时只套进内存里的 Mind / Persona，什么都不写。
+    mind_log（内心页）：套完之后记一条 reflect（final=True），energy 是这时候的精力。"""
+    import copy
+
     from ..chat.memory import format_date
 
     if not result:
         return ""
+    before_mind, before_persona = copy.deepcopy(mind), copy.deepcopy(persona)
+    dropped: list[str] = []
     try:
-        mind.apply(result, cards, friends, now, cfg)
+        dropped += mind.apply(result, cards, friends, now, cfg)
     except Exception:
-        log.exception("最终反思的结果套不进心情")
+        _log.exception("最终反思的结果套不进心情")
     if persona is not None:
         try:
             for why in persona.apply(result, cards, friends, now, cfg, soft=soft):
-                log.info("性格：%s", why)
+                _log.info("性格：%s", why)
+                dropped.append(why)
         except Exception:
-            log.exception("最终反思的结果套不进性格档案")
+            _log.exception("最终反思的结果套不进性格档案")
+    if mind_log is not None:
+        try:
+            from .log import diff
+
+            mind_log.reflect(now, True, mind, energy, diff(before_mind, mind, before_persona, persona), dropped)
+        except Exception:
+            _log.exception("最终反思记不进流水账")
     diary = result.get("diary") if isinstance(result.get("diary"), str) else ""
     raw_memos = result.get("memos") if isinstance(result.get("memos"), list) else []
     memos = [str(m).strip() for m in raw_memos if str(m).strip()]
@@ -131,5 +144,5 @@ def finish_reflection(
             try:
                 write()
             except Exception:
-                log.exception("最终反思写盘出错")
+                _log.exception("最终反思写盘出错")
     return "；".join(memos) if memos else diary.strip()[:100]

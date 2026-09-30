@@ -1513,6 +1513,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     ledger = _inner_ledger(cfg, store)
     mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run)
     persona = _inner_persona(cfg, ledger)
+    mind_log = _inner_log(ledger, reflector)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
     env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
@@ -1531,7 +1532,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
         env=env, social=social, emotes=emotes, camera=camera, locomotion=Locomotion(dev, cfg.brain.move_step), friend_checker=friend_checker,
         fallback=fallback, store=live_store, notes=notes, run=run, viewer=viewer, panel=panel, panels=panels, panel_ops=panel_ops,
-        ledger=ledger, mind=mind, reflector=reflector, persona=persona,
+        ledger=ledger, mind=mind, reflector=reflector, persona=persona, mind_log=mind_log,
     )
     work = run.path / "brain"
     eyes = Eyes(
@@ -1576,6 +1577,9 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
 
         if cfg.viewer.host in LOCAL_HOSTS:  # 手动控制：网页上直接让身体说话 / 做动作 / 转视角，只给本机
             viewer.control = ManualControl(body, eyes, events)
+            # 内心页（spec 2026-09-30-inner-viewer §2）：都在身体线程里做，等 3 秒
+            viewer.inner = lambda: body.call(body.inner_snapshot, timeout=3)
+            viewer.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
         else:
             log.warning("可视化网页开在局域网（%s）：局域网模式下关掉了手动控制", cfg.viewer.host)
     stop = threading.Event()
@@ -1668,6 +1672,21 @@ def _inner_persona(cfg: Config, ledger):
         return None
 
 
+def _inner_log(ledger, reflector):
+    """内心流水账（spec 2026-09-30-inner-viewer §1）：开了反思才记；live 写 mind_log.jsonl，启动时删掉 30 天前的行。"""
+    if ledger is None or reflector is None:
+        return None
+    from .inner.log import MindLog
+
+    try:
+        mind_log = MindLog(ledger.store.dir / "mind_log.jsonl", persist=ledger.persist)
+        mind_log.trim(time.time())
+        return mind_log
+    except Exception:
+        log.exception("内心流水账打不开，这次不记")
+        return None
+
+
 def _persona_prompt(persona) -> str:
     """系统提示词「你攒下的性格」；拼出错就不写这一节。"""
     if persona is None:
@@ -1693,7 +1712,7 @@ def _final_reflection(cfg: Config, body, reflector, ledger, live_store) -> str:
         result = reflector.final(body.reflect_materials(True))
         return finish_reflection(
             result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist, time.time(), cfg.inner,
-            persona=body.persona, soft=body.soft_names_this_session(),
+            persona=body.persona, soft=body.soft_names_this_session(), mind_log=body.mind_log, energy=body._energy,
         )
     except Exception:
         log.exception("下线前的反思出错")

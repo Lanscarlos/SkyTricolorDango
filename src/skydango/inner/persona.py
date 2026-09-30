@@ -217,6 +217,23 @@ class Persona:
         for name in ("catchphrases", "jokes", "opinions"):
             setattr(self, name, [t for t in getattr(self, name) if now - t.stamp() <= limit])
 
+    def remove(self, kind: str, text: str, who: str = "", topic: str = "") -> bool:
+        """网页上删一条（spec 2026-09-30-inner-viewer）：口头禅按原文、老梗按（好友, 原文）、看法按话题。返回删没删到。"""
+        if kind == "catchphrase":
+            name, hit = "catchphrases", lambda t: t.text == text
+        elif kind == "joke":
+            name, hit = "jokes", lambda t: t.who == who and t.text == text
+        elif kind == "opinion":
+            name, hit = "opinions", lambda t: t.topic == topic
+        else:
+            return False
+        items = getattr(self, name)
+        kept = [t for t in items if not hit(t)]
+        if len(kept) == len(items):
+            return False
+        setattr(self, name, kept)
+        return True
+
     # ---- 给大脑看的 ----
     def section(self) -> str:
         """系统提示词「你攒下的性格」；空档案给空串。"""

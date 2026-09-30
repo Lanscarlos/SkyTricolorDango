@@ -103,6 +103,9 @@ class Viewer:
         self.brain = None  # brain.trace.BrainTrace：有它网页才显示大脑时间线
         self.control = None  # brain.manual.ManualControl：有它网页才显示手动控制栏（只在本机模式挂）
         self.on_shutdown: Callable[[], None] | None = None  # POST /shutdown 时调（cli 里设成 interrupt_main，走 Ctrl+C 的收尾）
+        # 内心页（spec 2026-09-30-inner-viewer §2）：cli 在 run --view 时经 body.call 挂上；None 时 /inner、/inner/forget 回 404
+        self.inner: Callable[[], dict] | None = None
+        self.forget: Callable[[str, str, str, str], str] | None = None
         self._updated: float | None = None  # 最近一帧记下时的 time.monotonic()，/status 算 age
         self.frames = 0  # 更新了多少帧（测试 / 统计用）
         self.encodes = 0  # 压了多少次 JPEG（测试用）
@@ -226,6 +229,15 @@ class Viewer:
                         self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
                     else:
                         self._json(200, viewer.control.options())
+                elif url.path == "/inner" and viewer.inner is not None:
+                    if not self._local_host():
+                        self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                        return
+                    try:
+                        self._json(200, viewer.inner())
+                    except Exception as exc:  # 身体超时 / 已经停了
+                        log.debug("取内心快照失败：%s", exc)
+                        self._json(503, {"ok": False, "error": "团子正忙，稍后再试"})
                 elif url.path == "/brain" and viewer.brain is not None:
                     # errors="replace"：截断在 emoji 中间的半个代理字符不能让整条时间线卡在"连不上"
                     body = json.dumps(viewer.brain.since(self._after(url), WAIT), ensure_ascii=False).encode(errors="replace")
@@ -236,7 +248,8 @@ class Viewer:
             def do_POST(self) -> None:  # noqa: N802
                 """手动控制 / 退出：只收本机（Host）、带 X-Skydango 头的 JSON（见 post_guard）。"""
                 path = urlparse(self.path).path
-                if not ((path == "/control" and viewer.control is not None) or (path == "/shutdown" and viewer.on_shutdown is not None)):
+                if not ((path == "/control" and viewer.control is not None) or (path == "/shutdown" and viewer.on_shutdown is not None)
+                        or (path == "/inner/forget" and viewer.forget is not None)):
                     self._drain()
                     self._send(404, "text/plain; charset=utf-8", b"not found")
                     return
@@ -251,6 +264,9 @@ class Viewer:
                     viewer.on_shutdown()  # interrupt_main 只是让主线程收到 KeyboardInterrupt，这里照样能回应
                     self._json(200, {"ok": True, "text": "正在退出"})
                     return
+                if path == "/inner/forget":
+                    self._forget(length)
+                    return
                 try:
                     req = json.loads(self.rfile.read(length).decode("utf-8"))
                     if not isinstance(req, dict):
@@ -260,6 +276,23 @@ class Viewer:
                     self._json(400, {"ok": False, "text": str(exc)})
                     return
                 self._json(200, result)
+
+            def _forget(self, length: int) -> None:
+                """删一条性格条目：解析 → 交给身体线程（body.call）→ {"ok": true} 或原因。"""
+                from ..inner.api import forget_result, parse_forget
+
+                try:
+                    kind, text, who, topic = parse_forget(json.loads(self.rfile.read(length).decode("utf-8")))
+                except ValueError as exc:  # 坏 JSON、类别不认识：不交给身体
+                    self._json(400, {"ok": False, "error": str(exc)})
+                    return
+                try:
+                    reason = viewer.forget(kind, text, who, topic)
+                except Exception as exc:  # 身体超时 / 已经停了
+                    log.debug("删性格条目失败：%s", exc)
+                    self._json(503, {"ok": False, "error": "团子正忙，稍后再试"})
+                    return
+                self._json(200, forget_result(reason))
 
             def _local_host(self) -> bool:
                 return is_local_host(self.headers.get("Host") or "", self.server.server_address[1])

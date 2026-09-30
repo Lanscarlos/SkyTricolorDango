@@ -276,6 +276,19 @@ def test_page_has_four_tabs_and_uses_relative_api():
     assert "http://" not in page and "https://" not in page  # 离线也能用：不引外部资源
 
 
+def test_page_has_inner_tab():  # spec 2026-09-30-inner-viewer §3
+    page = _console_page()
+    live, inner, settings = (page.index(f'data-tab="{t}"') for t in ("live", "inner", "settings"))
+    assert live < inner < settings  # 「实时画面」后面
+    for id_ in ("tab-inner", "inner-source", "inner-now", "inner-curve", "inner-log", "inner-persona", "inner-cards", "inner-days"):
+        assert f'id="{id_}"' in page
+    for fn in ("function renderInnerNow(", "function loadInner(", "api/inner", "api/inner/forget"):
+        assert fn in page
+    for text in ("（没开反思）", "实时取不到，显示的是上次保存的", "团子正在启动 / 停止，稍等再删", "只看有改动的"):
+        assert text in page
+    assert "IN.lastState" in page  # 终审 I2：团子状态一变就重读一次（停止中按钮置灰、来源标签跟着变）
+
+
 def test_page_script_parses(tmp_path):
     import re
     import shutil

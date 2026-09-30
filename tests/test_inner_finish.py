@@ -59,3 +59,26 @@ def test_finish_without_persona_unchanged(tmp_path):
     st = InnerStore(tmp_path / "inner")
     finish_reflection({"persona_add": {"catchphrases": ["害"]}}, Mind(), st, None, {}, [], True, T0, InnerConfig())
     assert not st.persona_path.exists()
+
+
+# ---- 内心页：下线反思也记进流水账 ----
+def test_finish_logs_final_reflect(tmp_path):
+    from skydango.inner.energy import Energy
+    from skydango.inner.log import MindLog
+    from skydango.inner.persona import Persona
+
+    log = MindLog(None, persist=False)
+    finish_reflection({"mood": {"level": "开心", "text": "好"}, "persona_add": {"catchphrases": ["懒得动"]}},
+                      Mind(), None, None, {}, [], False, T0, InnerConfig(), persona=Persona(),
+                      mind_log=log, energy=Energy("还行", 60, "还行"))
+    r = log.recent()[-1]
+    assert r["final"] is True and r["t"] == T0 and r["energy"] == {"level": "还行", "score": 60}
+    assert r["changes"] == ["心情 平常→开心（好）", "新口头禅：懒得动"]
+
+
+def test_finish_none_logs_nothing():
+    from skydango.inner.log import MindLog
+
+    log = MindLog(None, persist=False)
+    finish_reflection(None, Mind(), None, None, {}, [], False, T0, InnerConfig(), mind_log=log)
+    assert log.recent() == []

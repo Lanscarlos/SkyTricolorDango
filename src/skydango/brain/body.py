@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import queue
@@ -39,6 +40,7 @@ from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
 from ..inner.energy import Energy, awake_minutes, energy as inner_energy
 from ..inner.ledger import card_line, match_friend
 from ..inner.ledger import ago
+from ..inner.log import ENERGY_EVERY, diff as diff_inner
 from ..inner.mind import sounds_upset
 from ..inner.reflect import materials as reflect_materials_text
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
@@ -58,6 +60,9 @@ PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身�
 
 def _first_line(exc: BaseException) -> str:
     return (str(exc).splitlines() or [type(exc).__name__])[0]
+
+
+FORGET_KINDS = ("catchphrase", "joke", "opinion")  # 网页上能删的性格条目类别
 
 
 class ToolError(Exception):
@@ -91,6 +96,7 @@ class Body:
         mind=None,  # inner.mind.Mind：心情、别扭、心愿（内心层第 2 期）；None = 没有
         reflector=None,  # inner.reflect.Reflector：反思；None = 不反思
         persona=None,  # inner.persona.Persona：性格档案（内心层第 3 期）；None = 性格关着（不沉淀、不记收着点）
+        mind_log=None,  # inner.log.MindLog：内心流水账（反思改了什么、精力曲线、删性格条目）；None = 不记
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
@@ -124,6 +130,8 @@ class Body:
         self.mind = mind
         self.reflector = reflector
         self.persona = persona
+        self.mind_log = mind_log
+        self._energy_logged = float("-inf")  # 上次往流水账记精力的墙上时间
         self._soft_until: dict[str, tuple[float, str]] = {}  # 说了难过的好友 → (收着点到什么时候, 他的原话)
         self.profile_text: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
         self.memory_notes: Callable[[], str] = lambda: ""  # 反思用的笔记（cli 设成 notes.md + inbox.md）
@@ -1624,6 +1632,9 @@ class Body:
         wall, now = self.wall(), self.clock()
         self._inner_call(lambda: self.mind.expire(wall))
         self._energy = self._inner_call(self.energy_now)
+        if self.mind_log is not None and wall - self._energy_logged >= ENERGY_EVERY:
+            self._energy_logged = wall
+            self._inner_call(lambda: self.mind_log.energy(wall, self._energy))
         self._inner_call(lambda: self._track_busy(wall))
         if self.reflector is None:
             return
@@ -1678,22 +1689,62 @@ class Body:
         if self.mind is None:
             return
         cards = self.ledger.cards if self.ledger is not None else {}
+        before_mind, before_persona = copy.deepcopy(self.mind), copy.deepcopy(self.persona)  # 流水账记“改了什么”用
         dropped = self.mind.apply(result, cards, self._safe_friends(), self.wall(), self.cfg.inner)
         for why in dropped:
             log.info("反思：%s", why)
         log.info("反思完了，心里：%s", self.mind.line(self.wall(), self._energy))
         self._save_mind()
         if self.persona is not None:
-            self._inner_call(lambda: self._apply_persona(result, cards))
+            dropped = dropped + (self._inner_call(lambda: self._apply_persona(result, cards), default=[]) or [])
+        if self.mind_log is not None:
+            self._inner_call(lambda: self.mind_log.reflect(
+                self.wall(), False, self.mind, self._energy, diff_inner(before_mind, self.mind, before_persona, self.persona), dropped))
 
     # ---- 内心层第 3 期：性格、收着点（spec 2026-09-30-inner-phase3）----
-    def _apply_persona(self, result: dict, cards) -> None:
-        """反思结果套进性格档案；live 时写 persona.json。"""
+    def _apply_persona(self, result: dict, cards) -> list[str]:
+        """反思结果套进性格档案；live 时写 persona.json。返回丢掉了哪些。"""
         wall = self.wall()
-        for why in self.persona.apply(result, cards, self._safe_friends(), wall, self.cfg.inner, soft=self.soft_names(wall)):
+        dropped = self.persona.apply(result, cards, self._safe_friends(), wall, self.cfg.inner, soft=self.soft_names(wall))
+        for why in dropped:
             log.info("性格：%s", why)
-        if self.ledger is not None and self.ledger.persist and self.ledger.store is not None:
+        self._save_persona()
+        return dropped
+
+    def _save_persona(self) -> None:
+        if self.persona is not None and self.ledger is not None and self.ledger.persist and self.ledger.store is not None:
             self.ledger.store.write_persona(self.persona)
+
+    # ---- 内心页（spec 2026-09-30-inner-viewer §4）：只在身体线程里调（viewer 经 body.call）----
+    def forget(self, kind: str, text: str, who: str = "", topic: str = "") -> str:
+        """网页上删一条性格条目。空字符串 = 删掉了；否则是原因。live 时写 persona.json；都记一条 forget。"""
+        if self.persona is None:
+            return "性格档案没开"
+        if kind not in FORGET_KINDS:
+            return "不认识的类别"
+        if not self.persona.remove(kind, text, who, topic):
+            return "找不到这条（可能已经淡出了）"
+        log.info("网页上删了性格条目：%s %s%s%s", kind, who + "——" if who else "", topic + "——" if topic else "", text)
+        self._inner_call(self._save_persona)
+        if self.mind_log is not None:
+            self._inner_call(lambda: self.mind_log.forget(self.wall(), kind, text, who, topic))
+        return ""
+
+    def inner_snapshot(self) -> dict:
+        """内心页的「现在」：心情、精力、别扭、心愿、收着点、性格档案、内存里最近的流水账。没开反思时这几项是 None / 空。"""
+        wall = self.wall()
+        m, e, g = self.mind, self._energy, self.mind.grudge if self.mind is not None else None
+        return {
+            "running": True,
+            "at": wall,
+            "mood": {"level": m.mood.level, "text": m.mood.text, "since": m.mood.since} if m is not None else None,
+            "energy": {"level": e.level, "score": e.score, "note": e.note} if m is not None and e is not None else None,
+            "grudge": {"who": g.who, "why": g.why, "until": g.until} if g is not None and wall < g.until else None,
+            "wants": [{"kind": w.kind, "text": w.text, "who": w.who, "until": w.until} for w in m.wants] if m is not None else [],
+            "soft": [{"who": who, "text": text, "until": until} for who, (until, text) in self._soft_until.items() if wall < until],
+            "persona": self.persona.to_dict() if self.persona is not None else None,
+            "log": self.mind_log.recent() if self.mind_log is not None else [],
+        }
 
     def _watch_upset(self, fresh: list[Message]) -> None:
         """好友说难过 / 不舒服……：接下来 soft_minutes 分钟对他收着点（不损、不唱反调、不拒绝）。"""

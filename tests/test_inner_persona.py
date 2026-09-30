@@ -182,3 +182,16 @@ def test_changed_stance_counts_as_used_now():  # 终审：换了立场不该一�
     p.apply(add(opinions=[{"topic": "雨林", "stance": "其实还行"}]), CARDS, FRIENDS, T0 + 13 * 86400, CFG)
     p.fade(T0 + 15 * 86400, CFG)
     assert [(t.text, t.last_used) for t in p.opinions] == [("其实还行", T0 + 13 * 86400)]
+
+
+# ---- 内心页：网页上删条目 ----
+def test_remove_each_kind():
+    p = Persona(catchphrases=[Trait("害")], jokes=[Trait("梗", who="小明"), Trait("梗", who="阿花")],
+                opinions=[Trait("丑", topic="雨林")])
+    assert p.remove("catchphrase", "害") and p.catchphrases == []
+    assert p.remove("joke", "梗", who="阿花") and [t.who for t in p.jokes] == ["小明"]
+    assert p.remove("opinion", "", topic="雨林") and p.opinions == []
+    assert not p.remove("catchphrase", "害")
+    assert not p.remove("joke", "梗", who="阿花")
+    assert not p.remove("opinion", "", topic="雨林")
+    assert not p.remove("xx", "梗")
