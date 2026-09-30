@@ -1,6 +1,6 @@
 # 大脑沙盒（管理面板「沙盒」页）— 设计
 
-日期：2026-09-30　状态：**设计已和用户确认，实施计划 `docs/superpowers/plans/2026-09-30-brain-sandbox.md`**（依赖内心层可视化 `2026-09-30-inner-viewer-design.md` 合进 main 之后再实现）
+日期：2026-09-30　状态：**代码已完成，待真 Claude 验证**（实施计划 `docs/superpowers/plans/2026-09-30-brain-sandbox.md`；只用 fake_claude 在浏览器里核对过，「验证」四步还没用真 Claude 跑）
 
 ## 背景
 

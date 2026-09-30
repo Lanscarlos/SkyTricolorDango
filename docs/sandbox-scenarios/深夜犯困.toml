@@ -1,0 +1,36 @@
+name = "深夜犯困"
+note = "越聊越晚：精力掉到困，主动开口变少、心跳变慢，但有人跟它说话还是会接"
+
+[start]
+memory = "reset"
+time = "22:30"
+nearby = ["小明", "阿花"]
+strangers = 1
+place = "暮土"
+scene = "暮土，夜里，几个人坐在一起"
+
+[[steps]]
+who = "阿花"
+say = "团子今天干嘛了"
+[[steps]]
+who = "小明"
+say = "好困啊，你困不困"
+expect = "还不算困，照常聊"
+[[steps]]
+time = "01:30"
+expect = "精力变成「困」"
+[[steps]]
+notice = "天上下起了流星雨"
+expect = "困的时候主动额度变少：可能被拦下（聊天记录里 blocked）或者干脆不说"
+wait = 20
+[[steps]]
+who = "阿花"
+say = "团子你还醒着吗"
+expect = "被叫到照样接话（接话永远照常），语气可以蔫一点"
+[[steps]]
+leave = "小明"
+[[steps]]
+leave = "阿花"
+[[steps]]
+skip = "30m"
+expect = "没人了，不主动开口"

@@ -364,10 +364,10 @@ class ConsoleServer:
         out = []
         folder = self.scenarios_dir()
         for path in sorted(folder.glob("*.toml")) if folder.is_dir() else []:
-            item = {"name": path.stem, "note": "", "steps": 0, "error": ""}
+            item = {"name": path.stem, "note": "", "steps": 0, "memory": "", "error": ""}
             try:
                 sc = load(path)
-                item.update(note=sc.note, steps=len(sc.steps))
+                item.update(note=sc.note, steps=len(sc.steps), memory=sc.start.memory)
             except ScenarioError as exc:
                 item["error"] = str(exc)
             out.append(item)

@@ -384,3 +384,12 @@ def test_page_has_sandbox_tab():  # 沙盒计划 Task 8（spec 2026-09-30-brain-
         assert api in page
     assert "会用 memory/ 覆盖沙盒记忆" in page  # 重置记忆的确认框
     assert page.index("<script src=") < page.index("<script>")  # 共用脚本在内联脚本前面（test_page_script_parses 只取内联那段）
+
+
+def test_page_has_scenario_controls():  # 沙盒计划 Task 11：剧本区
+    page = _console_page()
+    for id_ in ("sb-rec", "sb-rec-new", "sb-save", "sb-script", "sb-replay", "sb-replay-stop", "sb-progress", "sb-report"):
+        assert f'id="{id_}"' in page, id_
+    for api in ("api/sandbox/scenarios", "api/sandbox/save", "api/sandbox/replay", "api/sandbox/replay/stop", "api/sandbox/record/new"):
+        assert api in page
+    assert "（录制、回放下一步做）" not in page

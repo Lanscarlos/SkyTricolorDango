@@ -1,0 +1,37 @@
+name = "放鸽子"
+note = "说好来又不来，看会不会闹别扭；认真说难过后别扭要撤"
+
+[start]
+memory = "reset"          # reset = 先从 memory/ 重置；keep = 用沙盒现在的记忆
+time = "20:00"            # 起始沙盒时间：HH:MM（下限之后最近的这个时刻）或 "YYYY-MM-DD HH:MM"
+nearby = ["小明"]
+strangers = 0
+place = "云野"
+scene = "云野，傍晚，篝火旁"
+
+[[steps]]
+who = "小明"
+say = "我 9 点再来找你玩"
+[[steps]]
+leave = "小明"
+[[steps]]
+skip = "2h"               # 快进：30s / 10m / 2h；或 time = "23:30"
+[[steps]]
+come = "小明"
+[[steps]]
+reflect = true
+expect = "反思里心情变烦或低落，可能记下对小明的别扭（要一起玩过 3 天以上）"
+[[steps]]
+who = "小明"
+say = "在吗"
+expect = "团子带点情绪地接话（别扭时不冒输入气泡）"
+[[steps]]
+who = "小明"
+say = "对不起……我今天真的很难过"
+expect = "别扭当场撤掉，团子收着点、好好说话"
+wait = 10
+[[steps]]
+offline = true            # 下线写日记
+[[steps]]
+online = "sleep"          # 再上线：sleep = 睡一晚到第二天 9 点
+expect = "「日子」里带上一篇日记"

@@ -288,6 +288,20 @@ h2{font-size:17px;font-weight:600;margin:0 0 12px}
 .sb-brainpane{margin-top:18px}
 .sb-disabled{opacity:.5;pointer-events:none}
 .sb-link{margin-top:10px}
+/* 剧本：录制灯 + 回放进度（胶片一样一格一格走） */
+.sb-rec{display:inline-flex;align-items:center;gap:6px;font-size:12px;letter-spacing:0;font-weight:400;color:var(--muted)}
+.sb-rec::before{content:"";width:8px;height:8px;border-radius:50%;background:#3a404d}
+.sb-rec[data-on="1"]{color:var(--sakura)}.sb-rec[data-on="1"]::before{background:var(--sakura);animation:sbpulse 1.4s infinite}
+.sb-rec[data-on="play"]{color:var(--sand)}.sb-rec[data-on="play"]::before{background:var(--sand);animation:sbpulse .9s infinite}
+#sb-script{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:4px 8px}
+.sb-script-note{margin:6px 0 0;font-family:var(--serif);font-size:13px;color:#b7ae9d}
+.sb-script-note:empty,.sb-report:empty{display:none}
+.sb-progress{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:13px}
+.sb-reel{flex:1;height:10px;border-radius:3px;background:repeating-linear-gradient(90deg,#262b35 0 9px,var(--panel) 9px 11px);overflow:hidden;position:relative}
+.sb-reel i{position:absolute;left:0;top:0;bottom:0;background:repeating-linear-gradient(90deg,var(--sand) 0 9px,transparent 9px 11px);transition:width .6s}
+.sb-report{margin:10px 0 0;word-break:break-all}
+.sb-report code{font-family:var(--mono);font-size:12px;color:var(--text)}
+.sb-replaying .sb-say,.sb-replaying #sb-nearby,.sb-replaying #sb-scene,.sb-replaying .sb-jump{opacity:.45;pointer-events:none}
 #sb-now>h3{margin:0 0 12px;font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.12em}
 @media (max-width:860px){.sb-grid{grid-template-columns:minmax(0,1fr)}.sb-launch{grid-template-columns:minmax(0,1fr)}.sb-jump{margin-left:0}.sb-chat{height:420px}}
 
@@ -419,7 +433,7 @@ h2{font-size:17px;font-weight:600;margin:0 0 12px}
       <p class="sb-limit" id="sb-limit" hidden></p>
     </div>
     <p class="sb-msg msg" id="sb-msg" aria-live="polite"></p>
-    <div class="sb-grid">
+    <div class="sb-grid" id="sb-grid">
       <section class="pane sb-chatpane">
         <h3>聊天记录<span class="grow"></span><span class="note" style="letter-spacing:0" id="sb-quiet"></span></h3>
         <div class="sb-chat" id="sb-chat" aria-live="polite"><p class="none">启动沙盒之后，冒充好友说句话试试。</p></div>
@@ -446,7 +460,16 @@ h2{font-size:17px;font-weight:600;margin:0 0 12px}
           <div class="sb-field"><span></span><button class="btn small" type="button" id="sb-scene-go">改场景</button></div>
           <div class="sb-field"><span>新鲜事</span><input id="sb-notice" placeholder="天黑了" aria-label="新鲜事"><button class="btn small" type="button" id="sb-notice-go">放</button></div>
         </section>
-        <section class="pane" id="sb-scenario"><h3>剧本</h3><p class="none">（录制、回放下一步做）</p></section>
+        <section class="pane" id="sb-scenario"><h3>剧本<span class="grow"></span><span class="sb-rec" id="sb-rec" data-on="0">没在录</span></h3>
+          <div class="sb-field"><span>录制</span><button class="btn small" type="button" id="sb-rec-new">新录制</button>
+            <button class="btn small" type="button" id="sb-save">另存为…</button></div>
+          <div class="sb-field"><span>回放</span><select id="sb-script" aria-label="剧本"></select>
+            <button class="btn small go" type="button" id="sb-replay">回放</button>
+            <button class="btn small halt" type="button" id="sb-replay-stop" hidden>停止回放</button></div>
+          <p class="note sb-script-note" id="sb-script-note"></p>
+          <div class="sb-progress" id="sb-progress" hidden><div class="sb-reel"><i></i></div><span></span></div>
+          <p class="note sb-report" id="sb-report"></p>
+        </section>
       </div>
     </div>
     <section class="pane sb-brainpane"><div id="sb-brain" hidden></div><p class="none" id="sb-brain-none">（沙盒跑起来之后这里是大脑时间线）</p></section>
@@ -496,7 +519,7 @@ function showTab(name){
   if(location.hash!=="#"+name)history.replaceState(null,"","#"+name);
   if(name==="settings"&&!S.settings)loadSettings();
   if(name==="inner")loadInner(IN.source);
-  if(name==="sandbox"){sbLoadInfo();pullSbNow()}
+  if(name==="sandbox"){sbLoadInfo();pullSbNow();sbScripts();pullReplay()}
 }
 for(const b of document.querySelectorAll("nav button"))b.onclick=()=>showTab(b.dataset.tab);
 document.addEventListener("click",e=>{const go=e.target.closest("[data-go]");if(go){e.preventDefault();showTab(go.dataset.go)}});
@@ -1054,6 +1077,65 @@ $("sb-scene-text").oninput=()=>{SB.sceneDirty=true};
 $("sb-scene-go").onclick=async()=>{if(await sbOp({op:"scene",text:$("sb-scene-text").value.trim()}))SB.sceneDirty=false};
 $("sb-notice-go").onclick=async()=>{const text=$("sb-notice").value.trim();if(text&&await sbOp({op:"notice",text}))$("sb-notice").value=""};
 $("sb-inner-link").onclick=()=>{setInnerSource("sandbox");showTab("inner")};
+/* 剧本：录制状态、另存为、列表、回放和进度（spec §6） */
+async function sbScripts(){
+  try{const d=await getJSON("api/sandbox/scenarios");SB.scripts=d.scenarios||[];renderSbScripts()}catch(e){}
+}
+function renderSbScripts(){
+  const sel=$("sb-script"),keep=sel.value;sel.textContent="";
+  if(!SB.scripts||!SB.scripts.length){const o=el("option","","（sandbox/scenarios/ 里还没有剧本）");o.value="";sel.append(o)}
+  for(const x of SB.scripts||[]){const o=el("option","",x.error?`${x.name}（读不了）`:`${x.name} · ${x.steps} 步`);o.value=x.name;o.disabled=!!x.error;sel.append(o)}
+  if([...sel.options].some(o=>o.value===keep&&!o.disabled))sel.value=keep;
+  sbScriptNote();
+}
+function sbScriptNote(){const x=(SB.scripts||[]).find(y=>y.name===$("sb-script").value);$("sb-script-note").textContent=x?(x.error||x.note||""):""}
+$("sb-script").onchange=sbScriptNote;
+function renderReplay(d){
+  SB.replay=d;const p=d.progress||{},playing=!!p.running,rec=d.recording||{};
+  const lamp=$("sb-rec");
+  if(playing){lamp.dataset.on="play";lamp.textContent=`回放中「${p.name}」`}
+  else if(rec.active){lamp.dataset.on="1";lamp.textContent=`录制中 · ${rec.steps} 步${rec.memory==="keep"?"（用的是当时的记忆）":""}`}
+  else{lamp.dataset.on="0";lamp.textContent=SB.running?"没在录（下一个操作开始录）":"没在录（启动沙盒就开始录）"}
+  $("sb-replay").hidden=playing;$("sb-replay-stop").hidden=!playing;
+  $("sb-replay").disabled=!$("sb-script").value||(S.state&&S.state.run&&BUSY.includes(S.state.run.state)&&S.state.run.kind!=="sandbox");
+  $("sb-save").disabled=playing||!rec.steps;$("sb-rec-new").disabled=playing;
+  const bar=$("sb-progress");bar.hidden=!playing&&!SB.replayShown;
+  if(playing){SB.replayShown=true;bar.querySelector("i").style.width=`${p.total?Math.round(p.step/p.total*100):0}%`;
+    bar.querySelector("span").textContent=`第 ${p.step} / ${p.total} 步`}
+  else if(SB.replayShown){SB.replayShown=false;bar.hidden=true}
+  $("sb-grid").classList.toggle("sb-replaying",playing);
+  $("sb-reset").disabled=$("sb-reset").disabled||playing;$("sb-go").disabled=playing;
+  const rp=$("sb-report");rp.textContent="";
+  if(d.report){rp.append("最近的报告：",el("code","",d.report))}
+  if(SB.wasPlaying&&!playing)sbScripts();
+  SB.wasPlaying=playing;
+}
+async function pullReplay(){
+  if($("tab-sandbox").hidden&&!(SB.replay&&SB.replay.progress&&SB.replay.progress.running))return;
+  try{renderReplay(await getJSON("api/sandbox/replay"))}catch(e){}
+}
+$("sb-rec-new").onclick=async()=>{
+  if(SB.replay&&SB.replay.recording&&SB.replay.recording.steps&&!confirm("丢掉现在录的这一段，从这里重新开始录？"))return;
+  await post("api/sandbox/record/new");sbMsg("重新开始录了（沙盒下次启动的选项会写成剧本的开头）","ok");pullReplay();
+};
+$("sb-save").onclick=async()=>{
+  const name=(prompt("剧本名（中英文、数字、- _）","")||"").trim();if(!name)return;
+  const note=prompt("一句话说明这个剧本看什么（可以空着）","");if(note===null)return;
+  let r=await post("api/sandbox/save",{name,note});
+  if(r.status===409&&r.data.exists){if(!confirm(r.data.text))return;r=await post("api/sandbox/save",{name,note,overwrite:true})}
+  if(!r.data.ok){sbMsg(r.data.text||"没存成","bad");return}
+  sbMsg(`存好了：${r.data.path}${r.data.warning?"。"+r.data.warning:""}`,r.data.warning?"warn":"ok");
+  await sbScripts();$("sb-script").value=name;sbScriptNote();
+};
+$("sb-replay").onclick=async()=>{
+  const name=$("sb-script").value;if(!name)return;const x=(SB.scripts||[]).find(y=>y.name===name)||{};
+  const reset=x.memory!=="keep"?"\n剧本开头会用 memory/ 覆盖沙盒记忆（真的 memory/ 不会被改）。":"\n剧本用沙盒现在的记忆接着跑。";
+  if(!confirm(`回放「${name}」：沙盒在跑会先下线（写日记），再按剧本重新起。${reset}\n回放时每一步会真的调 Claude，花额度。继续？`))return;
+  const r=await post("api/sandbox/replay",{name});
+  if(!r.data.ok)sbMsg(r.data.text||"回放没开始","bad");else sbMsg(`开始回放「${name}」`,"ok");
+  pullReplay();
+};
+$("sb-replay-stop").onclick=async()=>{const r=await post("api/sandbox/replay/stop");sbMsg(r.data.text||"",r.data.ok?"ok":"bad");pullReplay()};
 async function pullSbNow(){  // 右栏「现在」：沙盒在跑且页面开着时每 5 秒
   if($("tab-sandbox").hidden||!SB.running)return;
   try{const d=await getJSON("api/inner?source=sandbox");d.clock=sbNow();renderInnerNow($("sb-now"),d.now,d)}catch(e){}
@@ -1063,6 +1145,6 @@ async function pullSbNow(){  // 右栏「现在」：沙盒在跑且页面开着
 showTab(location.hash.slice(1));
 renderCards();
 refresh();pullLogs();
-setInterval(refresh,1000);setInterval(pullLogs,1000);setInterval(pullSbNow,5000);setInterval(pullStatus,2000);setInterval(pullInner,5000);setInterval(()=>{const r=S.state&&S.state.run;if(r&&r.state!==IN.lastState)pullInner()},1000);
+setInterval(refresh,1000);setInterval(pullLogs,1000);setInterval(pullSbNow,5000);setInterval(pullReplay,1500);setInterval(pullStatus,2000);setInterval(pullInner,5000);setInterval(()=>{const r=S.state&&S.state.run;if(r&&r.state!==IN.lastState)pullInner()},1000);
 </script>
 </body></html>
