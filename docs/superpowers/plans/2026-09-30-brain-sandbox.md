@@ -2,7 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**前置：** `docs/superpowers/plans/2026-09-30-inner-viewer.md` 已实现并合进 main（本计划用它的 `MindLog`、`Body.inner_snapshot` / `forget`、`inner/api.py`、`console/inner_view.py`、页面的 `renderInnerNow` / `loadInner`）。
+**前置和并行：** 本计划用内心页计划（`docs/superpowers/plans/2026-09-30-inner-viewer.md`）的 `MindLog`、`Body.inner_snapshot` / `forget`、`inner/api.py`、`console/inner_view.py`、页面的 `renderInnerNow` / `loadInner`。
+分两段执行：
+- **线 2（和内心页计划并行，不碰 `cli.py`、不依赖内心页）：Task 1 → 3 → 9 → 7**
+- **顺序段（内心页计划和线 2 都合进 main 之后）：Task 2 → 4 → 5 → 6 → 8 → 10 → 11**
 
 **Goal:** 不开 MuMu，在管理面板上跑真的大脑 + 身体 + 内心层：冒充好友说话、造来去、快进时间、看团子的反应和心里；能把一段操作录成剧本回放、出报告。
 
@@ -100,14 +103,14 @@ def test_parse_duration():
 ### Task 2: 拆出 `World`，`_run_brain` 只管组装
 
 **Files:**
-- Create: `src/skydango/brain/world.py`
+- Modify: `src/skydango/brain/world.py`（Task 3 建好了 `World`；这里加 `BrainParts`）
 - Modify: `src/skydango/cli.py`（`_run_brain`、`_inner_ledger`、`_inner_mind`、`_inner_persona`、`_final_reflection`、`_days_prompt`、`cmd_run`；新 `_game_world`）
 - Modify: `src/skydango/brain/loop.py`（`Brain.in_turn`）
 - Test: `tests/test_cli_brain.py`（现有全过 + 追加）、`tests/test_brain_loop.py`（追加）
 
 **Interfaces:**
+- Consumes: Task 3 的 `World`
 - Produces:
-  - `@dataclass World`：`device`、`reader`、`self_filter`、`panel`、`env`、`social`、`emotes`、`camera`、`locomotion`、`sender`、`friend_checker`、`panels`、`panel_ops`、`clock: Callable[[], float] = time.monotonic`、`wall: Callable[[], float] = time.time`、`describe: Callable[[list[dict]], str] | None = None`（`None` = 眼睛用 Haiku）、`name: str = "game"`、`close: Callable[[], None] = lambda: None`（收尾：停 env、关 panels）
   - `@dataclass BrainParts`：`body`、`eyes`、`events`、`brain`、`trace`、`reflector`、`ledger`、`store`、`mind_log`
   - `cli._game_world(cfg, run, no_emotes: bool) -> World`：把现有的 `_device` / `_build_reader` / `_panel` / `_scene_watcher` / `SocialHandler` / `_build_emotes` / `_camera` / `_friend_checker` / `_panels` / `ChatSender` / `Locomotion` 原样搬进来（**仍按模块名调 `_device`、`_build_reader`**，现有测试的 monkeypatch 继续生效）
   - `cli._run_brain(cfg, run, world: World, duration=0.0, viewer=None, on_ready: Callable[[BrainParts], None] | None = None) -> None`；`cmd_run` 改成 `_run_brain(cfg, run, _game_world(cfg, run, args.no_emotes), args.duration, viewer)`
@@ -126,15 +129,17 @@ def test_parse_duration():
 
 ---
 
-### Task 3: 沙盒世界的部件
+### Task 3: 沙盒世界的部件（含 `World` 数据类）
 
 **Files:**
+- Create: `src/skydango/brain/world.py`（只有 `World` 数据类，见下；Task 2 再加 `BrainParts`、接进 `_run_brain`）
 - Create: `src/skydango/sandbox/world.py`、`src/skydango/sandbox/transcript.py`
 - Test: `tests/test_sandbox_world.py`
 
 **Interfaces:**
-- Consumes: Task 1 `SimClock`、Task 2 `World`
+- Consumes: Task 1 `SimClock`
 - Produces:
+  - `brain/world.py`：`@dataclass World`：`device`、`reader`、`self_filter`、`panel`、`env`、`social`、`emotes`、`camera`、`locomotion`、`sender`、`friend_checker`、`panels`、`panel_ops`、`clock: Callable[[], float] = time.monotonic`、`wall: Callable[[], float] = time.time`、`describe: Callable[[list[dict]], str] | None = None`（`None` = 眼睛用 Haiku）、`name: str = "game"`、`close: Callable[[], None] = lambda: None`（收尾：停 env、关 panels）
   - `transcript.py`：`class Transcript(clock: SimClock, limit=500)`：`add(kind: str, text: str, who: str = "") -> dict`、`since(seq: int) -> list[dict]`、`version: int`、`cond: threading.Condition`（`add` 时 `notify_all`，给长轮询）
   - `world.py`：
     - `GRAY: np.ndarray`（1080×1920×3，`uint8`，全 128）
