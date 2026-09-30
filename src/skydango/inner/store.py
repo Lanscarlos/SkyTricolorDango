@@ -11,7 +11,9 @@ import logging
 import time
 from pathlib import Path
 
+from ..chat.memory import format_date
 from .ledger import Card, Session
+from .mind import Mind
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +26,8 @@ class InnerStore:
         self.people_path = self.dir / "people.json"
         self.days_path = self.dir / "days.jsonl"
         self.current_path = self.dir / "current.json"
+        self.mind_path = self.dir / "mind.json"
+        self.diary_path = self.dir / "diary.md"
 
     # ---- people.json ----
     def people_exists(self) -> bool:
@@ -103,6 +107,56 @@ class InnerStore:
 
     def drop_current(self) -> None:
         self.current_path.unlink(missing_ok=True)
+
+    # ---- mind.json（第 2 期）----
+    def load_mind(self, quarantine: bool = True) -> Mind:
+        """读不了（坏 JSON / 版本不认识）→ quarantine 时改名放一边；都从“平常”开始。"""
+        if not self.mind_path.is_file():
+            return Mind()
+        try:
+            data = json.loads(self.mind_path.read_text(encoding="utf-8"))
+            if data.get("version") != VERSION:
+                raise ValueError(f"不认识的版本：{data.get('version')!r}")
+            return Mind.from_dict(data)
+        except (ValueError, TypeError, AttributeError, OSError) as exc:
+            if quarantine:
+                bad = self._quarantine(self.mind_path)
+                log.warning("内心 mind.json 读不了（%s），改名成 %s，从平常开始", exc, bad.name)
+            else:
+                log.warning("内心 mind.json 读不了：%s", exc)
+            return Mind()
+
+    def write_mind(self, mind: Mind) -> None:
+        self._write(self.mind_path, json.dumps({"version": VERSION, **mind.to_dict()}, ensure_ascii=False, indent=1))
+
+    # ---- diary.md（第 2 期）----
+    def append_diary(self, text: str, now: float) -> None:
+        """一天一节（## 日期），同一天再写就在这一节末尾空一行接着写。"""
+        text = text.strip()
+        if not text:
+            return
+        heading = f"## {format_date(now)}"
+        existing = self.diary_path.read_text(encoding="utf-8") if self.diary_path.is_file() else ""
+        headings = [line for line in existing.splitlines() if line.startswith("## ")]
+        if headings and headings[-1] == heading:
+            chunk = f"\n{text}\n"
+        else:
+            chunk = ("\n" if existing else "") + f"{heading}\n\n{text}\n"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with self.diary_path.open("a", encoding="utf-8") as fh:
+            fh.write(chunk)
+
+    def last_diaries(self, n: int) -> list[str]:
+        """最后 n 天的日记正文（旧到新，段落之间空一行）。"""
+        if n <= 0 or not self.diary_path.is_file():
+            return []
+        days: list[list[str]] = []
+        for line in self.diary_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("## "):
+                days.append([])
+            elif days:
+                days[-1].append(line)
+        return ["\n".join(lines).strip() for lines in days if "\n".join(lines).strip()][-n:]
 
     # ---- 内部 ----
     def _write(self, path: Path, text: str) -> None:
