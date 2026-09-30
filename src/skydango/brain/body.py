@@ -1046,6 +1046,9 @@ class Body:
             raise ToolError(f"没找到 {name}（{where}）；不在画面里的话可以先 look_around 看看在哪个方向")
         box, guessed = found
         note, frame = "", None
+        tag, me = self._fresh_tag(name, now), self._self_box(now)
+        log.debug("look_person %s：%s %s；名字标签 %s，团子框 %s，压在团子上 %s", name, "按标签估的框" if guessed else "身体框",
+                  box, tag, me, occluded(tag, me) if tag is not None and me is not None else "-")
         if guessed and self._hidden_tag(name, now) is not None:
             box, guessed, note, frame = self._peek(name, box, live)
         bx, by, bw, bh = box.x, box.y, box.w, box.h

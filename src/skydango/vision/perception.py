@@ -96,6 +96,22 @@ def one_self(dets: list[Detection]) -> list[Detection]:
     return [Detection("player", d.box, d.score) if id(d) in extra else d for d in dets]
 
 
+def promote_weak_self(dets: list[Detection], low: list[Detection]) -> list[Detection]:
+    """没有像样的 self 时，和低分 self 框几乎重合（IoU ≥ 0.5）的那个 player 就是团子，改成 self。
+
+    实测（2026-09-30，好友站在团子正后方、镜头贴得近）：团子被认成 player 0.74、self 只有 0.29，
+    好友的名字标签挂到了团子身上，look_person 裁了团子的背影，也找不到团子框、不换角度。只有团子会拿到 self 分数。"""
+    if any(d.cls == "self" for d in dets):
+        return dets
+    pairs = [(iou(d.box, w.box), i) for i, d in enumerate(dets) if d.cls == "player" for w in low if w.cls == "self"]
+    overlap, i = max(pairs, default=(0.0, -1))
+    if overlap < 0.5:
+        return dets
+    out = list(dets)
+    out[i] = Detection("self", dets[i].box, dets[i].score)
+    return out
+
+
 def people_boxes(dets: list[Detection]) -> list[Detection]:
     """一帧里的人（player / player_unlit / self）。模型可能在团子身上同时出 self 和 player 框：player 那个不算另一个人。"""
     selfs = [d for d in dets if d.cls == "self"]
@@ -361,7 +377,7 @@ class PerceptionWatcher:
         dets = one_self(self._filter(self._detect(frame), width, height, panel_visible))
         detected = time.perf_counter()
         low = [d for d in dets if d.score < self.cfg.conf]
-        dets = [d for d in dets if d.score >= self.cfg.conf]
+        dets = promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low)
         if self._occlusion(frame, dets):
             return
         tracks = self.tracker.update(dets, now)
