@@ -187,6 +187,28 @@ def changed_pixels(a: np.ndarray, b: np.ndarray) -> int:
     return int(np.count_nonzero(a != b))
 
 
+def _run_back(prev: list[str], cur: list[str], i: int, j: int, same: Callable[[str, str], bool]) -> int:
+    """cur[j] 对上 prev[i]，往上连续对上几行。"""
+    run = 0
+    while run <= j and run <= i and same(cur[j - run], prev[i - run]):
+        run += 1
+    return run
+
+
+def bottom_clipped(prev: list[str], cur: list[str], same: Callable[[str, str], bool]) -> bool:
+    """这一帧底部被裁掉了一截：它最底下几行正好是上一帧倒数第二行（或更上面）往上的几行，
+    而且比"上一帧最后一行在这一帧里、下面是新消息"的对法对上得更多。
+
+    新消息只会加在底部、旧消息只会从顶上滚出去，上一帧最底下的行不会自己消失 ——
+    消失了就是面板在重绘 / 输入框打开挤掉了底部（2026-09-30 实测），这一帧不能当基准。
+    """
+    if not prev or not cur:
+        return False
+    normal = max((_run_back(prev, cur, len(prev) - 1, j, same) for j in range(len(cur))), default=0)
+    clipped = max((_run_back(prev, cur, i, len(cur) - 1, same) for i in range(len(prev) - 1)), default=0)
+    return clipped >= 2 and clipped > normal
+
+
 def new_rows(prev: list[str], cur: list[str], same: Callable[[str, str], bool]) -> list[int]:
     """对齐前后两帧的行，返回 cur 里新增行的下标。
 

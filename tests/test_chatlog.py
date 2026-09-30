@@ -4,7 +4,7 @@ from skydango.chat.reader import ChatReader
 from skydango.chat.tracker import SelfFilter
 from skydango.config import Config
 from skydango.vision.bubbles import Rect
-from skydango.vision.chatlog import new_rows, parse_rows
+from skydango.vision.chatlog import bottom_clipped, new_rows, parse_rows
 from skydango.vision.ocr import OcrLine
 
 PW, PH = 640, 900  # 面板区域大小
@@ -56,6 +56,18 @@ def test_new_rows_alignment():
     assert new_rows(["m", "m", "m"], ["m", "m", "R"], same) == [2]  # 一堆相同的“陌生人”行
     assert new_rows(["a", "b", "c"], ["a", "b", "c", "a"], same) == [3]  # 有人重复说了一句
     assert new_rows(["a", "b"], ["x", "y"], same) == []  # 完全对不上：重新建立基线，不乱回
+
+
+def test_bottom_clipped():
+    """这一帧底部被裁掉了一截（面板重绘 / 输入框打开时实测）：它最底下几行正好是上一帧倒数第二行往上的几行。"""
+    same = lambda a, b: a == b  # noqa: E731
+    assert bottom_clipped(list("abcm"), list("abc"), same)  # 21:10:53：最底下一行"被屏蔽"被挤出去了
+    assert bottom_clipped(list("hmmmtuv"), list("hmmm"), same)  # 21:04:34：下面 3 行全没了
+    assert not bottom_clipped(list("abc"), list("bcde"), same)  # 滚上去一行、来了两条
+    assert not bottom_clipped(list("abc"), list("abca"), same)  # 有人重复说了一句
+    assert not bottom_clipped(list("xyh"), list("xyhh"), same)  # 同一句连说两遍
+    assert not bottom_clipped(list("mmm"), list("mmR"), same)
+    assert not bottom_clipped([], list("ab"), same) and not bottom_clipped(list("ab"), list("ab"), same)
 
 
 class SeqOcr:
@@ -365,6 +377,53 @@ def test_new_row_is_confirmed_on_next_frame_to_get_full_speaker():
     assert reader.read(after, 0.2) == []  # 刚冒出来：先不报
     fresh = reader.read(after, 0.4)  # 画面没变，但在等确认：照样再识别一次
     assert [(m.speaker, m.text) for m in fresh] == [("懒洋洋大王", "嗯应该是正太")]
+
+
+def _live_reader(frames):
+    """log 模式、每帧都跑 OCR 的读聊天；面板开没开由返回的 shown[0] 决定（不看输入框）。"""
+    cfg = Config()
+    cfg.vision.mode = "log"
+    cfg.vision.log_change_pixels = 0  # 每帧都识别
+    reader = ChatReader(SeqOcr(frames), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
+    shown = [True]
+    reader._log_area = lambda frame: (Rect(0, 0, PW, PH), shown[0])
+    return reader, shown
+
+
+def texts(msgs):
+    return [m.text for m in msgs]
+
+
+def test_clipped_frame_does_not_repeat_the_last_message():
+    """实测（2026-09-30 live）：团子要说话、输入框打开时，面板最底下那行"被屏蔽"被挤出显示区域，
+    几行"被屏蔽"一模一样，对齐错了一位，把已经读过的"团子你好冷漠"又报了一遍。"""
+    a, m, c, d = line(0, "在吗 - 小明"), line(1, "-陌生人"), line(2, "团子你好冷漠 - 小明"), line(3, "-陌生人")
+    full = [a, m, c, d]
+    clipped = [a, m, c]
+    newer = [a, m, c, d, line(4, "理我一下 - 小明")]
+    reader, _ = _live_reader([full, clipped, clipped, full, newer, newer])
+    img = np.full((PH, PW, 3), 50, np.uint8)
+    got = [texts(reader.read(img, t)) for t in (0.0, 0.5, 1.0, 1.5, 2.0, 2.5)]
+    assert got == [[], [], [], [], [], ["理我一下"]]
+
+
+def test_first_frame_after_panel_reopens_is_not_trusted():
+    """实测（2026-09-30 auto 模式）：定时看一眼时面板还在淡入，新消息被读成乱码（被当成"被屏蔽"），
+    拿这一帧当了基准，下一帧读清楚了却对不上，"团子你知道我在哪里吗"整句漏掉。"""
+    a, b = line(0, "在吗 - 小明"), line(1, "你在哪 - 小明")
+    garbled = [line(0, "-陌生人"), line(1, "-陌生人"), line(2, "-陌生人")]
+    full = [a, b, line(2, "团子你知道我在哪里吗 - 小明")]
+    reader, shown = _live_reader([[a, b], garbled, full, full])
+    img = np.full((PH, PW, 3), 50, np.uint8)
+    assert reader.read(img, 0.0) == []  # 面板开着：建立基准
+    shown[0] = False
+    assert reader.read(img, 1.0) == []  # 关上
+    shown[0] = True
+    assert reader.read(img, 30.0) == []  # 重新打开的第一帧：还在淡入（乱码）
+    assert reader.settling  # 读聊天的在等确认：面板先别关
+    assert reader.read(img, 30.5) == []  # 读清楚了，但还得再确认一帧
+    assert texts(reader.read(img, 31.0)) == ["团子你知道我在哪里吗"]
+    assert not reader.settling
 
 
 def test_split_speaker_falls_back_to_middle_dot():

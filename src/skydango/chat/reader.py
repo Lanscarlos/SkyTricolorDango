@@ -13,12 +13,14 @@ import numpy as np
 
 from ..config import ChatConfig, OcrConfig, VisionConfig
 from ..vision.bubbles import Rect, find_bubbles, roi_rect
-from ..vision.chatlog import LogRow, changed_pixels, find_input_top, new_rows, parse_rows, text_signature
+from ..vision.chatlog import LogRow, bottom_clipped, changed_pixels, find_input_top, new_rows, parse_rows, text_signature
 from ..vision.ocr import OcrEngine, OcrLine, join_lines
 from .tracker import SeenTracker, SelfFilter, similar
 
 log = logging.getLogger(__name__)
 
+CLIP_ACCEPT = 5  # 底部被裁掉的帧连着这么多次（面板真的变了）才接受为新基准
+REOPEN_TRIES = 4  # 面板刚出现：最多等这么多次识别对上，还对不上就用最后一次（别一直等）
 UNKNOWN_SPEAKERS = ("", "陌生人")  # 聊天记录面板里读不出说话人 / 陌生人的消息只显示"陌生人"
 
 
@@ -68,6 +70,10 @@ class ChatReader:
         self._sig: np.ndarray | None = None  # 上次 OCR 时面板文字的“指纹”
         self._ocr_at = float("-inf")
         self._shrunk = 0  # 连续几帧行数骤减
+        self._clipped = 0  # 连续几帧底部被裁掉（bottom_clipped）
+        self._reopened = False  # 面板刚重新出现：淡入动画里字读不全，要连续两次读到一样的才用
+        self._pending_keys: list[str] | None = None  # 面板刚出现时上一次读到的行（等下一次对上）
+        self._pending_tries = 0
         self.panel_closed_since: float | None = None  # 从什么时候开始看不到面板
         self._confirming = False  # 上一帧冒出了新行，等这一帧确认
         self.self_filter = self_filter
@@ -148,6 +154,7 @@ class ChatReader:
             if self.panel_closed_since is not None:
                 log.info("聊天记录面板又出现了，继续读取")
                 self.panel_closed_since = None
+                self._reopened, self._pending_keys, self._pending_tries = True, None, 0
         sig = text_signature(area.crop(frame))
         # 面板里的文字没变就不跑 OCR（截图约 9 ms，OCR 约 0.4 s）；隔一阵还是强制识别一次，以防万一
         if (
@@ -171,7 +178,28 @@ class ChatReader:
                 self._prev_keys, self._shrunk = keys, 0
             return []
         self._shrunk = 0
-        added = new_rows(self._prev_keys, keys, lambda a, b: similar(a, b, self.similarity))
+        same = lambda a, b: similar(a, b, self.similarity)  # noqa: E731
+        # 底部被裁掉的帧（面板重绘、输入框打开挤掉最底下的行）：几行"被屏蔽"一模一样时会对错一位，
+        # 把读过的又当成新的（2026-09-30 实测）。跳过；连着 CLIP_ACCEPT 帧都这样才接受为新基准（不回复里面的行）
+        if bottom_clipped(self._prev_keys, keys, same):
+            self._clipped += 1
+            log.debug("面板底部少了几行（第 %d 帧），先不用这一帧", self._clipped)
+            if self._clipped >= CLIP_ACCEPT:
+                self._prev_keys, self._clipped = keys, 0
+            return []
+        self._clipped = 0
+        if self._reopened:
+            # 面板刚出现，还在淡入：实测第一帧把新消息读成乱码（像"被屏蔽"），拿它当基准，读清楚后对不上，整句漏掉。
+            # 连续两次读到一样的才拿来和关面板前的基准比（这两次就算确认过了）；等的时候 settling 为真，面板先别关
+            stable = self._pending_keys is not None and len(keys) == len(self._pending_keys) and all(
+                same(a, b) for a, b in zip(keys, self._pending_keys)
+            )
+            self._pending_tries += 1
+            if not stable and self._pending_tries < REOPEN_TRIES:
+                self._pending_keys, self._confirming = keys, True
+                return []
+            self._reopened, self._pending_keys = False, None
+        added = new_rows(self._prev_keys, keys, same)
         if self.trace_path and keys != self._prev_keys:
             self._trace(now, rows, added)
         # 新消息淡入时名字比内容晚出现（实测第一帧读成“?：嗯应该是正太”）：新行第一次出现先不报、
