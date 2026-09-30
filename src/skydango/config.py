@@ -237,7 +237,7 @@ class SocialConfig:
 
     enabled: bool = True
     icons_dir: str = "assets/social"  # 圆圈图标模板，文件名就是类型
-    accept_friends: list[str] = field(default_factory=lambda: ["hand", "hug", "highfive", "piggyback"])
+    accept_friends: list[str] = field(default_factory=lambda: ["hand", "hug", "highfive", "piggyback", "candle"])  # 好友举蜡烛也回应（2026-09-30 用户）
     accept_strangers: list[str] = field(default_factory=lambda: ["candle"])  # 陌生人只接受点火（图标还没录到）
     icon_offset: float = 2.23  # 圆圈中心在名字标签上沿往下 这么多倍标签高度（实测标签 44 px 高、圆圈在下方 98 px）
     max_age: float = 10.0  # 请求是多久之内看到的才处理（后台每 env.interval 秒扫一次）
@@ -456,7 +456,7 @@ class PeekConfig:
     按键、等画面稳定、转不动的判断沿用 [track]。数字都是估的，没在真机标定。"""
 
     enabled: bool = True
-    self_center: float = 0.15  # YOLO 的团子框中心离屏幕中线不超过屏宽的这么多才采信（团子是镜头支点，总在中间）
+    self_center: float = 0.35  # YOLO 的团子框中心离屏幕中线不超过屏宽的这么多才采信（团子是镜头支点，一般在中间；2026-09-30 实测镜头没跟正时偏到 29%）
     too_close: float = 0.5  # 团子框高超过屏高的这么多 = 镜头贴太近，先拉远再转
     too_small: float = 0.25  # 露出来的好友框高不到屏高的这么多 = 看不清，拉近
     clear_overlap: float = 0.3  # 好友框和团子框水平重叠不到好友框宽的这么多 = 露出来了

@@ -42,6 +42,7 @@ def is_request(kind: str | None) -> bool:
     """圆圈里的图标是不是在请求团子做什么（牵手、拥抱、点火……）。"""
     return kind is not None and kind not in PASSIVE
 SCALES = [0.8, 0.9, 1.0, 1.1, 1.2]
+MARGIN_MIN, MARGIN = 0.65, 0.15  # 不到 min_score 时：不低于 MARGIN_MIN 且领先第二种 MARGIN 以上也算认出
 RETRY = 2.0  # 去点之前那一帧没认出图标：隔这么久再试（不进整段冷却）
 
 
@@ -106,12 +107,19 @@ class IconClassifier:
         if region.size == 0:
             return None, 0.0
         mask = cream(region)
-        best, score = None, 0.0
-        for kind, icon in self.icons.items():
-            s = best_match(mask, icon, SCALES).score
-            if s > score:
-                best, score = kind_of(kind), s
-        return (best, score) if score >= self.min_score else (None, score)
+        scores: dict[str, float] = {}
+        for name, icon in self.icons.items():
+            kind = kind_of(name)
+            scores[kind] = max(scores.get(kind, 0.0), best_match(mask, icon, SCALES).score)
+        if not scores:
+            return None, 0.0
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        best, score = ranked[0]
+        second = ranked[1][1] if len(ranked) > 1 else 0.0
+        # 图标会晃（火焰）、背景会透过来：实测清清楚楚的火焰只有 0.74，第二名 0.52。领先够多也算（2026-09-30 今晚 239 个圆圈核对过）
+        if score >= self.min_score or (score >= MARGIN_MIN and score - second >= MARGIN):
+            return best, score
+        return None, score
 
     def find(self, frame: np.ndarray, kind: str, near: tuple[int, int], radius: int = 150) -> tuple[int, int] | None:
         """在 near 附近找某种图标（人可能走动了一点），返回中心；找不到返回 None。"""
@@ -123,9 +131,9 @@ class IconClassifier:
         x2, y2 = min(width, near[0] + radius), min(height, near[1] + radius)
         mask = cream(frame[y1:y2, x1:x2])
         match = max((best_match(mask, icon, SCALES) for icon in icons), key=lambda m: m.score)
-        if match.score < self.min_score:
+        if match.score < min(self.min_score, MARGIN_MIN):
             return None
-        # 同一个位置别的图标更像：说明认错了（比如拥抱被当成牵手）
+        # 同一个位置别的图标更像 / 领先不够：说明认错了（比如拥抱被当成牵手）
         region = frame[max(0, y1 + match.y - 56) : y1 + match.y + 56, max(0, x1 + match.x - 56) : x1 + match.x + 56]
         if self.classify(region)[0] != kind:
             return None

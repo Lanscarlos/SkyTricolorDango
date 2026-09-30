@@ -53,6 +53,27 @@ def test_candle_over_bright_hair_is_recognized():
     assert IconClassifier(ICONS).classify(region)[0] == "candle"
 
 
+def test_clear_winner_just_below_threshold_is_recognized():
+    """实测（2026-09-30 22:56）：陌生人举蜡烛，火焰圈清清楚楚，分数 0.74（门槛 0.75），第二名拥抱只有 0.52 →
+    身体去点时"没认出图标"，团子一直没举蜡烛。领先第二名 0.15 以上、不低于 0.65 也算认出。"""
+    region = cv2.imread("tests/data/candle_just_below_threshold.png")
+    clf = IconClassifier(ICONS)
+    assert clf.classify(region)[0] == "candle"
+    frame = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+    frame[400 - 56 : 400 + 56, 1400 - 56 : 1400 + 56] = region
+    assert clf.find(frame, "candle", (1400, 400)) is not None
+
+
+def test_close_call_between_two_kinds_is_not_recognized():
+    """两种图标分数差不多（都不到门槛）：宁可不认。"""
+    clf = IconClassifier({"hug": ICONS["hug"], "hand": ICONS["hand"]}, min_score=0.99)  # 门槛拉到够不着，只看领先幅度
+    region = scene("hand")[344:456, 1344:1456]
+    assert clf.classify(region)[0] == "hand"  # 自己的模板 ≈ 1.0，远超拥抱
+    blurry = cv2.GaussianBlur(region, (0, 0), 6)
+    kind, score = clf.classify(blurry)
+    assert kind is None or score >= 0.65
+
+
 def draw_ring(frame):
     """触屏模式时左下角的摇杆圈（实测中心约 (230, 847)，半径约 40）。"""
     cv2.circle(frame, (230, 847), 40, (150, 150, 150), 4)
@@ -156,6 +177,13 @@ def test_handle_accepts_friend_requests_with_cooldown_and_skips_strangers():
     assert "牵手" in h.describe(1.0) and "懒洋洋大王" in h.describe(1.0)
     assert h.handle(requests, now=5.0) == []  # 冷却中
     assert h.handle({"路人": Request("路人", "hand", (1400, 400), 5.0)}, now=5.5) == []  # 陌生人的牵手不接
+
+
+def test_friend_holding_up_a_candle_is_accepted_by_default():
+    """用户 2026-09-30：好友举着蜡烛凑过来也回应（以前默认只接陌生人的点火）。"""
+    device = AcceptDevice(kind="candle")
+    h, _ = handler(device)
+    assert h.handle({"懒洋洋大王": Request("懒洋洋大王", "candle", (1400, 400), 0.0)}, now=0.5) == ["懒洋洋大王:candle"]
 
 
 def test_handle_waits_while_typing():

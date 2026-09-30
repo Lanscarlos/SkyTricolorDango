@@ -259,6 +259,26 @@ def test_ring_without_tag_is_a_stranger_request():
     assert STRANGER not in w.requests
 
 
+def test_stranger_request_survives_a_frame_where_the_icon_is_unclear():
+    """实测（2026-09-30 22:56）：火焰图标会晃，这一帧认出、下一帧认不出，请求一闪就没，身体来不及去点。
+    圆圈还在原地、只是这一帧没认出图标：请求留 REQUEST_HOLD 秒；圆圈没了 / 认成别的就马上撤。"""
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    icons = FakeIcons({"next": "candle"})
+    w = watcher(det, icons=icons)
+    w.process(frame(), 0.0, panel_visible=False)
+    icons.kinds["next"] = None  # 这一帧没认出
+    w.process(frame(), 0.3, panel_visible=False)
+    assert w.requests[STRANGER].kind == "candle"
+    w.process(frame(), 2.0, panel_visible=False)  # 一直认不出：过了 1.5 秒就撤
+    assert STRANGER not in w.requests
+    icons.kinds["next"] = "candle"
+    w.process(frame(), 2.1, panel_visible=False)
+    icons.kinds["next"] = "stranger"  # 放下蜡烛了：图标换成了别的
+    w.process(frame(), 2.2, panel_visible=False)
+    assert STRANGER not in w.requests
+
+
 def test_panel_area_and_bottom_bar_are_ignored():
     det = FakeDetector()
     det.frames = [[tag(100, 110), tag(990, 120, y=1000)]]  # 面板里的"- 名字"、底部输入栏
@@ -1275,6 +1295,31 @@ def test_name_leaves_a_player_when_its_tag_shows_up_elsewhere():
     assert [t.data.get("name") for t in w.last_tracks if t.cls == "player"] == [None]
     assert [p.kind for p in w.people(2.0)] == ["stranger"]  # 没了标签，过了 stranger_after 照常算陌生人
     assert w.labels["懒洋洋大王"][0] == 1400
+
+
+def test_player_box_on_a_weak_self_box_is_the_dango():
+    """实测（2026-09-30 21:47，好友站在团子正后方）：团子被认成 player（0.74），self 只有 0.29（低于 conf 被丢），
+    好友的名字标签在团子头顶 → 名字挂到了团子身上，look_person 裁了团子的背影、也不换角度（找不到团子框）。
+    同一个位置有个弱 self 框的 player 就是团子。"""
+    det = FakeDetector()
+    me = Rect(910, 346, 310, 669)
+    det.frames = [[Detection("player", me, 0.74), Detection("self", Rect(900, 340, 325, 669), 0.29),
+                   tag(936, 110, y=72, h=54)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    for t in (0.0, 1.0, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    assert [(t.cls, t.data.get("name")) for t in w.last_tracks if t.box == me] == [("self", None)]
+    assert w.people(2.0) == [] and w.strangers(2.0) == 0
+    assert w.labels["懒洋洋大王"][0] == 936  # 标签照样认得（peek 靠它判断被挡住）
+
+
+def test_weak_self_elsewhere_does_not_turn_a_player_into_the_dango():
+    det = FakeDetector()
+    det.frames = [[player(300), Detection("self", Rect(1300, 400, 90, 220), 0.29), tag(290, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    for t in (0.0, 1.0):
+        w.process(frame(), t, panel_visible=False)
+    assert [(p.kind, p.name) for p in w.people(1.0)] == [("friend", "懒洋洋大王")]
 
 
 def test_people_lists_side_and_distance_left_to_right():
