@@ -162,6 +162,7 @@ class Replayer:
         self._running = True  # 建好就算在回放（面板建好马上交给后台线程跑），run() 结束才变假
         self._step = 0
         self._after = 0
+        self._limit = ""  # 最近一次 /state 说的额度状态
         self.report: Path | None = None
 
     def stop_requested(self) -> None:
@@ -188,12 +189,16 @@ class Replayer:
         self._after = st.get("version", self._after)  # 沙盒重启过时版本号从头来，它会从 0 给
         return st
 
+    def _gave_up(self) -> bool:
+        """点了停止回放、沙盒也已经下线（页面上手动下线）：别再等它安静 / 起来。"""
+        return self._stop.is_set() and not self.api.running()
+
     def _wait_ready(self, sink: list[dict]) -> bool:
         """刚启动：等 /sandbox/state 能回话（身体建好了）。"""
         deadline = self.clock() + self.step_timeout
         self._after = 0
         while self._collect(sink) is None:
-            if self.clock() >= deadline:
+            if self.clock() >= deadline or self._gave_up():
                 return False
             self.sleep(POLL)
         return True
@@ -202,11 +207,22 @@ class Replayer:
         deadline = self.clock() + self.step_timeout
         while True:
             st = self._collect(sink)
+            if st is not None:
+                self._limit = st.get("limit") or ""
             if st is not None and st.get("idle"):
                 return True
-            if self.clock() >= deadline:
+            if self.clock() >= deadline or self._gave_up():
                 return False
             self.sleep(POLL)
+
+    def _wait_note(self, section: dict, ok: bool, what: str) -> None:
+        """等完一步之后往报告里写的话：被停止 / 超时 / 额度用完。"""
+        if self._gave_up():
+            section["notes"].append("回放被停止，沙盒已下线")
+        elif not ok:
+            section["notes"].append(what)
+        if self._limit:
+            section["notes"].append(self._limit)
 
     # ---- 跑 ----
     def run(self) -> Path:
@@ -245,6 +261,8 @@ class Replayer:
                 if self._stop.is_set() and i < len(sc.steps):
                     notes.append(f"回放在第 {i} 步做完后停下了（点了停止回放）")
                     break
+                if self._gave_up():  # 最后一步时被停了：也别再等
+                    break
         except Exception as exc:  # 面板接口出错：报告照样写，写到出错为止
             log.exception("回放出错")
             notes.append(f"回放出错停下了：{exc}")
@@ -270,14 +288,13 @@ class Replayer:
         elif step.action == "online":
             self.api.start(step.value)
             if not self._wait_ready(section["lines"]):
-                section["notes"].append("沙盒没起来（超时）")
-            elif not self._wait_idle(section["lines"]):
-                section["notes"].append(f"超时：{self.step_timeout:.0f} 秒还没安静")
+                self._wait_note(section, False, "沙盒没起来（超时）")
+            else:
+                self._wait_note(section, self._wait_idle(section["lines"]), f"超时：{self.step_timeout:.0f} 秒还没安静")
         else:
             self._op(to_op(step), section)
-            if not self._wait_idle(section["lines"]):
-                section["notes"].append(f"超时：{self.step_timeout:.0f} 秒还没安静")
-        if step.wait > 0 and step.action != "offline":
+            self._wait_note(section, self._wait_idle(section["lines"]), f"超时：{self.step_timeout:.0f} 秒还没安静")
+        if step.wait > 0 and step.action != "offline" and not self._gave_up():
             self.sleep(step.wait)
             self._collect(section["lines"])
         return section
