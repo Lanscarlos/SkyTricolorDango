@@ -84,6 +84,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
+| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines` |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、页面 `static/console.html`（见「管理面板」） |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
@@ -97,6 +98,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `inbox.md` | 随手记：每轮回复后后台单独调一次模型，只挑值得记的新信息，下一句就能用上 | 自动 |
 | `notes.md` | 长期记忆：每 `notes_every` 轮把聊天记录 + inbox 整理进来（合并去重、删过期） | 自动，用户可改 |
 | `history.jsonl` | 逐轮聊天记录，重启读回最近 `history_turns` 轮 | 自动 |
+| `inner/` | 内心账本（见「内心层」）：`people.json` 好友关系卡、`days.jsonl` 每次上线一行、`current.json` 这一次（运行中） | 自动，不用手改 |
 
 每次回复前都重新读这些文件，改了不用重启。只有 `run --live` 读写记忆（dry-run 的回复没真的发出去）。
 
@@ -305,6 +307,22 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **额度**：反射**不占**大脑的动作冷却（`EmotePlayer.perform(name, reflex=True)` 只更新 `last_any`）；自己 `quota_window` 里最多 `quota` 个；任何两个动作之间至少 `min_gap`（4 秒，大脑的 `emote` 也查）
 - 做完放 `reflex` 背景事件（不单独叫醒大脑），status "刚才下意识：…"、网页"反射"；提示词在「说话」一节多一句"身体已经替你冒了输入气泡"。黑屏、技能在跑、有互动请求、面板挡着时不做；dry-run 走 `pretend`
 - `enabled = false` 完全照旧（不开框、不做动作、`gesture` 照旧交给大脑、提示词不变、`emote` 不查 `min_gap`）；管理面板有 `reflex.enabled` / `reflex.bubble` 两个开关
+
+## 内心层（`[inner]`，大脑模式）
+
+设计见 `docs/superpowers/specs/2026-09-30-inner-phase1-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase1.md`。
+"让团子活着"的内在部分，统一放在一个内心层里，分三期：**1 账本**（这一期：关系卡 + 日子，不调模型）→ 2 反思（心情、精力、心愿、日记，接上后果）→ 3 性格（口头禅、老梗、放开太乖的规则）。
+代替了反射 spec 开头列的子项目 2~4。**还没在真机上跑过，数字都是估的**（spec「真机验证」五步）。
+- **关系卡**（只给好友，名字 = friends.md 的 `## 标题`，OCR 错字按最像的好友归）：第一次见、上次在身边、见过几次（离上次超过 `visit_gap` 30 分钟再出现才算新的一次，名字标签闪一下不多算）、
+  哪几天、一共 / 今天待了多久（单圈最多 `max_step` 秒）、说过几句 / 跟团子说的几句（反射的 `addressed()`）、他最后一句
+- **日子**：每次上线一行（开始、结束、见到谁、听到 / 说了几句、下线前大脑写的经过）；live 时每 `save_every` 秒写 `current.json`，被强杀后下次启动补一行"意外断了"；退出时身体收尾后、大脑写经过前先落一次账（`checkpoint`），写经过时被强杀也算正常下线
+- **身体记账**（`Body._ledger_call`，出错只记日志）：`_watch_people` 每圈 `present`（跟踪中也记）、`_heard` 每句 `heard`、`say` 记 `said`、每圈末尾 `save`
+- **大脑看到**：`arrive` 事件"小明 来到身边（第 13 次见；上次 3 天前；今天第一次）。他上次最后说的（3 天前）：「…」"（`return` 不带）；
+  status "身边的好友：小明（今天一起 40 分钟·认识 21 天·一起玩过 9 天）"；系统提示词「日子」（第几次上线、上次下线多久前、上次的经过、很久没见的好友）；「说话」一节加了按交情说话、别报数字
+- **第一次启用**（没有 `people.json`）从 `history.jsonl` 回填：第一次 / 最后一次说话、说过几句、最后一句、哪几天、见过几次（≈ 出现过的回填上线段数）；上线按相邻两轮隔 `session_gap` 分段。
+  `people.json` 坏了就改名 `.bad-<时间>`、空卡开始、**不回填**
+- **只在 `--live` 写盘**；dry-run 内存里照记（status 是真的），回填、补意外结束都只在内存里。`memory show` 多打印关系卡和最近 10 次上线（只读）
+- `enabled = false` 完全照旧；管理面板有 `inner.enabled` 开关。网页 / 管理面板的卡片这一期没加
 
 ## 常用命令
 

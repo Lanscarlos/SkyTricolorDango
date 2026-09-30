@@ -244,6 +244,10 @@ def cmd_memory(cfg: Config, args) -> None:
         ):
             print(f"\n===== {title} =====\n{text or '（空）'}")
         print(f"\n聊天记录 {len(store.history.all())} 轮，其中 {len(store.pending_turns())} 轮还没整理进长期记忆")
+        if cfg.inner.enabled:
+            from .inner import show_lines
+
+            print("\n" + "\n".join(show_lines(cfg.inner, store.dir / "inner", _friend_names(cfg)(), time.time())))
     elif args.action == "update":
         from .brain.claude import ClaudeLlm
 
@@ -1497,6 +1501,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             memory_llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout)
             notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every)
     live_store = None if cfg.reply.dry_run else store
+    ledger = _inner_ledger(cfg, store)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
     env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
@@ -1515,6 +1520,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
         env=env, social=social, emotes=emotes, camera=camera, locomotion=Locomotion(dev, cfg.brain.move_step), friend_checker=friend_checker,
         fallback=fallback, store=live_store, notes=notes, run=run, viewer=viewer, panel=panel, panels=panels, panel_ops=panel_ops,
+        ledger=ledger,
     )
     work = run.path / "brain"
     eyes = Eyes(
@@ -1539,6 +1545,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         base, claude_vars, work / "session", server.url, brain_prompt(
             cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns,
             proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
+            days=_days_prompt(ledger), inner=ledger is not None,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
@@ -1575,13 +1582,49 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             panels.close()
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
         brain_thread.join(timeout=5)
+        if ledger is not None:
+            try:
+                ledger.checkpoint(time.time())  # 写经过可能很慢、被强杀：先落账，别被当成意外断了
+            except Exception:
+                log.exception("内心账本落账出错")
+        summary = ""
         if live_store is not None and not brain_thread.is_alive():
             try:
-                brain.farewell()  # 把这次的经过记进 inbox.md
+                summary = brain.farewell()  # 把这次的经过记进 inbox.md
             except Exception:
                 log.exception("退出前写经过失败")
+        if ledger is not None:
+            try:
+                ledger.close(summary, time.time())  # 这一次记进 days.jsonl（dry-run 不写）
+            except Exception:
+                log.exception("内心账本收尾出错")
         session.close()
         server.stop()
+
+
+def _inner_ledger(cfg: Config, store):
+    """内心账本（spec 2026-09-30-inner-phase1）：[inner] enabled 且有记忆目录才有；出错就不记（团子照常跑）。"""
+    if not cfg.inner.enabled or store is None:
+        return None
+    from .inner import open_ledger
+
+    try:
+        return open_ledger(
+            cfg.inner, store.dir / "inner", _friend_names(cfg), store.history.all, persist=not cfg.reply.dry_run, now=time.time()
+        )
+    except Exception:
+        log.exception("内心账本打不开，这次不记")
+        return None
+
+
+def _days_prompt(ledger) -> str:
+    if ledger is None:
+        return ""
+    try:
+        return ledger.days_prompt(time.time())
+    except Exception:
+        log.exception("拼「日子」一节出错")
+        return ""
 
 
 def _panels(cfg: Config, dev, reader):

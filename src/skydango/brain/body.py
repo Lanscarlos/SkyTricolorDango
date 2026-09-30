@@ -81,6 +81,7 @@ class Body:
         notes=None,  # chat.memory.NotesKeeper
         run=None,  # runlog.RunDir
         panel=None,  # chat.panel.PanelManager：cli 建一个、和镜头 / 轮盘 / 互动共用；None = 自己建
+        ledger=None,  # inner.ledger.Ledger：内心账本（好友关系卡、这次上线）；None = 不记
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
@@ -110,6 +111,8 @@ class Body:
         self.store = store
         self.notes = notes
         self.run_dir = run
+        self.ledger = ledger
+        self._arrive_notes: dict[str, str] = {}  # 算作新见面、还没发 arrive 的好友 → 交情说明（跟踪中攒着，发 arrive / leave 时取走）
         self.clock = clock
         self.sleep = sleep
         self.wall = wall
@@ -199,6 +202,7 @@ class Body:
         self._watch_bubble(self.clock())
         self._watch_idle(self.clock())
         self._fallback(now)
+        self._ledger_call("save", self.wall())
 
     def _show(self, frame, now: float, fresh: list[Message]) -> None:
         from ..vision.viewer import panel_box
@@ -327,6 +331,14 @@ class Body:
         for m in fresh:
             log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             self.chat.append((self.wall(), m.speaker, m.text))
+        if self.ledger is not None:
+            for m in fresh:
+                try:
+                    to_me = self._addressed(m, now)
+                except Exception:  # 好友名单读不了之类：账少记一点，这批聊天照样变成事件
+                    log.exception("判断是不是在跟团子说话出错")
+                    to_me = False
+                self._ledger_call("heard", m.speaker, m.text, to_me, self.wall())
         self.heard = (self.heard + fresh)[-20:]
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
@@ -594,6 +606,8 @@ class Body:
         self._ref_thumb, self._ref_at = t, now
 
     def _watch_people(self, now: float) -> None:
+        near = self.env.nearby(now)  # 只取一次：账本和人来人走看的是同一份名单
+        self._arrive_notes.update(self._ledger_call("present", near, self.wall(), default={}) or {})  # 跟踪中也照记
         if getattr(self.skills.active, "quiet_people", False):
             # 跟踪中转镜头：人进出画面是自己转的，不是人来了 / 走了。不发人来人走的事件、不更新比较基准，技能结束后下一圈照常比较。
             # 转镜头时框变大变小会被当成"走过来"、动作也认不准：攒着的丢掉，免得跟踪结束后冒出过时的事件。
@@ -604,22 +618,23 @@ class Body:
             if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
                 self.panel.bubble_seen(now)
         else:
-            self._watch_comings(now)
+            self._watch_comings(now, near)
         self._watch_requests(now)
 
-    def _watch_comings(self, now: float) -> None:
+    def _watch_comings(self, now: float, near_list: list[str] | None = None) -> None:
         """人来人走：身边有谁、陌生人、正在输入的气泡、有人走过来、对团子做动作。"""
-        near = set(self.env.nearby(now))
+        near = set(self.env.nearby(now) if near_list is None else near_list)
         if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
             self.panel.trigger("arrive", now)
         for name in sorted(near - self._nearby):
             if now - self._left_at.get(name, float("-inf")) <= self.cfg.brain.rejoin:  # 走出画面又回来：不用再打招呼
                 self.events.put("return", f"{name} 回来了", who=name)
             else:
-                self.events.put("arrive", f"{name} 来到身边", who=name)
+                self.events.put("arrive", f"{name} 来到身边{self._arrive_notes.pop(name, '')}", who=name)
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
             self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
+            self._arrive_notes.pop(name, None)
             self._left_at[name] = now
             if name == self.holding:  # 人都走开了，肯定没牵着了
                 self.events.put("released", f"（推测）和 {name} 分开了")
@@ -1035,7 +1050,10 @@ class Body:
         if others:
             parts.append("开着的面板：" + "、".join(p.describe() for p in others))
         near = self.env.nearby(now) if self.env is not None else []
-        parts.append("身边的好友：" + ("、".join(near) if near else "没看到"))
+        friends = "、".join(near)
+        if near and self.ledger is not None:
+            friends = self._ledger_call("status_line", near, self.wall(), default="") or friends
+        parts.append("身边的好友：" + (friends or "没看到"))
         if hasattr(self.env, "strangers"):
             parts.append(f"身边的陌生人：{self.env.strangers(now)} 个")
         closest = self.env.nearest(now) if hasattr(self.env, "nearest") else None
@@ -1130,6 +1148,7 @@ class Body:
         self._said_at = now
         self.reflexes.stir(now)
         self.said.append(full)
+        self._ledger_call("said", self.wall())
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
         if not live:
@@ -1482,6 +1501,16 @@ class Body:
         self._ref_thumb = None
         self._forget_self()
         return result + stopped
+
+    def _ledger_call(self, method: str, *args, default=None):
+        """内心账本（spec 2026-09-30-inner-phase1 §5）：出错只记日志，不影响身体。"""
+        if self.ledger is None:
+            return default
+        try:
+            return getattr(self.ledger, method)(*args)
+        except Exception:
+            log.exception("内心账本出错（%s）", method)
+            return default
 
     def _owner(self, now: float) -> bool:
         """卡洛的 # 命令还在生效：move / emote / camera 放宽限制（设计见 2026-09-27-brain-move-design.md）。"""

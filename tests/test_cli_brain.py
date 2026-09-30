@@ -344,3 +344,45 @@ def test_lan_viewer_has_no_shutdown(monkeypatch):  # 终审：局域网模式别
         assert v.on_shutdown is None
     finally:
         v.stop()
+
+
+def test_run_brain_live_writes_inner_ledger(tmp_path, monkeypatch):
+    from skydango.inner.store import InnerStore
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    (day,) = InnerStore(tmp_path / "memory" / "inner").days()
+    assert day.ended == "normal" and day.summary.startswith("收到：")  # 假大脑把退出前的经过原样回过来
+    assert not (tmp_path / "memory" / "inner" / "current.json").exists()
+    prompt = (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+    assert "## 日子" in prompt and "这是你第一次上线" in prompt and "别报数字" in prompt
+
+
+def test_run_brain_dry_run_inner_prompt_but_no_files(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert not (tmp_path / "memory" / "inner").exists()
+    assert "## 日子" in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+
+
+def test_run_brain_inner_disabled(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False
+    cfg.inner.enabled = False
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert not (tmp_path / "memory" / "inner").exists()
+    assert "## 日子" not in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+
+
+def test_memory_show_prints_inner(tmp_path, capsys):
+    import argparse
+
+    cfg = Config()
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cli.cmd_memory(cfg, argparse.Namespace(action="show"))
+    out = capsys.readouterr().out
+    assert "===== 关系卡 =====" in out and "===== 最近 10 次上线 =====" in out
