@@ -194,3 +194,15 @@ def test_example_config_has_persona_keys():
     raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))["inner"]
     keys = ("persona", "fade_days", "catchphrases_max", "jokes_per_friend", "jokes_max", "opinions_max", "soft_minutes")
     assert {k: raw[k] for k in keys} == {k: getattr(InnerConfig(), k) for k in keys}
+
+
+def test_example_config_has_sandbox():
+    import tomllib
+
+    from skydango.config import SandboxConfig
+
+    raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))["sandbox"]
+    d = SandboxConfig()
+    assert raw == {"dir": d.dir, "port": d.port, "step_timeout": d.step_timeout, "wake_hour": d.wake_hour, "emotes": d.emotes}
+    assert (d.dir, d.port, d.step_timeout, d.wake_hour, d.emotes) == ("sandbox", 19392, 180.0, 9, [])
+    assert load_config(ROOT / "config.example.toml").sandbox.port == 19392

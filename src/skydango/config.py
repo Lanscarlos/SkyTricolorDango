@@ -598,6 +598,17 @@ class ConsoleConfig:
 
 
 @dataclass
+class SandboxConfig:
+    """大脑沙盒（`sandbox`，见 docs/superpowers/specs/2026-09-30-brain-sandbox-design.md §7）。管理面板设置清单不加（很少改）。"""
+
+    dir: str = "sandbox"  # 沙盒目录：memory/、scenarios/、reports/、clock.json（不进 git）
+    port: int = 19392  # 沙盒子进程的接口端口
+    step_timeout: float = 180.0  # 回放时每步最多等多久安静（秒，真实时间）
+    wake_hour: int = 9  # "睡一晚" / "到明早" 拨到几点
+    emotes: list[str] = field(default_factory=list)  # 没有 emotes/ 图标库时假装轮盘上有这些动作
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
@@ -627,6 +638,7 @@ class Config:
     reflex: ReflexConfig = field(default_factory=ReflexConfig)
     inner: InnerConfig = field(default_factory=InnerConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:
