@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -26,6 +27,7 @@ from ..config import Config, console_paths, read_secrets
 from ..vision.viewer import is_local_host, post_guard
 from . import probes
 from .devicecheck import run_checks
+from .inner_view import BUSY_ERROR, forget_offline, inner_state
 from .preflight import preflight
 from .runner import LOCAL, LaunchOptions, Runner, build_command, child_env, probe_status, send_shutdown
 from .settings import SettingsStore
@@ -191,6 +193,49 @@ class ConsoleServer:
         except (urllib.error.URLError, OSError, http.client.HTTPException):  # 连不上、超时、响应体传到一半断了
             return not_running
 
+    # ---- 内心页（spec 2026-09-30-inner-viewer §2）----
+    def _inner_dir_and_friends(self) -> tuple[Path, list[str]]:
+        from ..chat.memory import MemoryStore
+
+        cfg = self.store._fallback()  # console.toml 坏了也能看
+        found = MemoryStore(cfg.reply.memory_dir).friend_names() if cfg.reply.memory_dir else []
+        return Path(cfg.reply.memory_dir) / "inner", list(dict.fromkeys([*found, *cfg.reply.friends]))
+
+    def _live_inner(self) -> dict | None:
+        code, _, raw = self.proxy("GET", "inner", "")
+        if code != 200:
+            return None
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def inner(self) -> tuple[int, dict]:
+        inner_dir, friends = self._inner_dir_and_friends()
+        return 200, inner_state(inner_dir, friends, self.runner.status()["state"], self._live_inner, time.time())
+
+    def forget(self, body: dict) -> tuple[int, dict]:
+        state = self.runner.status()["state"]
+        if state in ("starting", "stopping"):  # 两边可能同时改 persona.json
+            return 409, {"ok": False, "error": BUSY_ERROR}
+        if state == "running":
+            code, _, raw = self.proxy("POST", "inner/forget", "", json.dumps(body, ensure_ascii=False).encode())
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                data = None
+            if not isinstance(data, dict):
+                return 503, {"ok": False, "error": "团子没回应，稍后再试"}
+            if not data.get("ok") and "error" not in data:
+                data["error"] = data.get("text") or "团子没删成"
+            return code, data
+        inner_dir, _ = self._inner_dir_and_friends()
+        try:
+            return 200, forget_offline(inner_dir, body, time.time())
+        except ValueError as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
     # ---- HTTP ----
     def start(self) -> str:
         """起服务（后台线程），返回地址。端口被占用抛 OSError。"""
@@ -210,6 +255,8 @@ class ConsoleServer:
                     self._json(200, console.runner.logs(self._after(url)))
                 elif url.path == "/api/settings":
                     self._json(200, console.store.view())
+                elif url.path == "/api/inner":
+                    self._json(*console.inner())
                 elif url.path.startswith("/live/"):
                     self._send(*console.proxy("GET", url.path[len("/live/"):], url.query))
                 else:
@@ -224,6 +271,7 @@ class ConsoleServer:
                     "/api/run/start": console.start_run,
                     "/api/run/stop": lambda body: (console.runner.stop(), (200, {"ok": True}))[1],
                     "/api/orphan/stop": lambda body: console.stop_orphan(),
+                    "/api/inner/forget": console.forget,
                 }
                 if path not in routes and path != "/live/control":
                     self._drain()
