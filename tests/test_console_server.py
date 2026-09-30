@@ -369,3 +369,18 @@ def test_live_proxy_timeout_is_503(srv):
 def test_cards_show_mood_and_energy():  # 终审 I8
     line = next(l for l in _console_page().splitlines() if l.startswith("const CARDS="))
     assert '"心情"' in line and '"精力"' in line
+
+
+def test_page_has_sandbox_tab():  # 沙盒计划 Task 8（spec 2026-09-30-brain-sandbox §5）
+    page = _console_page()
+    inner, sandbox, settings = (page.index(f'data-tab="{t}"') for t in ("inner", "sandbox", "settings"))
+    assert inner < sandbox < settings  # 「内心」后面
+    for id_ in ("tab-sandbox", "sb-start", "sb-clock", "sb-chat", "sb-say", "sb-now", "sb-nearby", "sb-scene", "sb-scenario", "sb-brain",
+                "inner-source-toggle"):
+        assert f'id="{id_}"' in page, id_
+    assert 'src="static/brain_trace.js"' in page and 'href="static/brain_trace.css"' in page
+    assert 'mountBrainTrace($("sb-brain"),"sandbox/brain")' in page.replace(" ", "")
+    for api in ("api/sandbox/start", "api/sandbox/stop", "api/sandbox/reset", "api/sandbox/info", "sandbox/state", "sandbox/op"):
+        assert api in page
+    assert "会用 memory/ 覆盖沙盒记忆" in page  # 重置记忆的确认框
+    assert page.index("<script src=") < page.index("<script>")  # 共用脚本在内联脚本前面（test_page_script_parses 只取内联那段）
