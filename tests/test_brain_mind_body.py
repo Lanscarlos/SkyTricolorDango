@@ -51,7 +51,7 @@ def test_mood_scales_proactive_quota(clock, tmp_path):
     assert b.occasion().left == 2  # 安静 2
     b.mind.mood = Mood("低落", "闷", 0)
     assert b.occasion().left == 1  # 安静 2 × 0.5
-    assert b.effects() == Effects(quota=0.5)
+    assert b.effects() == Effects(quota=0.5, wander=1.5)
 
 
 def test_grudge_target_no_bubble_others_yes(clock, tmp_path):  # Review Focus 4
