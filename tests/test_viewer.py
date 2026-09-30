@@ -401,26 +401,68 @@ def test_page_has_typing_colour_and_legend():
     assert 'typing:"#e879f9"' in PAGE and 'typing:"正在输入"' in PAGE
 
 
+def _trace_js() -> str:
+    """大脑时间线抽成了共用的 vision/static/brain_trace.js（沙盒计划 Task 7）：时间线的检查改看它。"""
+    import importlib.resources
+
+    return (importlib.resources.files("skydango.vision") / "static" / "brain_trace.js").read_text(encoding="utf-8")
+
+
 def test_page_has_brain_section():
     from skydango.vision.viewer import PAGE
 
-    for part in ('id="brain"', 'id="brain-state"', 'id="brain-turns"', 'id="brain-acted"', "brain?after="):
-        assert part in PAGE
+    assert 'id="brain"' in PAGE and 'mountBrainTrace($("brain"),"brain")' in PAGE
+    script = _trace_js()
+    for part in ("brain-state", "brain-turns", "brain-acted", "?after="):
+        assert part in script
 
 
 def test_page_never_uses_innerhtml_for_brain_data():
-    from skydango.vision.viewer import PAGE
-
-    assert "// ---- brain ----" in PAGE
-    script = PAGE.split("// ---- brain ----", 1)[1]
-    assert "innerHTML" not in script
+    assert "innerHTML" not in _trace_js()
 
 
 def test_page_restarts_brain_list_when_program_restarts():
+    assert "d.boot" in _trace_js()  # 换了进程（boot 变了）就清空、从头拉
+
+
+def test_page_uses_shared_brain_trace_script():
     from skydango.vision.viewer import PAGE
 
-    script = PAGE.split("// ---- brain ----", 1)[1]
-    assert "d.boot" in script  # 换了进程（boot 变了）就清空、从头拉
+    assert "const B={turns:" not in PAGE and "function brainMerge" not in PAGE  # 不再内联一份
+    assert 'src="brain_trace.js"' in PAGE and 'href="brain_trace.css"' in PAGE
+    assert "function mountBrainTrace" in _trace_js()
+
+
+def test_viewer_serves_brain_trace_assets():
+    v = viewer()
+    url = v.start()
+    try:
+        with urllib.request.urlopen(url + "brain_trace.js", timeout=5) as r:
+            assert r.status == 200 and "javascript" in r.headers["Content-Type"]
+            assert "function mountBrainTrace" in r.read().decode("utf-8")
+        with urllib.request.urlopen(url + "brain_trace.css", timeout=5) as r:
+            assert r.status == 200 and "text/css" in r.headers["Content-Type"] and b".turn" in r.read()
+    finally:
+        v.stop()
+
+
+def test_brain_trace_script_parses(tmp_path):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("没有 node")
+    path = tmp_path / "brain_trace.js"
+    path.write_text(_trace_js(), encoding="utf-8")
+    assert subprocess.run([node, "--check", str(path)]).returncode == 0
+
+
+def test_viewer_page_script_parses(tmp_path):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("没有 node")
+    [script] = re.findall(r"<script>(.*?)</script>", PAGE, re.S)
+    path = tmp_path / "viewer.js"
+    path.write_text(script, encoding="utf-8")
+    assert subprocess.run([node, "--check", str(path)]).returncode == 0
 
 
 def test_brain_endpoint_survives_lone_surrogate():
@@ -445,9 +487,7 @@ def _node(script: str) -> str:
 
 def test_newest_turn_stays_open_until_the_next_one_starts():
     # 边跑边看：正在看的那一轮收尾时不能自己收起；下一轮开始后，没点过的旧轮次收起；点过的按用户的来
-    from skydango.vision.viewer import PAGE
-
-    [fn] = [line for line in PAGE.splitlines() if line.startswith("function wantOpen(")]
+    [fn] = [line for line in _trace_js().splitlines() if line.startswith("function wantOpen(")]
     out = _node(fn + """
 const live={id:5,end:null},done={id:5,end:1},old={id:4,end:1};
 console.log(JSON.stringify([wantOpen(live,undefined,5),wantOpen(done,undefined,5),wantOpen(old,undefined,5),

@@ -290,6 +290,14 @@ def test_page_script_parses(tmp_path):
     assert subprocess.run([node, "--check", str(path)]).returncode == 0
 
 
+def test_serves_shared_brain_trace_assets(srv):  # 沙盒页的大脑时间线和 viewer 用同一份脚本
+    for name, kind, word in (("brain_trace.js", "javascript", "function mountBrainTrace"), ("brain_trace.css", "text/css", ".turn")):
+        with urllib.request.urlopen(srv.url + "static/" + name, timeout=5) as r:
+            assert r.status == 200 and kind in r.headers["Content-Type"] and word in r.read().decode("utf-8")
+    assert request(srv.url + "static/../server.py")[0] == 404
+    assert request(srv.url + "static/nope.js")[0] == 404
+
+
 def test_start_refused_while_orphan_holds_port(tmp_path, upstream):  # 终审 Important 3：别起第二个团子
     s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n')
     try:
