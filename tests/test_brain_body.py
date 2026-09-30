@@ -2191,3 +2191,10 @@ def test_peek_ignores_sweep_self_box_after_zooming(clock):  # 转圈认出的团
 def test_status_hidden_note_depends_on_whether_peek_can_run(clock):
     b, _, _ = peek_body(clock, [(BEHIND_TAG, None)], live=False)
     assert "被你挡住：小明" in b.status() and "会自己换角度" not in b.status()
+
+
+def test_peek_lost_after_undoing_zoom_still_uses_revealed_view(clock):  # 露出来过、拉近把人推出画面、退回后仍看不到
+    small = Rect(1300, 500, 60, 150)
+    b, _, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 460, 120, 36), small), (None, None)])
+    _, note = b.look_person("小明")
+    assert "没看清" not in note["text"] and "按名字标签估的" not in note["text"]

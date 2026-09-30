@@ -802,7 +802,7 @@ class Body:
             if pressed:
                 self._ref_thumb = None  # 自己转的，不算画面大变
                 self._forget_self()
-        if reason == "budget" and planner.enlarging:  # 已经露出来了，只是还在调大小
+        if reason in ("budget", "lost") and planner.enlarging:  # 已经露出来过（调大小时用完预算 / 拉近把人推没了）：用露出来那一帧
             reason = "revealed"
         where = f"镜头：{self.camera.describe()}，要转回去用 camera_reset" if pressed else ""
         if reason == "revealed" and last is not None:
