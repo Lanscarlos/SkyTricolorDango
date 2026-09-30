@@ -122,6 +122,7 @@ class Brain:
 
     def wake(self, now: float, reason: str) -> None:
         self.last_wake = now
+        began = self.clock()  # 取事件之前：之后身体才读到的消息不在这一轮里（last_turn 用）
         events = self.events.drain()
         text = self.message(now, events)
         self.toolbox.begin_turn()
@@ -139,7 +140,7 @@ class Brain:
             raise
         finally:
             self.chat_turn = False
-            self.last_turn = (start, self.clock())
+            self.last_turn = (began, self.clock())
         self._trace("finish", result, self.clock() - start)
         self._ok()
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1

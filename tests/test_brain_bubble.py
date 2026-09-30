@@ -149,3 +149,66 @@ def test_no_bubble_when_brain_offline(clock):
     b.brain_offline = lambda now: True
     called(b)
     assert OPEN not in dev.calls
+
+
+def test_bubble_stamped_after_box_opens(clock):
+    """审查 I1：开框时间记在按下 Enter 之后（晚于这批消息放进事件队列），不是这一圈开始的时间。"""
+    b, dev, _, _ = rb(clock)
+    press = dev.hw_key
+
+    def slow(code):
+        clock.advance(0.5)
+        press(code)
+
+    dev.hw_key = slow
+    start = clock()
+    called(b)
+    assert b._bubble_at is not None and b._bubble_at > start
+
+
+def test_second_message_restamps_bubble(clock):
+    """审查 I1：框开着又来一句叫团子的：回第一句的那一轮没说话结束时，别把框关了。"""
+    b, dev, _, _ = rb(clock)
+    called(b)
+    first = b._bubble_at
+    clock.advance(2)
+    called(b, "团子？")
+    b.brain_turn = lambda: (first + 1, clock())  # 回第一句的那一轮，在第二句之前开始
+    clock.advance(1)
+    b.step()
+    assert b.sender.opened
+
+
+def test_no_bubble_while_request_visible(clock):
+    """审查 I2：挂着一个不会接受的请求（比如被拒的）时不开框，免得开了马上又被 social 关掉、来回闪。"""
+    social = FakeSocial()
+    b, dev, _, env = rb(clock, social=social)
+    env.requests = {"小明": Request("小明", "hug", (5, 5), clock())}
+    b.step()
+    called(b)
+    called(b, "团子？")
+    assert OPEN not in dev.calls and BACK not in dev.calls
+
+
+def test_no_bubble_during_blackout(clock):
+    b, dev, _, _ = rb(clock)
+    b.blackout = True
+    b._watch_screen = lambda frame, now: None  # 保持黑屏状态
+    called(b)
+    assert OPEN not in dev.calls
+
+
+class BlockingPanels:  # 玩家自己开着一个（没核对的）面板，挡着 say
+    cards = {}
+
+    def blocking(self, action):
+        return [object()] if action == "say" else []
+
+
+def test_no_bubble_when_panel_blocks_say(clock):
+    """审查 I3：say 会被挡着的面板拦下，开框也一样，不在别的面板上按 Enter。"""
+    b, dev, _, _ = rb(clock)
+    b.panels = BlockingPanels()
+    b._watch_panels = lambda frame, now: None
+    called(b)
+    assert OPEN not in dev.calls

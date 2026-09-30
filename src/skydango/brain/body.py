@@ -365,6 +365,10 @@ class Body:
         if self.skills.active is not None:  # 技能在按方向键：框开着按键会变成打字，动作也会打断它
             log.debug("正在%s，不冒输入气泡", self.skills.active.goal)
             return
+        busy = self._bubble_blocked()
+        if busy:  # 开了也会马上被关掉（气泡来回闪），或者会在别的面板上按 Enter
+            log.debug("不冒输入气泡：%s", busy)
+            return
         name = self.reflexes.pick_addressed(now, self._wheel())
         if name:
             self._reflex_emote(name, f"有人叫你，你下意识{name}", now)
@@ -374,6 +378,16 @@ class Body:
             log.info("[dry-run] 会冒输入气泡（有人在跟团子说话）")
             return
         self._open_bubble(now)
+
+    def _bubble_blocked(self) -> str:
+        """这会儿不该开框 / 做反射动作的原因；空 = 可以。"""
+        if self.blackout:
+            return "画面黑着"
+        if self._requests:  # social 要点圆圈会先关框；接不了的请求挂着时开了又关会来回闪
+            return "有互动请求挂着"
+        if self.panels is not None and self.panels.blocking("say"):
+            return "有面板挡着"
+        return ""
 
     def _wheel(self) -> list[str]:
         return self.emotes.on_wheel() if self.emotes is not None else []
@@ -433,7 +447,9 @@ class Body:
         return f"{text}（{now - t:.0f} 秒前）" if now - t <= 300 else ""
 
     def _open_bubble(self, now: float) -> bool:
-        if self.sender.opened:  # 上一句还没想完，框还开着
+        if self.sender.opened:  # 上一句还没想完，框还开着：按这一句重新计时（回上一句的那一轮结束时别关）
+            if self._bubble_at is not None:
+                self._bubble_at = self.clock()
             return True
         try:
             self.panel.before_speak(now)  # 先开面板再按 Enter：说完对方的回复马上读得到
@@ -442,7 +458,7 @@ class Body:
             log.warning("冒输入气泡失败", exc_info=True)
             return False
         if opened:
-            self._bubble_at = now
+            self._bubble_at = self.clock()  # 按下 Enter 之后（晚于这批消息进事件队列）：取事件更早的那一轮结束时不会关它
             log.info("有人在跟团子说话：先冒输入气泡")
         return opened
 

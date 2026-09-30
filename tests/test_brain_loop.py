@@ -307,3 +307,18 @@ def test_last_turn_records_start_and_end(clock):
     assert brain.last_turn == (start, start + 5.0)
     brain.wake(clock(), "heartbeat")  # 失败的一轮也记
     assert brain.last_turn == (start + 5.0, start + 10.0)
+
+
+def test_last_turn_starts_before_draining_events(clock):
+    """审查 I1：拼消息（status 要等身体线程）期间身体读到的新消息不在这一轮里，这一轮的开始要早于它。"""
+    brain, _, tb, _ = make(clock, FakeSession())
+    status = tb.status
+
+    def slow_status():
+        clock.advance(2.0)  # body.call(status) 要等身体线程下一圈
+        return status()
+
+    tb.status = slow_status
+    start = clock()
+    brain.wake(start, "events")
+    assert brain.last_turn[0] == start
