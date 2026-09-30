@@ -43,7 +43,7 @@
   - `lit(track_id, pos) -> bool | None`（身体核实用，全靠 YOLO）：这条轨迹现在是 `player` 且连续 `lit_frames`（3）帧都是 → True；
     还是 `player_unlit` → False；轨迹没了（闪光时 IoU 断掉换了 id）→ 看 `pos` 附近（框中心距离 < 1 倍框宽）这 `light_timeout` 内新出现的轨迹：
     是 `player` 且没挂名字标签（不是路过的好友）→ True，没有 → None（人走了 / 跟丢了）。`Tracker` 的 `cross` 组本来就让 `player` ↔ `player_unlit` 翻转时 id 不变，换 id 只是兜底
-  - **已处理过的轨迹不再出请求**：身体点过（不管成没成）调 `env.mark_lit(track_id)`，感知层记在一个集合里，轨迹没了就清掉
+  - **已处理过的轨迹不再出请求**：身体点过（不管成没成）调 `env.mark_tried(track_id)`，感知层记在一个集合里，轨迹没了就清掉
 - 孤儿圆圈（`social_ring` 上面没名字标签）被认成 `candle`、但外环是暗的、没有亮描边 → 不当成举蜡烛的请求（YOLO 以后可能也会框到圆盘）；归到它下面的黑影轨迹上按上面处理
 - `Request` 加一个可选字段 `track: int | None = None`，别的请求不填
 
@@ -55,13 +55,13 @@
 - 大脑的 `set_request_policy` 的 kind 多一个 `light`（`REQUEST_KINDS`、工具说明、提示词「互动请求」一节各加一句："light 点亮陌生人：没点火的陌生人站到你身边时身体会自动举蜡烛给他点火，不想点可以关"）；只对陌生人
 - 状态机（每圈 `_watch_light(now)`）：
   1. **闲着**：有 `light` 请求、`allowed`、`candle_slot` 格子上有东西 → 过护栏（同反射动作：黑屏、技能在跑、面板挡着、输入框开着、牵着手、别的互动请求挂着都先不做；`clear_view("emote")` 过不了不做）→
-     按 `candle_slot`（3）键举蜡烛（`_held("wheel")`，走 `wheel` 按数字键的同一条路），记下 `raised_at`、目标轨迹，`env.mark_lit(track)`
+     按 `candle_slot`（3）键举蜡烛（`_held("wheel")`，走 `wheel` 按数字键的同一条路），记下 `raised_at`、目标轨迹，`env.mark_tried(track)`
   2. **举着**：`env.lit(track, pos)` 为 True → 成功，进"等鞠躬"；过了 `light_timeout`（8 s）还不是 True（还是黑的 / 人走了）→ 失败，按 3 放下蜡烛（只有 `emotes.last_any` 还早于 `raised_at`，也就是之后没做过动作时才按），
      WARNING 日志"举了蜡烛 8 秒他还是黑的（或者走了），不再点他"
   3. **等鞠躬**：见 §5
 - 举着的这段时间身体的反射动作（`_reflex_emote`）先不做（动作会放下蜡烛，点火就断了）；大脑的 `emote` 照做，做了就当蜡烛已经放下（按 `last_any` 判断），之后不再按 3
 - 不点屏幕：不借聊天面板、不切触屏模式（数字键和面板的关系按现有动作的做法，见 `clear_view("emote")`）
-- dry-run：不按键，日志"[dry-run] 会举蜡烛点亮身边的陌生人"，`mark_lit` 照记（免得每圈都打）
+- dry-run：不按键，日志"[dry-run] 会举蜡烛点亮身边的陌生人"，`mark_tried` 照记（免得每圈都打）
 - 普通 Agent（`run --no-brain`）不做（没有身体）
 
 ## 5. 点完鞠躬（`brain/body.py`，只在大脑模式）
@@ -99,7 +99,7 @@
 
 - 单元测试（`python -m pytest -q`）：
   - `candle.py`：合成画面（黑色人影 + 深色实心圆 + 贴上 `candle.png` 的火焰）认得出；白圈 + 火焰不算；圆盘里换成 `stranger.png` 不算
-  - 感知层：同一条黑影轨迹圆盘不到 `light_after` 不出请求、到了出一个；中间断 0.5 s 不重置、断 2 s 重置；`mark_lit` 之后不再出；
+  - 感知层：同一条黑影轨迹圆盘不到 `light_after` 不出请求、到了出一个；中间断 0.5 s 不重置、断 2 s 重置；`mark_tried` 之后不再出；
     `lit()`：同一条轨迹翻成 `player` 满 `lit_frames` 帧 → True、不满 → False；轨迹没了、原地冒出没名字的 `player` → True；原地没人 → None；冒出来的是挂着好友名字的 → 不算
   - 身体（假设备 + 假 env）：有 `light` 请求 → 按一次 3；`lit` 为真 → 过 `bow_delay` 鞠躬、不再按 3；超时 → 按 3 放下、不鞠躬；
     中途大脑做了动作 → 超时也不按 3；鞠躬一直做不成 → 放弃时按 3；规则关掉 `light` / dry-run / 牵着手 / 3 号格空着 → 不按；不点屏幕；不发 `request` 事件
