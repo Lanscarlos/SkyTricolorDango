@@ -15,6 +15,7 @@ import queue
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -234,9 +235,12 @@ class NotesKeeper:
     - 整理：每攒够 every 轮，让模型把新的聊天记录和 inbox 归并进 notes.md
     """
 
-    def __init__(self, llm, store: MemoryStore, persona: str, every: int = 15, background: bool = True) -> None:
+    def __init__(
+        self, llm, store: MemoryStore, persona: str, every: int = 15, background: bool = True, wall: Callable[[], float] = time.time,
+    ) -> None:
         self.llm = llm
         self.store = store
+        self.wall = wall  # 整理时告诉模型"今天是"哪天：沙盒传模拟时钟
         self.persona = persona
         self.every = every
         self.background = background
@@ -302,7 +306,7 @@ class NotesKeeper:
             return False
         persona = self.store.profile() or self.persona
         content = (
-            f"今天是 {format_date(time.time())}\n\n"
+            f"今天是 {format_date(self.wall())}\n\n"
             f"## 人设（参考，不用记）\n{persona or '（无）'}\n\n"
             f"## 好友资料（参考，不用记）\n{self.store.friends() or '（无）'}\n\n"
             f"## 现有笔记\n{self.store.notes() or '（空）'}\n\n"

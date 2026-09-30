@@ -30,6 +30,7 @@ from . import probes
 from .devicecheck import run_checks
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
 from .preflight import preflight
+from .replay import KEEP_NOTE, Recorder, Replayer, safe_name
 from .runner import LOCAL, LaunchOptions, Runner, build_command, build_sandbox_command, child_env, probe_status, send_shutdown
 from .settings import SettingsStore
 
@@ -102,6 +103,11 @@ class ConsoleServer:
         self._device_lock = threading.Lock()  # 检测设备期间不让启动（两边会同时碰设备）
         self._checking = False
         self._server: ThreadingHTTPServer | None = None
+        # 沙盒剧本（spec 2026-09-30-brain-sandbox §6）：录制和回放都在面板进程里
+        self.recorder = Recorder()
+        self.replayer: Replayer | None = None
+        self.last_report: str | None = None
+        self._replay_lock = threading.Lock()
 
     # ---- 各个接口 ----
     def _busy(self) -> bool:
@@ -233,11 +239,24 @@ class ConsoleServer:
     def sandbox_dir(self) -> Path:
         return Path(self.store._fallback().sandbox.dir)
 
+    def replaying(self) -> bool:
+        r = self.replayer
+        return r is not None and bool(r.progress().get("running"))
+
     def start_sandbox(self, body: dict) -> tuple[int, dict]:
         try:
             start = _start_choice(body)
         except ValueError as exc:
             return 400, {"ok": False, "text": str(exc)}
+        if self.replaying():
+            return 409, {"ok": False, "problems": ["正在回放剧本，先停止回放"]}
+        code, res = self.launch_sandbox(start)
+        if code == 200:
+            self.recorder.started(start)  # 第一次启动是剧本的 [start]，之后记成 online
+        return code, res
+
+    def launch_sandbox(self, start: str) -> tuple[int, dict]:
+        """起沙盒子进程（页面启动和回放共用；只有页面启动才记进录制）。"""
         port = self.sandbox_port()
         with self._device_lock:
             problems: list[str] = []
@@ -252,6 +271,9 @@ class ConsoleServer:
             if not self._busy() and probe_status(port):
                 orphan = True
                 problems.append(f"{port} 端口上有上次留下的沙盒，先点「让它退出」")
+            if not self._busy() and probe_status(self.child_port):  # 上次留下的团子：共用令牌，别两个大脑同时在线
+                self.orphan = True
+                problems.append(f"{self.child_port} 端口上有上次留下的团子，先在总览让它退出")
             try:
                 secrets = read_secrets(console_paths(self.config_path)[1])
             except ValueError as exc:
@@ -268,18 +290,34 @@ class ConsoleServer:
     def stop_sandbox(self) -> tuple[int, dict]:
         if _kind(self.runner.status()) != "sandbox":
             return 409, {"ok": False, "text": "沙盒没在运行"}
+        if self.replaying():  # 回放中手动下线：回放这一步做完就停
+            self.replayer.stop_requested()
+        elif self._state_of("sandbox") in ("starting", "running"):
+            self.recorder.stopped()
         self.runner.stop()
         return 200, {"ok": True}
 
     def reset_sandbox(self) -> tuple[int, dict]:
+        if self.replaying():
+            return 409, {"ok": False, "text": "正在回放剧本，先停止回放"}
+        code, res = self._reset_sandbox()
+        if code == 200:
+            self.recorder.new(reset=True)
+        return code, res
+
+    def _reset_sandbox(self) -> tuple[int, dict]:
         from .sandbox_view import reset
 
-        if self._state_of("sandbox") in BUSY:
-            return 409, {"ok": False, "text": "先下线沙盒再重置记忆"}
-        if probe_status(self.sandbox_port()):
-            return 409, {"ok": False, "text": "上次留下的沙盒还在跑（占着沙盒端口），先让它退出"}
-        cfg = self.store._fallback()
-        reset(self.sandbox_dir(), Path(cfg.reply.memory_dir or "memory"))
+        with self._device_lock:  # 和起沙盒互斥：锁里再看一次状态，别一边删目录一边起子进程
+            if self._state_of("sandbox") in BUSY:
+                return 409, {"ok": False, "text": "先下线沙盒再重置记忆"}
+            if probe_status(self.sandbox_port()):
+                return 409, {"ok": False, "text": "上次留下的沙盒还在跑（占着沙盒端口），先让它退出"}
+            cfg = self.store._fallback()
+            try:
+                reset(self.sandbox_dir(), Path(cfg.reply.memory_dir or "memory"))
+            except ValueError as exc:  # 沙盒目录和真 memory 重合
+                return 409, {"ok": False, "text": str(exc)}
         return 200, {"ok": True, "text": "沙盒记忆用 memory/ 重置好了"}
 
     def sandbox_info(self) -> dict:
@@ -309,7 +347,108 @@ class ConsoleServer:
             return not_running
 
     def sandbox_op(self, raw: bytes) -> tuple[int, str, bytes]:
-        return self.sandbox_proxy("POST", "op", "", raw)
+        """页面的手动操作：回放中拒绝；沙盒收下了（200）就记进录制。"""
+        if self.replaying():
+            body = {"ok": False, "text": "正在回放剧本，先停止回放再手动操作"}
+            return 409, "application/json; charset=utf-8", json.dumps(body, ensure_ascii=False).encode()
+        code, ctype, out = self.sandbox_proxy("POST", "op", "", raw)
+        if code == 200:
+            try:
+                req = json.loads(raw.decode("utf-8"))
+                if isinstance(req, dict):
+                    self.recorder.record(req)
+            except ValueError:
+                pass
+        return code, ctype, out
+
+    # ---- 剧本（spec §6）----
+    def scenarios_dir(self) -> Path:
+        return self.sandbox_dir() / "scenarios"
+
+    def list_scenarios(self) -> dict:
+        from .scenario import ScenarioError, load
+
+        out = []
+        folder = self.scenarios_dir()
+        for path in sorted(folder.glob("*.toml")) if folder.is_dir() else []:
+            item = {"name": path.stem, "note": "", "steps": 0, "memory": "", "error": ""}
+            try:
+                sc = load(path)
+                item.update(note=sc.note, steps=len(sc.steps), memory=sc.start.memory)
+            except ScenarioError as exc:
+                item["error"] = str(exc)
+            out.append(item)
+        return {"scenarios": out, "dir": str(folder)}
+
+    def save_scenario(self, body: dict) -> tuple[int, dict]:
+        import tomllib
+
+        from .scenario import ScenarioError, dumps, parse
+
+        name, note = body.get("name"), body.get("note", "")
+        if not safe_name(name):
+            return 400, {"ok": False, "text": "剧本名只许中英文、数字和 - _（最多 40 个字）"}
+        if not isinstance(note, str):
+            return 400, {"ok": False, "text": "note 要是文字"}
+        if not self.recorder.describe()["steps"]:
+            return 400, {"ok": False, "text": "还没录到操作（启动沙盒、做点什么之后再存）"}
+        path = self.scenarios_dir() / f"{name}.toml"
+        if path.exists() and body.get("overwrite") is not True:
+            return 409, {"ok": False, "exists": True, "text": f"已经有叫「{name}」的剧本了，要覆盖吗？"}
+        scenario = self.recorder.snapshot(name, note.strip())
+        text = dumps(scenario)
+        try:
+            parse(tomllib.loads(text), name)  # 存之前自己读一遍：录下来的也得是能回放的
+        except (ScenarioError, tomllib.TOMLDecodeError) as exc:
+            return 400, {"ok": False, "text": f"录下来的操作存不成剧本：{exc}"}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        warning = KEEP_NOTE if scenario.start.memory == "keep" else ""
+        return 200, {"ok": True, "path": str(path), "warning": warning}
+
+    def start_replay(self, body: dict) -> tuple[int, dict]:
+        from .scenario import ScenarioError, load
+
+        name = body.get("name")
+        if not safe_name(name):
+            return 400, {"ok": False, "text": "剧本名不对"}
+        path = self.scenarios_dir() / f"{name}.toml"
+        if not path.is_file():
+            return 404, {"ok": False, "text": f"找不到剧本「{name}」"}
+        try:
+            scenario = load(path)
+        except ScenarioError as exc:
+            return 400, {"ok": False, "text": str(exc)}
+        with self._replay_lock:
+            if self.replaying():
+                return 409, {"ok": False, "text": "已经在回放了"}
+            other = self._other_busy("sandbox")
+            if other:
+                return 409, {"ok": False, "text": other}
+            cfg = self.store._fallback()
+            replayer = Replayer(_SandboxApi(self), scenario, self.sandbox_dir() / "reports", cfg.sandbox.step_timeout,
+                                cfg.console.stop_timeout)
+            self.replayer = replayer
+            self.recorder.new()  # 回放的操作不录；回放完接着手动玩的从这里重新录
+        threading.Thread(target=self._run_replay, args=(replayer,), name="console-replay", daemon=True).start()
+        return 200, {"ok": True}
+
+    def _run_replay(self, replayer: Replayer) -> None:
+        try:
+            self.last_report = str(replayer.run())
+        except Exception:
+            log.exception("回放出错")
+
+    def stop_replay(self) -> tuple[int, dict]:
+        if not self.replaying():
+            return 409, {"ok": False, "text": "没在回放"}
+        self.replayer.stop_requested()
+        return 200, {"ok": True, "text": "这一步做完就停"}
+
+    def replay_state(self) -> dict:
+        r = self.replayer
+        progress = r.progress() if r is not None else {"running": False, "step": 0, "total": 0, "name": ""}
+        return {"progress": progress, "report": self.last_report, "recording": self.recorder.describe()}
 
     def proxy(self, method: str, rest: str, query: str, body: bytes | None = None) -> tuple[int, str, bytes]:
         """转发到子进程的 viewer；没在运行 / 连不上 / 超时都是 503（子进程可能刚好退出）。"""
@@ -391,8 +530,9 @@ class ConsoleServer:
         if probe_status(self.sandbox_port()):
             return 409, {"ok": False, "error": "上次留下的沙盒还在跑（占着沙盒端口），先让它退出再删"}
         try:
+            # "别处在跑"按真实时间比 mtime；流水账这一条记沙盒时间（和沙盒自己记的排在一条线上）
             return 200, forget_offline(self.sandbox_dir() / "memory" / "inner", clean, time.time(),
-                                       self.store._fallback().inner.save_every * 3)
+                                       self.store._fallback().inner.save_every * 3, at=self._sandbox_now())
         except ValueError as exc:
             return 400, {"ok": False, "error": str(exc)}
 
@@ -460,6 +600,10 @@ class ConsoleServer:
                     self._json(*console.inner(parse_qs(url.query).get("source", ["dango"])[0]))
                 elif url.path == "/api/sandbox/info":
                     self._json(200, console.sandbox_info())
+                elif url.path == "/api/sandbox/scenarios":
+                    self._json(200, console.list_scenarios())
+                elif url.path == "/api/sandbox/replay":
+                    self._json(200, console.replay_state())
                 elif url.path.startswith("/live/"):
                     self._send(*console.proxy("GET", url.path[len("/live/"):], url.query))
                 elif url.path.startswith("/sandbox/"):
@@ -484,6 +628,10 @@ class ConsoleServer:
                     "/api/sandbox/start": console.start_sandbox,
                     "/api/sandbox/stop": lambda body: console.stop_sandbox(),
                     "/api/sandbox/reset": lambda body: console.reset_sandbox(),
+                    "/api/sandbox/save": console.save_scenario,
+                    "/api/sandbox/replay": console.start_replay,
+                    "/api/sandbox/replay/stop": lambda body: console.stop_replay(),
+                    "/api/sandbox/record/new": lambda body: (console.recorder.new(), (200, {"ok": True}))[1],
                 }
                 forwards = {"/live/control", *(f"/sandbox/{p}" for p in SANDBOX_POST)}
                 if path not in routes and path not in forwards:
@@ -568,3 +716,55 @@ def _safe_list(fn) -> list:
     except Exception:
         log.exception("读沙盒好友名单出错")
         return []
+
+
+class _SandboxApi:
+    """回放引擎用的沙盒接口：直接调面板自己的方法（不经 HTTP、不录制）。"""
+
+    def __init__(self, console: ConsoleServer) -> None:
+        self.c = console
+
+    def start(self, choice: str) -> None:
+        code, res = self.c.launch_sandbox(choice or "resume")
+        if code != 200:
+            raise RuntimeError("沙盒起不来：" + "；".join(res.get("problems") or [res.get("text", "")]))
+
+    def stop(self) -> None:
+        if _kind(self.c.runner.status()) == "sandbox":
+            self.c.runner.stop()
+
+    def reset(self) -> None:
+        code, res = self.c._reset_sandbox()
+        if code != 200:
+            raise RuntimeError(res.get("text") or "重置记忆没成")
+
+    def running(self) -> bool:
+        return self.c._state_of("sandbox") in BUSY
+
+    def op(self, req: dict) -> dict:
+        code, _, raw = self.c.sandbox_proxy("POST", "op", "", json.dumps(req, ensure_ascii=False).encode())
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            data = None
+        return data if isinstance(data, dict) else {"ok": False, "text": f"沙盒没回应（{code}）"}
+
+    def state(self, after: int) -> dict | None:
+        code, _, raw = self.c.sandbox_proxy("GET", "state", f"after={int(after)}&wait=1")
+        if code != 200:
+            return None
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def inner(self) -> dict:
+        return self.c.inner("sandbox")[1].get("now") or {}
+
+    def diary(self) -> str:
+        path = self.c.sandbox_dir() / "memory" / "inner" / "diary.md"
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""

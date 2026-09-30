@@ -157,3 +157,16 @@ def test_to_op():
     assert to_op(Step("reflect", True)) == {"op": "reflect"}
     assert to_op(Step("offline", True)) is None
     assert to_op(Step("online", "sleep")) is None
+
+
+def test_example_scenarios_in_docs_load():  # 沙盒计划 Task 11：docs/sandbox-scenarios/ 的示例都能读
+    from pathlib import Path
+
+    folder = Path(__file__).resolve().parents[1] / "docs" / "sandbox-scenarios"
+    files = sorted(folder.glob("*.toml"))
+    assert {p.stem for p in files} >= {"放鸽子", "深夜犯困", "第二天上线"}
+    for path in files:
+        s = load(path)
+        assert s.name == path.stem and s.note and s.steps
+        assert all(n in ("小明", "阿花") for n in s.start.nearby)  # 人名是占位的
+    assert (folder / "README.md").is_file()

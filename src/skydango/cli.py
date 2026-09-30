@@ -1349,6 +1349,13 @@ def cmd_sandbox(cfg: Config, args) -> None:
         raise SystemExit(f"[sandbox] wake_hour 要是 0~23 的整数，现在是 {sb.wake_hour!r}")
     root = Path(sb.dir)
     memory = root / "memory"
+    if cfg.reply.memory_dir:  # 沙盒只写 sandbox/memory/：和真的记忆目录重合就不起（否则会写进真记忆）
+        from .console.sandbox_view import check_separate
+
+        try:
+            check_separate(root, Path(cfg.reply.memory_dir))
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
     memory.mkdir(parents=True, exist_ok=True)  # 第一次：空记忆（管理面板「重置记忆」才从 memory/ 复制）
     cfg.reply.dry_run = False  # 沙盒总是 live：记忆、内心层都真的写，但只写 sandbox/memory/
     cfg.reply.memory_dir = str(memory)
@@ -1615,7 +1622,7 @@ def _run_brain(
             if not cfg.reply.dry_run:
                 # 记忆整理也走 Claude（订阅）：随手记、整理 notes.md 各起一次性 claude -p，在记忆后台线程里跑
                 memory_llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout)
-                notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every)
+                notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every, wall=wall)
         live_store = None if cfg.reply.dry_run else store
         ledger = _inner_ledger(cfg, store, wall())
         mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run, wall(), clock)

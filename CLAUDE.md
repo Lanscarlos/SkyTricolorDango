@@ -87,7 +87,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析 |
-| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、页面 `static/console.html`（见「管理面板」） |
+| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、页面 `static/console.html`（见「管理面板」「大脑沙盒」） |
+| `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、聊天记录 `transcript.py`、操作和状态 `control.py`、JSON 接口 `server.py` |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
 
@@ -214,7 +215,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 ## 管理面板（`[console]`，`console`）
 
 设计见 `docs/superpowers/specs/2026-09-29-console-design.md`，计划 `docs/superpowers/plans/2026-09-29-console.md`。`python -m skydango console` → 浏览器开 `http://127.0.0.1:19390/`：
-总览（启动选项 + 叫醒 / 停止 + 状态卡片 + 日志尾巴）、实时画面（iframe 嵌子进程的 viewer）、内心（见下）、设置、设备检测。**还没在真机上用过**（spec §8 真机验证 1~6）。
+总览（启动选项 + 叫醒 / 停止 + 状态卡片 + 日志尾巴）、实时画面（iframe 嵌子进程的 viewer）、内心（见下）、沙盒（见「大脑沙盒」）、设置、设备检测。**还没在真机上用过**（spec §8 真机验证 1~6）。
 - **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
   加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
   `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程
@@ -353,6 +354,37 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - 只在 live 写 `persona.json`；dry-run 只在内存里，坏文件不改名。`persona = false` = 第 2 期原样（提示词、反思提示词和材料逐字一样，不记收着点）；管理面板有 `inner.persona` 开关
 - 还是太乖：旧的乖回复会把模型拉回去，按「记忆」一节把 `history.jsonl` 挪到 `memory/archive/` 再试
 
+## 大脑沙盒（`[sandbox]`，`sandbox` / 管理面板「沙盒」页）
+
+设计见 `docs/superpowers/specs/2026-09-30-brain-sandbox-design.md`，计划 `docs/superpowers/plans/2026-09-30-brain-sandbox.md`。
+不开 MuMu，让**真的大脑 + 身体 + 内心层**接一个假世界：冒充好友说话、造来去、快进时间，看团子的反应和心里；调性格和提示词用。
+**代码已完成，只用 fake_claude 在浏览器里核对过，还没用真 Claude 跑过**（spec「验证」四步，见下）。
+- **拆出世界**（`brain/world.py`）：`cli._run_brain(cfg, run, world=None, …, on_ready, trace, *, no_emotes)` 只管组装；`World` 给设备、读聊天、身边、轮盘、说话、走路……和 `clock` / `wall`。
+  真机是 `cli._game_world`（原样搬的，`world=None` 时在检查完令牌之后才建），沙盒是 `sandbox/world.py` 的 `sandbox_world`。身体、事件队列、眼睛、反思器、大脑循环、账本都用 world 的钟
+- **沙盒世界**：模拟时钟 `SimClock`（只往前拨；起始时间不早于 `clock.json` / 沙盒 `days.jsonl` 最后一次下线）、中灰截图（不算黑屏）、队列读聊天、名单当身边、手写场景当眼睛（空 = 看不清，不调 Haiku）；
+  说话 / 动作 / 走路 / 气泡都写进沙盒聊天记录（`sandbox/transcript.py`）；没有镜头、好友树、面板、互动请求（工具回"沙盒里没有这个"）；`look` / `look_person` 只给文字（`World.text_only`）
+- **总是 live，但只写 `sandbox/memory/`**（`[sandbox] dir`，整个 `sandbox/` 不进 git）：真的 `memory/` 永远不碰（端到端测试比 sha256）；
+  沙盒记忆目录和 `reply.memory_dir` 重合（相同或互相包含，比如 `dir = "."`）时，重置和启动都拒绝。`--duration` 按真实时间，快进不会提前下线。随手记、反思、日记都真的调 Claude，和真机一样花额度
+- **子进程** `python -m skydango sandbox --port 19392 [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]`：只给 JSON 接口（`sandbox/server.py`：`/status` `/state` 长轮询 `/op` `/brain` `/inner` `/inner/forget` `/shutdown`，本机 Host + `post_guard`）；
+  操作经 `body.call` 在身体线程做（`sandbox/control.py`：冒充发言、来去、陌生人、地名、场景、新鲜事、快进、拨时间、立刻反思）；下线 = `/shutdown`，走最终反思 → 日记 → 合账本，再存 `clock.json`
+- **管理面板**：子进程槽带 kind（团子 / 沙盒），**同一时间只能有一个**（共用令牌和 `.brain-claude/`），另一个在跑时拒绝并提示先停；`/sandbox/*` 转发、`/live/*` 只在团子时转。
+  「沙盒」页：启动选项（接着上次 / 睡一晚 / 自定义）、沙盒时间牌 + 快进、聊天记录（heard 左 / 说的右 / 动作旁白 / 事件分隔线 / 被拦的删除线 + 原因）、现在、身边、场景和新鲜事、大脑时间线；
+  「重置记忆」只在停着时能点（用 `memory/` 覆盖沙盒记忆，`memory/archive/` 不复制）；「内心」页顶上能切 团子 / 沙盒
+- **剧本**（`console/scenario.py` 格式、`console/replay.py` 录制和回放，`sandbox/scenarios/*.toml`）：沙盒启动就开始录，停止 / 再启动记成 offline / online，「另存为」写成剧本；
+  回放：沙盒在跑先下线 → 按 `[start]` 重置 / 起 / 发身边 → 每步发出后等安静（`[sandbox] step_timeout` 180 秒，超时记下接着走）；回放中手动操作被拒、页面置灰；「停止回放」做完当前这步就停。
+  报告 `sandbox/reports/<剧本>-<时间>.md`：每步之后的聊天记录、反思行、`expect`（只写进报告，不检查）、最后的心里、这次写的日记。示例剧本在 `docs/sandbox-scenarios/`（人名是占位的，换成自己的好友名再复制进 `sandbox/scenarios/`）
+- **已知问题**（都偏小，没修）：
+  - 身体正在执行 say 这类命令时点「下线」，中断会经 Future 传进 MCP 线程报一段未处理异常（`run` 原来就这样）
+  - 大脑时间线每轮的开始时间是真实时间，大脑收到的消息里是沙盒时间
+  - 好友一直在身边时快进超过 `visit_gap`，关系卡会多记一次"见过"
+  - 回放时的操作不录；回放完接着手动玩的从 `memory = "keep"` 起录，存不成"回放 + 手动"一整个剧本
+  - 额度用完时 idle 不看事件队列（大脑醒不来，事件会一直积着）：回放照样往下走、报告里那一步标"额度用完"，这段时间团子的反应其实没测到
+- **要用真 Claude 验证**（spec「验证」，都没做）：
+  1. 重置记忆、启动，冒充好友聊几句：聊天记录、"现在"、大脑时间线都在动
+  2. 快进到 23:30：精力变困、主动开口变少（聊天记录里 blocked 或干脆不说）；额度用完时顶上写"额度用完，约 N 分钟后再试"
+  3. 回放「放鸽子」（换成本机好友名、要一起玩过 3 天以上的老朋友）：报告里有别扭、说难过后撤掉；反思改了什么进聊天记录（"── 反思：… ──"）；「内心」页切沙盒看流水账和曲线
+  4. 下线再"睡一晚"上线：「日子」里带上一篇日记；最后确认真的 `memory/` 没被动过
+
 ## 常用命令
 
 ```bash
@@ -361,7 +393,8 @@ python -m skydango shot [--grid]          # 截图到 tmp/shot.png
 python -m skydango detect                 # 读一次聊天记录面板（先在游戏里按 C），标注图 tmp/detect.png
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
 python -m skydango chat --emotes 鞠躬,害羞  # 终端里和人设聊天，假装轮盘上有这些动作
-python -m skydango console [--port 端口] [--no-browser]  # 管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面
+python -m skydango console [--port 端口] [--no-browser]  # 管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面；「沙盒」页不开模拟器调大脑
+python -m skydango sandbox [--port 19392] [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]  # 大脑沙盒子进程（一般由管理面板起；只有 JSON 接口），记忆只写 sandbox/memory/
 python -m skydango run [--live | --dry-run] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；先 claude setup-token、设 SKYDANGO_CLAUDE_TOKEN；--duration 到点自己退出
 python -m skydango run --no-brain [--echo] [--live]  # 调试用的普通 Agent（DeepSeek 回复）；--echo 不调模型
 python -m skydango panels scan [图片或目录]    # 面板识别：每张卡开没开、每个特征的分数 + 通用兜底，标注图 tmp/panels/（不发输入）

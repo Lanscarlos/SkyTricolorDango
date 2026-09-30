@@ -16,6 +16,7 @@ from .clock import parse_duration
 
 log = logging.getLogger(__name__)
 
+IDLE_POLL = 0.5  # 秒：长轮询里多久看一次 idle 变没变
 QUIET = 2.0  # 秒（真实时间）：事件队列空、大脑不在想、反思不在跑、命令队列空，持续这么久才算安静
 MAX_TEXT = 500  # 冒充发言 / 场景 / 新鲜事最多几个字
 MAX_STRANGERS = 20
@@ -232,11 +233,20 @@ class SandboxControl:
             self._event("反思：" + "；".join(row["changes"]))
 
     # ---- 状态 ----
+    def _limited(self) -> bool:
+        try:
+            return self.parts.brain.limit_left(self.sim.clock()) > 0
+        except Exception:
+            log.debug("读额度状态出错", exc_info=True)
+            return False
+
     def idle(self) -> bool:
-        """事件队列空 + 大脑不在一轮里 + 反思不在跑 + 身体命令队列空 + 冒充的话都读走了，持续 ≥ 2 秒（真实时间）。"""
+        """事件队列空 + 大脑不在一轮里 + 反思不在跑 + 身体命令队列空 + 冒充的话都读走了，持续 ≥ 2 秒（真实时间）。
+
+        额度用完时大脑醒不来、事件会一直积在队列里：这时不看事件队列（回放照样往下走，报告里标"额度用完"）。"""
         reflector = self.parts.reflector
         busy = (
-            len(self.parts.events) > 0
+            (len(self.parts.events) > 0 and not self._limited())
             or bool(getattr(self.parts.brain, "in_turn", False))
             or (reflector is not None and reflector.running)
             or not self.body._commands.empty()
@@ -263,11 +273,17 @@ class SandboxControl:
     def state(self, after: int, timeout: float) -> dict:
         """等到聊天记录有 after 之后的新行或超时（after 比现在的版本还新 = 沙盒重启过，从头给）。"""
         t = self.transcript
+        was_idle = self.idle()
+        deadline = time.monotonic() + max(0.0, timeout)
         with t.cond:
             if after > t.version:
                 after = 0
-            else:
-                t.cond.wait_for(lambda: t.version > after, timeout=max(0.0, timeout))
+            else:  # 有新行、或者 idle 变了（安静下来 / 又忙起来）就回，回放靠它尽早往下走
+                while t.version <= after:
+                    left = deadline - time.monotonic()
+                    if left <= 0 or self.idle() != was_idle:
+                        break
+                    t.cond.wait(min(IDLE_POLL, left))
         energy = self.body._energy
         reflector = self.parts.reflector
         wall = self.sim.wall()

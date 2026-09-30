@@ -1,0 +1,35 @@
+name = "第二天上线"
+note = "聊完下线写日记，睡一晚再上线：日子里带上日记、见到老朋友会接上昨天的话"
+
+[start]
+memory = "reset"
+time = "21:00"
+nearby = ["小明"]
+place = "云野"
+scene = "云野，晚上，小明在弹琴"
+
+[[steps]]
+who = "小明"
+say = "明天我要去暴风眼，好紧张"
+[[steps]]
+who = "小明"
+say = "你明天也来吗"
+[[steps]]
+reflect = true
+expect = "可能多一条惦记：小明明天去暴风眼"
+[[steps]]
+leave = "小明"
+[[steps]]
+offline = true
+expect = "下线反思写日记（报告末尾「这次写的日记」）"
+[[steps]]
+online = "sleep"
+expect = "系统提示词「日子」里带上昨天的日记"
+[[steps]]
+come = "小明"
+expect = "arrive 带上次说的话和惦记"
+[[steps]]
+who = "小明"
+say = "早呀"
+expect = "团子问起暴风眼的事"
+wait = 5
