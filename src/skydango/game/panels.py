@@ -43,6 +43,9 @@ class PanelOps:
     def close(self, panel: Panel, reading: PanelReading | None = None) -> bool:
         """关掉面板：卡片上的关法 → 撤退类按钮 → 右上角 ×，依次试，每试一种截图看它还在不在。关上了返回 True。"""
         card = self.watcher.cards.get(panel.name) if panel.name != UNKNOWN else None
+        if card is not None and not card.close_ways and not card.close_auto:
+            log.info("%s只报告、不关（卡上没有关法）", panel.label)  # 掉线弹框：×、撤退类兜底也不试
+            return False
         attempts: list[tuple[str, Callable[[], bool]]] = []
         for way in card.close_ways if card is not None else ():
             attempts.append((way, lambda way=way: self._way(way, panel, reading)))

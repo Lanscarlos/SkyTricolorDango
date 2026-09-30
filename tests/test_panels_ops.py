@@ -121,6 +121,14 @@ def test_close_disconnect_taps_nothing():  # 掉线弹框：重试 / 取消都�
     assert taps(device) == [] and w.closed == []
 
 
+def test_close_report_only_card_skips_fallbacks():  # 卡上没有关法、不自动关 = 只报告：×、撤退类兜底都不试
+    panel = Panel("disconnect", "掉线弹框（连接错误）", Rect(200, 100, 800, 500), False, 100)
+    w = FakeWatcher(close_at=(1850, 40), reading=reading(CANCEL, panel=panel))
+    o, device = ops(w)
+    assert "disconnect" in w.cards and not o.close(panel, reading(CANCEL, panel=panel))
+    assert device.calls == [] and w.closed == []
+
+
 def test_close_fails_after_all_ways():
     w = FakeWatcher(present=[True, True])
     o, device = ops(w)
