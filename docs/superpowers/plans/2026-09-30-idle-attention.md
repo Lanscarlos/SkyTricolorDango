@@ -216,7 +216,7 @@ class Attention:
   - 实际兴趣 = 基础 ×（1 − bored）；在中间带（`|x − width/2| ≤ center_band × width / 2`）时 `bored += bore_rate × dt`，不在时 `-= recover_rate × dt`，夹到 [0, 1]；`dt = min(now − 上一圈, max_step)`
   - `fresh` 和上次记的不同 → 这个 key 的 bored 清零
   - 当前目标：实际兴趣最高且 ≥ `min_interest`；换目标要新目标比当前高出 `switch_margin`，且距上次换 ≥ `switch_hold`；当前目标这一圈不在候选里 → 清掉
-  - `action`：current 不在中间带、且距上次按键 ≥ `track.settle` 时，`Turn("right" if x < width/2 else "left", clamp(gain × |x − width/2| / (width/2), nudge_min, nudge_max))`（按右远处往左，同 peek）
+  - `action`：current 不在中间带、且距上次按键 ≥ `track.settle` 时，`Turn("right" if x > width/2 else "left", clamp(gain × |x − width/2| / (width/2), nudge_min, nudge_max))`（按右键画面里的东西往左移：目标在右边就按右，把它拉向中间 —— 同 track；**和 peek 相反**，peek 是把人从团子身后推开）
   - 转不动：`pressed` 时记下当时的偏差；同方向连续 `track.stall_nudges` 次偏差缩小 < `track.stall_px` → current 的 bored += `stuck_bored`、计数清零；两次按键隔了 > `3 × track.settle` 计数也清零
   - `pressed` 之前 `think` 不再给同一个 action 第二次（`settle` 没过就 `action=None`）
   - 本任务 `mode` 只实现 `随意`，随意看返回 `wandering=False, action=None`（Task 4 做）
@@ -228,7 +228,7 @@ def tgt(key, kind, x, who=None, fresh=None): return Target(key, kind, x, who, fr
 
 def test_friend_talking_beats_stranger_talking():
     a = attn(); th = a.think([tgt("t:1", "talk_stranger", 300), tgt("t:2", "talk_friend", 1600, "小明", 0.0)], 0.0)
-    assert th.current.key == "t:2" and th.action.direction == "left"  # 目标在右边：按左（远处往右移）
+    assert th.current.key == "t:2" and th.action.direction == "right"  # 目标在右边：按右把它拉向中间（同 track）
 
 def test_centered_target_needs_no_turn():            # x = 1000 在中间 40% 内 → action None, centered True
 def test_turn_seconds_scale_with_offset_and_clamp():  # 偏差大 → 0.1；偏差小 → ≥ 0.02
@@ -355,7 +355,7 @@ git commit -m "feat(attention): 随意看、四种模式、focus；内心层 Eff
 - [ ] **Step 1: 写失败的测试**
 
 ```python
-def test_turns_toward_friend_talking_when_idle_in_auto_mode():     # 一圈后 cam.nudges == [("left", ...)]
+def test_turns_toward_friend_talking_when_idle_in_auto_mode():     # 好友在右边（x=1600）：一圈后 cam.nudges[0][0] == "right"
 def test_no_press_in_always_mode():
 def test_no_press_when_panel_opened_this_round():                  # 同一圈 reader 读到新消息 → chatting → 不按
 @pytest.mark.parametrize("block", ["ime", "bubble_box", "skill", "request", "pending_chat", "brain_busy",
