@@ -35,6 +35,11 @@ class ChatSender:
         self.sleep = sleep
         self._opened = False  # 输入框是不是我们自己提前打开的（type_ahead）
 
+    @property
+    def opened(self) -> bool:
+        """输入框是我们 open() 提前打开的、还没发也没 cancel()。"""
+        return self._opened
+
     def _press_open(self) -> None:
         width, height = self.screen_size()
         if self.cfg.open_chat_key:

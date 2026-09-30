@@ -161,6 +161,9 @@ def memory_prompt(reply: ReplyConfig, store: MemoryStore | None, history_turns: 
     return "\n\n".join(parts + [recent] if recent else parts)
 
 
+SAY_FIRST = "- 聊天消息是截图识别出来的，可能有错别字、缺字。带名字的是“名字：内容”，同一批里可能有好几个人；先看清是谁说的、在对谁说。\n"
+BUBBLE_NOTE = "- 有人跟你说话时，身体已经替你冒了输入气泡（对方看到你在打字），不用急：想好就 say；想用动作回应就先 emote 再 say；不想回也行，身体会关掉。\n"
+
 PANEL_AUTO_NOTE = "- 聊天面板平时关着，画面外的人说话可能晚半分钟才看到；想马上看最近的聊天就调 chat_log。\n"
 
 
@@ -172,14 +175,18 @@ def brain_prompt(
     history_turns: int = 0,
     now: float | None = None,
     proactive: bool = True,
+    bubble: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
     quick_around：打开了感知层，look_around 是 YOLO 连续转一圈（几秒），不是眼睛看四张图（十几秒）。
     panel_auto：聊天面板按需打开（[panel] mode = "auto"），平时关着。
     history_turns：带上 history.jsonl 最近几轮原话（重启后接得上话），0 不带。
-    proactive：看场合主动开口（[proactive] enabled）。"""
+    proactive：看场合主动开口（[proactive] enabled）。
+    bubble：身体反射替大脑冒输入气泡（[reflex] enabled 且 bubble）。"""
     rules = static_prompt(reply, proactive)
+    if bubble:
+        rules = rules.replace(SAY_FIRST, SAY_FIRST + BUBBLE_NOTE, 1)
     if quick_around:
         rules = rules.replace("（要十几秒，别常用）", "（几秒就好）")
     if panel_auto:

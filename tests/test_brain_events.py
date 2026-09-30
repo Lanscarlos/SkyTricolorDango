@@ -57,7 +57,7 @@ def test_subscribers_hear_every_event(clock):
 
 
 def test_background_kinds():
-    assert {"stranger", "leave", "return", "request", "accepted", "holding", "released", "scene_change"} <= BACKGROUND
+    assert {"stranger", "leave", "return", "request", "accepted", "holding", "released", "scene_change", "reflex"} <= BACKGROUND
     assert not {"chat", "owner_command", "arrive", "approach", "gesture", "notice", "task_done", "error"} & BACKGROUND
 
 

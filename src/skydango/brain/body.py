@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import math
 import queue
+import random
 import threading
 import time
 from collections import deque
@@ -33,6 +34,7 @@ from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
+from .reflex import Reflexes, addressed
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
 from .skills import SkillRunner
 from .track import TrackSkill
@@ -82,6 +84,7 @@ class Body:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
+        rng: random.Random | None = None,  # 反射抽概率用；测试传固定的
     ) -> None:
         self.cfg = cfg
         self.device = device
@@ -112,6 +115,10 @@ class Body:
         self.wall = wall
         self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
         self.brain_offline: Callable[[float], bool] = lambda now: False
+        self.brain_turn: Callable[[], tuple[float, float]] = lambda: (float("-inf"), float("-inf"))  # 大脑最近一轮的 (开始, 结束)，cli 设
+        self._bubble_at: float | None = None  # 身体替大脑开输入框（冒“正在输入”）的时间；None = 没开（spec 2026-09-30-body-reflex §2）
+        self.reflexes = Reflexes(cfg.reflex, rng or random.Random(), clock())
+        self._said_at = float("-inf")  # 团子上次说话（clock）：“刚说完好友就接话”算在跟团子说
         self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在回聊天（取走了聊天的那一轮还没结束）：聊天面板别因为安静关掉
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
@@ -189,6 +196,8 @@ class Body:
             if self.viewer is not None:
                 self._show(frame, now, fresh)
         self._run_commands()
+        self._watch_bubble(self.clock())
+        self._watch_idle(self.clock())
         self._fallback(now)
 
     def _show(self, frame, now: float, fresh: list[Message]) -> None:
@@ -202,6 +211,8 @@ class Body:
             info["聊天面板"] = panel
         info["正在做"] = self.skills.describe(now).removeprefix("正在做：")
         info["刚说过"] = self.said[-3:][::-1] or "还没说话"
+        if self.cfg.reflex.enabled:
+            info["反射"] = self._recent_reflex(now) or "还没有"
         if self.cfg.proactive.enabled:
             try:
                 o = self.occasion()
@@ -333,6 +344,147 @@ class Body:
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
             else:
                 self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」")
+        if self.cfg.reflex.enabled:
+            self._on_heard(fresh, now)
+
+    # ---- 身体反射（spec 2026-09-30-body-reflex）----
+    def _addressed(self, m: Message, now: float) -> bool:
+        """这句是不是在跟团子说（叫名字 / 团子刚说完 / 身边只有他一个好友）。"""
+        nearby = self.env.nearby(now) if self.env is not None else []
+        since = now - self._said_at if self._said_at > float("-inf") else None
+        return addressed(
+            m.speaker, m.text, is_friend=is_friend_fn(self.friend_names()), self_names=self.cfg.proactive.self_names,
+            nearby=nearby, since_said=since, followup_window=self.cfg.reflex.followup_window, owner=self.cfg.brain.owner_name,
+        )
+
+    def _on_heard(self, fresh: list[Message], now: float) -> None:
+        """有人在跟团子说话：偶尔先做个小动作，再马上冒输入气泡，大脑想好了用这个框发。一批最多一次。"""
+        self.reflexes.stir(now)
+        if not any(self._addressed(m, now) for m in fresh):
+            return
+        if self.skills.active is not None:  # 技能在按方向键：框开着按键会变成打字，动作也会打断它
+            log.debug("正在%s，不冒输入气泡", self.skills.active.goal)
+            return
+        busy = self._bubble_blocked()
+        if busy:  # 开了也会马上被关掉（气泡来回闪），或者会在别的面板上按 Enter
+            log.debug("不冒输入气泡：%s", busy)
+            return
+        name = self.reflexes.pick_addressed(now, self._wheel())
+        if name:
+            self._reflex_emote(name, f"有人叫你，你下意识{name}", now)
+        if not self.cfg.reflex.bubble:
+            return
+        if self._dry(False):
+            log.info("[dry-run] 会冒输入气泡（有人在跟团子说话）")
+            return
+        self._open_bubble(now)
+
+    def _bubble_blocked(self) -> str:
+        """这会儿不该开框 / 做反射动作的原因；空 = 可以。"""
+        if self.blackout:
+            return "画面黑着"
+        if self._requests:  # social 要点圆圈会先关框；接不了的请求挂着时开了又关会来回闪
+            return "有互动请求挂着"
+        if self.panels is not None and self.panels.blocking("say"):
+            return "有面板挡着"
+        return ""
+
+    def _wheel(self) -> list[str]:
+        return self.emotes.on_wheel() if self.emotes is not None else []
+
+    def _reflex_emote(self, name: str, why: str, now: float) -> bool:
+        """反射做一个轮盘上的动作：做不了（被挡、在忙、刚做过）就算了，不抛。不占大脑的动作冷却。"""
+        if self.emotes is None or self.blackout or self.skills.active is not None or self._requests:
+            return False
+        if now - self.emotes.last_any < self.cfg.reflex.min_gap:
+            return False
+        try:
+            self.clear_view("emote")  # 顺带关掉替大脑开的框、面板挡着就不做
+        except ToolError as exc:
+            log.debug("反射「%s」没做：%s", name, exc)
+            return False
+        try:
+            if self._dry(False):
+                self.emotes.pretend(name, reflex=True)
+                log.info("[dry-run] 反射：%s", why)
+            else:
+                with self._held("wheel"):
+                    self.emotes.perform(name, reflex=True)
+                log.info("反射：%s", why)
+        except Exception:
+            log.warning("反射「%s」没做成", name, exc_info=True)
+            return False
+        self.emoted.append(name)
+        self.emoted[:] = self.emoted[-50:]
+        self.reflexes.done(now, why)
+        self.events.put("reflex", why)
+        return True
+
+    def _return_gesture(self, who: str, label: str, text: str, now: float) -> bool:
+        """别人对团子挥手 / 鞠躬：按概率回同一个动作。框开着就回完再开回来。"""
+        name = self.reflexes.pick_return(now, label, self._wheel())
+        if name is None:
+            return False
+        bubble = self._bubble_at
+        if not self._reflex_emote(name, f"{text}，你回了个{name}", now):
+            return False
+        if bubble is not None and self._open_bubble(now):
+            self._bubble_at = bubble  # 还是那一次：大脑那一轮结束 / 超时照原来的算
+        return True
+
+    def _watch_idle(self, now: float) -> None:
+        """闲着很久：从清单里挑个小动作（框开着 = 正在打字，不做）。"""
+        if not self.cfg.reflex.enabled or self._bubble_at is not None or self.emotes is None:
+            return
+        name = self.reflexes.pick_idle(now, self._wheel())
+        if name:
+            self._reflex_emote(name, f"闲着，你{name}", now)
+
+    def _recent_reflex(self, now: float) -> str:
+        if not self.reflexes.recent:
+            return ""
+        t, text = self.reflexes.recent[-1]
+        return f"{text}（{now - t:.0f} 秒前）" if now - t <= 300 else ""
+
+    def _open_bubble(self, now: float) -> bool:
+        if self.sender.opened:  # 上一句还没想完，框还开着：按这一句重新计时（回上一句的那一轮结束时别关）
+            if self._bubble_at is not None:
+                self._bubble_at = self.clock()
+            return True
+        try:
+            self.panel.before_speak(now)  # 先开面板再按 Enter：说完对方的回复马上读得到
+            opened = self.sender.open()
+        except Exception:
+            log.warning("冒输入气泡失败", exc_info=True)
+            return False
+        if opened:
+            self._bubble_at = self.clock()  # 按下 Enter 之后（晚于这批消息进事件队列）：取事件更早的那一轮结束时不会关它
+            log.info("有人在跟团子说话：先冒输入气泡")
+        return opened
+
+    def _close_bubble(self, why: str) -> None:
+        """关掉身体替大脑开的框（只关自己开的；say 用掉了就什么都不做）。"""
+        if self._bubble_at is None:
+            return
+        self._bubble_at = None
+        if self.sender.opened:
+            try:
+                self.sender.cancel()
+            except Exception:
+                log.warning("关输入框失败", exc_info=True)
+            log.debug("关掉替大脑开的输入框：%s", why)
+
+    def _watch_bubble(self, now: float) -> None:
+        if self._bubble_at is None:
+            return
+        if not self.sender.opened:  # say 用这个框发出去了
+            self._bubble_at = None
+            return
+        start, end = self.brain_turn()
+        if start >= self._bubble_at and end >= start:  # 开框之后才开始的那一轮结束了，没说话
+            self._close_bubble("大脑这一轮没说话")
+        elif now - self._bubble_at >= self.cfg.reflex.bubble_max:
+            self._close_bubble("开太久了")
 
     def news(self, text: str) -> None:
         """眼睛自动看时挑出的新鲜事（眼睛线程调，只入队）。"""
@@ -395,6 +547,9 @@ class Body:
     def clear_view(self, action: str, live: bool = False) -> str:
         """操作前确认画面没被面板挡着：已核对、卡片允许自动关的顺手关掉；别的拒绝（ToolError），交给大脑。
         返回 dry-run 时要附加的说明（"真执行时会先关掉……"）。"""
+        if action != "say":  # 框开着时按键会变成打字、点屏幕会先收起键盘：身体替大脑开的框先关掉
+            self._close_bubble(action)
+        self.reflexes.stir(self.clock())  # 有动静：闲着的小动作重新计时
         if self.panels is None:
             return ""
         notes = []
@@ -492,7 +647,10 @@ class Body:
             for who, label in self.env.pop_gestures():
                 if who == self.holding:
                     continue
-                self.events.put("gesture", f"{who}对你{names.get(label, label)}")
+                text = f"{who}对你{names.get(label, label)}"
+                if self.cfg.reflex.enabled and self._return_gesture(who, label, text, now):
+                    continue  # 身体已经回礼了（reflex 事件），不再叫大脑决定
+                self.events.put("gesture", text)
 
     def _watch_requests(self, now: float) -> None:
         """互动请求、按规则自动接受、牵手状态（跟踪中也照常）。"""
@@ -866,10 +1024,13 @@ class Body:
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
-        try:
-            parts.append("输入框" + ("开" if self.device.ime_shown() else "关"))
-        except Exception:
-            parts.append("输入框状态读不到")
+        if self._bubble_at is not None:
+            parts.append("输入框：开着（身体替你开的，想好就 say）")
+        else:
+            try:
+                parts.append("输入框" + ("开" if self.device.ime_shown() else "关"))
+            except Exception:
+                parts.append("输入框状态读不到")
         others = self.panels.state.others() if self.panels is not None else ()
         if others:
             parts.append("开着的面板：" + "、".join(p.describe() for p in others))
@@ -893,6 +1054,9 @@ class Body:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:
             parts.append("画面黑着")
+        reflex = self._recent_reflex(now)
+        if reflex:
+            parts.append("刚才下意识：" + reflex)
         if self.camera is not None:
             parts.append("镜头：" + self.camera.describe())
         parts.append("上次看图：" + (f"{now - self.last_look:.0f} 秒前" if self.last_look > float("-inf") else "还没看过"))
@@ -963,6 +1127,8 @@ class Body:
         note = self.clear_view("say", live)
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
+        self._said_at = now
+        self.reflexes.stir(now)
         self.said.append(full)
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
@@ -1006,6 +1172,9 @@ class Body:
         if name not in available:
             raise ToolError(f"「{name}」现在做不了；能做的：{'、'.join(available) or '暂时没有（刚做过动作，要等一会儿）'}")
         relaxed = owner and name not in self.emotes.available()  # 平时这会儿还在动作限速里
+        gap = self.cfg.reflex.min_gap - (self.clock() - self.emotes.last_any) if self.cfg.reflex.enabled else 0.0
+        if gap > 0:  # 上一个动作（多半是反射）的动画还没做完
+            raise ToolError(f"刚做完一个动作，{math.ceil(gap)} 秒后再做")
         note = self.clear_view("emote", live)
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长
@@ -1149,6 +1318,7 @@ class Body:
     def panel_press(self, button: str, live: bool = False) -> str:
         """按 panel_read 列出的按钮（编号或文字）；过安全规则：never 不按，其他（非撤退类）要主人 #允许。"""
         self._need_panels()
+        self._close_bubble("panel_press")
         now = self.clock()
         ttl = self.cfg.panels.read_ttl
         if now - self._read_at > ttl:
@@ -1190,6 +1360,7 @@ class Body:
     def panel_close(self, live: bool = False) -> str:
         """关最上面的面板（卡片关法 → 撤退类按钮 → ×）。"""
         self._need_panels()
+        self._close_bubble("panel_close")
         top = self.panels.state.top()
         if top is None:
             return "没有开着的面板"

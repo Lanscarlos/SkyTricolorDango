@@ -233,6 +233,25 @@ min_gap = 60.0                 # 两句主动的话之间至少隔几秒
 cold_after = 3                 # 连续几句主动的话没人接就暂停主动，等有好友说话
 self_names = ["团子", "三彩"]   # 聊天里出现这些字算“叫了你”
 
+[reflex]
+# 身体反射（大脑模式）：有人跟团子说话马上冒“正在输入”气泡、别人挥手回礼、闲着做小动作；只用轮盘上已有的动作。数字都是估的，没在真机验证
+enabled = true                 # false = 完全照旧
+bubble = true                  # 有人跟团子说话时马上打开输入框，大脑想好了用这个框发
+followup_window = 30.0         # 团子说完多少秒内好友接话，算“在跟团子说”（叫名字、身边只有一个好友也算）
+bubble_max = 45.0              # 替大脑开的框最长开多久
+# addressed = ["点头"]         # 被叫到时开框前偶尔做的小动作（要在轮盘上）
+addressed_chance = 0.3
+# idle = ["伸懒腰", "坐下"]    # 闲着时的小动作
+idle_min = 180.0               # 闲着 idle_min~idle_max 秒（随机）做一个
+idle_max = 420.0
+return_chance = 0.7
+quota_window = 600.0           # 反射动作额度：这么多秒里最多 quota 个（不占大脑的动作冷却）
+quota = 4
+min_gap = 4.0                  # 任何两个动作之间至少隔几秒
+# [reflex.return_map]          # 回礼：别人对团子做的动作（[gesture] labels）→ 团子回的动作
+# wave = "挥手"
+# bow = "鞠躬"
+
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉
 # 关面板用 ESC（用户确认）；面板样子还没核对：先用 python -m skydango friend-check X Y 试，确认后再打开
