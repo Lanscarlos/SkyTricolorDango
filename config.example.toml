@@ -274,6 +274,14 @@ grudge_max = 7200.0            # 别扭最长多久，到点自己消气
 wants_max = 3                  # 心愿 / 惦记的事最多几条
 want_days = 7.0                # 心愿几天后过期
 diary_prompt = 1               # 启动时「日子」里带几篇日记
+# 第 3 期：性格（反思顺带攒口头禅 / 老梗 / 看法，进系统提示词；提示词加「脾气」；好友说难过就对他收着点）。数字都是估的，没在真机验证
+persona = true                 # false = 第 2 期原样（沉淀要 reflect = true；reflect = false 时只有提示词和收着点）
+fade_days = 14.0               # 多少天没用的口头禅 / 老梗 / 看法淡出
+catchphrases_max = 5           # 口头禅最多几条
+jokes_per_friend = 3           # 每个好友最多几条老梗
+jokes_max = 20                 # 老梗总共最多几条
+opinions_max = 10              # 看法最多几条（一个话题一句）
+soft_minutes = 30.0            # 好友说难过后多久内对他收着点
 
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉

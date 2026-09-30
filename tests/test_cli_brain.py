@@ -1,6 +1,7 @@
 import _thread
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -404,7 +405,7 @@ def test_run_brain_live_final_reflection_replaces_farewell(tmp_path, monkeypatch
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
     lines = _claude_log(log)
     systems = [l["args"][l["args"].index("--system-prompt") + 1] for l in lines if "args" in l and "--system-prompt" in l["args"]]
-    assert REFLECT_SYSTEM in systems  # 下线前的最终反思
+    assert any(s.startswith(REFLECT_SYSTEM) for s in systems)  # 下线前的最终反思（第 3 期默认后面接 PERSONA_SYSTEM）
     assert not any(SUMMARY_REQUEST in l.get("message", "") for l in lines)  # 不再让大脑写经过
     (day,) = InnerStore(tmp_path / "memory" / "inner").days()
     assert day.ended == "normal"  # 假模型回的不是 JSON：summary 空，照样 close
@@ -440,3 +441,80 @@ def test_final_reflection_timeout_fits_console_stop():  # 终审 I7
     assert cli._final_timeout(cfg) == 10.0
     cfg.console.stop_timeout = 600
     assert cli._final_timeout(cfg) == cfg.inner.reflect_timeout
+
+
+def test_profile_template_has_temper():
+    for s in ("## 脾气", "毛病", "执念", "雷点"):
+        assert s in cli.PROFILE_TEMPLATE
+    assert cli.PROFILE_TEMPLATE.index("## 喜好和看法") < cli.PROFILE_TEMPLATE.index("## 脾气")
+
+
+
+# ---- 内心层第 3 期：性格 ----
+def _reflect_systems(log):
+    return [l["args"][l["args"].index("--system-prompt") + 1] for l in _claude_log(log)
+            if "args" in l and "--system-prompt" in l["args"]]
+
+
+def test_run_brain_live_persona_on(tmp_path, monkeypatch):
+    from skydango.brain.prompt import TEMPER_RULES
+    from skydango.inner.persona import Persona, Trait
+    from skydango.inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM
+    from skydango.inner.store import InnerStore
+
+    cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False
+    InnerStore(tmp_path / "memory" / "inner").write_persona(Persona(catchphrases=[Trait("害，懒得动", since=time.time())]))
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    prompt = (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+    assert TEMPER_RULES in prompt and "## 你攒下的性格" in prompt and "口头禅：害，懒得动" in prompt
+    assert prompt.index("## 你攒下的性格") < prompt.index("## 日子")
+    systems = [s for s in _reflect_systems(log) if s.startswith(REFLECT_SYSTEM)]
+    assert systems and all(PERSONA_SYSTEM in s for s in systems)
+
+
+def test_run_brain_persona_off_is_phase2(tmp_path, monkeypatch):
+    from skydango.brain.prompt import TEMPER_RULES
+    from skydango.inner.reflect import REFLECT_SYSTEM
+
+    cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False
+    cfg.inner.persona = False
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert TEMPER_RULES not in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+    assert REFLECT_SYSTEM in _reflect_systems(log)
+
+
+def test_run_brain_dry_run_persona_reads_but_writes_nothing(tmp_path, monkeypatch):
+    from skydango.brain.prompt import TEMPER_RULES
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert not (tmp_path / "memory" / "inner").exists()
+    assert TEMPER_RULES in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+
+
+def test_dry_run_bad_persona_not_renamed(tmp_path, monkeypatch):  # Review Focus 4
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    inner = tmp_path / "memory" / "inner"
+    inner.mkdir(parents=True)
+    (inner / "persona.json").write_text("坏", encoding="utf-8")
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert (inner / "persona.json").exists() and not list(inner.glob("persona.json.bad-*"))
+
+
+def test_memory_show_prints_persona(tmp_path, capsys):
+    import argparse
+
+    cfg = Config()
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cli.cmd_memory(cfg, argparse.Namespace(action="show"))
+    out = capsys.readouterr().out
+    assert "===== 性格档案 =====" in out and not (tmp_path / "memory" / "inner").exists()
+    cfg.inner.persona = False
+    cli.cmd_memory(cfg, argparse.Namespace(action="show"))
+    assert "===== 性格档案 =====" not in capsys.readouterr().out

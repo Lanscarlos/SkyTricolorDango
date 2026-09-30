@@ -106,6 +106,11 @@ _QUOTES = "\"'“”‘’「」『』"
 _CLAIMS_HUMAN = re.compile(r"我.{0,4}是.{0,2}(真人|人类|活人)|(真人|活人)一个|不是\s*(ai|机器人|人工智能|bot)", re.I)
 
 
+def claims_human(text: str) -> bool:
+    """这句话是不是在声称自己是真人（和 clean_reply 同一条规矩）。"""
+    return bool(_CLAIMS_HUMAN.search(text or ""))
+
+
 _PREFIX = re.compile(r"^(回复|答|AI|我)\s*[:：]\s*")
 
 

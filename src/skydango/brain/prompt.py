@@ -129,6 +129,15 @@ MIND_RULES = """- 状态里的“心里”是你现在的心情、精力、别�
 - 惦记的事：见到那个人、场合合适时自然地问一句，别一见面就查户口。
 - 想做的事、小心思：场合合适时提，别硬塞；做不到的（坐下、弹琴、自己去远处）只能说想，请别人配合。
 """
+# 内心层第 3 期（spec 2026-09-30-inner-phase3 §2）：放开四样“太乖”，插在心情规矩之后
+TEMPER_RULES = """- 有立场：不同意就直说（“我觉得雨林就是丑”），别动不动“你说得对”；可以争两句、嘴硬，但不吵架、不人身攻击。
+- 熟人之间可以互损（状态里写了交情、一起玩过好几天的）：损事不损人——路痴、手残、放鸽子可以；外貌、身材、家里、成绩、年龄不碰。对方不接梗、语气不对就收；刚认识的、陌生人不损。
+- 会拒绝、会偷懒：不想做就说不（“不要，懒”），不想聊可以敷衍两句；卡洛的 # 命令、有人真着急或真难过时别偷懒。
+- 有执念和怪癖：人设和「你攒下的性格」里的执念可以反复提、口头禅会用，偶尔说点出人意料的话；别每句都用。
+- 状态里写着“收着点”的人：不损、不唱反调、不拒绝，好好说话。
+"""
+GO_ON_OLD = "接对方的话往下聊；"
+GO_ON_NEW = "接得住就接，不想接也可以吐槽一句或者敷衍两句；"
 REMEMBER_ANCHOR = "- 记住聊过的内容和对方的名字"  # 交情规矩、按需面板的说明都插在这一条前面
 
 SUMMARY_REQUEST = """（身体）要下线了。用不超过 300 字写一份这次的经过，留给下次的你：在哪、和谁玩了什么、聊了什么、答应过什么、要注意的事。
@@ -160,18 +169,23 @@ def recent_turns(store: MemoryStore, n: int, now: float | None = None) -> str:
 
 
 def memory_prompt(
-    reply: ReplyConfig, store: MemoryStore | None, history_turns: int = 0, now: float | None = None, days: str = ""
+    reply: ReplyConfig,
+    store: MemoryStore | None,
+    history_turns: int = 0,
+    now: float | None = None,
+    days: str = "",
+    persona_text: str = "",
 ) -> str:
-    """人设、好友、长期记忆 + 随手记 + 「日子」+ 最近几轮原话。只在启动时读：改系统提示词会让后面整段对话的缓存失效。"""
+    """人设、好友、长期记忆 + 随手记 + 「你攒下的性格」+「日子」+ 最近几轮原话。只在启动时读：改系统提示词会让后面整段对话的缓存失效。"""
     if store is None:
-        return "\n\n".join(identity_sections(reply) + ([days] if days else []))
+        return "\n\n".join(identity_sections(reply) + [p for p in (persona_text, days) if p])
     notes = store.notes()
     inbox = store.inbox()
     if inbox:
         notes = (notes + "\n\n" if notes else "") + "刚记下的：\n" + inbox
     parts = identity_sections(reply, store.profile(), store.friends(), notes)
     recent = recent_turns(store, history_turns, now) if history_turns > 0 else ""
-    return "\n\n".join(parts + [p for p in (days, recent) if p])
+    return "\n\n".join(parts + [p for p in (persona_text, days, recent) if p])
 
 
 SAY_FIRST = "- 聊天消息是截图识别出来的，可能有错别字、缺字。带名字的是“名字：内容”，同一批里可能有好几个人；先看清是谁说的、在对谁说。\n"
@@ -192,6 +206,8 @@ def brain_prompt(
     days: str = "",
     inner: bool = False,
     mind: bool = False,
+    persona_text: str = "",
+    temper: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -200,7 +216,8 @@ def brain_prompt(
     history_turns：带上 history.jsonl 最近几轮原话（重启后接得上话），0 不带。
     proactive：看场合主动开口（[proactive] enabled）。
     bubble：身体反射替大脑冒输入气泡（[reflex] enabled 且 bubble）。
-    days：「日子」一节（内心层，放在「上次聊到哪」之前）；inner：内心层开着（加交情规矩）；mind：反思开着（加心情 / 别扭 / 惦记的规矩）。"""
+    days：「日子」一节（内心层，放在「上次聊到哪」之前）；inner：内心层开着（加交情规矩）；mind：反思开着（加心情 / 别扭 / 惦记的规矩）。
+    persona_text：「你攒下的性格」（内心层第 3 期，放在「日子」之前）；temper：性格开着（加「脾气」、放开“接对方的话往下聊”）。"""
     rules = static_prompt(reply, proactive)
     if bubble:
         rules = rules.replace(SAY_FIRST, SAY_FIRST + BUBBLE_NOTE, 1)
@@ -212,4 +229,7 @@ def brain_prompt(
         rules = rules.replace(REMEMBER_ANCHOR, INNER_RULES + REMEMBER_ANCHOR, 1)
     if mind:  # 插在交情规矩之后
         rules = rules.replace(REMEMBER_ANCHOR, MIND_RULES + REMEMBER_ANCHOR, 1)
-    return memory_prompt(reply, store, history_turns, now, days) + "\n\n" + rules
+    if temper:  # 插在心情规矩之后
+        rules = rules.replace(GO_ON_OLD, GO_ON_NEW, 1)
+        rules = rules.replace(REMEMBER_ANCHOR, TEMPER_RULES + REMEMBER_ANCHOR, 1)
+    return memory_prompt(reply, store, history_turns, now, days, persona_text) + "\n\n" + rules

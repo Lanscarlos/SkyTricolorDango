@@ -54,6 +54,7 @@ FIELDS: tuple[Field, ...] = (
     Field("reflex.bubble", "替大脑冒输入气泡", "有人跟团子说话时马上打开输入框，头顶显示正在输入", "bool", "brain"),
     Field("inner.enabled", "内心账本", "给好友记关系卡（见过几次、上次什么时候）和每次上线的日子；关掉就回到老样子", "bool", "brain"),
     Field("inner.reflect", "反思", "定时想想刚才发生的事：心情、精力、闹别扭、惦记的事，下线写日记；关掉就只记账", "bool", "brain"),
+    Field("inner.persona", "性格", "攒口头禅、老梗和看法，敢唱反调、会拒绝、熟人之间互损；关掉就回到第 2 期", "bool", "brain"),
     Field("env.enabled", "识别环境", "后台 OCR 画面：身边有谁、在哪", "bool", "features"),
     Field("perception.enabled", "YOLO 感知层", "开发中；打开后替换定时整图 OCR，要先训练模型", "bool", "features"),
     Field("perception.model", "YOLO 模型", "模型文件路径", "file", "features"),

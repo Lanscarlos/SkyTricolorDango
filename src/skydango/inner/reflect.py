@@ -35,6 +35,17 @@ REFLECT_SYSTEM = """你是《光遇》里的三彩团子（人设见材料），
 
 材料最后说“这是今天下线前的最后一次”时，再写：diary = 一段第一人称日记（不超过 200 字，口语，写今天和谁玩了什么、心情怎么样）；memos = 给以后的自己的要点（不超过 5 条，每条不超过 30 字，写清楚是谁、具体日期，只记以后用得上的）。其他时候这两项留空。"""
 
+# 第 3 期（spec 2026-09-30-inner-phase3 §3）：persona 开着时接在 REFLECT_SYSTEM 后面
+PERSONA_SYSTEM = """顺便想想你自己的性格（材料里“你攒下的性格”是已经记下的）：
+- 口头禅（catchphrases）：这段时间你自己说过、有人接或者笑了的说法，记下原话（不超过 30 字）。
+- 老梗（jokes）：你和某个熟悉的好友之间反复提的事、外号，写 {"who": 好友名, "text": 一句（不超过 30 字）}。只给一起玩过好几天的熟人记，陌生人、刚认识的不记。
+- 看法（opinions）：你表过态的话题，写 {"topic": 话题（不超过 10 字）, "stance": 你的立场（不超过 30 字）}；同一个话题改了主意就写新的立场。
+- 这段时间你用了已经记下的口头禅 / 老梗 / 看法，而且有人接，把它的原文（口头禅和老梗写 text，看法写 topic）写进 persona_used。
+- 损人的、拿外貌 / 身材 / 家里 / 成绩 / 年龄开玩笑的一律不记。没有就给空的，别硬凑。
+
+在上面那个 JSON 对象里多加两项：
+"persona_add": {"catchphrases": ["..."], "jokes": [{"who": "...", "text": "..."}], "opinions": [{"topic": "...", "stance": "..."}]}, "persona_used": ["..."]"""
+
 
 def _block(title: str, lines: list[str]) -> str:
     return f"{title}\n" + ("\n".join(lines) if lines else "（没有）")
@@ -50,6 +61,7 @@ def materials(
     notes: list[str],  # notes.md / inbox.md 里提到他们的行
     persona: str,
     final: bool,
+    traits: str | None = None,  # 第 3 期：已经攒下的性格（Persona.section()）；None = 不写这一段，"" = 还没有
 ) -> str:
     """拼给反思的材料（一条 user 消息）。"""
     d = time.localtime(now)
@@ -60,6 +72,11 @@ def materials(
         _block("人设：", [persona.strip()] if persona.strip() else []),
         _block("这段时间的聊天（“我”是你自己说的）：", [f"{who or '（看不出是谁）'}：{text}" for _, who, text in chat[-MAX_CHAT:]]),
         _block("这段时间谁来了谁走了：", comings),
+    ]
+    if traits is not None:
+        body = [line for line in traits.splitlines() if line.strip() and not line.startswith("## ")]
+        parts.append("你攒下的性格：\n" + ("\n".join(body) if body else "（还没有）"))
+    parts += [
         _block("相关的好友：", cards),
         _block("笔记里提到他们的：", notes),
     ]
@@ -69,8 +86,10 @@ def materials(
 
 
 class Reflector:
-    def __init__(self, cfg: InnerConfig, llm, clock: Callable[[], float] = time.monotonic, threaded: bool = True) -> None:
+    def __init__(self, cfg: InnerConfig, llm, clock: Callable[[], float] = time.monotonic, threaded: bool = True,
+                 system: str = REFLECT_SYSTEM) -> None:
         self.cfg = cfg
+        self.system = system  # 第 3 期：persona 开着时是 REFLECT_SYSTEM + PERSONA_SYSTEM
         self.llm = llm  # complete(system, messages) -> str（brain.claude.ClaudeLlm）
         self.clock = clock
         self.threaded = threaded  # 测试里同步跑
@@ -141,7 +160,7 @@ class Reflector:
 
     def _ask(self, content: str) -> dict | None:
         try:
-            raw = self.llm.complete(REFLECT_SYSTEM, [{"role": "user", "content": content}])
+            raw = self.llm.complete(self.system, [{"role": "user", "content": content}])
         except ClaudeError as exc:
             if exc.limit:
                 self._paused_until = self.clock() + LIMIT_RETRY

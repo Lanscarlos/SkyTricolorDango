@@ -35,3 +35,27 @@ def test_finish_dry_run_writes_nothing(tmp_path):  # Review Focus 5
 def test_finish_none_and_junk():
     assert finish_reflection(None, Mind(), None, None, {}, [], True, T0, InnerConfig()) == ""
     assert finish_reflection({"diary": 5, "memos": "不是列表"}, Mind(), None, None, {}, [], False, T0, InnerConfig()) == ""
+
+
+# ---- 第 3 期：下线反思也套性格 ----
+def test_finish_applies_persona_live_only(tmp_path):
+    from skydango.inner.ledger import Card
+    from skydango.inner.persona import Persona
+
+    cards = {"小明": Card(first_met=0, days=["d1", "d2", "d3"])}
+    result = {"persona_add": {"catchphrases": ["害，懒得动"], "jokes": [{"who": "小明", "text": "路痴带路"}]}}
+    for persist in (False, True):
+        st = InnerStore(tmp_path / str(persist) / "inner")
+        p = Persona()
+        finish_reflection(result, Mind(), st, None, cards, ["小明"], persist, T0, InnerConfig(), persona=p)
+        assert [t.text for t in p.catchphrases] == ["害，懒得动"] and [t.who for t in p.jokes] == ["小明"]
+        assert st.persona_path.exists() is persist
+    p = Persona()
+    finish_reflection(result, Mind(), None, None, cards, ["小明"], False, T0, InnerConfig(), persona=p, soft={"小明"})
+    assert p.jokes == []  # 收着点的人不记新老梗
+
+
+def test_finish_without_persona_unchanged(tmp_path):
+    st = InnerStore(tmp_path / "inner")
+    finish_reflection({"persona_add": {"catchphrases": ["害"]}}, Mind(), st, None, {}, [], True, T0, InnerConfig())
+    assert not st.persona_path.exists()

@@ -1,4 +1,4 @@
-"""memory/inner/ 的读写（spec §1、§7）：people.json、days.jsonl、current.json。
+"""memory/inner/ 的读写（spec §1、§7）：people.json、days.jsonl、current.json；第 2 期 mind.json、diary.md；第 3 期 persona.json。
 
 原子写（先写 .tmp 再 replace）；读不了的文件改名成 <名字>.bad-<时间> 放一边（只读时不改名）。
 读的时候不建目录：dry-run 和 memory show 不能在磁盘上留下东西。
@@ -15,6 +15,7 @@ from pathlib import Path
 from ..chat.memory import format_date
 from .ledger import Card, Session
 from .mind import Mind
+from .persona import Persona
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class InnerStore:
         self.current_path = self.dir / "current.json"
         self.mind_path = self.dir / "mind.json"
         self.diary_path = self.dir / "diary.md"
+        self.persona_path = self.dir / "persona.json"
 
     # ---- people.json ----
     def people_exists(self) -> bool:
@@ -129,6 +131,27 @@ class InnerStore:
 
     def write_mind(self, mind: Mind) -> None:
         self._write(self.mind_path, json.dumps({"version": VERSION, **mind.to_dict()}, ensure_ascii=False, indent=1))
+
+    # ---- persona.json（第 3 期）----
+    def load_persona(self, quarantine: bool = True) -> Persona:
+        """读不了（坏 JSON / 版本不认识 / 格式不对）→ quarantine 时改名放一边；都从空档案开始。"""
+        if not self.persona_path.is_file():
+            return Persona()
+        try:
+            data = json.loads(self.persona_path.read_text(encoding="utf-8"))
+            if data.get("version") != VERSION:
+                raise ValueError(f"不认识的版本：{data.get('version')!r}")
+            return Persona.from_dict(data)
+        except (ValueError, TypeError, AttributeError, KeyError, OSError) as exc:
+            if quarantine:
+                bad = self._quarantine(self.persona_path)
+                log.warning("性格档案 persona.json 读不了（%s），改名成 %s，从空的开始", exc, bad.name)
+            else:
+                log.warning("性格档案 persona.json 读不了：%s", exc)
+            return Persona()
+
+    def write_persona(self, persona: Persona) -> None:
+        self._write(self.persona_path, json.dumps({"version": VERSION, **persona.to_dict()}, ensure_ascii=False, indent=1))
 
     # ---- diary.md（第 2 期）----
     def append_diary(self, text: str, now: float) -> None:

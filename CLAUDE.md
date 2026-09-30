@@ -84,7 +84,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
-| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection` |
+| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法） |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、页面 `static/console.html`（见「管理面板」） |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
@@ -98,7 +98,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `inbox.md` | 随手记：每轮回复后后台单独调一次模型，只挑值得记的新信息，下一句就能用上 | 自动 |
 | `notes.md` | 长期记忆：每 `notes_every` 轮把聊天记录 + inbox 整理进来（合并去重、删过期） | 自动，用户可改 |
 | `history.jsonl` | 逐轮聊天记录，重启读回最近 `history_turns` 轮 | 自动 |
-| `inner/` | 内心账本（见「内心层」）：`people.json` 好友关系卡、`days.jsonl` 每次上线一行、`current.json` 这一次（运行中）、`mind.json` 心情 / 别扭 / 心愿、`diary.md` 日记（一天一节） | 自动，不用手改 |
+| `inner/` | 内心账本（见「内心层」）：`people.json` 好友关系卡、`days.jsonl` 每次上线一行、`current.json` 这一次（运行中）、`mind.json` 心情 / 别扭 / 心愿、`diary.md` 日记（一天一节）、`persona.json` 性格档案（口头禅 / 老梗 / 看法，可以直接删条目） | 自动，不用手改 |
 
 每次回复前都重新读这些文件，改了不用重启。只有 `run --live` 读写记忆（dry-run 的回复没真的发出去）。
 
@@ -334,6 +334,17 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **大脑看到**：status "心里：有点闷（…）· 有点困（…）· 跟小明闹别扭（…，还有 40 分钟消气）· 惦记：…"；arrive 后面接"你惦记着：…"；「日子」带上一篇日记（代替"上次的经过"）；提示词多一段心情 / 别扭（认真问、说难过时立刻作废）/ 惦记 / 小心思的规矩；网页和管理面板卡片有"心情""精力"
 - **下线**：`checkpoint` → 最终反思（材料是这次上线的全部聊天，最多 80 行；超时压到 `console.stop_timeout − 25` 秒）写日记（`diary.md`，每次下线一段，「日子」取最后一段、带日期）和要点（inbox.md、`days.jsonl` 的经过）→ `close`，**不再让大脑写经过**；`reflect = false` 照第 1 期
 - 只在 live 写 `mind.json` / `diary.md` / inbox；dry-run 照样反思（`--view` 里看得到），不写盘；管理面板有 `inner.reflect` 开关
+
+**第 3 期：性格**（设计见 `docs/superpowers/specs/2026-09-30-inner-phase3-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase3.md`；**还没在真机上跑过，数字都是估的**，spec「真机验证」五步）
+- **性格档案**（`persona.py`，`memory/inner/persona.json`）：口头禅（`catchphrases_max` 5）、和某个好友的老梗（每人 `jokes_per_friend` 3、总共 `jokes_max` 20）、看法（一个话题一句，`opinions_max` 10）。
+  反思（`persona` 开着时系统提示词接上 `PERSONA_SYSTEM`、材料带「你攒下的性格」）顺带给 `persona_add` / `persona_used`；**代码守的规矩**（`Persona.apply`）：截 30 字（话题 10 字）、带敏感词（胖瘦丑矮、长相身材脸、爸妈家里、成绩考试分数作业老师、几岁年纪年龄今年岁、学校班小学生初中高中、本名 QQ 微信、哭）/ 难过类的话（`DISTRESS`）/ 声称是真人的话（`claims_human`）的丢；口头禅和看法里**不许提好友名字**（人只进老梗）、
+  老梗只挂在一起玩过 ≥ `grudge_min_days` 天的好友名下（OCR 错字按最像的好友归）、收着点的人不记新老梗、几乎一样的不重复加、同话题换立场；超上限只在旧条目里挤（这次新记的不挤）：先删 `hits` 最少的、再删最久没用的；换了立场算刚用过；`fade_days`（14 天）没用就淡出（启动时和每次套完）；启动时 `prepare` 按现在的规矩把旧条目再筛一遍、手写的 `since = 0` 当作现在记的
+- **大脑看到**：系统提示词「你攒下的性格」（启动时算一次，放在「日子」之前，空的不写）；`arrive` 在“你惦记着”之后接“你们的老梗：…”（最多 2 条）；
+  提示词多一段「脾气」（`TEMPER_RULES`：有立场、熟人互损但损事不损人、会拒绝会偷懒但卡洛的 `#` 命令和有人真难过时不偷懒、有执念、对“收着点”的人好好说话），“接对方的话往下聊”换成“接得住就接，不想接也可以吐槽一句或者敷衍两句”；底线各节一字不动
+- **收着点**（身体兜底）：任何好友说了难过类的话（第 2 期的 `DISTRESS`）→ `soft_minutes`（30 分钟）内 status 写“对小明收着点（他刚说「…」）”、他来时 arrive 不带老梗，反思不给他记新老梗（下线那次反思看整次上线：这次上线里说过难过的都算）
+- `memory init` 的人设模板多了「## 脾气」（毛病 / 执念 / 雷点）；已有的 `memory/profile.md` 要自己加。`memory show` 末尾打印性格档案（只读），`profile.md` 永远优先、程序不改
+- 只在 live 写 `persona.json`；dry-run 只在内存里，坏文件不改名。`persona = false` = 第 2 期原样（提示词、反思提示词和材料逐字一样，不记收着点）；管理面板有 `inner.persona` 开关
+- 还是太乖：旧的乖回复会把模型拉回去，按「记忆」一节把 `history.jsonl` 挪到 `memory/archive/` 再试
 
 ## 常用命令
 

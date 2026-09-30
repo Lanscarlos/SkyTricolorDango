@@ -184,3 +184,13 @@ def test_perception_object_classes_appended():
     assert p.classes[6:] == ["bench", "bonfire", "instrument", "spirit"]
     assert (p.object_min_hits, p.object_near, p.object_far) == (3, 0.85, 0.65)
     assert load_config(ROOT / "config.example.toml").perception.object_min_hits == 3
+
+
+def test_example_config_has_persona_keys():
+    import tomllib
+
+    from skydango.config import InnerConfig
+
+    raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))["inner"]
+    keys = ("persona", "fade_days", "catchphrases_max", "jokes_per_friend", "jokes_max", "opinions_max", "soft_minutes")
+    assert {k: raw[k] for k in keys} == {k: getattr(InnerConfig(), k) for k in keys}
