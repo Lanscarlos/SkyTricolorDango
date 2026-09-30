@@ -43,7 +43,7 @@ def test_tools_over_mcp():
     assert names == TOOL_NAMES
     assert not status.is_error and [c.text for c in status.content] == ["状态"]
     assert [c.type for c in look.content] == ["image", "text"]
-    assert not emote.is_error and tb.body.calls[-1] == ("emote", "鞠躬", False)
+    assert not emote.is_error and tb.body.calls[-1] == ("emote", "鞠躬")
     assert bad.is_error and bad.content[0].text == "说得太快了"
 
 

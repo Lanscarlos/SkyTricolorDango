@@ -27,7 +27,7 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
               "query 给空格分开的几个关键词（中一个就算），who 只看某个人说的 / 对他说的（名字写一部分也行），"
               "days 往前查几天（1~90，默认 14）；query 和 who 至少给一个。有人提起以前的事，先查再答；没找到可以换个说法再查一次。",
     "say": "在游戏里发一句话。一次一句，口语，短。",
-    "emote": "做一个动作（只能用 status 里“能做的动作”列出的）。牵着手时会被拦下，确定要松手才传 force=true。",
+    "emote": "做一个动作（只能用 status 里“能做的动作”列出的）。牵着手也能做，不会松手。",
     "set_request_policy": (
         "改互动请求的规则（本次运行有效）。who：好友昵称，或 \"*\" 表示所有好友、\"stranger\" 表示陌生人；"
         f"kind：{' / '.join(REQUEST_KINDS)}（hand 牵手、hug 拥抱、highfive 击掌、piggyback 背背、candle 点火、* 所有）；"
@@ -198,8 +198,8 @@ class ToolBox:
             text = _str(a, "text")
             return lambda: b.say(text)
         if name == "emote":
-            emote, force = _str(a, "name"), _bool(a, "force", False)
-            return lambda: b.emote(emote, force)
+            emote = _str(a, "name")
+            return lambda: b.emote(emote)
         if name == "set_request_policy":
             who, kind, accept = _str(a, "who"), _str(a, "kind"), _bool(a, "accept")
             return lambda: b.set_policy(who, kind, accept)

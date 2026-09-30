@@ -58,8 +58,8 @@ class FakeBody:
             raise ToolError("说得太快了")
         return f"说了{text}"
 
-    def emote(self, name, force):
-        self.calls.append(("emote", name, force))
+    def emote(self, name):
+        self.calls.append(("emote", name))
         return "ok"
 
     def set_policy(self, who, kind, accept):
@@ -206,7 +206,7 @@ def test_run_dispatches_with_defaults():
     tb.run("move", {"direction": "forward"})
     tb.run("move", {"direction": "left", "steps": 2, "force": True})
     assert body.calls == [
-        ("chat_log", 20), ("emote", "鞠躬", False), ("camera", "left", 1), ("policy", "*", "hug", False), ("look_at", 1, 2, 30, 40),
+        ("chat_log", 20), ("emote", "鞠躬"), ("camera", "left", 1), ("policy", "*", "hug", False), ("look_at", 1, 2, 30, 40),
         ("look_person", "小明"), ("stop_task",), ("move", "forward", 1, False), ("move", "left", 2, True),
     ]
 

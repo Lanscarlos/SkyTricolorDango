@@ -1,6 +1,6 @@
 """手动控制：可视化网页上直接让身体说话、做动作、转视角 / 环视、看人、盯人 / 停下（`run --brain --view`），手动试身体的功能用。
 
-- 手动的总是真执行（身体方法传 live=True）：大脑 dry-run 时也一样；身体的护栏照旧（不能自称真人、限速、牵手要 force……）
+- 手动的总是真执行（身体方法传 live=True）：大脑 dry-run 时也一样；身体的护栏照旧（不能自称真人、限速、走动时牵手要 force……）
 - 经 Body.call 交给身体线程，和大脑的工具排队执行
 - 做成了就放一条 manual 事件告诉大脑（它会醒一次），免得它看到自己没说过的话犯糊涂
 设计见 docs/superpowers/specs/2026-09-28-viewer-manual-control-design.md
@@ -87,8 +87,8 @@ class ManualControl:
             text = _text(a, "text")
             return (lambda: b.say(text, live=True)), f"说了「{text}」", None
         if action == "emote":
-            name, force = _text(a, "name"), bool(a.get("force", False))
-            return (lambda: b.emote(name, force, live=True)), f"做了动作「{name}」", None
+            name = _text(a, "name")
+            return (lambda: b.emote(name, live=True)), f"做了动作「{name}」", None
         if action == "camera":
             move = a.get("action")
             if move not in KEYS:

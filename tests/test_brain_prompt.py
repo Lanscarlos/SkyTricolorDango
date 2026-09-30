@@ -43,6 +43,11 @@ def test_brain_prompt_mentions_gestures_and_following_by_holding_hands():
     assert "跟着别人走" not in text  # 以前说"不能跟着别人走"：现在能靠牵手跟
 
 
+def test_emote_does_not_release_hands_in_prompt():
+    text = static_prompt(ReplyConfig())
+    assert "做动作会松开手" not in text and "不会松开手" in text  # 用户实测：做动作不松手，走动才会
+
+
 def test_following_by_hand_is_only_for_friends():
     text = static_prompt(ReplyConfig())
     line = next(l for l in text.splitlines() if "牵我一下" in l)

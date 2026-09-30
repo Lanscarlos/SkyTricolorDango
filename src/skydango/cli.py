@@ -1908,7 +1908,7 @@ def main(argv: list[str] | None = None) -> None:
     live.add_argument("--dry-run", action="store_true", help="只打印不发送（覆盖 config.toml 的 reply.dry_run）")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显（联调用）")
     p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动结束（默认一直跑）")
-    p.add_argument("--no-emotes", action="store_true", help="这次不做动作（牵着手时用：做动作会松开牵手）")
+    p.add_argument("--no-emotes", action="store_true", help="这次不做动作")
     p.add_argument("--brain", action="store_true", help="接统管大脑（已是默认，保留兼容）")
     p.add_argument("--no-brain", action="store_true", help="不接大脑，用旧的普通 Agent（调试用）")
     p.add_argument("--view", action="store_true", help="开可视化网页：实时显示画面和识别框（地址见 [viewer]）")

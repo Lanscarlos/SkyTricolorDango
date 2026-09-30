@@ -997,7 +997,8 @@ class Body:
         if self.notes is not None:
             self.notes.turn_added(Turn(now, user, body))
 
-    def emote(self, name: str, force: bool = False, live: bool = False) -> str:
+    def emote(self, name: str, live: bool = False) -> str:
+        """做动作不会松开牵手（用户实测；以前记的“会松手”是对方自己断开的），牵着手也照做。"""
         if self.emotes is None:
             raise ToolError("这次没开动作（--no-emotes 或者图标库是空的）")
         owner = self._owner(self.clock())
@@ -1005,10 +1006,6 @@ class Body:
         if name not in available:
             raise ToolError(f"「{name}」现在做不了；能做的：{'、'.join(available) or '暂时没有（刚做过动作，要等一会儿）'}")
         relaxed = owner and name not in self.emotes.available()  # 平时这会儿还在动作限速里
-        if self.holding and not force:
-            if not owner:
-                raise ToolError(f"正牵着 {self.holding} 的手，做动作会松手；确定要松手再做就传 force=true")
-            relaxed = True
         note = self.clear_view("emote", live)
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长

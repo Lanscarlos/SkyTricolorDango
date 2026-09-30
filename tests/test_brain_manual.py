@@ -55,13 +55,12 @@ def test_bad_arguments_raise_value_error(clock, action, args):
         ManualControl(here(b)).run(action, args)
 
 
-def test_emote_force_and_camera(clock):
+def test_emote_while_holding_and_camera(clock):
     emotes, cam = FakeEmotes(), FakeCamera()
     b, _, _, events = body(clock, emotes=emotes, camera=cam)
     m = ManualControl(here(b), events=events)
     b.holding = "懒洋洋大王"
-    assert m.run("emote", {"name": "鞠躬"})["ok"] is False
-    assert m.run("emote", {"name": "鞠躬", "force": True}) == {"ok": True, "text": "做了「鞠躬」"}
+    assert m.run("emote", {"name": "鞠躬"}) == {"ok": True, "text": "做了「鞠躬」"}  # 牵着手也照做
     assert m.run("camera", {"action": "left", "steps": 2})["ok"] is True and cam.moves == [("left", 2)]
     assert m.run("camera", {"action": "right"})["ok"] is True and cam.moves[-1] == ("right", 1)  # 步数默认 1
     assert m.run("camera_reset", {})["ok"] is True and cam.resets == 1
