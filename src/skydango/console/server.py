@@ -271,6 +271,9 @@ class ConsoleServer:
             if not self._busy() and probe_status(port):
                 orphan = True
                 problems.append(f"{port} 端口上有上次留下的沙盒，先点「让它退出」")
+            if not self._busy() and probe_status(self.child_port):  # 上次留下的团子：共用令牌，别两个大脑同时在线
+                self.orphan = True
+                problems.append(f"{self.child_port} 端口上有上次留下的团子，先在总览让它退出")
             try:
                 secrets = read_secrets(console_paths(self.config_path)[1])
             except ValueError as exc:
@@ -305,12 +308,16 @@ class ConsoleServer:
     def _reset_sandbox(self) -> tuple[int, dict]:
         from .sandbox_view import reset
 
-        if self._state_of("sandbox") in BUSY:
-            return 409, {"ok": False, "text": "先下线沙盒再重置记忆"}
-        if probe_status(self.sandbox_port()):
-            return 409, {"ok": False, "text": "上次留下的沙盒还在跑（占着沙盒端口），先让它退出"}
-        cfg = self.store._fallback()
-        reset(self.sandbox_dir(), Path(cfg.reply.memory_dir or "memory"))
+        with self._device_lock:  # 和起沙盒互斥：锁里再看一次状态，别一边删目录一边起子进程
+            if self._state_of("sandbox") in BUSY:
+                return 409, {"ok": False, "text": "先下线沙盒再重置记忆"}
+            if probe_status(self.sandbox_port()):
+                return 409, {"ok": False, "text": "上次留下的沙盒还在跑（占着沙盒端口），先让它退出"}
+            cfg = self.store._fallback()
+            try:
+                reset(self.sandbox_dir(), Path(cfg.reply.memory_dir or "memory"))
+            except ValueError as exc:  # 沙盒目录和真 memory 重合
+                return 409, {"ok": False, "text": str(exc)}
         return 200, {"ok": True, "text": "沙盒记忆用 memory/ 重置好了"}
 
     def sandbox_info(self) -> dict:

@@ -1349,6 +1349,13 @@ def cmd_sandbox(cfg: Config, args) -> None:
         raise SystemExit(f"[sandbox] wake_hour 要是 0~23 的整数，现在是 {sb.wake_hour!r}")
     root = Path(sb.dir)
     memory = root / "memory"
+    if cfg.reply.memory_dir:  # 沙盒只写 sandbox/memory/：和真的记忆目录重合就不起（否则会写进真记忆）
+        from .console.sandbox_view import check_separate
+
+        try:
+            check_separate(root, Path(cfg.reply.memory_dir))
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
     memory.mkdir(parents=True, exist_ok=True)  # 第一次：空记忆（管理面板「重置记忆」才从 memory/ 复制）
     cfg.reply.dry_run = False  # 沙盒总是 live：记忆、内心层都真的写，但只写 sandbox/memory/
     cfg.reply.memory_dir = str(memory)

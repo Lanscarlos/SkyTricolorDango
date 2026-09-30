@@ -18,10 +18,21 @@ log = logging.getLogger(__name__)
 SKIP = ("archive",)  # memory/ 下不复制的目录（挪走的旧聊天记录）
 
 
+def check_separate(sandbox_dir: Path, memory_dir: Path) -> None:
+    """沙盒记忆目录和真的记忆目录不能重合（相同或互相包含），否则重置会删掉真的 memory/、沙盒会写进真记忆。"""
+    mine = (Path(sandbox_dir) / "memory").resolve()
+    real = Path(memory_dir).resolve()
+    if mine == real or real in mine.parents or mine in real.parents:
+        raise ValueError(
+            f"沙盒的记忆目录 {mine} 和真的记忆目录 {real} 重合了：改一下 [sandbox] dir（默认 \"sandbox\"），别让它们互相包含"
+        )
+
+
 def reset(sandbox_dir: Path, memory_dir: Path) -> None:
     """用 memory/ 覆盖沙盒记忆：删掉 sandbox/memory/ 和 clock.json，再把 memory/（除了 archive/）复制过去。
-    memory/ 不存在就建一个空的沙盒记忆。真的 memory/ 只读。"""
+    memory/ 不存在就建一个空的沙盒记忆。真的 memory/ 只读；两个目录重合时 ValueError，什么都不动。"""
     sandbox_dir, memory_dir = Path(sandbox_dir), Path(memory_dir)
+    check_separate(sandbox_dir, memory_dir)
     target = sandbox_dir / "memory"
     if target.exists():
         shutil.rmtree(target)
