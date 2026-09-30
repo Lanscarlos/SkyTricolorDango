@@ -456,6 +456,10 @@ class FakeEmotes:
     def __init__(self):
         self.done = []
         self.cooling = False  # 动作限速中
+        self.last_any = float("-inf")  # 同 EmotePlayer：任何动作最近一次（反射的 min_gap 用）
+
+    def on_wheel(self):
+        return ["鞠躬"]
 
     def available(self, ignore_interval=False):
         return [] if self.cooling and not ignore_interval else ["鞠躬"]
