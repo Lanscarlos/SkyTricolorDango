@@ -43,6 +43,11 @@ def test_brain_prompt_mentions_gestures_and_following_by_holding_hands():
     assert "跟着别人走" not in text  # 以前说"不能跟着别人走"：现在能靠牵手跟
 
 
+def test_emote_does_not_release_hands_in_prompt():
+    text = static_prompt(ReplyConfig())
+    assert "做动作会松开手" not in text and "不会松开手" in text  # 用户实测：做动作不松手，走动才会
+
+
 def test_following_by_hand_is_only_for_friends():
     text = static_prompt(ReplyConfig())
     line = next(l for l in text.splitlines() if "牵我一下" in l)
@@ -160,3 +165,91 @@ def test_prompt_explains_background_events_and_return():
     text = static_prompt(ReplyConfig(max_chars=40))
     assert "下次醒来时一起告诉你" in text  # 背景事件不马上叫醒（events.BACKGROUND）
     assert "回来了" in text and "不用再打招呼" in text
+
+
+BUBBLE = "有人跟你说话时，身体已经替你冒了输入气泡"
+
+
+def test_bubble_note_only_when_enabled():
+    assert BUBBLE in brain_prompt(ReplyConfig(), None, bubble=True)
+    assert BUBBLE not in brain_prompt(ReplyConfig(), None)
+
+
+def test_brain_prompt_inner_adds_days_and_rules():
+    from skydango.brain.prompt import INNER_RULES
+
+    text = brain_prompt(ReplyConfig(), None, days="## 日子\n今天……", inner=True)
+    assert "## 日子\n今天……" in text and INNER_RULES in text
+    assert text.index(INNER_RULES) < text.index("- 记住聊过的内容和对方的名字")
+    assert "别报数字" in INNER_RULES
+
+
+def test_brain_prompt_inner_off_unchanged():
+    assert brain_prompt(ReplyConfig(), None) == brain_prompt(ReplyConfig(), None, days="", inner=False)
+    assert "## 日子" not in brain_prompt(ReplyConfig(), None)
+
+
+def test_days_before_recent_turns(tmp_path):
+    import time
+
+    now = time.time()
+    text = brain_prompt(ReplyConfig(), _history_store(tmp_path, now), history_turns=3, now=now, days="## 日子\n今天……", inner=True)
+    assert text.index("## 日子") < text.index("## 上次聊到哪")
+
+
+def test_mind_rules_after_inner_rules():
+    from skydango.brain.prompt import INNER_RULES, MIND_RULES
+
+    text = brain_prompt(ReplyConfig(), None, inner=True, mind=True)
+    assert text.index(INNER_RULES) < text.index(MIND_RULES) < text.index("- 记住聊过的内容和对方的名字")
+    assert "别扭立刻作废" in MIND_RULES and "牵手" in MIND_RULES
+    assert brain_prompt(ReplyConfig(), None, inner=True) == brain_prompt(ReplyConfig(), None, inner=True, mind=False)
+    assert MIND_RULES not in brain_prompt(ReplyConfig(), None, inner=True)
+
+
+# ---- 内心层第 3 期：脾气、你攒下的性格 ----
+def test_temper_rules_and_loosened_line():
+    from skydango.brain.prompt import GO_ON_NEW, GO_ON_OLD, MIND_RULES, TEMPER_RULES
+
+    text = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True)
+    assert text.index(MIND_RULES) < text.index(TEMPER_RULES) < text.index("- 记住聊过的内容和对方的名字")
+    assert GO_ON_NEW in text and GO_ON_OLD not in text
+    for s in ("有立场", "损事不损人", "不要，懒", "收着点", "# 命令"):
+        assert s in TEMPER_RULES
+
+
+def test_temper_loosened_line_without_proactive():
+    from skydango.brain.prompt import GO_ON_NEW, NO_NEW_TOPIC
+
+    text = brain_prompt(ReplyConfig(), None, proactive=False, temper=True)
+    assert GO_ON_NEW + NO_NEW_TOPIC in text
+
+
+def test_temper_off_identical_to_phase2():  # Review Focus 5
+    assert brain_prompt(ReplyConfig(), None, inner=True, mind=True) == brain_prompt(
+        ReplyConfig(), None, inner=True, mind=True, temper=False, persona_text="")
+
+
+def test_bottom_lines_untouched():
+    on = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True)
+    off = brain_prompt(ReplyConfig(), None, inner=True, mind=True)
+    for head in ("## 身份", "## 底线"):
+        seg = lambda t: t[t.index(head): t.index("\n## ", t.index(head) + 1)]  # noqa: E731
+        assert seg(on) == seg(off)
+
+
+def test_persona_section_before_days(tmp_path):
+    text = brain_prompt(ReplyConfig(), None, days="## 日子\n今天……", persona_text="## 你攒下的性格（…）\n口头禅：害", temper=True)
+    assert text.index("## 你攒下的性格") < text.index("## 日子")
+    store = MemoryStore(tmp_path)
+    (tmp_path / "profile.md").write_text("我是团子", encoding="utf-8")
+    text = memory_prompt(ReplyConfig(), store, days="## 日子\n今天……", persona_text="## 你攒下的性格（…）\n口头禅：害")
+    assert text.index("我是团子") < text.index("## 你攒下的性格") < text.index("## 日子")
+
+
+def test_go_on_line_does_not_contradict_proactive():  # 终审：别和“别硬转话题”打架
+    from skydango.brain.prompt import GO_ON_NEW
+
+    assert "换个话头" not in GO_ON_NEW
+    text = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True, proactive=True)
+    assert GO_ON_NEW in text

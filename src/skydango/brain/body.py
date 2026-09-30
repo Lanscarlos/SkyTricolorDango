@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import queue
+import random
 import threading
 import time
 from collections import deque
@@ -33,6 +35,14 @@ from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
+from .reflex import Reflexes, addressed
+from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
+from ..inner.energy import Energy, awake_minutes, energy as inner_energy
+from ..inner.ledger import card_line, match_friend
+from ..inner.ledger import ago
+from ..inner.log import ENERGY_EVERY, diff as diff_inner
+from ..inner.mind import sounds_upset
+from ..inner.reflect import materials as reflect_materials_text
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
 from .skills import SkillRunner
 from .track import TrackSkill
@@ -50,6 +60,9 @@ PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身�
 
 def _first_line(exc: BaseException) -> str:
     return (str(exc).splitlines() or [type(exc).__name__])[0]
+
+
+FORGET_KINDS = ("catchphrase", "joke", "opinion")  # 网页上能删的性格条目类别
 
 
 class ToolError(Exception):
@@ -79,9 +92,15 @@ class Body:
         notes=None,  # chat.memory.NotesKeeper
         run=None,  # runlog.RunDir
         panel=None,  # chat.panel.PanelManager：cli 建一个、和镜头 / 轮盘 / 互动共用；None = 自己建
+        ledger=None,  # inner.ledger.Ledger：内心账本（好友关系卡、这次上线）；None = 不记
+        mind=None,  # inner.mind.Mind：心情、别扭、心愿（内心层第 2 期）；None = 没有
+        reflector=None,  # inner.reflect.Reflector：反思；None = 不反思
+        persona=None,  # inner.persona.Persona：性格档案（内心层第 3 期）；None = 性格关着（不沉淀、不记收着点）
+        mind_log=None,  # inner.log.MindLog：内心流水账（反思改了什么、精力曲线、删性格条目）；None = 不记
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
+        rng: random.Random | None = None,  # 反射抽概率用；测试传固定的
     ) -> None:
         self.cfg = cfg
         self.device = device
@@ -107,11 +126,35 @@ class Body:
         self.store = store
         self.notes = notes
         self.run_dir = run
+        self.ledger = ledger
+        self.mind = mind
+        self.reflector = reflector
+        self.persona = persona
+        self.mind_log = mind_log
+        self._energy_logged = float("-inf")  # 上次往流水账记精力的墙上时间
+        self._soft_until: dict[str, tuple[float, str]] = {}  # 说了难过的好友 → (收着点到什么时候, 他的原话)
+        self.profile_text: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
+        self.memory_notes: Callable[[], str] = lambda: ""  # 反思用的笔记（cli 设成 notes.md + inbox.md）
+        self._energy: Energy | None = None  # 这一圈的精力（每圈算一次）
+        self._born_wall = wall()
+        self._cheered_at = float("-inf")  # 最近一次有好友跟团子说话（墙上时间）
+        self._busy_log: deque[tuple[float, float]] = deque()  # (墙上时间, 秒)：热闹的时段，只留一小时
+        self._last_tick_wall: float | None = None
+        self._reflect_chat: list[tuple[float, str, str]] = []  # 上次反思以来听到的 / 说出的
+        self._reflect_comings: list[str] = []
+        self._session_chat: deque[tuple[float, str, str]] = deque(maxlen=80)  # 这次上线的聊天（下线写日记用）
+        self._session_comings: deque[str] = deque(maxlen=40)
+        self._arrive_notes: dict[str, str] = {}  # 算作新见面、还没发 arrive 的好友 → 交情说明（跟踪中攒着，发 arrive / leave 时取走）
         self.clock = clock
         self.sleep = sleep
         self.wall = wall
         self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
         self.brain_offline: Callable[[float], bool] = lambda now: False
+        self.brain_turn: Callable[[], tuple[float, float]] = lambda: (float("-inf"), float("-inf"))  # 大脑最近一轮的 (开始, 结束)，cli 设
+        self.on_blocked: Callable[[str, str], None] | None = None  # say 被过滤 / 主动护栏拦下时调 (原话, 原因)；沙盒记进聊天记录
+        self._bubble_at: float | None = None  # 身体替大脑开输入框（冒“正在输入”）的时间；None = 没开（spec 2026-09-30-body-reflex §2）
+        self.reflexes = Reflexes(cfg.reflex, rng or random.Random(), clock())
+        self._said_at = float("-inf")  # 团子上次说话（clock）：“刚说完好友就接话”算在跟团子说
         self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在回聊天（取走了聊天的那一轮还没结束）：聊天面板别因为安静关掉
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
@@ -189,7 +232,11 @@ class Body:
             if self.viewer is not None:
                 self._show(frame, now, fresh)
         self._run_commands()
+        self._watch_bubble(self.clock())
+        self._watch_idle(self.clock())
         self._fallback(now)
+        self._inner_tick()
+        self._ledger_call("save", self.wall())
 
     def _show(self, frame, now: float, fresh: list[Message]) -> None:
         from ..vision.viewer import panel_box
@@ -202,6 +249,8 @@ class Body:
             info["聊天面板"] = panel
         info["正在做"] = self.skills.describe(now).removeprefix("正在做：")
         info["刚说过"] = self.said[-3:][::-1] or "还没说话"
+        if self.cfg.reflex.enabled:
+            info["反射"] = self._recent_reflex(now) or "还没有"
         if self.cfg.proactive.enabled:
             try:
                 o = self.occasion()
@@ -209,6 +258,9 @@ class Body:
             except Exception:
                 log.debug("算场合出错", exc_info=True)
                 info["场合"] = "算不出来"
+        if self.mind is not None:
+            info["心情"] = self.mind.mood.text or self.mind.mood.level
+            info["精力"] = self._energy.note if self._energy is not None else "算不出来"
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
             self.viewer.update(
@@ -316,6 +368,29 @@ class Body:
         for m in fresh:
             log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             self.chat.append((self.wall(), m.speaker, m.text))
+        if self.ledger is not None:
+            for m in fresh:
+                try:
+                    to_me = self._addressed(m, now)
+                except Exception:  # 好友名单读不了之类：账少记一点，这批聊天照样变成事件
+                    log.exception("判断是不是在跟团子说话出错")
+                    to_me = False
+                self._ledger_call("heard", m.speaker, m.text, to_me, self.wall())
+                if to_me:
+                    self._cheered_at = self.wall()
+        if self.mind is not None:
+            friends = self._safe_friends()
+            for m in fresh:
+                self._reflect_chat.append((self.wall(), m.speaker, m.text))
+                self._session_chat.append((self.wall(), m.speaker, m.text))
+                who = match_friend(m.speaker, friends)
+                if who is not None and sounds_upset(m.text) and self.mind.forgive(who, self.wall()):
+                    log.info("%s 说「%s」：别扭立刻作废", who, m.text)  # 代码兜底，不等反思
+                    self._inner_call(self._save_mind)
+                if self.reflector is not None:
+                    self.reflector.heard(who is not None, now)
+        if self.persona is not None:
+            self._inner_call(lambda: self._watch_upset(fresh))
         self.heard = (self.heard + fresh)[-20:]
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
@@ -333,13 +408,159 @@ class Body:
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
             else:
                 self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」")
+        if self.cfg.reflex.enabled:
+            self._on_heard(fresh, now)
+
+    # ---- 身体反射（spec 2026-09-30-body-reflex）----
+    def _addressed(self, m: Message, now: float) -> bool:
+        """这句是不是在跟团子说（叫名字 / 团子刚说完 / 身边只有他一个好友）。"""
+        nearby = self.env.nearby(now) if self.env is not None else []
+        since = now - self._said_at if self._said_at > float("-inf") else None
+        return addressed(
+            m.speaker, m.text, is_friend=is_friend_fn(self.friend_names()), self_names=self.cfg.proactive.self_names,
+            nearby=nearby, since_said=since, followup_window=self.cfg.reflex.followup_window, owner=self.cfg.brain.owner_name,
+        )
+
+    def _on_heard(self, fresh: list[Message], now: float) -> None:
+        """有人在跟团子说话：偶尔先做个小动作，再马上冒输入气泡，大脑想好了用这个框发。一批最多一次。"""
+        self.reflexes.stir(now, scale=self.effects().idle)
+        if not any(self._addressed(m, now) for m in fresh):
+            return
+        if self._all_from_grudge(fresh):  # 在跟他闹别扭：故意晚点接（不冒气泡、不做小动作），大脑照常收到消息
+            log.debug("在跟 %s 闹别扭，不冒输入气泡", self.mind.grudge.who)
+            return
+        if self.skills.active is not None:  # 技能在按方向键：框开着按键会变成打字，动作也会打断它
+            log.debug("正在%s，不冒输入气泡", self.skills.active.goal)
+            return
+        busy = self._bubble_blocked()
+        if busy:  # 开了也会马上被关掉（气泡来回闪），或者会在别的面板上按 Enter
+            log.debug("不冒输入气泡：%s", busy)
+            return
+        name = self.reflexes.pick_addressed(now, self._wheel(), scale=self.effects().addressed)
+        if name:
+            self._reflex_emote(name, f"有人叫你，你下意识{name}", now)
+        if not self.cfg.reflex.bubble:
+            return
+        if self._dry(False):
+            log.info("[dry-run] 会冒输入气泡（有人在跟团子说话）")
+            return
+        self._open_bubble(now)
+
+    def _bubble_blocked(self) -> str:
+        """这会儿不该开框 / 做反射动作的原因；空 = 可以。"""
+        if self.blackout:
+            return "画面黑着"
+        if self._requests:  # social 要点圆圈会先关框；接不了的请求挂着时开了又关会来回闪
+            return "有互动请求挂着"
+        if self.panels is not None and self.panels.blocking("say"):
+            return "有面板挡着"
+        return ""
+
+    def _wheel(self) -> list[str]:
+        return self.emotes.on_wheel() if self.emotes is not None else []
+
+    def _reflex_emote(self, name: str, why: str, now: float) -> bool:
+        """反射做一个轮盘上的动作：做不了（被挡、在忙、刚做过）就算了，不抛。不占大脑的动作冷却。"""
+        if self.emotes is None or self.blackout or self.skills.active is not None or self._requests:
+            return False
+        if now - self.emotes.last_any < self.cfg.reflex.min_gap:
+            return False
+        try:
+            self.clear_view("emote")  # 顺带关掉替大脑开的框、面板挡着就不做
+        except ToolError as exc:
+            log.debug("反射「%s」没做：%s", name, exc)
+            return False
+        try:
+            if self._dry(False):
+                self.emotes.pretend(name, reflex=True)
+                log.info("[dry-run] 反射：%s", why)
+            else:
+                with self._held("wheel"):
+                    self.emotes.perform(name, reflex=True)
+                log.info("反射：%s", why)
+        except Exception:
+            log.warning("反射「%s」没做成", name, exc_info=True)
+            return False
+        self.emoted.append(name)
+        self.emoted[:] = self.emoted[-50:]
+        self.reflexes.done(now, why, scale=self.effects().idle)
+        self.events.put("reflex", why)
+        return True
+
+    def _return_gesture(self, who: str, label: str, text: str, now: float) -> bool:
+        """别人对团子挥手 / 鞠躬：按概率回同一个动作。框开着就回完再开回来。"""
+        name = self.reflexes.pick_return(now, label, self._wheel())
+        if name is None:
+            return False
+        bubble = self._bubble_at
+        if not self._reflex_emote(name, f"{text}，你回了个{name}", now):
+            return False
+        if bubble is not None and self._open_bubble(now):
+            self._bubble_at = bubble  # 还是那一次：大脑那一轮结束 / 超时照原来的算
+        return True
+
+    def _watch_idle(self, now: float) -> None:
+        """闲着很久：从清单里挑个小动作（框开着 = 正在打字，不做）。"""
+        if not self.cfg.reflex.enabled or self._bubble_at is not None or self.emotes is None:
+            return
+        name = self.reflexes.pick_idle(now, self._wheel())
+        if name:
+            self._reflex_emote(name, f"闲着，你{name}", now)
+
+    def _recent_reflex(self, now: float) -> str:
+        if not self.reflexes.recent:
+            return ""
+        t, text = self.reflexes.recent[-1]
+        return f"{text}（{now - t:.0f} 秒前）" if now - t <= 300 else ""
+
+    def _open_bubble(self, now: float) -> bool:
+        if self.sender.opened:  # 上一句还没想完，框还开着：按这一句重新计时（回上一句的那一轮结束时别关）
+            if self._bubble_at is not None:
+                self._bubble_at = self.clock()
+            return True
+        try:
+            self.panel.before_speak(now)  # 先开面板再按 Enter：说完对方的回复马上读得到
+            opened = self.sender.open()
+        except Exception:
+            log.warning("冒输入气泡失败", exc_info=True)
+            return False
+        if opened:
+            self._bubble_at = self.clock()  # 按下 Enter 之后（晚于这批消息进事件队列）：取事件更早的那一轮结束时不会关它
+            log.info("有人在跟团子说话：先冒输入气泡")
+        return opened
+
+    def _close_bubble(self, why: str) -> None:
+        """关掉身体替大脑开的框（只关自己开的；say 用掉了就什么都不做）。"""
+        if self._bubble_at is None:
+            return
+        self._bubble_at = None
+        if self.sender.opened:
+            try:
+                self.sender.cancel()
+            except Exception:
+                log.warning("关输入框失败", exc_info=True)
+            log.debug("关掉替大脑开的输入框：%s", why)
+
+    def _watch_bubble(self, now: float) -> None:
+        if self._bubble_at is None:
+            return
+        if not self.sender.opened:  # say 用这个框发出去了
+            self._bubble_at = None
+            return
+        start, end = self.brain_turn()
+        if start >= self._bubble_at and end >= start:  # 开框之后才开始的那一轮结束了，没说话
+            self._close_bubble("大脑这一轮没说话")
+        elif now - self._bubble_at >= self.cfg.reflex.bubble_max:
+            self._close_bubble("开太久了")
 
     def news(self, text: str) -> None:
         """眼睛自动看时挑出的新鲜事（眼睛线程调，只入队）。"""
         self._news.put(text)
 
-    def _watch_news(self, now: float) -> None:
-        """新鲜事 / 换了地图 → notice 事件；没熟人、主动额度用完、太勤、和上一条一样都不发（省得为此叫醒大脑）。"""
+    def _watch_news(self, now: float) -> list[tuple[str, str]]:
+        """新鲜事 / 换了地图 → notice 事件；没熟人、主动额度用完、太勤、和上一条一样都不发（省得为此叫醒大脑）。
+
+        返回这次被拦下的 [(新鲜事, 原因)]（沙盒页上显示）。"""
         found = []
         while True:
             try:
@@ -352,16 +573,23 @@ class Body:
                 found.append(f"看起来到了{place}")
             self._place_seen = place
         if not found:
-            return
+            return []
         o = self.occasion()
+        blocked: list[tuple[str, str]] = []
         for text in found:
             if o.level == "alone" or o.left == 0:
-                log.debug("新鲜事没发（%s）：%s", o.blocked or "主动额度用完了", text)
-            elif now - self._notice_at < self.cfg.proactive.notice_min or similar(text, self._notice_last, 0.9):
-                log.debug("新鲜事没发（太勤或重复）：%s", text)
+                why = o.blocked or "主动额度用完了"
+            elif now - self._notice_at < self.cfg.proactive.notice_min:
+                why = f"{self.cfg.proactive.notice_min:.0f} 秒内刚有过一条新鲜事"
+            elif similar(text, self._notice_last, 0.9):
+                why = "和上一条新鲜事差不多"
             else:
                 self.events.put("notice", text)
                 self._notice_at, self._notice_last = now, text
+                continue
+            log.debug("新鲜事没发（%s）：%s", why, text)
+            blocked.append((text, why))
+        return blocked
 
     def _watch_panel(self, now: float) -> None:
         """只在面板该开着（常开模式 / 聊天中）却没开时告诉大脑；按需模式闲着时关着是正常的。"""
@@ -395,6 +623,9 @@ class Body:
     def clear_view(self, action: str, live: bool = False) -> str:
         """操作前确认画面没被面板挡着：已核对、卡片允许自动关的顺手关掉；别的拒绝（ToolError），交给大脑。
         返回 dry-run 时要附加的说明（"真执行时会先关掉……"）。"""
+        if action != "say":  # 框开着时按键会变成打字、点屏幕会先收起键盘：身体替大脑开的框先关掉
+            self._close_bubble(action)
+        self.reflexes.stir(self.clock(), scale=self.effects().idle)  # 有动静：闲着的小动作重新计时
         if self.panels is None:
             return ""
         notes = []
@@ -439,6 +670,8 @@ class Body:
         self._ref_thumb, self._ref_at = t, now
 
     def _watch_people(self, now: float) -> None:
+        near = self.env.nearby(now)  # 只取一次：账本和人来人走看的是同一份名单
+        self._arrive_notes.update(self._ledger_call("present", near, self.wall(), default={}) or {})  # 跟踪中也照记
         if getattr(self.skills.active, "quiet_people", False):
             # 跟踪中转镜头：人进出画面是自己转的，不是人来了 / 走了。不发人来人走的事件、不更新比较基准，技能结束后下一圈照常比较。
             # 转镜头时框变大变小会被当成"走过来"、动作也认不准：攒着的丢掉，免得跟踪结束后冒出过时的事件。
@@ -449,22 +682,30 @@ class Body:
             if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
                 self.panel.bubble_seen(now)
         else:
-            self._watch_comings(now)
+            self._watch_comings(now, near)
         self._watch_requests(now)
 
-    def _watch_comings(self, now: float) -> None:
+    def _watch_comings(self, now: float, near_list: list[str] | None = None) -> None:
         """人来人走：身边有谁、陌生人、正在输入的气泡、有人走过来、对团子做动作。"""
-        near = set(self.env.nearby(now))
+        near = set(self.env.nearby(now) if near_list is None else near_list)
         if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
             self.panel.trigger("arrive", now)
         for name in sorted(near - self._nearby):
             if now - self._left_at.get(name, float("-inf")) <= self.cfg.brain.rejoin:  # 走出画面又回来：不用再打招呼
                 self.events.put("return", f"{name} 回来了", who=name)
             else:
-                self.events.put("arrive", f"{name} 来到身边", who=name)
+                want = self._inner_call(lambda: self.mind.want_note(name), default="") if self.mind is not None else ""
+                joke = ""
+                if self.persona is not None and name not in self.soft_names(self.wall()):  # 收着点的人：不提老梗
+                    joke = self._inner_call(lambda: self.persona.joke_note(name), default="")
+                text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}{joke or ''}"
+                self.events.put("arrive", text, who=name)
+                self._reflect_note(f"{name} 来到身边")
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
             self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
+            self._arrive_notes.pop(name, None)
+            self._reflect_note(f"{name} 走开了")
             self._left_at[name] = now
             if name == self.holding:  # 人都走开了，肯定没牵着了
                 self.events.put("released", f"（推测）和 {name} 分开了")
@@ -492,7 +733,10 @@ class Body:
             for who, label in self.env.pop_gestures():
                 if who == self.holding:
                     continue
-                self.events.put("gesture", f"{who}对你{names.get(label, label)}")
+                text = f"{who}对你{names.get(label, label)}"
+                if self.cfg.reflex.enabled and self._return_gesture(who, label, text, now):
+                    continue  # 身体已经回礼了（reflex 事件），不再叫大脑决定
+                self.events.put("gesture", text)
 
     def _watch_requests(self, now: float) -> None:
         """互动请求、按规则自动接受、牵手状态（跟踪中也照常）。"""
@@ -866,15 +1110,21 @@ class Body:
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
-        try:
-            parts.append("输入框" + ("开" if self.device.ime_shown() else "关"))
-        except Exception:
-            parts.append("输入框状态读不到")
+        if self._bubble_at is not None:
+            parts.append("输入框：开着（身体替你开的，想好就 say）")
+        else:
+            try:
+                parts.append("输入框" + ("开" if self.device.ime_shown() else "关"))
+            except Exception:
+                parts.append("输入框状态读不到")
         others = self.panels.state.others() if self.panels is not None else ()
         if others:
             parts.append("开着的面板：" + "、".join(p.describe() for p in others))
         near = self.env.nearby(now) if self.env is not None else []
-        parts.append("身边的好友：" + ("、".join(near) if near else "没看到"))
+        friends = "、".join(near)
+        if near and self.ledger is not None:
+            friends = self._ledger_call("status_line", near, self.wall(), default="") or friends
+        parts.append("身边的好友：" + (friends or "没看到"))
         if hasattr(self.env, "strangers"):
             parts.append(f"身边的陌生人：{self.env.strangers(now)} 个")
         closest = self.env.nearest(now) if hasattr(self.env, "nearest") else None
@@ -893,6 +1143,9 @@ class Body:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:
             parts.append("画面黑着")
+        reflex = self._recent_reflex(now)
+        if reflex:
+            parts.append("刚才下意识：" + reflex)
         if self.camera is not None:
             parts.append("镜头：" + self.camera.describe())
         parts.append("上次看图：" + (f"{now - self.last_look:.0f} 秒前" if self.last_look > float("-inf") else "还没看过"))
@@ -908,6 +1161,13 @@ class Body:
             except Exception:
                 log.exception("算场合出错")
                 parts.append("场合：算不出来（详见日志）")
+        if self.mind is not None:
+            heart = self._inner_call(lambda: self.mind.line(self.wall(), self._energy))
+            if heart:
+                parts.append("心里：" + heart)
+        soft = self._inner_call(lambda: self._soft_line(self.wall()), default="") if self.persona is not None else ""
+        if soft:
+            parts.append(soft)
         parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
             parts.append("dry-run（说话、动作、转视角、走动都不会真的执行）")
@@ -920,7 +1180,7 @@ class Body:
         strangers = self.env.strangers(now) if hasattr(self.env, "strangers") else 0
         return assess(
             self.cfg.proactive, self.wall(), friends, strangers, list(self.chat), list(self.spoken),
-            is_friend_fn(self.friend_names()),
+            is_friend_fn(self.friend_names()), quota_scale=self.effects().quota,
         )
 
     def chat_log(self, n: int = 20) -> str:
@@ -952,18 +1212,29 @@ class Body:
         now = self.clock()
         body = clean_reply(text, self.cfg.reply.max_chars)  # 含“不能声称自己是真人”的硬过滤
         if body is None:
+            self._blocked(text, "过滤掉了（空的、<skip>，或者说了自己是真人）")
             raise ToolError("这句没发：是空的、<skip>，或者说了自己是真人（不能这么说）。换个说法")
         if not self.limiter.allow(now):
+            self._blocked(text, "说得太快了")
             raise ToolError("说得太快了，等几秒再说")
         proactive = self.cfg.proactive.enabled and not live and not reply and not self.brain_busy()
         if proactive:
             blocked = self.occasion().blocked
             if blocked:
+                self._blocked(text, blocked)
                 raise ToolError(blocked)
         note = self.clear_view("say", live)
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
+        self._said_at = now
+        self.reflexes.stir(now, scale=self.effects().idle)
         self.said.append(full)
+        self._ledger_call("said", self.wall())
+        if self.mind is not None:
+            self._reflect_chat.append((self.wall(), "我", full))
+            self._session_chat.append((self.wall(), "我", full))
+            if self.reflector is not None:
+                self.reflector.stirred(now)
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
         if not live:
@@ -977,6 +1248,14 @@ class Body:
         self.self_filter.remember(full, self.clock())
         self._remember(body, full, sent=True, manual=live)
         return f"已发送：{full}"
+
+    def _blocked(self, text: str, why: str) -> None:
+        if self.on_blocked is None:
+            return
+        try:
+            self.on_blocked(text, why)
+        except Exception:
+            log.exception("on_blocked 出错")
 
     def _remember(self, body: str, full: str, sent: bool, manual: bool = False) -> None:
         if manual:  # 主人手动让团子说的：不是 AI 的回复——运行记录里标出来，不写聊天历史 / 记忆（模型会模仿 history），不拿走待回复的消息
@@ -997,7 +1276,8 @@ class Body:
         if self.notes is not None:
             self.notes.turn_added(Turn(now, user, body))
 
-    def emote(self, name: str, force: bool = False, live: bool = False) -> str:
+    def emote(self, name: str, live: bool = False) -> str:
+        """做动作不会松开牵手（用户实测；以前记的“会松手”是对方自己断开的），牵着手也照做。"""
         if self.emotes is None:
             raise ToolError("这次没开动作（--no-emotes 或者图标库是空的）")
         owner = self._owner(self.clock())
@@ -1005,10 +1285,9 @@ class Body:
         if name not in available:
             raise ToolError(f"「{name}」现在做不了；能做的：{'、'.join(available) or '暂时没有（刚做过动作，要等一会儿）'}")
         relaxed = owner and name not in self.emotes.available()  # 平时这会儿还在动作限速里
-        if self.holding and not force:
-            if not owner:
-                raise ToolError(f"正牵着 {self.holding} 的手，做动作会松手；确定要松手再做就传 force=true")
-            relaxed = True
+        gap = self.cfg.reflex.min_gap - (self.clock() - self.emotes.last_any) if self.cfg.reflex.enabled else 0.0
+        if gap > 0:  # 上一个动作（多半是反射）的动画还没做完
+            raise ToolError(f"刚做完一个动作，{math.ceil(gap)} 秒后再做")
         note = self.clear_view("emote", live)
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长
@@ -1152,6 +1431,7 @@ class Body:
     def panel_press(self, button: str, live: bool = False) -> str:
         """按 panel_read 列出的按钮（编号或文字）；过安全规则：never 不按，其他（非撤退类）要主人 #允许。"""
         self._need_panels()
+        self._close_bubble("panel_press")
         now = self.clock()
         ttl = self.cfg.panels.read_ttl
         if now - self._read_at > ttl:
@@ -1193,6 +1473,7 @@ class Body:
     def panel_close(self, live: bool = False) -> str:
         """关最上面的面板（卡片关法 → 撤退类按钮 → ×）。"""
         self._need_panels()
+        self._close_bubble("panel_close")
         top = self.panels.state.top()
         if top is None:
             return "没有开着的面板"
@@ -1314,6 +1595,217 @@ class Body:
         self._ref_thumb = None
         self._forget_self()
         return result + stopped
+
+    # ---- 内心层第 2 期：心情、精力、反思（spec 2026-09-30-inner-phase2）----
+    def _inner_call(self, fn: Callable[[], Any], default=None):
+        """内心层出错只记日志，不影响身体。"""
+        try:
+            return fn()
+        except Exception:
+            log.exception("内心层出错")
+            return default
+
+    def effects(self) -> Effects:
+        """心情和精力的倍数（主动额度、反射、心跳）；没有内心层或出错时是中性的。"""
+        if self.mind is None:
+            return NEUTRAL
+        try:
+            return inner_effects(self.mind.mood.level, self._energy.level if self._energy is not None else "精神")
+        except Exception:
+            log.exception("算心情的后果出错")
+            return NEUTRAL
+
+    def energy_now(self) -> Energy:
+        wall = self.wall()
+        t = time.localtime(wall)
+        if self.ledger is not None:
+            awake = awake_minutes(wall, self.ledger.session.start, self.ledger.history, self.cfg.inner.rest_gap)
+        else:
+            awake = max(0.0, wall - self._born_wall) / 60
+        busy = sum(sec for at, sec in self._busy_log if wall - at <= 3600) / 60
+        return inner_energy(t.tm_hour + t.tm_min / 60, awake, wall - self._cheered_at < 600, busy)
+
+    def _safe_friends(self) -> list[str]:
+        try:
+            return list(self.friend_names())
+        except Exception:
+            log.exception("读好友名单出错")
+            return []
+
+    def _all_from_grudge(self, fresh: list[Message]) -> bool:
+        if self.mind is None or self.mind.grudge is None:
+            return False
+        wall, friends = self.wall(), self._safe_friends()
+        return all(self.mind.grudge_on(match_friend(m.speaker, friends) or m.speaker, wall) for m in fresh)
+
+    def _reflect_note(self, text: str) -> None:
+        if self.mind is None:
+            return
+        self._reflect_comings.append(text)
+        self._session_comings.append(text)
+        if self.reflector is not None:
+            self.reflector.stirred(self.clock())
+
+    def _inner_tick(self) -> None:
+        """每圈：别扭 / 心愿到期、算精力、记热闹、取回反思结果、该反思了就开始。"""
+        if self.mind is None:
+            return
+        wall, now = self.wall(), self.clock()
+        self._inner_call(lambda: self.mind.expire(wall))
+        self._energy = self._inner_call(self.energy_now)
+        if self.mind_log is not None and wall - self._energy_logged >= ENERGY_EVERY:
+            self._energy_logged = wall
+            self._inner_call(lambda: self.mind_log.energy(wall, self._energy))
+        self._inner_call(lambda: self._track_busy(wall))
+        if self.reflector is None:
+            return
+        result = self._inner_call(self.reflector.poll)
+        if result is not None:
+            self._inner_call(lambda: self.apply_reflection(result))
+        if self._inner_call(lambda: self.reflector.due(now), default=False):
+            content = self._inner_call(lambda: self.reflect_materials(False))
+            if content is not None:
+                self._reflect_chat, self._reflect_comings = [], []
+                self._inner_call(lambda: self.reflector.start(content, now))
+
+    def _track_busy(self, wall: float) -> None:
+        last, self._last_tick_wall = self._last_tick_wall, wall
+        if last is not None and self.occasion().level == "busy":
+            self._busy_log.append((wall, min(max(0.0, wall - last), self.cfg.inner.max_step)))
+        while self._busy_log and wall - self._busy_log[0][0] > 3600:
+            self._busy_log.popleft()
+
+    def reflect_materials(self, final: bool) -> str:
+        """拼给反思的材料：上次反思以来的聊天和来去、相关好友的关系卡、笔记里提到他们的行。"""
+        wall = self.wall()
+        friends = self._safe_friends()
+        names = list(dict.fromkeys(
+            [n for n in (match_friend(who, friends) for _, who, _ in self._reflect_chat) if n]
+            + [n for n in (match_friend(x, friends) for x in (self.env.nearby(self.clock()) if self.env is not None else [])) if n]
+        ))
+        cards = []
+        for n in names:
+            card = self.ledger.card(n) if self.ledger is not None else None
+            if card is not None:
+                cards.append(card_line(n, card, wall))
+        notes = [line.strip() for line in (self.memory_notes() or "").splitlines()
+                 if line.strip() and not line.startswith("#") and any(n in line for n in names)][:10]
+        mind_line = self.mind.line(wall, self._energy) if self.mind is not None else ""
+        if self.mind is not None and self.mind.updated is not None:
+            mind_line += f"（{ago(wall - self.mind.updated)}前想的）"
+        chat, comings = (self._session_chat, self._session_comings) if final else (self._reflect_chat, self._reflect_comings)
+        return reflect_materials_text(
+            wall, self._energy.note if self._energy is not None else "", mind_line, list(chat), list(comings), cards, notes,
+            self.profile_text() or "", final, self._traits(),
+        )
+
+    def _traits(self) -> str | None:
+        """反思材料里的「你攒下的性格」：性格关着 / 拼出错 → None（不写这一段）。"""
+        if self.persona is None:
+            return None
+        return self._inner_call(self.persona.section)
+
+    def apply_reflection(self, result: dict) -> None:
+        """反思结果套进 Mind（身体线程里）；live 时写 mind.json。"""
+        if self.mind is None:
+            return
+        cards = self.ledger.cards if self.ledger is not None else {}
+        before_mind, before_persona = copy.deepcopy(self.mind), copy.deepcopy(self.persona)  # 流水账记“改了什么”用
+        dropped = self.mind.apply(result, cards, self._safe_friends(), self.wall(), self.cfg.inner)
+        for why in dropped:
+            log.info("反思：%s", why)
+        log.info("反思完了，心里：%s", self.mind.line(self.wall(), self._energy))
+        self._save_mind()
+        if self.persona is not None:
+            dropped = dropped + (self._inner_call(lambda: self._apply_persona(result, cards), default=[]) or [])
+        if self.mind_log is not None:
+            self._inner_call(lambda: self.mind_log.reflect(
+                self.wall(), False, self.mind, self._energy, diff_inner(before_mind, self.mind, before_persona, self.persona), dropped))
+
+    # ---- 内心层第 3 期：性格、收着点（spec 2026-09-30-inner-phase3）----
+    def _apply_persona(self, result: dict, cards) -> list[str]:
+        """反思结果套进性格档案；live 时写 persona.json。返回丢掉了哪些。"""
+        wall = self.wall()
+        dropped = self.persona.apply(result, cards, self._safe_friends(), wall, self.cfg.inner, soft=self.soft_names(wall))
+        for why in dropped:
+            log.info("性格：%s", why)
+        self._save_persona()
+        return dropped
+
+    def _save_persona(self) -> None:
+        if self.persona is not None and self.ledger is not None and self.ledger.persist and self.ledger.store is not None:
+            self.ledger.store.write_persona(self.persona)
+
+    # ---- 内心页（spec 2026-09-30-inner-viewer §4）：只在身体线程里调（viewer 经 body.call）----
+    def forget(self, kind: str, text: str, who: str = "", topic: str = "") -> str:
+        """网页上删一条性格条目。空字符串 = 删掉了；否则是原因。live 时写 persona.json；都记一条 forget。"""
+        if self.persona is None:
+            return "性格档案没开"
+        if kind not in FORGET_KINDS:
+            return "不认识的类别"
+        if not self.persona.remove(kind, text, who, topic):
+            return "找不到这条（可能已经淡出了）"
+        log.info("网页上删了性格条目：%s %s%s%s", kind, who + "——" if who else "", topic + "——" if topic else "", text)
+        self._inner_call(self._save_persona)
+        if self.mind_log is not None:
+            self._inner_call(lambda: self.mind_log.forget(self.wall(), kind, text, who, topic))
+        return ""
+
+    def inner_snapshot(self) -> dict:
+        """内心页的「现在」：心情、精力、别扭、心愿、收着点、性格档案、内存里最近的流水账。没开反思时这几项是 None / 空。"""
+        wall = self.wall()
+        m, e, g = self.mind, self._energy, self.mind.grudge if self.mind is not None else None
+        return {
+            "running": True,
+            "at": wall,
+            "mood": {"level": m.mood.level, "text": m.mood.text, "since": m.mood.since} if m is not None else None,
+            "energy": {"level": e.level, "score": e.score, "note": e.note} if m is not None and e is not None else None,
+            "grudge": {"who": g.who, "why": g.why, "until": g.until} if g is not None and wall < g.until else None,
+            "wants": [{"kind": w.kind, "text": w.text, "who": w.who, "until": w.until} for w in m.wants] if m is not None else [],
+            "soft": [{"who": who, "text": text, "until": until} for who, (until, text) in self._soft_until.items() if wall < until],
+            "persona": self.persona.to_dict() if self.persona is not None else None,
+            "log": self.mind_log.recent() if self.mind_log is not None else [],
+        }
+
+    def _watch_upset(self, fresh: list[Message]) -> None:
+        """好友说难过 / 不舒服……：接下来 soft_minutes 分钟对他收着点（不损、不唱反调、不拒绝）。"""
+        friends, wall = self._safe_friends(), self.wall()
+        for m in fresh:
+            who = match_friend(m.speaker, friends)
+            if who is not None and sounds_upset(m.text):
+                self._soft_until[who] = (wall + self.cfg.inner.soft_minutes * 60, m.text[:20])
+                log.info("%s 说「%s」：接下来对他收着点", who, m.text)
+
+    def soft_names_this_session(self) -> set[str]:
+        """这次上线里说过难过的好友（下线反思看的是整次上线：这些人都不记新老梗）。"""
+        return set(self._soft_until)
+
+    def soft_names(self, wall: float) -> set[str]:
+        """现在要收着点的好友。"""
+        return {who for who, (until, _) in self._soft_until.items() if wall < until}
+
+    def _soft_line(self, wall: float) -> str:
+        live = [(who, text) for who, (until, text) in self._soft_until.items() if wall < until]
+        if not live:
+            return ""
+        if len(live) == 1:
+            return f"对{live[0][0]}收着点（他刚说「{live[0][1]}」）"
+        return "对" + "、".join(who for who, _ in live) + "收着点（他们刚说难过）"
+
+    def _save_mind(self) -> None:
+        """live 时写 mind.json。"""
+        if self.mind is not None and self.ledger is not None and self.ledger.persist and self.ledger.store is not None:
+            self.ledger.store.write_mind(self.mind)
+
+    def _ledger_call(self, method: str, *args, default=None):
+        """内心账本（spec 2026-09-30-inner-phase1 §5）：出错只记日志，不影响身体。"""
+        if self.ledger is None:
+            return default
+        try:
+            return getattr(self.ledger, method)(*args)
+        except Exception:
+            log.exception("内心账本出错（%s）", method)
+            return default
 
     def _owner(self, now: float) -> bool:
         """卡洛的 # 命令还在生效：move / emote / camera 放宽限制（设计见 2026-09-27-brain-move-design.md）。"""

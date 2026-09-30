@@ -58,8 +58,8 @@ class FakeBody:
             raise ToolError("说得太快了")
         return f"说了{text}"
 
-    def emote(self, name, force):
-        self.calls.append(("emote", name, force))
+    def emote(self, name):
+        self.calls.append(("emote", name))
         return "ok"
 
     def set_policy(self, who, kind, accept):
@@ -206,7 +206,7 @@ def test_run_dispatches_with_defaults():
     tb.run("move", {"direction": "forward"})
     tb.run("move", {"direction": "left", "steps": 2, "force": True})
     assert body.calls == [
-        ("chat_log", 20), ("emote", "鞠躬", False), ("camera", "left", 1), ("policy", "*", "hug", False), ("look_at", 1, 2, 30, 40),
+        ("chat_log", 20), ("emote", "鞠躬"), ("camera", "left", 1), ("policy", "*", "hug", False), ("look_at", 1, 2, 30, 40),
         ("look_person", "小明"), ("stop_task",), ("move", "forward", 1, False), ("move", "left", 2, True),
     ]
 
@@ -277,3 +277,34 @@ def test_recall_errors_go_back_to_the_brain(tmp_path):
     assert tb.run("recall", {"query": "x", "days": "三天"})[1] is True
     out, err = ToolBox(FakeBody()).run("recall", {"query": "x"})
     assert err and "记忆" in out
+
+
+# ---- 沙盒计划 Task 2：text_only（沙盒里没有画面）----
+def test_text_only_look_always_gives_eyes_text():
+    from skydango.brain.tools import SANDBOX_NO_PERSON
+
+    body = FakeBody()
+    tb = ToolBox(body, FakeEyes(), text_only=True)
+    out, err = tb.run("look", {"image": True})
+    assert not err and out == "描述帧"  # 不附图、只要眼睛的文字
+    out, err = tb.run("look_person", {"name": "小明"})
+    assert not err and out == SANDBOX_NO_PERSON == "沙盒里看不到人，只能靠聊天和场景"
+    assert ("look_person", "小明") not in body.calls
+
+
+def test_not_text_only_is_unchanged():
+    tb = ToolBox(FakeBody(), FakeEyes())
+    assert tb.run("look", {"image": True}) == ([{"type": "image"}], False)
+
+
+def test_sandbox_says_missing_parts():  # 沙盒计划 Task 5：镜头、好友树、面板、互动请求 → "沙盒里没有这个"
+    body = FakeBody()
+    tb = ToolBox(body, FakeEyes(), max_steps=50, sandbox=True)
+    for name, args in (("camera", {"action": "left"}), ("camera_reset", {}), ("track", {"name": "小明"}), ("look_around", {}),
+                       ("check_friend", {"x": 1, "y": 2}), ("panel_read", {}), ("panel_close", {}),
+                       ("set_request_policy", {"who": "*", "kind": "hand", "accept": True})):
+        out, err = tb.run(name, args)
+        assert err and out.startswith("沙盒里没有这个"), (name, out)
+    assert body.calls == []
+    assert tb.run("emote", {"name": "鞠躬"}) == ("ok", False)  # 别的照旧
+    assert ToolBox(FakeBody()).run("camera", {"action": "left"}) == ("ok", False)

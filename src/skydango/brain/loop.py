@@ -46,6 +46,7 @@ class Brain:
         run=None,  # runlog.RunDir
         store=None,  # chat.memory.MemoryStore：live 时退出前把经过记进 inbox.md
         trace=None,  # brain.trace.BrainTrace：可视化网页的大脑时间线（run --brain --view）
+        slow: Callable[[], bool] | None = None,  # 困了：没事时醒得慢一档（内心层第 2 期）
     ) -> None:
         self.cfg = cfg
         self.chat = chat
@@ -59,6 +60,7 @@ class Brain:
         self.run_dir = run
         self.store = store
         self.trace = trace
+        self.slow: Callable[[], bool] = slow or (lambda: False)
         if trace is not None:
             trace.state = self.trace_state
         self.last_wake = float("-inf")  # 刚上线马上醒一次
@@ -66,6 +68,9 @@ class Brain:
         self.failures = 0
         self.failing_since: float | None = None
         self.backoff_until = float("-inf")
+        self.limited = False  # 最近一次失败是订阅额度用完（沙盒状态里显示还要等多久）
+        self.last_turn = (float("-inf"), float("-inf"))  # 最近一轮（成功或失败）的 (开始, 结束)：身体据此关掉替大脑开的输入框
+        self.in_turn = False  # 正在一轮里（wake 开始到结束，成功 / 失败都算）：沙盒判断安静了没有用
         self.chat_turn = False  # 正在回聊天（这一轮取走了聊天 / 主人命令，还没结束）：身体据此别把聊天面板当成安静关掉
 
     # ---- 什么时候醒 ----
@@ -76,7 +81,12 @@ class Brain:
     def heartbeat(self, now: float) -> float:
         beats = self.cfg.heartbeat
         start = 0 if self.nearby(now) else 1  # 身边有好友时醒得勤一点
-        return beats[min(start + self._idle, len(beats) - 1)]
+        try:
+            sleepy = 1 if self.slow() else 0
+        except Exception:
+            log.debug("算困不困出错", exc_info=True)
+            sleepy = 0
+        return beats[min(start + self._idle + sleepy, len(beats) - 1)]
 
     def due(self, now: float) -> str | None:
         if now < self.backoff_until:
@@ -120,7 +130,15 @@ class Brain:
         return "\n".join(lines)
 
     def wake(self, now: float, reason: str) -> None:
+        self.in_turn = True
+        try:
+            self._wake(now, reason)
+        finally:
+            self.in_turn = False
+
+    def _wake(self, now: float, reason: str) -> None:
         self.last_wake = now
+        began = self.clock()  # 取事件之前：之后身体才读到的消息不在这一轮里（last_turn 用）
         events = self.events.drain()
         text = self.message(now, events)
         self.toolbox.begin_turn()
@@ -138,15 +156,16 @@ class Brain:
             raise
         finally:
             self.chat_turn = False
+            self.last_turn = (began, self.clock())
         self._trace("finish", result, self.clock() - start)
         self._ok()
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1
         self._log(result)
 
-    def farewell(self) -> bool:
-        """退出前让它写一份这次的经过，记进 inbox.md（只在 live、没在失败时）。"""
+    def farewell(self) -> str:
+        """退出前让它写一份这次的经过，记进 inbox.md（只在 live、没在失败时）；返回写出的经过，没写出来是空字符串。"""
         if self.store is None or self.failing_since is not None:
-            return False
+            return ""
         self.toolbox.begin_turn()
         self._trace("begin", "farewell", SUMMARY_REQUEST)
         start = self.clock()
@@ -155,17 +174,17 @@ class Brain:
         except ClaudeError as exc:
             self._trace("fail", str(exc), self.clock() - start)
             log.warning("退出前写经过失败：%s", exc)
-            return False
+            return ""
         except Exception as exc:
             self._trace("fail", f"{type(exc).__name__}: {exc}", self.clock() - start)
             raise
         self._trace("finish", result, self.clock() - start)
         text = " ".join((result.get("result") or "").split())
         if not text:
-            return False
+            return ""
         self.store.add_memos([f"{format_date(self.wall())} 的经过：{text}"])
         log.info("这次的经过记进了 inbox.md（%d 字）", len(text))
-        return True
+        return text
 
     # ---- 可视化网页的大脑时间线 ----
     def trace_state(self) -> dict:
@@ -193,6 +212,7 @@ class Brain:
         if self.failing_since is None:
             self.failing_since = now
         limit = bool(getattr(exc, "limit", False))
+        self.limited = limit
         delay = self.cfg.limit_retry if limit else BACKOFF[min(self.failures, len(BACKOFF)) - 1]
         self.backoff_until = now + delay
         what = "订阅额度用完了" if limit else "大脑这一轮失败"
@@ -202,6 +222,11 @@ class Brain:
         self.failures = 0
         self.failing_since = None
         self.backoff_until = float("-inf")
+        self.limited = False
+
+    def limit_left(self, now: float) -> float:
+        """额度用完时离再试还有几秒；不是额度问题（或已经能再试了）是 0。"""
+        return max(0.0, self.backoff_until - now) if self.limited else 0.0
 
     def _log(self, result: dict) -> None:
         text = (result.get("result") or "").strip()

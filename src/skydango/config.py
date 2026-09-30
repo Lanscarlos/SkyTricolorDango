@@ -193,7 +193,7 @@ class WheelConfig:
 
 @dataclass
 class EmoteConfig:
-    """聊天时做表情动作（game/emotes.py）。做动作会松开牵手：牵着手时用 `run --no-emotes`。"""
+    """聊天时做表情动作（game/emotes.py）。做动作不会松开牵手（用户实测）。"""
 
     enabled: bool = True  # 图标库是空的时候自动不做
     # 白名单：不在轮盘上时可以换上去的动作（图标库里的名字）
@@ -413,7 +413,7 @@ class ViewerConfig:
     """识别过程可视化：本机网页实时显示画面 + 识别框（`run --view` 或 `python -m skydango view`）。"""
 
     host: str = "127.0.0.1"  # 只给本机看：画面里有好友昵称和聊天
-    port: int = 8765
+    port: int = 19399
     fps: float = 10.0  # 最多每秒更新几帧
     width: int = 1280  # 发给浏览器的图缩到这么宽
     quality: int = 70  # JPEG 质量
@@ -529,11 +529,65 @@ class ProactiveConfig:
 
 
 @dataclass
+class ReflexConfig:
+    """身体反射（见 docs/superpowers/specs/2026-09-30-body-reflex-design.md）：有人跟团子说话马上冒输入气泡、回礼、闲着做小动作。数字都是估的"""
+
+    enabled: bool = True  # false = 完全照旧（不开框、不做反射动作、gesture 照旧交给大脑）
+    bubble: bool = True  # 有人跟团子说话时身体马上打开输入框（头顶“正在输入”），大脑想好了用这个框发
+    followup_window: float = 30.0  # 团子说完多少秒内好友接话，算“在跟团子说”
+    bubble_max: float = 45.0  # 替大脑开的框最长开多久（秒）
+    addressed: list[str] = field(default_factory=list)  # 被叫到时开框前偶尔做的小动作（轮盘上的动作名）
+    addressed_chance: float = 0.3
+    return_map: dict[str, str] = field(default_factory=dict)  # 回礼：[gesture] labels 里的标签 → 动作名，比如 wave = "挥手"
+    return_chance: float = 0.7
+    idle: list[str] = field(default_factory=list)  # 闲着时的小动作
+    idle_min: float = 180.0  # 闲着多久做一个（秒，在 idle_min~idle_max 之间随机）
+    idle_max: float = 420.0
+    quota_window: float = 600.0  # 反射动作额度的时间窗口（秒）
+    quota: int = 4  # 窗口内反射最多做几个动作
+    min_gap: float = 4.0  # 任何两个动作（反射或大脑）之间至少隔几秒，给动画留时间
+
+
+@dataclass
+class InnerConfig:
+    """内心层第 1 期（见 docs/superpowers/specs/2026-09-30-inner-phase1-design.md）：给好友记关系卡、每次上线记一行，
+    写在 memory/inner/，只在 --live 时写盘。数字都是估的"""
+
+    enabled: bool = True  # false = 完全照旧（不记账、不回填、提示词和 status 不变）
+    visit_gap: float = 1800.0  # 离上次在场超过这么多秒再出现，算新的一次见面
+    session_gap: float = 7200.0  # 回填 history.jsonl 时，相邻两轮隔这么多秒算两次上线
+    long_gap: float = 7.0  # 超过这么多天没见算“好久没见”
+    save_every: float = 60.0  # live 时每隔多少秒存一次 people.json / current.json
+    max_step: float = 5.0  # 算在一起待了多久时，单圈最多算几秒（卡顿时不一下加一大截）
+    # 第 2 期：反思（docs/superpowers/specs/2026-09-30-inner-phase2-design.md）
+    reflect: bool = True  # 反思总开关（心情、精力、别扭、心愿、日记）；false = 第 1 期原样
+    reflect_model: str = "sonnet"  # 反思用的模型（一次性 claude -p，令牌同大脑）
+    reflect_every: float = 1200.0  # 有动静时多久反思一次（秒）
+    reflect_after_quiet: float = 180.0  # 好友说够 reflect_min_lines 句后安静多久反思
+    reflect_min_lines: int = 6
+    reflect_timeout: float = 90.0  # 一次反思最多等多久（下线那次也是）
+    rest_gap: float = 3600.0  # 两次上线隔多久算睡过一觉（不到就接着上次的累算）
+    grudge_min_days: int = 3  # 一起玩过几天才可能闹别扭
+    grudge_max: float = 7200.0  # 别扭最长多久（秒），到点自己消气
+    wants_max: int = 3  # 心愿 / 惦记的事最多几条
+    want_days: float = 7.0  # 心愿几天后过期
+    diary_prompt: int = 1  # 「日子」带几篇日记
+    # 第 3 期：性格（docs/superpowers/specs/2026-09-30-inner-phase3-design.md）
+    persona: bool = True  # 性格总开关（口头禅、老梗、看法，提示词「脾气」，收着点）；false = 第 2 期原样
+    fade_days: float = 14.0  # 多少天没用的条目淡出
+    catchphrases_max: int = 5
+    jokes_per_friend: int = 3
+    jokes_max: int = 20
+    opinions_max: int = 10
+    soft_minutes: float = 30.0  # 好友说难过后多久内对他收着点
+
+
+@dataclass
 class ConsoleConfig:
     """管理面板（`console`，见 docs/superpowers/specs/2026-09-29-console-design.md）。启动选项由面板写进 console.toml，只影响面板启动的团子。"""
 
-    port: int = 8760  # 面板端口；和 view 的 8765 错开，可以同时开
-    child_port: int = 8761  # 面板起的团子子进程的 viewer 端口
+    port: int = 19390  # 面板端口；和 view 的 19399 错开，可以同时开
+    child_port: int = 19391  # 面板起的团子子进程的 viewer 端口
     stop_timeout: float = 60.0  # 停止时最多等几秒（live 大脑退出前要写记忆），超了强杀
     log_lines: int = 500  # 日志尾巴保留几行
     # 上次的启动选项，面板写
@@ -541,6 +595,17 @@ class ConsoleConfig:
     live: bool = False
     emotes: bool = True
     duration: float = 0.0  # 0 = 一直跑
+
+
+@dataclass
+class SandboxConfig:
+    """大脑沙盒（`sandbox`，见 docs/superpowers/specs/2026-09-30-brain-sandbox-design.md §7）。管理面板设置清单不加（很少改）。"""
+
+    dir: str = "sandbox"  # 沙盒目录：memory/、scenarios/、reports/、clock.json（不进 git）
+    port: int = 19392  # 沙盒子进程的接口端口
+    step_timeout: float = 180.0  # 回放时每步最多等多久安静（秒，真实时间）
+    wake_hour: int = 9  # "睡一晚" / "到明早" 拨到几点
+    emotes: list[str] = field(default_factory=list)  # 没有 emotes/ 图标库时假装轮盘上有这些动作
 
 
 @dataclass
@@ -570,7 +635,10 @@ class Config:
     peek: PeekConfig = field(default_factory=PeekConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    reflex: ReflexConfig = field(default_factory=ReflexConfig)
+    inner: InnerConfig = field(default_factory=InnerConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:

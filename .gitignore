@@ -38,3 +38,6 @@ models/
 
 # 认地图的参考截图（可能有好友）
 places/
+
+# 大脑沙盒（沙盒自己的记忆、剧本里是好友真昵称、报告）；只忽略仓库根目录的，别连 src/skydango/sandbox/ 一起忽略
+/sandbox/

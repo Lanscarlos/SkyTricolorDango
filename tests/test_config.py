@@ -130,7 +130,7 @@ def test_console_defaults():
     from skydango.config import Config
 
     c = Config().console
-    assert (c.port, c.child_port, c.stop_timeout, c.log_lines) == (8760, 8761, 60.0, 500)
+    assert (c.port, c.child_port, c.stop_timeout, c.log_lines) == (19390, 19391, 60.0, 500)
     assert (c.brain, c.live, c.emotes, c.duration) == (True, False, True, 0.0)
 
 
@@ -184,3 +184,25 @@ def test_perception_object_classes_appended():
     assert p.classes[6:] == ["bench", "bonfire", "instrument", "spirit"]
     assert (p.object_min_hits, p.object_near, p.object_far) == (3, 0.85, 0.65)
     assert load_config(ROOT / "config.example.toml").perception.object_min_hits == 3
+
+
+def test_example_config_has_persona_keys():
+    import tomllib
+
+    from skydango.config import InnerConfig
+
+    raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))["inner"]
+    keys = ("persona", "fade_days", "catchphrases_max", "jokes_per_friend", "jokes_max", "opinions_max", "soft_minutes")
+    assert {k: raw[k] for k in keys} == {k: getattr(InnerConfig(), k) for k in keys}
+
+
+def test_example_config_has_sandbox():
+    import tomllib
+
+    from skydango.config import SandboxConfig
+
+    raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))["sandbox"]
+    d = SandboxConfig()
+    assert raw == {"dir": d.dir, "port": d.port, "step_timeout": d.step_timeout, "wake_hour": d.wake_hour, "emotes": d.emotes}
+    assert (d.dir, d.port, d.step_timeout, d.wake_hour, d.emotes) == ("sandbox", 19392, 180.0, 9, [])
+    assert load_config(ROOT / "config.example.toml").sandbox.port == 19392

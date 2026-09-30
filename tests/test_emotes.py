@@ -168,3 +168,15 @@ def test_restore_noop_when_unchanged(library):
     device.calls.clear()
     player.restore()
     assert device.calls == []
+
+
+def test_reflex_emote_does_not_start_brain_cooldown(library):
+    player, device, t, _ = make_player(library)
+    player.start()
+    player.perform("鞠躬", reflex=True)
+    assert player.last_any == 100.0 and player.available() == ["鞠躬", "欢呼", "指向"]  # 大脑照样能做
+    player.pretend("欢呼", reflex=True)
+    assert player.last_emote == float("-inf") and player.last_any == 100.0
+    t[0] = 105.0
+    player.perform("鞠躬")
+    assert player.available() == [] and player.last_any == 105.0

@@ -12,7 +12,7 @@ def fake_console(monkeypatch, events):
 
         def start(self):
             events.append("start")
-            return "http://127.0.0.1:8760/"
+            return "http://127.0.0.1:19390/"
 
         def stop(self):
             events.append("server.stop")
@@ -43,7 +43,7 @@ def test_console_starts_server_and_stops_runner_on_ctrl_c(tmp_path, monkeypatch,
     monkeypatch.chdir(tmp_path)
     cli.main(["console", "--no-browser"])
     assert events == ["start", "runner.close", "server.stop"]
-    assert "管理面板：http://127.0.0.1:8760/" in capsys.readouterr().out
+    assert "管理面板：http://127.0.0.1:19390/" in capsys.readouterr().out
 
 
 def test_console_does_not_load_secrets_into_its_own_environment(tmp_path, monkeypatch, caplog):
@@ -69,7 +69,7 @@ def test_console_port_in_use_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.setattr("skydango.console.server.ConsoleServer", Busy)
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit, match="console --port"):
-        cli.main(["console", "--no-browser", "--port", "8760"])
+        cli.main(["console", "--no-browser", "--port", "19390"])
 
 
 @pytest.mark.parametrize("name, text", [("console.toml", "[device\n"), ("console.toml", "[foo]\nbar = 1\n"), ("secrets.toml", "[env\n")])

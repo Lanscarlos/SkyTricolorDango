@@ -377,7 +377,7 @@ Expected: 全部 PASS（基线 557 passed, 5 skipped，加上新测试）
 - [ ] **Step 5: 真机验证**（先按 `docs/game-ops.md` 确认游戏状态：聊天记录面板开着、输入框没开）
 
 Run: `python -m skydango run --brain --view --duration 300`（dry-run；**不要**用 `timeout` 包）
-在内置浏览器看 `http://127.0.0.1:8765/`：轮次、原因、收到的消息、工具调用和返回、结果都显示，进行中的一轮实时更新；截图存 `tmp/`。
+在内置浏览器看 `http://127.0.0.1:19399/`：轮次、原因、收到的消息、工具调用和返回、结果都显示，进行中的一轮实时更新；截图存 `tmp/`。
 翻 `runs/<这次>/agent.log` 或临时在 `feed` 里记 DEBUG，核对 stream-json 里**实际有没有 `user` / `tool_result` 消息、有没有思考原文**：
 - 有 → 照现在的做法
 - 没有 `tool_result` → 改成在 `ToolBox.run` 里把 (name, args, out, err) 交给 trace（新增 `BrainTrace.tool_result(name, text, error)`，按 spec §6，接口不变），补测试，再验证一次

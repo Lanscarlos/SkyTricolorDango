@@ -40,12 +40,12 @@
 ## 1. 架构和模块
 
 ```
-浏览器 ──► 面板进程（python -m skydango console，127.0.0.1:8760）
+浏览器 ──► 面板进程（python -m skydango console，127.0.0.1:19390）
              ├─ /                一个页面，4 个页签（static/console.html）
              ├─ /api/settings    读写 console.toml / secrets.toml、测试按钮
              ├─ /api/device      设备检测（团子没运行时才能用）
              ├─ /api/run         启动 / 停止 / 状态 / 日志尾巴
-             └─ /live/*  ──转发──► 子进程 run --view（127.0.0.1:8761）
+             └─ /live/*  ──转发──► 子进程 run --view（127.0.0.1:19391）
                                      / /snapshot /brain /control /control/options
                                      /status /shutdown（新增）
 ```
@@ -156,8 +156,8 @@
 
 ```toml
 [console]
-port = 8760          # 面板端口；和 view 的 8765 错开，可以同时开
-child_port = 8761    # 团子子进程的 viewer 端口
+port = 19390        # 面板端口；和 view 的 19399 错开，可以同时开
+child_port = 19391  # 团子子进程的 viewer 端口
 stop_timeout = 60.0  # 停止时最多等几秒，超了强杀
 log_lines = 500      # 日志尾巴保留几行
 # 上次的启动选项，面板写

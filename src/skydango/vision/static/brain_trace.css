@@ -1,0 +1,16 @@
+/* 大脑时间线（brain_trace.js）的样式：viewer 和管理面板共用。颜色用页面的 --line / --muted / --text 变量。
+   外面的容器（边框、间距）由页面自己定。 */
+.brain-trace .bt-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:6px;font-size:13px}
+.brain-trace .bt-head label{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer}
+.brain-trace .brain-state.warn{color:#facc15}.brain-trace .brain-state.bad{color:#f87171}
+.brain-trace .turn{border-top:1px solid var(--line)}.brain-trace .turn[hidden]{display:none}
+.brain-trace .turn>summary{cursor:pointer;padding:5px 0;display:flex;gap:6px 12px;flex-wrap:wrap;font-size:13px;list-style:none}
+.brain-trace .turn>summary::-webkit-details-marker{display:none}.brain-trace .turn>summary::before{content:"▶";color:var(--muted);font-size:10px;line-height:20px}
+.brain-trace .turn[open]>summary::before{content:"▼"}.brain-trace .turn>summary .t{color:var(--muted);font-variant-numeric:tabular-nums}
+.brain-trace .turn>summary .n{color:var(--muted)}.brain-trace .turn.err>summary{color:#f87171}.brain-trace .turn.live>summary{color:#60a5fa}
+.brain-trace .tbody{padding:2px 0 10px 16px}.brain-trace .step{margin:6px 0;border-left:3px solid var(--line);padding-left:8px}
+.brain-trace .step h4{margin:0;font-size:12px;font-weight:600;color:var(--muted)}
+.brain-trace .step pre{margin:2px 0 0;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,Consolas,monospace}
+.brain-trace .k-thinking{border-color:#a78bfa}.brain-trace .k-text{border-color:#3ddc84}.brain-trace .k-tool{border-color:#60a5fa}.brain-trace .k-result{border-color:#6b7280}
+.brain-trace .k-result.error{border-color:#facc15}.brain-trace .k-result.error pre{color:#facc15}.brain-trace .k-end{border-color:#8b93a7}.brain-trace .k-end.error pre{color:#f87171}
+.brain-trace .step button{margin-top:4px;font-size:12px;padding:1px 8px}

@@ -200,6 +200,11 @@ PROFILE_TEMPLATE = """{persona}
 - 装扮：樱花发型天下第一；喜欢浅色、粉色系的可爱斗篷，看到好看的会忍不住夸、问在哪换的
 - 爱做的事：坐着看风景、听别人弹琴；对收集先祖有兴趣，但懒得跑，更愿意被牵着走
 - 说话的态度：夸人是真心的，不敷衍；吐槽点到为止，不损人
+
+## 脾气
+- 毛病：嘴硬，爱装懒，被催就更不想动
+- 执念：樱花发型天下第一，谁说不好看跟谁急
+- 雷点：讨厌被说“像机器人”（打哈哈带过，别较真）
 """
 
 FRIENDS_TEMPLATE = """# 好友资料：每个人一节，标题写游戏里显示的昵称（要和聊天记录面板里的名字一致）
@@ -244,6 +249,14 @@ def cmd_memory(cfg: Config, args) -> None:
         ):
             print(f"\n===== {title} =====\n{text or '（空）'}")
         print(f"\n聊天记录 {len(store.history.all())} 轮，其中 {len(store.pending_turns())} 轮还没整理进长期记忆")
+        if cfg.inner.enabled:
+            from .inner import show_lines
+
+            print("\n" + "\n".join(show_lines(cfg.inner, store.dir / "inner", _friend_names(cfg)(), time.time())))
+            if cfg.inner.persona:
+                from .inner.store import InnerStore
+
+                print("\n" + "\n".join(InnerStore(store.dir / "inner").load_persona(quarantine=False).show_lines()))
     elif args.action == "update":
         from .brain.claude import ClaudeLlm
 
@@ -1308,12 +1321,77 @@ def cmd_run(cfg: Config, args) -> None:
         if args.view:
             viewer = _viewer(cfg, open_browser=not args.no_browser, brain=cfg.brain.enabled, on_shutdown=request_exit)
         if cfg.brain.enabled:
-            _run_brain(cfg, run, args.no_emotes, args.duration, viewer)
+            _run_brain(cfg, run, None, args.duration, viewer, no_emotes=args.no_emotes)  # 真机世界在里面检查完令牌后再建
         else:
             _run_agent(cfg, run, args.no_emotes, args.duration, viewer)
     finally:
         if viewer is not None:
             viewer.stop()
+        run.close()
+
+
+def cmd_sandbox(cfg: Config, args) -> None:
+    """大脑沙盒（spec 2026-09-30-brain-sandbox）：不开 MuMu，真的大脑 + 身体 + 内心层接一个假世界，只给 JSON 接口（页面在管理面板里）。
+
+    总是 live，但记忆只写 [sandbox] dir 下的 memory/（真的 memory/ 永远不碰）；模拟时钟从 --start 算出来。"""
+    import _thread
+
+    from .brain.trace import BrainTrace
+    from .console import watchdog
+    from .sandbox import clock as sandbox_clock
+    from .sandbox.control import SandboxControl
+    from .sandbox.server import SandboxServer
+    from .sandbox.transcript import Transcript
+    from .sandbox.world import Scene, sandbox_world
+
+    sb = cfg.sandbox
+    if isinstance(sb.wake_hour, bool) or not isinstance(sb.wake_hour, int) or not 0 <= sb.wake_hour <= 23:
+        raise SystemExit(f"[sandbox] wake_hour 要是 0~23 的整数，现在是 {sb.wake_hour!r}")
+    root = Path(sb.dir)
+    memory = root / "memory"
+    memory.mkdir(parents=True, exist_ok=True)  # 第一次：空记忆（管理面板「重置记忆」才从 memory/ 复制）
+    cfg.reply.dry_run = False  # 沙盒总是 live：记忆、内心层都真的写，但只写 sandbox/memory/
+    cfg.reply.memory_dir = str(memory)
+    cfg.run.save_frames = False  # 灰图不用存
+    cfg.brain.enabled = True
+    floor, now = sandbox_clock.floor_time(root), time.time()
+    try:
+        start = sandbox_clock.resolve_start(args.start, floor, now, sb.wake_hour)
+    except ValueError as exc:
+        raise SystemExit(f"沙盒起始时间不对：{exc}") from None
+    sim = sandbox_clock.SimClock(offset=start - now)
+    request_exit = watchdog.once(_thread.interrupt_main)  # 看门狗和 /shutdown 共用：只中断一次，不打断收尾（写日记）
+    if args.parent_pid is not None:
+        watchdog.watch_parent(args.parent_pid, request_exit)
+    port = args.port if args.port is not None else sb.port
+    server = SandboxServer(port, request_exit)
+    server.trace = BrainTrace()
+    try:
+        url = server.start()  # 先起接口：/status 立刻可用，管理面板据此判断子进程起来了
+    except OSError as exc:
+        raise SystemExit(f"沙盒接口起不来（127.0.0.1:{port}）：{exc}；端口可能被上次留下的沙盒占着") from exc
+    run = RunDir.create(cfg, "sandbox")
+    run.attach_log()
+    log.info("本次运行的日志和截图: %s", run.path.resolve())
+    log.info("沙盒接口：%s；沙盒时间从 %s 开始（记忆在 %s）", url, sandbox_clock._fmt(sim.wall()), memory.resolve())
+    transcript = Transcript(sim)
+    scene = Scene()
+    world = sandbox_world(cfg, sim, transcript, scene)
+
+    def ready(parts) -> None:
+        body = parts.body
+        server.inner = lambda: body.call(body.inner_snapshot, timeout=3)
+        server.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
+        server.control = SandboxControl(parts, world, sim, transcript, scene)
+
+    try:
+        _run_brain(cfg, run, world, getattr(args, "duration", 0.0) or 0.0, None, on_ready=ready, trace=server.trace)
+    finally:
+        try:
+            sandbox_clock.save(root / "clock.json", sim.wall())
+        except OSError:
+            log.exception("沙盒时钟没存上")
+        server.stop()
         run.close()
 
 
@@ -1461,42 +1539,18 @@ def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
     return _claude_base(cfg, hint)
 
 
-def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0, viewer=None) -> None:
-    """统管大脑：身体在当前线程跑（独占设备）；大脑（常驻 Claude Code）和眼睛各一个后台线程；工具经本机 MCP 服务。"""
-    import dataclasses
-    import threading
+def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
+    """真机世界（brain-sandbox spec §2）：接 MuMu 的设备、OCR 读聊天、身边识别、轮盘、镜头……原样搬自 _run_brain。
 
-    from .brain.body import Body
-    from .brain.claude import ClaudeLlm, one_shot
-    from .brain.events import EventQueue
-    from .brain.eyes import Eyes, eyes_command
-    from .brain.images import scene_note
+    仍按模块名调 _device / _build_reader / _panels……（测试的 monkeypatch 照样生效）。"""
     from .brain.locomotion import Locomotion
-    from .brain.loop import Brain, log_brain_message
-    from .brain.mcp_server import SkyServer
-    from .brain.prompt import brain_prompt
-    from .brain.session import BrainSession
-    from .brain.tools import ToolBox
-    from .brain.trace import BrainTrace
-    from .chat.llm import make_llm
-    from .chat.responder import Responder
+    from .brain.world import World
     from .chat.sender import ChatSender
 
-    base, claude_vars = _brain_env(cfg)  # 先检查令牌和 claude 命令，缺了早点报错
     dev = _device(cfg)
     reader, self_filter = _build_reader(cfg)
     reader.trace_path = run.rows_log
     panel = _panel(cfg, dev, reader)
-    store = notes = None
-    if cfg.reply.memory_dir:  # dry-run 也读人设和记忆（看大脑的表现要用），但不写
-        from .chat.memory import MemoryStore, NotesKeeper
-
-        store = MemoryStore(cfg.reply.memory_dir)
-        if not cfg.reply.dry_run:
-            # 记忆整理也走 Claude（订阅）：随手记、整理 notes.md 各起一次性 claude -p，在记忆后台线程里跑
-            memory_llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout)
-            notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every)
-    live_store = None if cfg.reply.dry_run else store
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
     env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
@@ -1508,44 +1562,126 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     camera = _camera(cfg, dev, panel)
     friend_checker = _friend_checker(cfg, dev, panel) if cfg.friend_check.enabled else None
     panels, panel_ops = _panels(cfg, dev, reader)
-    events = EventQueue()
-    # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
-    fallback = Responder(make_llm(dataclasses.replace(cfg.llm, timeout=10.0, max_retries=0)), cfg.reply)
-    body = Body(
-        cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
-        env=env, social=social, emotes=emotes, camera=camera, locomotion=Locomotion(dev, cfg.brain.move_step), friend_checker=friend_checker,
-        fallback=fallback, store=live_store, notes=notes, run=run, viewer=viewer, panel=panel, panels=panels, panel_ops=panel_ops,
+
+    def close() -> None:
+        _stop_scene(env)
+        if panels is not None:
+            panels.close()
+
+    return World(
+        device=dev, reader=reader, self_filter=self_filter, panel=panel, env=env, social=social, emotes=emotes, camera=camera,
+        locomotion=Locomotion(dev, cfg.brain.move_step), sender=ChatSender(dev, cfg.sender, _screen_size_fn(dev)),
+        friend_checker=friend_checker, panels=panels, panel_ops=panel_ops, close=close,
     )
-    work = run.path / "brain"
-    eyes = Eyes(
-        cfg.brain,
-        describe=lambda content: one_shot(eyes_command(base, cfg.brain), claude_vars, work / "eyes", content, cfg.brain.eyes_timeout),
-        frame=lambda: body.last_frame,
-        labels=lambda: dict(env.labels) if env else {},
-        blackout=lambda: body.blackout,
-        label_keep=cfg.env.interval * 2 + 1,
-        note=(lambda now, s: scene_note(env, now, s)) if hasattr(env, "strangers") else None,
-        proactive=cfg.proactive,
-        busy=(lambda now: bool(env.nearby(now))) if env else (lambda now: False),
-        on_news=body.news,
-    )
-    body.friend_names = _friend_names(cfg)
-    events.subscribe(eyes.notice)
-    toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store)  # recall 只读，dry-run 也给
-    server = SkyServer(toolbox)
-    server.start()
-    trace = None if viewer is None else (viewer.brain or BrainTrace())  # 网页上的大脑时间线（一般 _viewer 已经挂好）
+
+
+def _run_brain(
+    cfg: Config, run: RunDir, world=None, duration: float = 0.0, viewer=None, on_ready=None, trace=None, *, no_emotes: bool = False,
+) -> None:
+    """统管大脑：身体在当前线程跑（独占设备）；大脑（常驻 Claude Code）和眼睛各一个后台线程；工具经本机 MCP 服务。
+
+    world：接世界的东西（brain.world.World）；None = 真机（_game_world，在检查完令牌之后才建、才连设备）。
+    时间一律从 world 取（沙盒是模拟时钟）。on_ready(BrainParts)：身体建好、线程启动前调一次。
+    trace：大脑时间线（沙盒没有 viewer 时由调用方传进来）。"""
+    import dataclasses
+    import threading
+
+    from .brain.body import Body
+    from .brain.claude import ClaudeLlm, one_shot
+    from .brain.events import EventQueue
+    from .brain.eyes import Eyes, eyes_command
+    from .brain.images import scene_note
+    from .brain.loop import Brain, log_brain_message
+    from .brain.mcp_server import SkyServer
+    from .brain.prompt import brain_prompt
+    from .brain.session import BrainSession
+    from .brain.tools import ToolBox
+    from .brain.trace import BrainTrace
+    from .brain.world import BrainParts
+    from .chat.llm import make_llm
+    from .chat.responder import Responder
+
+    base, claude_vars = _brain_env(cfg)  # 先检查令牌和 claude 命令，缺了早点报错
+    if world is None:
+        world = _game_world(cfg, run, no_emotes)
+    wall, clock = world.wall, world.clock
+    env = world.env
+    try:
+        store = notes = None
+        if cfg.reply.memory_dir:  # dry-run 也读人设和记忆（看大脑的表现要用），但不写
+            from .chat.memory import MemoryStore, NotesKeeper
+
+            store = MemoryStore(cfg.reply.memory_dir)
+            if not cfg.reply.dry_run:
+                # 记忆整理也走 Claude（订阅）：随手记、整理 notes.md 各起一次性 claude -p，在记忆后台线程里跑
+                memory_llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout)
+                notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every)
+        live_store = None if cfg.reply.dry_run else store
+        ledger = _inner_ledger(cfg, store, wall())
+        mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run, wall(), clock)
+        persona = _inner_persona(cfg, ledger, wall())
+        mind_log = _inner_log(ledger, reflector, wall())
+        events = EventQueue(clock=clock)
+        # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
+        fallback = Responder(make_llm(dataclasses.replace(cfg.llm, timeout=10.0, max_retries=0)), cfg.reply)
+        body = Body(
+            cfg, world.device, world.reader, world.sender, world.self_filter, events,
+            env=env, social=world.social, emotes=world.emotes, camera=world.camera, locomotion=world.locomotion,
+            friend_checker=world.friend_checker, fallback=fallback, store=live_store, notes=notes, run=run, viewer=viewer,
+            panel=world.panel, panels=world.panels, panel_ops=world.panel_ops,
+            ledger=ledger, mind=mind, reflector=reflector, persona=persona, mind_log=mind_log, clock=clock, wall=wall,
+        )
+        work = run.path / "brain"
+        if world.describe is not None:
+            describe = world.describe
+        else:
+            def describe(content):
+                return one_shot(eyes_command(base, cfg.brain), claude_vars, work / "eyes", content, cfg.brain.eyes_timeout)
+        if world.text_only:  # 沙盒：没有画面，不给位置说明
+            note = lambda now, s: ""  # noqa: E731
+        else:
+            note = (lambda now, s: scene_note(env, now, s)) if hasattr(env, "strangers") else None
+        eyes = Eyes(
+            cfg.brain,
+            describe=describe,
+            frame=lambda: body.last_frame,
+            labels=lambda: dict(env.labels) if env else {},
+            blackout=lambda: body.blackout,
+            label_keep=cfg.env.interval * 2 + 1,
+            clock=clock,
+            note=note,
+            proactive=cfg.proactive,
+            busy=(lambda now: bool(env.nearby(now))) if env else (lambda now: False),
+            on_news=body.news,
+        )
+        body.friend_names = _friend_names(cfg)
+        if store is not None:  # 反思用的人设和笔记（dry-run 也读）
+            body.profile_text = lambda: store.profile() or cfg.reply.persona
+            body.memory_notes = lambda: f"{store.notes()}\n{store.inbox()}"
+        events.subscribe(eyes.notice)
+        # recall 只读，dry-run 也给
+        toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
+                          sandbox=world.name == "sandbox")
+        server = SkyServer(toolbox)
+        server.start()
+    except BaseException:
+        world.close()
+        raise
+    if trace is None and viewer is not None:
+        trace = viewer.brain or BrainTrace()  # 网页上的大脑时间线（一般 _viewer 已经挂好）
     session = BrainSession(
         base, claude_vars, work / "session", server.url, brain_prompt(
             cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns,
-            proactive=cfg.proactive.enabled,
+            now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
+            days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
+            persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
     )
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
-        eyes=eyes, run=run, store=live_store, trace=trace,
+        eyes=eyes, clock=clock, wall=wall, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
     )
     if viewer is not None:
         viewer.brain = trace
@@ -1554,6 +1690,9 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
 
         if cfg.viewer.host in LOCAL_HOSTS:  # 手动控制：网页上直接让身体说话 / 做动作 / 转视角，只给本机
             viewer.control = ManualControl(body, eyes, events)
+            # 内心页（spec 2026-09-30-inner-viewer §2）：都在身体线程里做，等 3 秒
+            viewer.inner = lambda: body.call(body.inner_snapshot, timeout=3)
+            viewer.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
         else:
             log.warning("可视化网页开在局域网（%s）：局域网模式下关掉了手动控制", cfg.viewer.host)
     stop = threading.Event()
@@ -1561,6 +1700,15 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
     body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
     body.brain_busy = lambda: brain.chat_turn
+    body.brain_turn = lambda: brain.last_turn  # 替大脑开的输入框：开框之后的那一轮结束了没说话就关
+    if on_ready is not None:
+        try:
+            on_ready(BrainParts(
+                body=body, eyes=eyes, events=events, brain=brain, trace=trace, reflector=reflector, ledger=ledger, store=store,
+                mind_log=mind_log,
+            ))
+        except Exception:
+            log.exception("on_ready 出错")
     brain_thread.start()
     eyes_thread.start()
     try:
@@ -1569,18 +1717,139 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         print("\n已停止")
     finally:
         stop.set()
-        _stop_scene(env)
-        if panels is not None:
-            panels.close()
+        world.close()  # 停 env、关面板识别
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
         brain_thread.join(timeout=5)
-        if live_store is not None and not brain_thread.is_alive():
+        if ledger is not None:
             try:
-                brain.farewell()  # 把这次的经过记进 inbox.md
+                ledger.checkpoint(wall())  # 写经过可能很慢、被强杀：先落账，别被当成意外断了
+            except Exception:
+                log.exception("内心账本落账出错")
+        summary = ""
+        if reflector is not None:  # 下线前的最终反思：写日记和要点，代替大脑写经过（dry-run 照跑、不写盘）
+            summary = _final_reflection(cfg, body, reflector, ledger, live_store, wall())
+        elif live_store is not None and not brain_thread.is_alive():
+            try:
+                summary = brain.farewell()  # 把这次的经过记进 inbox.md
             except Exception:
                 log.exception("退出前写经过失败")
+        if ledger is not None:
+            try:
+                ledger.close(summary, wall())  # 这一次记进 days.jsonl（dry-run 不写）
+            except Exception:
+                log.exception("内心账本收尾出错")
         session.close()
         server.stop()
+
+
+def _inner_ledger(cfg: Config, store, now: float | None = None):
+    """内心账本（spec 2026-09-30-inner-phase1）：[inner] enabled 且有记忆目录才有；出错就不记（团子照常跑）。"""
+    if not cfg.inner.enabled or store is None:
+        return None
+    from .inner import open_ledger
+
+    try:
+        return open_ledger(
+            cfg.inner, store.dir / "inner", _friend_names(cfg), store.history.all, persist=not cfg.reply.dry_run,
+            now=time.time() if now is None else now,
+        )
+    except Exception:
+        log.exception("内心账本打不开，这次不记")
+        return None
+
+
+def _inner_mind(cfg: Config, ledger, base, claude_vars, run, now: float | None = None, clock=time.monotonic):
+    """内心层第 2 期：(Mind, Reflector)；没有账本或 [inner] reflect = false 时 (None, None)。"""
+    if ledger is None or not cfg.inner.reflect:
+        return None, None
+    from .brain.claude import ClaudeLlm
+    from .inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM, Reflector
+
+    try:
+        mind = ledger.store.load_mind(quarantine=ledger.persist)
+        if mind.wake(time.time() if now is None else now, cfg.inner.rest_gap):
+            log.info("睡过一觉：心情回到平常")
+        llm = ClaudeLlm(base, claude_vars, cfg.inner.reflect_model, run.path / "brain" / "reflect", cfg.inner.reflect_timeout)
+        system = REFLECT_SYSTEM + "\n\n" + PERSONA_SYSTEM if cfg.inner.persona else REFLECT_SYSTEM
+        return mind, Reflector(cfg.inner, llm, clock=clock, system=system)
+    except Exception:
+        log.exception("反思打不开，这次不反思")
+        return None, None
+
+
+def _inner_persona(cfg: Config, ledger, now: float | None = None):
+    """内心层第 3 期：性格档案；没有账本或 [inner] persona = false 时 None。读不了：live 改名放一边、都从空的开始。"""
+    if ledger is None or not cfg.inner.persona:
+        return None
+    now = time.time() if now is None else now
+    try:
+        persona = ledger.store.load_persona(quarantine=ledger.persist)
+        for why in persona.prepare(now, _friend_names(cfg)()):
+            log.info("性格档案：%s", why)
+        persona.fade(now, cfg.inner)
+        return persona
+    except Exception:
+        log.exception("性格档案打不开，这次不用")
+        return None
+
+
+def _inner_log(ledger, reflector, now: float | None = None):
+    """内心流水账（spec 2026-09-30-inner-viewer §1）：开了反思才记；live 写 mind_log.jsonl，启动时删掉 30 天前的行。"""
+    if ledger is None or reflector is None:
+        return None
+    from .inner.log import MindLog
+
+    try:
+        mind_log = MindLog(ledger.store.dir / "mind_log.jsonl", persist=ledger.persist)
+        mind_log.trim(time.time() if now is None else now)
+        return mind_log
+    except Exception:
+        log.exception("内心流水账打不开，这次不记")
+        return None
+
+
+def _persona_prompt(persona) -> str:
+    """系统提示词「你攒下的性格」；拼出错就不写这一节。"""
+    if persona is None:
+        return ""
+    try:
+        return persona.section()
+    except Exception:
+        log.exception("拼「你攒下的性格」一节出错")
+        return ""
+
+
+def _final_timeout(cfg: Config) -> float:
+    """下线反思最多等多久：管理面板 stop_timeout 到了会强杀，留 25 秒给身体收尾和等大脑线程。"""
+    return min(cfg.inner.reflect_timeout, max(10.0, cfg.console.stop_timeout - 25))
+
+
+def _final_reflection(cfg: Config, body, reflector, ledger, live_store, now: float | None = None) -> str:
+    from .inner import finish_reflection
+
+    try:
+        if hasattr(reflector.llm, "timeout"):
+            reflector.llm.timeout = _final_timeout(cfg)
+        result = reflector.final(body.reflect_materials(True))
+        return finish_reflection(
+            result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist,
+            time.time() if now is None else now, cfg.inner,
+            persona=body.persona, soft=body.soft_names_this_session(), mind_log=body.mind_log, energy=body._energy,
+        )
+    except Exception:
+        log.exception("下线前的反思出错")
+        return ""
+
+
+def _days_prompt(ledger, cfg: Config | None = None, now: float | None = None) -> str:
+    if ledger is None:
+        return ""
+    try:
+        diaries = ledger.store.last_diaries(cfg.inner.diary_prompt) if cfg is not None and cfg.inner.reflect else None
+        return ledger.days_prompt(time.time() if now is None else now, diaries=diaries)
+    except Exception:
+        log.exception("拼「日子」一节出错")
+        return ""
 
 
 def _panels(cfg: Config, dev, reader):
@@ -1898,9 +2167,17 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_view)
 
     p = sub.add_parser("console", help="管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面")
-    p.add_argument("--port", type=int, help="面板端口（默认 [console] port = 8760）")
+    p.add_argument("--port", type=int, help="面板端口（默认 [console] port = 19390）")
     p.add_argument("--no-browser", action="store_true", help="不打开浏览器")
     p.set_defaults(func=cmd_console)
+
+    p = sub.add_parser("sandbox", help="大脑沙盒：不开模拟器，真的大脑 + 内心层接假世界，只给 JSON 接口（管理面板「沙盒」页用）")
+    p.add_argument("--port", type=int, help="接口端口（默认 [sandbox] port = 19392）")
+    p.add_argument("--no-browser", action="store_true", help="（沙盒没有自己的页面，只为和 run 一致）")
+    p.add_argument("--parent-pid", type=int, help="这个进程没了就自己退出（管理面板用）")
+    p.add_argument("--start", default="resume", help="沙盒时间从哪开始：resume 接着上次 / sleep 睡一晚 / HH:MM / \"YYYY-MM-DD HH:MM\"")
+    p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动下线（默认一直跑，调试用）")
+    p.set_defaults(func=lambda cfg, args: cmd_sandbox(cfg, args))
 
     p = sub.add_parser("run", help="启动团子（默认接统管大脑、dry-run；--no-brain 是调试用的普通模式）")
     live = p.add_mutually_exclusive_group()
@@ -1908,7 +2185,7 @@ def main(argv: list[str] | None = None) -> None:
     live.add_argument("--dry-run", action="store_true", help="只打印不发送（覆盖 config.toml 的 reply.dry_run）")
     p.add_argument("--echo", action="store_true", help="不调模型，原样回显（联调用）")
     p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动结束（默认一直跑）")
-    p.add_argument("--no-emotes", action="store_true", help="这次不做动作（牵着手时用：做动作会松开牵手）")
+    p.add_argument("--no-emotes", action="store_true", help="这次不做动作")
     p.add_argument("--brain", action="store_true", help="接统管大脑（已是默认，保留兼容）")
     p.add_argument("--no-brain", action="store_true", help="不接大脑，用旧的普通 Agent（调试用）")
     p.add_argument("--view", action="store_true", help="开可视化网页：实时显示画面和识别框（地址见 [viewer]）")

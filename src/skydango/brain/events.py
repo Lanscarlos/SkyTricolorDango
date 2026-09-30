@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 # 背景事件：身体已经处理了 / 只是周围在变，自己不叫醒大脑，攒着等下一次醒来一起给（最多等 brain.background_wait 秒）。
 # 2026-09-29 真机 dry-run 5 分钟醒了 42 次，41 次是这些（陌生人数量来回跳、好友走出画面又回来、没接的互动请求反复报）
-BACKGROUND = frozenset({"stranger", "leave", "return", "request", "accepted", "holding", "released", "scene_change", "dropped"})
+BACKGROUND = frozenset({"stranger", "leave", "return", "request", "accepted", "holding", "released", "scene_change", "dropped", "reflex"})
 CANCELS = {"leave": "return", "return": "leave"}  # 同一个人攒着的"走开"和"回来"互相抵消：大脑不用知道他离开过
 
 

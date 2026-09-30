@@ -1,7 +1,8 @@
-"""管理面板起停团子子进程（`python -m skydango run --view …`）：状态机、日志尾巴、先请它自己退出、超时再强杀。
+"""管理面板起停子进程：团子（`python -m skydango run --view …`）或大脑沙盒（`python -m skydango sandbox …`）。
+状态机、日志尾巴、先请它自己退出、超时再强杀。
 
-子进程收到 POST /shutdown 走和 Ctrl+C 一样的收尾（复原镜头、换回轮盘、结束 Claude Code）；
-面板没了，子进程的 --parent-pid 看门狗会让它自己退出。同一时间只有一个子进程。
+子进程收到 POST /shutdown 走和 Ctrl+C 一样的收尾（复原镜头、换回轮盘、写日记、结束 Claude Code）；
+面板没了，子进程的 --parent-pid 看门狗会让它自己退出。同一时间只有一个子进程（团子和沙盒互斥：共用令牌和 .brain-claude/）。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import time
 import urllib.request
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,15 @@ def build_command(opts: LaunchOptions, config_path: Path, child_port: int, paren
     if opts.duration > 0:
         cmd += ["--duration", str(float(opts.duration))]
     return cmd + ["--view", "--viewer-port", str(child_port), "--no-browser", "--parent-pid", str(parent_pid)]
+
+
+def build_sandbox_command(config_path: Path, port: int, parent_pid: int, start: str, python: str = sys.executable) -> list[str]:
+    """大脑沙盒子进程（spec 2026-09-30-brain-sandbox §2）：--start 透传（resume / sleep / HH:MM / YYYY-MM-DD HH:MM）。"""
+    return [python, "-m", "skydango", "-c", str(config_path), "sandbox", "--port", str(port), "--no-browser",
+            "--parent-pid", str(parent_pid), "--start", start]
+
+
+KIND_NAMES = {"dango": "团子", "sandbox": "沙盒"}
 
 
 def child_env(base: Mapping[str, str], secrets: Mapping[str, str]) -> dict[str, str]:
@@ -120,15 +130,22 @@ class Runner:
         self._exit_code: int | None = None
         self._run_dir: str | None = None
         self._forced = False
-        self._options: LaunchOptions | None = None
+        self._options: LaunchOptions | dict | None = None
+        self._kind = "dango"  # 这个槽现在（或最近一次）是团子还是沙盒
+        self._port = child_port  # 这次的子进程接口端口：探活、请它退出都用它
 
     # ---- 起 ----
-    def start(self, cmd: list[str], env: dict[str, str], options: LaunchOptions) -> None:
+    def start(self, cmd: list[str], env: dict[str, str], options, kind: str = "dango", port: int | None = None) -> None:
+        """kind：dango 团子 / sandbox 沙盒；port 默认 child_port。已经有一个在跑（不管哪种）就 RuntimeError。"""
+        if kind not in KIND_NAMES:
+            raise ValueError(f"不认识的子进程类型：{kind}")
         with self._lock:
             if self._state not in (IDLE, EXITED, CRASHED):
-                raise RuntimeError("团子已经在运行")
+                who = KIND_NAMES[self._kind]
+                raise RuntimeError(f"{who}已经在运行，先停{who}")
             self._lines.clear()
             self._count, self._exit_code, self._run_dir, self._forced, self._options = 0, None, None, False, options
+            self._kind, self._port = kind, self.child_port if port is None else port
             self._proc = subprocess.Popen(
                 cmd, cwd=self.cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **_popen_flags(sys.platform),
@@ -139,7 +156,7 @@ class Runner:
         reader = threading.Thread(target=self._read, args=(proc,), name="console-child-out", daemon=True)
         reader.start()
         threading.Thread(target=self._monitor, args=(proc, reader), name="console-child", daemon=True).start()
-        log.info("起团子：%s", " ".join(cmd))
+        log.info("起%s：%s", KIND_NAMES[kind], " ".join(cmd))
 
     def _read(self, proc: subprocess.Popen) -> None:
         """按 \n 或单独的 \r 分行：进度条只用 \r 刷新时，新的一段顶掉上一段（像终端那样），不攒成一整行。"""
@@ -177,7 +194,7 @@ class Runner:
                 break
             except subprocess.TimeoutExpired:
                 pass
-            if self._state == STARTING and self._probe(self.child_port):
+            if self._state == STARTING and self._probe(self._port):
                 with self._lock:
                     if self._state == STARTING:
                         self._state = RUNNING
@@ -185,7 +202,7 @@ class Runner:
         with self._lock:
             self._exit_code = code
             self._state = EXITED if self._state == STOPPING or code == 0 else CRASHED
-        log.info("团子退出了（退出码 %s）", code)
+        log.info("%s退出了（退出码 %s）", KIND_NAMES[self._kind], code)
 
     # ---- 停 ----
     def stop(self) -> None:
@@ -194,21 +211,21 @@ class Runner:
             if self._state not in (STARTING, RUNNING):
                 return
             self._state = STOPPING
-            proc = self._proc
-        threading.Thread(target=self._stop, args=(proc,), name="console-stop", daemon=True).start()
+            proc, port = self._proc, self._port
+        threading.Thread(target=self._stop, args=(proc, port), name="console-stop", daemon=True).start()
 
-    def _stop(self, proc: subprocess.Popen) -> None:
+    def _stop(self, proc: subprocess.Popen, port: int) -> None:
         deadline = time.monotonic() + self.stop_timeout
         sent = False
         while proc.poll() is None and time.monotonic() < deadline:
             if not sent:
-                sent = self._shutdown(self.child_port)
+                sent = self._shutdown(port)
             try:
                 proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 pass
         if proc.poll() is None:
-            log.warning("团子 %.0f 秒没退出，强制结束（轮盘可能没换回）", self.stop_timeout)
+            log.warning("%s %.0f 秒没退出，强制结束（轮盘可能没换回）", KIND_NAMES[self._kind], self.stop_timeout)
             with self._lock:
                 self._forced = True
             self._kill(proc.pid)
@@ -241,10 +258,18 @@ class Runner:
                 "run_dir": self._run_dir,
                 "forced": self._forced,
                 "slow_start": self._state == STARTING and uptime is not None and uptime > self.start_notice,
-                "options": asdict(self._options) if self._options else None,
+                "options": _options_dict(self._options),
+                "kind": self._kind,
+                "port": self._port,
             }
 
     def logs(self, after: int = 0) -> dict:
         """行号从 1 连续编号；after = 已经拿到的最后一行，环形缓冲丢掉的行不再返回。"""
         with self._lock:
             return {"next": self._count, "lines": [text for n, text in self._lines if n > after]}
+
+
+def _options_dict(options) -> dict | None:
+    if not options:
+        return None
+    return asdict(options) if is_dataclass(options) else dict(options)

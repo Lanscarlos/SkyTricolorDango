@@ -54,9 +54,9 @@ SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
 
 
 def test_build_command_is_explicit():
-    cmd = build_command(LaunchOptions(brain=False, live=False, emotes=False, duration=90), Path("c.toml"), 8761, 42, python="py")
+    cmd = build_command(LaunchOptions(brain=False, live=False, emotes=False, duration=90), Path("c.toml"), 19391, 42, python="py")
     assert cmd == ["py", "-m", "skydango", "-c", "c.toml", "run", "--no-brain", "--dry-run", "--no-emotes", "--duration", "90.0",
-                   "--view", "--viewer-port", "8761", "--no-browser", "--parent-pid", "42"]
+                   "--view", "--viewer-port", "19391", "--no-browser", "--parent-pid", "42"]
     assert "--live" in build_command(LaunchOptions(live=True), Path("c.toml"), 1, 2)
     assert "--no-brain" not in build_command(LaunchOptions(), Path("c.toml"), 1, 2)
     assert "--duration" not in build_command(LaunchOptions(), Path("c.toml"), 1, 2)
@@ -205,3 +205,29 @@ def test_stop_while_starting_then_port_opens_exits_cleanly(tmp_path):  # 重试�
     r.stop()
     wait_state(r, EXITED)
     assert r.status()["forced"] is False and "收到退出" in r.logs()["lines"]
+
+
+# ---- 沙盒计划 Task 6：团子 / 沙盒一个槽，按 kind 用各自的端口 ----
+def test_sandbox_kind_uses_its_port_and_blocks_dango(tmp_path):
+    from skydango.console.runner import build_sandbox_command
+
+    r = runner(tmp_path)
+    port = free_port()
+    r.start([sys.executable, str(FAKE), "--port", str(port)], ENV(), {"start": "resume"}, kind="sandbox", port=port)
+    wait_state(r, RUNNING)  # 探活用这次的端口，不是 child_port
+    st = r.status()
+    assert st["kind"] == "sandbox" and st["port"] == port and st["options"] == {"start": "resume"}
+    with pytest.raises(RuntimeError, match="沙盒已经在运行，先停沙盒"):
+        r.start(child(r), ENV(), LaunchOptions())
+    r.stop()
+    wait_state(r, EXITED)  # 退出请求也发到沙盒端口
+    assert r.status()["forced"] is False
+    r.start(child(r), ENV(), LaunchOptions())
+    wait_state(r, RUNNING)
+    assert r.status()["kind"] == "dango" and r.status()["port"] == r.child_port
+    with pytest.raises(RuntimeError, match="团子已经在运行，先停团子"):
+        r.start(SLEEPER, ENV(), {"start": "resume"}, kind="sandbox", port=port)
+    r.stop()
+    wait_state(r, EXITED)
+    assert build_sandbox_command(Path("c.toml"), 19392, 42, "sleep", python="py") == [
+        "py", "-m", "skydango", "-c", "c.toml", "sandbox", "--port", "19392", "--no-browser", "--parent-pid", "42", "--start", "sleep"]

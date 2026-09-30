@@ -1,4 +1,5 @@
-"""管理面板的 HTTP 服务：页面、设置、设备检测、启停团子，/live/* 转发到团子子进程的 viewer。
+"""管理面板的 HTTP 服务：页面、设置、设备检测、启停团子 / 大脑沙盒，/live/* 转发到团子子进程的 viewer，
+/sandbox/* 转发到沙盒子进程的接口（团子和沙盒同一时间只能有一个）。
 
 只监听 127.0.0.1。除了页面本身，所有请求都校验 Host（防 DNS 重绑定）；POST 还要 X-Skydango 头 + JSON + 大小上限
 （别的网页借浏览器发不过来）。防护函数和 vision/viewer.py 共用。
@@ -14,6 +15,7 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -23,11 +25,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..config import Config, console_paths, read_secrets
-from ..vision.viewer import is_local_host, post_guard
+from ..vision.viewer import is_local_host, post_guard, static_asset
 from . import probes
 from .devicecheck import run_checks
+from .inner_view import BUSY_ERROR, forget_offline, inner_state
 from .preflight import preflight
-from .runner import LOCAL, LaunchOptions, Runner, build_command, child_env, probe_status, send_shutdown
+from .runner import LOCAL, LaunchOptions, Runner, build_command, build_sandbox_command, child_env, probe_status, send_shutdown
 from .settings import SettingsStore
 
 log = logging.getLogger(__name__)
@@ -37,6 +40,24 @@ PROXY_TIMEOUT = 5.0  # 长轮询 2 秒 + 余量
 BUSY = ("starting", "running", "stopping")
 LIVE = ("running", "stopping")
 NOT_RUNNING = {"ok": False, "text": "团子没在运行"}
+SANDBOX_NOT_RUNNING = {"ok": False, "text": "沙盒没在运行"}
+SANDBOX_PROXY_TIMEOUT = 35.0  # /sandbox/state 长轮询最多 25 秒、/sandbox/op 身体线程最多 10 秒 + 余量
+SANDBOX_GET = ("state", "brain", "inner", "status")  # 转发给沙盒的 GET
+SANDBOX_POST = ("op", "inner/forget")  # 转发给沙盒的 POST（/shutdown 不给页面直接发，走 /api/sandbox/stop）
+
+
+def _kind(status: dict) -> str:
+    return status.get("kind") or "dango"
+
+
+def _start_choice(body: dict) -> str:
+    """沙盒启动选项：resume / sleep / HH:MM / YYYY-MM-DD HH:MM；不对抛 ValueError。"""
+    from ..sandbox.clock import is_time_text
+
+    start = body.get("start", "resume")
+    if not isinstance(start, str) or not (start in ("resume", "sleep") or is_time_text(start)):
+        raise ValueError("起始时间要是 resume（接着上次）/ sleep（睡一晚）/ HH:MM / YYYY-MM-DD HH:MM")
+    return start.strip()
 
 
 class _Server(ThreadingHTTPServer):
@@ -86,15 +107,34 @@ class ConsoleServer:
     def _busy(self) -> bool:
         return self.runner.status()["state"] in BUSY
 
+    def _state_of(self, kind: str) -> str:
+        """某一种子进程（dango / sandbox）现在的状态；槽被另一种占着时当它 idle。"""
+        st = self.runner.status()
+        return st["state"] if _kind(st) == kind else "idle"
+
+    def _other_busy(self, kind: str) -> str | None:
+        """另一种子进程在 starting / running / stopping 时给一句"先停它"。"""
+        st = self.runner.status()
+        if st["state"] in BUSY and _kind(st) != kind:
+            return "沙盒在运行，先在「沙盒」页下线沙盒" if _kind(st) == "sandbox" else "团子在运行，先停团子"
+        return None
+
     def launch_options(self) -> LaunchOptions:
         c = self.store._fallback().console
         return LaunchOptions(c.brain, c.live, c.emotes, c.duration)
+
+    def _run_problems(self, opts: LaunchOptions) -> list[str]:
+        """叫醒团子前的问题：沙盒占着槽时说"先下线沙盒"，不说"团子已经在运行"。"""
+        other = self._other_busy("dango")
+        if other:
+            return [other, *preflight(self.store, opts, False, self.find_spec)]
+        return preflight(self.store, opts, self._busy(), self.find_spec)
 
     def state(self) -> dict:
         opts = self.launch_options()
         busy = self._busy()
         return {"run": self.runner.status(), "launch": dataclasses.asdict(opts),
-                "problems": preflight(self.store, opts, busy, self.find_spec), "orphan": self.orphan and not busy,
+                "problems": self._run_problems(opts), "orphan": self.orphan and not busy,
                 "emotes_allowed": self.store._fallback().emotes.enabled}  # config.toml 关了动作：面板上只能关不能开
 
     def start_run(self, body: dict) -> tuple[int, dict]:
@@ -105,12 +145,14 @@ class ConsoleServer:
         self.store.save({"console.brain": opts.brain, "console.live": opts.live, "console.emotes": opts.emotes,
                          "console.duration": opts.duration})  # 下次打开面板还是这次的选择
         with self._device_lock:  # 和设备检测互斥：检查完到真的起进程之间，检测不能插进来
-            problems = preflight(self.store, opts, self._busy(), self.find_spec)
+            problems = self._run_problems(opts)
             if self._checking:
                 problems.append("正在检测设备，等检测完再叫醒")
             if not self._busy() and probe_status(self.child_port):  # 上次留下的团子还占着端口：再起一个会有两个团子
                 self.orphan = True
                 problems.append(f"{self.child_port} 端口上有上次留下的团子，先点「让它退出」")
+            if not self._busy() and probe_status(self.sandbox_port()):  # 上次留下的沙盒：共用令牌，也别同时在线
+                problems.append(f"{self.sandbox_port()} 端口上有上次留下的沙盒，先在「沙盒」页让它退出")
             try:
                 secrets = read_secrets(console_paths(self.config_path)[1])
             except ValueError as exc:
@@ -170,15 +212,110 @@ class ConsoleServer:
         finally:
             self._checking = False
 
-    def stop_orphan(self) -> tuple[int, dict]:
+    def stop_orphan(self, body: dict | None = None) -> tuple[int, dict]:
+        """让上次留下的子进程退出；body {"kind": "sandbox"} 时是沙盒端口。"""
+        if (body or {}).get("kind") == "sandbox":
+            return 200, {"ok": send_shutdown(self.sandbox_port())}
         ok = send_shutdown(self.child_port)
         self.orphan = False
         return 200, {"ok": ok}
 
+    def stop_run(self) -> tuple[int, dict]:
+        """总览的「停止」：只停团子（沙盒在跑时不动它）。"""
+        if _kind(self.runner.status()) == "dango":
+            self.runner.stop()
+        return 200, {"ok": True}
+
+    # ---- 大脑沙盒（spec 2026-09-30-brain-sandbox §4）----
+    def sandbox_port(self) -> int:
+        return self.store._fallback().sandbox.port
+
+    def sandbox_dir(self) -> Path:
+        return Path(self.store._fallback().sandbox.dir)
+
+    def start_sandbox(self, body: dict) -> tuple[int, dict]:
+        try:
+            start = _start_choice(body)
+        except ValueError as exc:
+            return 400, {"ok": False, "text": str(exc)}
+        port = self.sandbox_port()
+        with self._device_lock:
+            problems: list[str] = []
+            other = self._other_busy("sandbox")
+            if other:
+                problems.append(other)
+            elif self._busy():
+                problems.append("沙盒已经在运行")
+            # 沙盒不碰设备：预检只看配置、令牌、mcp（和团子的大脑模式一样）
+            problems += preflight(self.store, LaunchOptions(brain=True), False, self.find_spec)
+            orphan = False
+            if not self._busy() and probe_status(port):
+                orphan = True
+                problems.append(f"{port} 端口上有上次留下的沙盒，先点「让它退出」")
+            try:
+                secrets = read_secrets(console_paths(self.config_path)[1])
+            except ValueError as exc:
+                problems.append(str(exc))
+            if problems:
+                return 409, {"ok": False, "problems": problems, "orphan": orphan}
+            cmd = build_sandbox_command(self.config_path, port, self.parent_pid, start)
+            try:
+                self.runner.start(cmd, child_env(os.environ, secrets), {"start": start}, kind="sandbox", port=port)
+            except (RuntimeError, OSError) as exc:
+                return 409, {"ok": False, "problems": [str(exc)]}
+        return 200, {"ok": True}
+
+    def stop_sandbox(self) -> tuple[int, dict]:
+        if _kind(self.runner.status()) != "sandbox":
+            return 409, {"ok": False, "text": "沙盒没在运行"}
+        self.runner.stop()
+        return 200, {"ok": True}
+
+    def reset_sandbox(self) -> tuple[int, dict]:
+        from .sandbox_view import reset
+
+        if self._state_of("sandbox") in BUSY:
+            return 409, {"ok": False, "text": "先下线沙盒再重置记忆"}
+        if probe_status(self.sandbox_port()):
+            return 409, {"ok": False, "text": "上次留下的沙盒还在跑（占着沙盒端口），先让它退出"}
+        cfg = self.store._fallback()
+        reset(self.sandbox_dir(), Path(cfg.reply.memory_dir or "memory"))
+        return 200, {"ok": True, "text": "沙盒记忆用 memory/ 重置好了"}
+
+    def sandbox_info(self) -> dict:
+        from .sandbox_view import friends, start_info
+
+        cfg = self.store._fallback()
+        root = self.sandbox_dir()
+        return {**start_info(root, time.time()), "friends": _safe_list(lambda: friends(root)), "owner_name": cfg.brain.owner_name,
+                "dir": str(root), "state": self._state_of("sandbox")}
+
+    def sandbox_proxy(self, method: str, rest: str, query: str, body: bytes | None = None) -> tuple[int, str, bytes]:
+        """转发到沙盒子进程；槽被团子占着 / 沙盒没在跑 / 连不上都是 503。"""
+        not_running = (503, "application/json; charset=utf-8", json.dumps(SANDBOX_NOT_RUNNING, ensure_ascii=False).encode())
+        st = self.runner.status()
+        if _kind(st) != "sandbox" or st["state"] not in LIVE:
+            return not_running
+        port = st.get("port") or self.sandbox_port()
+        url = f"http://127.0.0.1:{port}/{rest}" + (f"?{query}" if query else "")
+        headers = {"Content-Type": "application/json", "X-Skydango": "1"} if method == "POST" else {}
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with LOCAL.open(req, timeout=SANDBOX_PROXY_TIMEOUT) as r:
+                return r.status, r.headers.get("Content-Type", "application/octet-stream"), r.read()
+        except urllib.error.HTTPError as err:
+            return err.code, err.headers.get("Content-Type", "text/plain"), err.read()
+        except (urllib.error.URLError, OSError, http.client.HTTPException):
+            return not_running
+
+    def sandbox_op(self, raw: bytes) -> tuple[int, str, bytes]:
+        return self.sandbox_proxy("POST", "op", "", raw)
+
     def proxy(self, method: str, rest: str, query: str, body: bytes | None = None) -> tuple[int, str, bytes]:
         """转发到子进程的 viewer；没在运行 / 连不上 / 超时都是 503（子进程可能刚好退出）。"""
         not_running = (503, "application/json; charset=utf-8", json.dumps(NOT_RUNNING, ensure_ascii=False).encode())
-        if self.runner.status()["state"] not in LIVE:
+        st = self.runner.status()
+        if st["state"] not in LIVE or _kind(st) != "dango":  # 槽被沙盒占着：/live/* 不转
             return not_running
         url = f"http://127.0.0.1:{self.child_port}/{rest}" + (f"?{query}" if query else "")
         headers = {"Content-Type": "application/json", "X-Skydango": "1"} if method == "POST" else {}
@@ -191,6 +328,108 @@ class ConsoleServer:
         except (urllib.error.URLError, OSError, http.client.HTTPException):  # 连不上、超时、响应体传到一半断了
             return not_running
 
+    # ---- 内心页（spec 2026-09-30-inner-viewer §2）----
+    def _inner_dir_and_friends(self) -> tuple[Path, list[str]]:
+        from ..chat.memory import MemoryStore
+
+        cfg = self.store._fallback()  # console.toml 坏了也能看
+        found = MemoryStore(cfg.reply.memory_dir).friend_names() if cfg.reply.memory_dir else []
+        return Path(cfg.reply.memory_dir) / "inner", list(dict.fromkeys([*found, *cfg.reply.friends]))
+
+    def _live_inner(self) -> dict | None:
+        code, _, raw = self.proxy("GET", "inner", "")
+        if code != 200:
+            return None
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _sandbox_live_inner(self) -> dict | None:
+        code, _, raw = self.sandbox_proxy("GET", "inner", "")
+        if code != 200:
+            return None
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _sandbox_now(self) -> float:
+        """沙盒没在跑时的"现在"：上次停下时的沙盒时间（可能比真实时间晚），别用真实时间把沙盒的别扭 / 心愿判成过期。"""
+        from ..sandbox.clock import floor_time
+
+        return max(time.time(), floor_time(self.sandbox_dir()))
+
+    def inner(self, source: str = "dango") -> tuple[int, dict]:
+        if source == "sandbox":
+            from .sandbox_view import friends
+
+            root = self.sandbox_dir()
+            return 200, inner_state(root / "memory" / "inner", _safe_list(lambda: friends(root)), self._state_of("sandbox"),
+                                    self._sandbox_live_inner, self._sandbox_now())
+        inner_dir, friends = self._inner_dir_and_friends()
+        return 200, inner_state(inner_dir, friends, self._state_of("dango"), self._live_inner, time.time())
+
+    def _forget_sandbox(self, body: dict) -> tuple[int, dict]:
+        state = self._state_of("sandbox")
+        if state in ("starting", "stopping"):
+            return 409, {"ok": False, "error": "沙盒正在启动 / 下线，稍等再删"}
+        clean = {k: v for k, v in body.items() if k != "source"}
+        if state == "running":
+            code, _, raw = self.sandbox_proxy("POST", "inner/forget", "", json.dumps(clean, ensure_ascii=False).encode())
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                data = None
+            if not isinstance(data, dict):
+                return 503, {"ok": False, "error": "沙盒没回应，稍后再试"}
+            if not data.get("ok") and "error" not in data:
+                data["error"] = data.get("text") or "沙盒没删成"
+            return code, data
+        if probe_status(self.sandbox_port()):
+            return 409, {"ok": False, "error": "上次留下的沙盒还在跑（占着沙盒端口），先让它退出再删"}
+        try:
+            return 200, forget_offline(self.sandbox_dir() / "memory" / "inner", clean, time.time(),
+                                       self.store._fallback().inner.save_every * 3)
+        except ValueError as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
+    def forget(self, body: dict) -> tuple[int, dict]:
+        if body.get("source") == "sandbox":
+            return self._forget_sandbox(body)
+        body = {k: v for k, v in body.items() if k != "source"}
+        state = self._state_of("dango")
+        if state in ("starting", "stopping"):  # 两边可能同时改 persona.json
+            return 409, {"ok": False, "error": BUSY_ERROR}
+        inner_dir, _ = self._inner_dir_and_friends()
+        alive = self.store._fallback().inner.save_every * 3
+        if state == "running":
+            code, _, raw = self.proxy("POST", "inner/forget", "", json.dumps(body, ensure_ascii=False).encode())
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                data = None
+            if not isinstance(data, dict):
+                return 503, {"ok": False, "error": "团子没回应，稍后再试"}
+            if not data.get("ok") and "error" not in data:
+                data["error"] = data.get("text") or "团子没删成"
+            options = self.runner.status().get("options") or {}
+            if data.get("ok") and options.get("live") is False:
+                # dry-run 的团子只删了内存里的（它从不写 persona.json）：面板顺手把文件也改了，停掉之后不会回来
+                try:
+                    forget_offline(inner_dir, body, time.time(), alive)
+                except Exception:
+                    log.exception("dry-run 时顺手改 persona.json 出错")
+            return code, data
+        if probe_status(self.child_port):  # 上次留下的团子还占着端口：它会把性格档案写回去
+            return 409, {"ok": False, "error": "上次留下的团子还在跑（占着子进程端口），先在总览让它退出再删"}
+        try:
+            return 200, forget_offline(inner_dir, body, time.time(), alive)
+        except ValueError as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
     # ---- HTTP ----
     def start(self) -> str:
         """起服务（后台线程），返回地址。端口被占用抛 OSError。"""
@@ -202,6 +441,13 @@ class ConsoleServer:
                 if url.path == "/":
                     self._send(200, "text/html; charset=utf-8", _page())
                     return
+                if url.path.startswith("/static/"):  # 和 viewer 共用的大脑时间线脚本 / 样式（同页面一样公开）
+                    asset = static_asset(url.path[len("/static/"):])
+                    if asset is None:
+                        self._json(404, {"ok": False, "text": "没有这个地址"})
+                    else:
+                        self._send(200, *asset)
+                    return
                 if not is_local_host(self.headers.get("Host") or "", console.port):
                     self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
                 elif url.path == "/api/state":
@@ -210,8 +456,18 @@ class ConsoleServer:
                     self._json(200, console.runner.logs(self._after(url)))
                 elif url.path == "/api/settings":
                     self._json(200, console.store.view())
+                elif url.path == "/api/inner":
+                    self._json(*console.inner(parse_qs(url.query).get("source", ["dango"])[0]))
+                elif url.path == "/api/sandbox/info":
+                    self._json(200, console.sandbox_info())
                 elif url.path.startswith("/live/"):
                     self._send(*console.proxy("GET", url.path[len("/live/"):], url.query))
+                elif url.path.startswith("/sandbox/"):
+                    rest = url.path[len("/sandbox/"):]
+                    if rest in SANDBOX_GET:
+                        self._send(*console.sandbox_proxy("GET", rest, url.query))
+                    else:
+                        self._json(404, {"ok": False, "text": "没有这个地址"})
                 else:
                     self._json(404, {"ok": False, "text": "没有这个地址"})
 
@@ -222,10 +478,15 @@ class ConsoleServer:
                     "/api/settings/test": console.test_settings,
                     "/api/device": lambda body: console.check_device(),
                     "/api/run/start": console.start_run,
-                    "/api/run/stop": lambda body: (console.runner.stop(), (200, {"ok": True}))[1],
-                    "/api/orphan/stop": lambda body: console.stop_orphan(),
+                    "/api/run/stop": lambda body: console.stop_run(),
+                    "/api/orphan/stop": console.stop_orphan,
+                    "/api/inner/forget": console.forget,
+                    "/api/sandbox/start": console.start_sandbox,
+                    "/api/sandbox/stop": lambda body: console.stop_sandbox(),
+                    "/api/sandbox/reset": lambda body: console.reset_sandbox(),
                 }
-                if path not in routes and path != "/live/control":
+                forwards = {"/live/control", *(f"/sandbox/{p}" for p in SANDBOX_POST)}
+                if path not in routes and path not in forwards:
                     self._drain()
                     self._json(404, {"ok": False, "text": "没有这个地址"})
                     return
@@ -244,6 +505,12 @@ class ConsoleServer:
                     return
                 if path == "/live/control":
                     self._send(*console.proxy("POST", "control", "", raw))
+                    return
+                if path == "/sandbox/op":
+                    self._send(*console.sandbox_op(raw))
+                    return
+                if path.startswith("/sandbox/"):
+                    self._send(*console.sandbox_proxy("POST", path[len("/sandbox/"):], "", raw))
                     return
                 try:
                     self._json(*routes[path](body))
@@ -293,3 +560,11 @@ class ConsoleServer:
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
+
+
+def _safe_list(fn) -> list:
+    try:
+        return list(fn())
+    except Exception:
+        log.exception("读沙盒好友名单出错")
+        return []

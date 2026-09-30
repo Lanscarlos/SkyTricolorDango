@@ -79,7 +79,7 @@ api_key_env = "ANTHROPIC_API_KEY"   # 从这个环境变量读 Key，不要把 K
 # api_key_env = "DEEPSEEK_API_KEY"
 
 [emotes]
-# 聊天时让模型挑时机做动作。做动作会松开牵手：牵着手时用 `run --no-emotes`
+# 聊天时让模型挑时机做动作。牵着手也能做，不会松手（走动才会）
 enabled = true
 # 可以换上轮盘的动作（图标库 emotes/ 里的名字），不在轮盘上时会换到 swap_slots 里再做
 extra = []
@@ -195,7 +195,7 @@ poll = 0.15                     # 等画面停稳后，每隔这么久看一次�
 # 识别可视化网页：python -m skydango view（只看不动）或 run --view，浏览器里实时看画面 + 识别框
 # 画面里有好友昵称和聊天：默认只给本机看。改成 "0.0.0.0" 手机也能看，但同一局域网的人都能看
 host = "127.0.0.1"
-port = 8765
+port = 19399
 fps = 10.0                      # 最多每秒更新几帧（run --view 时受身体主循环限制，约 6~7 帧）
 width = 1280                    # 发给浏览器的图缩到这么宽
 quality = 70                    # JPEG 质量
@@ -232,6 +232,56 @@ quota_quiet = 2                # 安静时窗口内最多主动说几句
 min_gap = 60.0                 # 两句主动的话之间至少隔几秒
 cold_after = 3                 # 连续几句主动的话没人接就暂停主动，等有好友说话
 self_names = ["团子", "三彩"]   # 聊天里出现这些字算“叫了你”
+
+[reflex]
+# 身体反射（大脑模式）：有人跟团子说话马上冒“正在输入”气泡、别人挥手回礼、闲着做小动作；只用轮盘上已有的动作。数字都是估的，没在真机验证
+enabled = true                 # false = 完全照旧
+bubble = true                  # 有人跟团子说话时马上打开输入框，大脑想好了用这个框发
+followup_window = 30.0         # 团子说完多少秒内好友接话，算“在跟团子说”（叫名字、身边只有一个好友也算）
+bubble_max = 45.0              # 替大脑开的框最长开多久
+# addressed = ["点头"]         # 被叫到时开框前偶尔做的小动作（要在轮盘上）
+addressed_chance = 0.3
+# idle = ["伸懒腰", "坐下"]    # 闲着时的小动作
+idle_min = 180.0               # 闲着 idle_min~idle_max 秒（随机）做一个
+idle_max = 420.0
+return_chance = 0.7
+quota_window = 600.0           # 反射动作额度：这么多秒里最多 quota 个（不占大脑的动作冷却）
+quota = 4
+min_gap = 4.0                  # 任何两个动作之间至少隔几秒
+# [reflex.return_map]          # 回礼：别人对团子做的动作（[gesture] labels）→ 团子回的动作
+# wave = "挥手"
+# bow = "鞠躬"
+
+[inner]
+# 内心层第 1 期（大脑模式）：给好友记关系卡（见过几次、上次什么时候、待了多久、说过几句）、每次上线记一行（日子），
+# 大脑在“来到身边”、status、系统提示词「日子」里看到。存在 <memory_dir>/inner/，只在 --live 时写。数字都是估的，没在真机验证
+enabled = true                 # false = 完全照旧
+visit_gap = 1800.0             # 离上次在场超过这么多秒再出现，算新的一次见面
+session_gap = 7200.0           # 第一次启用时从 history.jsonl 回填：相邻两轮隔这么多秒算两次上线
+long_gap = 7.0                 # 超过这么多天没见算“好久没见”
+save_every = 60.0              # live 时每隔多少秒存一次（被强杀时最多丢这么久的账）
+max_step = 5.0                 # 算在一起待了多久时，单圈最多算几秒
+# 第 2 期：反思（心情、精力、闹别扭、惦记的事，下线写日记代替大脑写的经过）。数字都是估的，没在真机验证
+reflect = true                 # false = 只记账（第 1 期原样）
+reflect_model = "sonnet"       # 反思用的模型（一次性 claude -p，令牌同大脑）
+reflect_every = 1200.0         # 有动静（有人说话 / 好友来去）时多久反思一次
+reflect_after_quiet = 180.0    # 好友说够 reflect_min_lines 句后安静这么久也反思一次
+reflect_min_lines = 6
+reflect_timeout = 90.0         # 一次反思最多等多久（下线那次也是）
+rest_gap = 3600.0              # 两次上线隔多久算睡过一觉（不到就接着上次的累算）
+grudge_min_days = 3            # 一起玩过几天的好友才可能闹别扭
+grudge_max = 7200.0            # 别扭最长多久，到点自己消气
+wants_max = 3                  # 心愿 / 惦记的事最多几条
+want_days = 7.0                # 心愿几天后过期
+diary_prompt = 1               # 启动时「日子」里带几篇日记
+# 第 3 期：性格（反思顺带攒口头禅 / 老梗 / 看法，进系统提示词；提示词加「脾气」；好友说难过就对他收着点）。数字都是估的，没在真机验证
+persona = true                 # false = 第 2 期原样（沉淀要 reflect = true；reflect = false 时只有提示词和收着点）
+fade_days = 14.0               # 多少天没用的口头禅 / 老梗 / 看法淡出
+catchphrases_max = 5           # 口头禅最多几条
+jokes_per_friend = 3           # 每个好友最多几条老梗
+jokes_max = 20                 # 老梗总共最多几条
+opinions_max = 10              # 看法最多几条（一个话题一句）
+soft_minutes = 30.0            # 好友说难过后多久内对他收着点
 
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉
@@ -279,5 +329,13 @@ close_with_back = true         # 发完按 BACK 关掉输入框，否则头顶�
 # [console]
 # 管理面板（python -m skydango console）。其余项（上次的启动选项等）由面板写进 console.toml，
 # 面板里改的设置也写在 console.toml（叠加在本文件之后），密钥写在 secrets.toml；两个文件都不进 git
-# port = 8760          # 面板端口
-# child_port = 8761    # 面板起的团子子进程的 viewer 端口
+# port = 19390        # 面板端口
+# child_port = 19391  # 面板起的团子子进程的 viewer 端口
+
+[sandbox]
+# 大脑沙盒（管理面板「沙盒」页）：不开 MuMu，假世界 + 真大脑 / 内心层；只写 <dir>/memory/，永远不写 memory/
+dir = "sandbox"          # 沙盒目录（memory/、scenarios/、reports/、clock.json），不进 git
+port = 19392             # 沙盒子进程的接口端口
+step_timeout = 180.0     # 回放时每步最多等多久安静（秒，真实时间）
+wake_hour = 9            # "睡一晚" / "到明早" 拨到几点
+emotes = []              # 没有 emotes/ 图标库时假装轮盘上有这些动作，如 ["鞠躬", "挥手"]

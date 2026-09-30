@@ -78,8 +78,8 @@ def build_server(toolbox: ToolBox) -> MCPServer:
         return call("say", text=text)
 
     @srv.tool(name="emote", description=DESCRIPTIONS["emote"])
-    def emote(name: str, force: bool = False):
-        return call("emote", name=name, force=force)
+    def emote(name: str):
+        return call("emote", name=name)
 
     @srv.tool(name="set_request_policy", description=DESCRIPTIONS["set_request_policy"])
     def set_request_policy(who: str, kind: str, accept: bool):

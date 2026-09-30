@@ -151,3 +151,20 @@ def fake_panel(device, open_=True, mode="always"):
 
     device.hw_key = hw_key
     return panel_manager(device, lambda: state.open, mode), state
+
+
+class FakeLlm:
+    """假的一次性模型（反思用）：complete() 记下调用，返回 reply（是异常就抛）；wait 给了就先等它。"""
+
+    def __init__(self, reply="{}", wait=None) -> None:
+        self.reply = reply
+        self.wait = wait
+        self.calls: list[tuple[str, str]] = []
+
+    def complete(self, system, messages, max_tokens=None):
+        self.calls.append((system, messages[0]["content"]))
+        if self.wait is not None:
+            self.wait.wait(5)
+        if isinstance(self.reply, BaseException):
+            raise self.reply
+        return self.reply

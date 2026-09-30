@@ -68,6 +68,92 @@ def post_guard(headers, port: int, max_body: int) -> tuple[int, str] | None:
     return None
 
 
+STATIC = ("brain_trace.js", "brain_trace.css")  # vision/static/ 里给页面用的共用文件（大脑时间线）
+_STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
+
+
+def static_asset(name: str) -> tuple[str, bytes] | None:
+    """(Content-Type, 内容)；只认 STATIC 里的名字（不拼路径），别的返回 None。管理面板共用。"""
+    if name not in STATIC:
+        return None
+    import importlib.resources
+
+    data = (importlib.resources.files("skydango.vision") / "static" / name).read_bytes()
+    return _STATIC_TYPES[name[name.rindex("."):]], data
+
+
+# ---- viewer 和大脑沙盒（sandbox/server.py）共用的接口处理 ----
+def brain_body(trace, after: int, wait: float = WAIT) -> bytes:
+    """/brain：大脑时间线长轮询的响应体。errors="replace"：截断在 emoji 中间的半个代理字符不能让整条时间线卡在"连不上"。"""
+    return json.dumps(trace.since(after, wait), ensure_ascii=False).encode(errors="replace")
+
+
+def inner_response(inner: Callable[[], dict]) -> tuple[int, dict]:
+    """/inner：取内心快照（经身体线程）；身体超时 / 已经停了 → 503。"""
+    try:
+        return 200, inner()
+    except Exception as exc:
+        log.debug("取内心快照失败：%s", exc)
+        return 503, {"ok": False, "error": "团子正忙，稍后再试"}
+
+
+def forget_response(forget: Callable[[str, str, str, str], str], raw: bytes) -> tuple[int, dict]:
+    """/inner/forget：删一条性格条目：解析 → 交给身体线程 → {"ok": true} 或原因。"""
+    from ..inner.api import forget_result, parse_forget
+
+    try:
+        kind, text, who, topic = parse_forget(json.loads(raw.decode("utf-8")))
+    except ValueError as exc:  # 坏 JSON、类别不认识：不交给身体
+        return 400, {"ok": False, "error": str(exc)}
+    try:
+        reason = forget(kind, text, who, topic)
+    except Exception as exc:  # 身体超时 / 已经停了
+        log.debug("删性格条目失败：%s", exc)
+        return 503, {"ok": False, "error": "团子正忙，稍后再试"}
+    return 200, forget_result(reason)
+
+
+class JsonHandler(BaseHTTPRequestHandler):
+    """viewer 和沙盒共用的请求处理小工具：回 JSON、读 after、读掉没读的请求体、校验 Host。"""
+
+    def _local_host(self) -> bool:
+        return is_local_host(self.headers.get("Host") or "", self.server.server_address[1])
+
+    def _drain(self) -> None:
+        """没读的请求体读掉（最多 64 KB），否则直接关连接浏览器那边会报连接被重置、看不到状态码。"""
+        try:
+            left = min(int(self.headers.get("Content-Length") or 0), 65536)
+            if left > 0:
+                self.rfile.read(left)
+        except (ValueError, OSError):
+            pass
+
+    def _json(self, code: int, data) -> None:
+        self._send(code, "application/json; charset=utf-8", json.dumps(data, ensure_ascii=False).encode(errors="replace"))
+
+    def _after(self, url) -> int:
+        try:
+            return int(parse_qs(url.query).get("after", ["0"])[0] or 0)
+        except ValueError:
+            return 0
+
+    def _send(self, code: int, ctype: str, body: bytes) -> None:
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            if code != 204:
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if code != 204:
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def log_message(self, *args) -> None:  # 别刷屏
+        pass
+
+
 def _box(r: Rect, kind: str, label: str) -> dict:
     return {"x": int(r.x), "y": int(r.y), "w": int(r.w), "h": int(r.h), "kind": kind, "label": label}
 
@@ -103,6 +189,9 @@ class Viewer:
         self.brain = None  # brain.trace.BrainTrace：有它网页才显示大脑时间线
         self.control = None  # brain.manual.ManualControl：有它网页才显示手动控制栏（只在本机模式挂）
         self.on_shutdown: Callable[[], None] | None = None  # POST /shutdown 时调（cli 里设成 interrupt_main，走 Ctrl+C 的收尾）
+        # 内心页（spec 2026-09-30-inner-viewer §2）：cli 在 run --view 时经 body.call 挂上；None 时 /inner、/inner/forget 回 404
+        self.inner: Callable[[], dict] | None = None
+        self.forget: Callable[[str, str, str, str], str] | None = None
         self._updated: float | None = None  # 最近一帧记下时的 time.monotonic()，/status 算 age
         self.frames = 0  # 更新了多少帧（测试 / 统计用）
         self.encodes = 0  # 压了多少次 JPEG（测试用）
@@ -205,11 +294,13 @@ class Viewer:
         """起网页服务（后台线程），返回地址。端口被占用时抛 OSError。"""
         viewer = self
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(JsonHandler):
             def do_GET(self) -> None:  # noqa: N802
                 url = urlparse(self.path)
                 if url.path == "/":
                     self._send(200, "text/html; charset=utf-8", PAGE.encode())
+                elif url.path[1:] in STATIC:  # 大脑时间线的共用脚本 / 样式
+                    self._send(200, *static_asset(url.path[1:]))
                 elif url.path == "/snapshot":
                     body = viewer.snapshot(self._after(url))
                     if body is None:
@@ -226,17 +317,21 @@ class Viewer:
                         self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
                     else:
                         self._json(200, viewer.control.options())
+                elif url.path == "/inner" and viewer.inner is not None:
+                    if not self._local_host():
+                        self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                        return
+                    self._json(*inner_response(viewer.inner))
                 elif url.path == "/brain" and viewer.brain is not None:
-                    # errors="replace"：截断在 emoji 中间的半个代理字符不能让整条时间线卡在"连不上"
-                    body = json.dumps(viewer.brain.since(self._after(url), WAIT), ensure_ascii=False).encode(errors="replace")
-                    self._send(200, "application/json; charset=utf-8", body)
+                    self._send(200, "application/json; charset=utf-8", brain_body(viewer.brain, self._after(url)))
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
 
             def do_POST(self) -> None:  # noqa: N802
                 """手动控制 / 退出：只收本机（Host）、带 X-Skydango 头的 JSON（见 post_guard）。"""
                 path = urlparse(self.path).path
-                if not ((path == "/control" and viewer.control is not None) or (path == "/shutdown" and viewer.on_shutdown is not None)):
+                if not ((path == "/control" and viewer.control is not None) or (path == "/shutdown" and viewer.on_shutdown is not None)
+                        or (path == "/inner/forget" and viewer.forget is not None)):
                     self._drain()
                     self._send(404, "text/plain; charset=utf-8", b"not found")
                     return
@@ -251,6 +346,9 @@ class Viewer:
                     viewer.on_shutdown()  # interrupt_main 只是让主线程收到 KeyboardInterrupt，这里照样能回应
                     self._json(200, {"ok": True, "text": "正在退出"})
                     return
+                if path == "/inner/forget":
+                    self._json(*forget_response(viewer.forget, self.rfile.read(length)))
+                    return
                 try:
                     req = json.loads(self.rfile.read(length).decode("utf-8"))
                     if not isinstance(req, dict):
@@ -260,43 +358,6 @@ class Viewer:
                     self._json(400, {"ok": False, "text": str(exc)})
                     return
                 self._json(200, result)
-
-            def _local_host(self) -> bool:
-                return is_local_host(self.headers.get("Host") or "", self.server.server_address[1])
-
-            def _drain(self) -> None:
-                """没读的请求体读掉（最多 64 KB），否则直接关连接浏览器那边会报连接被重置、看不到状态码。"""
-                try:
-                    left = min(int(self.headers.get("Content-Length") or 0), 65536)
-                    if left > 0:
-                        self.rfile.read(left)
-                except (ValueError, OSError):
-                    pass
-
-            def _json(self, code: int, data) -> None:
-                self._send(code, "application/json; charset=utf-8", json.dumps(data, ensure_ascii=False).encode(errors="replace"))
-
-            def _after(self, url) -> int:
-                try:
-                    return int(parse_qs(url.query).get("after", ["0"])[0] or 0)
-                except ValueError:
-                    return 0
-
-            def _send(self, code: int, ctype: str, body: bytes) -> None:
-                try:
-                    self.send_response(code)
-                    self.send_header("Content-Type", ctype)
-                    self.send_header("Cache-Control", "no-store")
-                    if code != 204:
-                        self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    if code != 204:
-                        self.wfile.write(body)
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                    pass
-
-            def log_message(self, *args) -> None:  # 别刷屏
-                pass
 
         self._server = _Server((self.cfg.host, self.cfg.port), Handler)
         self._server.daemon_threads = True
@@ -354,6 +415,7 @@ def describe_env(env, now: float) -> dict:
 PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>团子看到的</title>
+<link rel="stylesheet" href="brain_trace.css"><script src="brain_trace.js"></script>
 <style>
 :root{--bg:#0f1115;--panel:#171a21;--text:#e6e8ee;--muted:#8b93a7;--line:#2a2f3a}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
@@ -380,25 +442,13 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 #brain{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}#brain[hidden]{display:none}
 .bhead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:6px;font-size:13px}
 .bhead label{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer}
-#brain-state.warn{color:#facc15}#brain-state.bad{color:#f87171}
-.turn{border-top:1px solid var(--line)}.turn[hidden]{display:none}
-.turn>summary{cursor:pointer;padding:5px 0;display:flex;gap:6px 12px;flex-wrap:wrap;font-size:13px;list-style:none}
-.turn>summary::-webkit-details-marker{display:none}.turn>summary::before{content:"▶";color:var(--muted);font-size:10px;line-height:20px}
-.turn[open]>summary::before{content:"▼"}.turn>summary .t{color:var(--muted);font-variant-numeric:tabular-nums}
-.turn>summary .n{color:var(--muted)}.turn.err>summary{color:#f87171}.turn.live>summary{color:#60a5fa}
-.tbody{padding:2px 0 10px 16px}.step{margin:6px 0;border-left:3px solid var(--line);padding-left:8px}
-.step h4{margin:0;font-size:12px;font-weight:600;color:var(--muted)}
-.step pre{margin:2px 0 0;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,Consolas,monospace}
-.k-thinking{border-color:#a78bfa}.k-text{border-color:#3ddc84}.k-tool{border-color:#60a5fa}.k-result{border-color:#6b7280}
-.k-result.error{border-color:#facc15}.k-result.error pre{color:#facc15}.k-end{border-color:#8b93a7}.k-end.error pre{color:#f87171}
-.step button{margin-top:4px;font-size:12px;padding:1px 8px}
 @media (max-width:900px){main{flex-direction:column}aside{width:100%}}
 </style></head><body><main>
 <div id="stage"><div class="bar"><button id="pause">暂停</button><button id="boxes">隐藏框</button><button id="save">存图</button>
 <span id="status">连接中…</span></div><canvas id="c"></canvas>
 <section id="control" hidden><div class="bhead"><b>手动控制</b><span id="ctl-warn" hidden>手动操作会真的在游戏里执行（大脑是 dry-run 也一样）</span><span id="ctl-busy"></span></div>
 <div class="row" id="ctl-say"><b>说话</b><input type="text" id="ctl-say-text" placeholder="让团子说一句…"><span id="ctl-count"></span><button id="ctl-say-go">说</button></div>
-<div class="row" id="ctl-emote"><b>动作</b><select id="ctl-emote-name"></select><label><input type="checkbox" id="ctl-force">牵着手也做（会松手）</label><button id="ctl-emote-go">做</button></div>
+<div class="row" id="ctl-emote"><b>动作</b><select id="ctl-emote-name"></select><button id="ctl-emote-go">做</button></div>
 <div class="row" id="ctl-camera"><b>视角</b><button data-cam="left">左转</button><button data-cam="right">右转</button><button data-cam="up">抬头</button><button data-cam="down">低头</button><button data-cam="zoom_in">拉近</button><button data-cam="zoom_out">拉远</button>
 步数<input type="number" id="ctl-steps" value="1" min="1"><button id="ctl-reset">复位</button><button id="ctl-around">环视一圈</button></div>
 <div class="row"><b>看人</b><button id="ctl-pick">在画面上选人</button><span id="ctl-pick-tip" class="n"></span></div>
@@ -406,8 +456,7 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 秒<input type="number" id="ctl-track-sec" value="30" min="1"><button id="ctl-track-go">盯</button><button id="ctl-stop">停下</button><span id="ctl-track-tip" class="n"></span></div>
 <div class="row" id="ctl-panels" hidden><b>面板</b><button id="ctl-panel-read">读面板</button><button id="ctl-panel-close">关面板</button></div>
 <ul id="ctl-log"></ul></section>
-<section id="brain" hidden><div class="bhead"><b>大脑</b><span id="brain-state">连接中…</span>
-<label><input type="checkbox" id="brain-acted">只看做了事的轮次</label></div><div id="brain-turns"></div></section></div>
+<section id="brain" hidden></section></div>
 <aside><h1>团子看到的</h1><dl id="info"></dl><div class="legend" id="legend"></div></aside>
 </main><script>
 const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",
@@ -455,12 +504,13 @@ async function loop(){
 }
 loop();
 // ---- control ----
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
 const CAM={left:"左转",right:"右转",up:"抬头",down:"低头",zoom_in:"拉近",zoom_out:"拉远"};
 const K={opts:null,busy:false,picking:false,trackPick:false,mark:null};
 function nameAt(boxes,x,y){let best=null,area=Infinity;for(const b of boxes){if(!b.label||(b.kind!=="friend"&&b.kind!=="name"))continue;const tag=b.kind==="name",x1=tag?b.x-b.w:b.x,w=tag?b.w*3:b.w,h=tag?b.h*7:b.h;/* 名字标签：人在它正下方（宽 3 倍、连标签 7 倍高，同身体 _below_tag） */if(x<x1||x>=x1+w||y<b.y||y>=b.y+h)continue;if(w*h<area){best=b.label;area=w*h}}return best}
 function toFrame(clientX,clientY,rect,width,height){return [Math.round((clientX-rect.left)*width/rect.width),Math.round((clientY-rect.top)*height/rect.height)]}
 function controlLine(action,args,res){const a=args||{};let what;
-  if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」${a.force?"（松手也做）":""}`;
+  if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」`;
   else if(action==="camera")what=`${CAM[a.action]||a.action} ×${a.steps}`;else if(action==="camera_reset")what="复位";
   else if(action==="look_around")what="环视一圈";else if(action==="panel_read")what="读面板";else if(action==="panel_close")what="关面板";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;
   else if(action==="track")what=`盯着${a.name}（${a.seconds} 秒）`;else if(action==="stop_task")what="停下";else what=action;
@@ -476,7 +526,7 @@ function ctlApply(){const o=K.opts;if(!o)return;
   $("ctl-steps").max=o.max_steps;ctlCount();ctlLock()}
 function ctlLock(){const o=K.opts||{emotes:[],camera:[]},b=K.busy;
   $("ctl-say-text").disabled=b;$("ctl-say-go").disabled=b||!$("ctl-say-text").value.trim();
-  $("ctl-emote-name").disabled=$("ctl-emote-go").disabled=$("ctl-force").disabled=b||!o.emotes.length;
+  $("ctl-emote-name").disabled=$("ctl-emote-go").disabled=b||!o.emotes.length;
   for(const x of document.querySelectorAll("#ctl-camera button,#ctl-steps"))x.disabled=b||!o.camera.length;
   const pick=$("ctl-pick");pick.disabled=b||!o.friend_check;pick.title=o.friend_check?"":"[friend_check] enabled = false";
   $("ctl-pick-tip").textContent=o.friend_check?(K.picking?"点一下画面上的人":""):"没开（[friend_check] enabled = false）";
@@ -507,7 +557,7 @@ setInterval(()=>{if(K.opts&&!K.busy)ctlOptions(false)},5000);
 $("ctl-say-text").oninput=ctlCount;
 $("ctl-say-text").onkeydown=e=>{if(e.key==="Enter"&&!e.isComposing)$("ctl-say-go").click()};
 $("ctl-say-go").onclick=async()=>{const t=$("ctl-say-text").value.trim();if(!t)return;const res=await ctlSend("say",{text:t});if(res&&res.ok){$("ctl-say-text").value="";ctlCount()}};
-$("ctl-emote-go").onclick=()=>ctlSend("emote",{name:$("ctl-emote-name").value,force:$("ctl-force").checked});
+$("ctl-emote-go").onclick=()=>ctlSend("emote",{name:$("ctl-emote-name").value});
 for(const x of document.querySelectorAll("#ctl-camera button[data-cam]"))
   x.onclick=()=>{const max=K.opts?K.opts.max_steps:4,n=Math.min(max,Math.max(1,parseInt($("ctl-steps").value,10)||1));$("ctl-steps").value=n;ctlSend("camera",{action:x.dataset.cam,steps:n})};
 $("ctl-reset").onclick=()=>ctlSend("camera_reset",{});
@@ -530,78 +580,7 @@ c.addEventListener("click",e=>{if(!K.picking||!last)return;
   setTimeout(async()=>{const go=confirm(`点 (${x}, ${y}) 这个人？`);K.picking=false;ctlLock();
     if(go)await ctlSend("check_friend",{x,y});K.mark=null;if(last)draw(last)},30)});
 ctlOptions(true);
-// ---- brain ----
-const B={turns:new Map(),els:new Map(),version:0,boot:null,want:new Map(),acted:false};
-const REASONS={events:"新消息 / 事件",background:"周围的变化",heartbeat:"心跳",farewell:"退出前总结",outside:"轮外"};
-const ICONS={thinking:"💭 思考",text:"💬 说",tool:"🔧 调用",result:"↩ 返回"};
-const FOLD=10;
-function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
-function kilo(n){return n==null?"—":n>=1000?(n/1000).toFixed(1)+"k":String(n)}
-function hms(t){return t?new Date(t*1000).toTimeString().slice(0,8):"--:--:--"}
-// 点过的按用户的来；没点过的：进行中的和最新一轮展开（收尾时不自己收起），下一轮开始后收起
-function wantOpen(t,want,newestId){return want!==undefined?want:(t.end===null||t.id===newestId)}
-function acted(t){return t.end===null||!!t.error||t.steps.some(s=>s.kind==="tool"||s.kind==="text")}
-function toolCounts(t){const c={};for(const n of t.tools)c[n]=(c[n]||0)+1;
-  const s=Object.entries(c).map(([n,k])=>`${n}×${k}`).join(" ");return s||(t.steps.some(x=>x.kind==="text")?"（只说了话）":"（什么都没做）")}
-function tokens(r){if(!r)return "";const k=r.tokens||{};return `in ${kilo(k.input)} · out ${kilo(k.output)}`+(k.thinking?` · 思考 ${kilo(k.thinking)}`:"")}
-function stepTitle(s){return s.kind==="tool"?`${ICONS.tool} ${s.name}`:ICONS[s.kind]+(s.kind==="result"&&s.error?"（出错 / 被拒绝）":"")}
-function stepText(s){return s.kind==="tool"?JSON.stringify(s.input,null,2):(s.text||"")}
-function endText(t){const r=t.result,k=(r&&r.tokens)||{},parts=[];
-  if(r)parts.push(`${r.subtype??"—"} · ${r.num_turns??"—"} 步`);
-  if(t.seconds!=null)parts.push(`${t.seconds.toFixed(1)}s`);
-  if(r)parts.push(`输入 ${kilo(k.input)} · 输出 ${kilo(k.output)} · 缓存读 ${kilo(k.cache_read)} · 缓存写 ${kilo(k.cache_write)} · 思考 ${kilo(k.thinking)}`);
-  if(r&&r.cost!=null)parts.push(`参考 $${r.cost.toFixed(4)}`);
-  return (t.error?`失败：${t.error}\\n`:"")+parts.join(" · ")}
-function copyText(t){const lines=[`[${hms(t.start)}] ${REASONS[t.reason]||t.reason}`,"== 收到 ==",t.prompt];
-  for(const s of t.steps)lines.push(`== ${stepTitle(s)} ==`,stepText(s));
-  if(t.end!==null)lines.push("== 结果 ==",endText(t));return lines.join("\\n")}
-async function copy(t,btn){const text=copyText(t);
-  try{await navigator.clipboard.writeText(text)}catch(e){const a=el("textarea");a.value=text;document.body.append(a);a.select();document.execCommand("copy");a.remove()}
-  btn.textContent="已复制";setTimeout(()=>btn.textContent="复制这一轮",1200)}
-function block(kind,title,text,error){const d=el("div",`step k-${kind}${error?" error":""}`);d.append(el("h4","",title));
-  const lines=text.split("\\n"),pre=el("pre");d.append(pre);
-  if(lines.length<=FOLD){pre.textContent=text;return d}
-  let full=false;const btn=el("button","");
-  const show=()=>{pre.textContent=full?text:lines.slice(0,FOLD).join("\\n")+"\\n…";btn.textContent=full?"收起":`展开全部（${lines.length} 行）`};
-  btn.onclick=()=>{full=!full;show()};show();d.append(btn);return d}
-function newest(){return Math.max(0,...B.turns.keys())}
-function turnEl(t){const live=t.end===null,d=el("details",`turn${t.error?" err":""}${live?" live":""}`);
-  d.open=wantOpen(t,B.want.get(t.id),newest());
-  const sm=el("summary");sm.append(el("span","t",hms(t.start)),el("span","",REASONS[t.reason]||t.reason));
-  if(t.error)sm.append(el("span","",`失败：${t.error}`));
-  else if(live)sm.append(el("span","",`进行中…${t.tools.length?" "+toolCounts(t):""}`));
-  else sm.append(el("span","",toolCounts(t)),el("span","n",t.seconds!=null?`${t.seconds.toFixed(1)}s`:""),el("span","n",tokens(t.result)));
-  sm.onclick=()=>B.want.set(t.id,!d.open);d.append(sm);
-  const body=el("div","tbody");
-  if(t.reason!=="outside")body.append(block("prompt","收到",t.prompt||""));
-  for(const s of t.steps)body.append(block(s.kind,stepTitle(s),stepText(s),s.kind==="result"&&s.error));
-  if(!live)body.append(block("end","结果",endText(t),!!t.error));
-  const btn=el("button","","复制这一轮");btn.onclick=()=>copy(t,btn);body.append(btn);
-  d.append(body);d.hidden=B.acted&&!acted(t);return d}
-function brainState(st){const e=$("brain-state");let text=`${st.model??"?"} / ${st.effort??"?"} · 已醒 ${st.turns??0} 轮 · `,cls="";
-  if(st.offline){text+="已转备用回复（DeepSeek）";cls="bad"}
-  else if(st.retry_in!=null){text+=`连续失败 ${st.failures} 次，${Math.ceil(st.retry_in)} 秒后重试`;cls="warn"}
-  else text+="在线";e.textContent=text;e.className=cls}
-function brainRender(changed){const box=$("brain-turns");
-  for(const t of changed){const old=B.els.get(t.id),neu=turnEl(t);if(old)old.replaceWith(neu);B.els.set(t.id,neu)}
-  const top=newest();for(const [id,e] of B.els)if(!B.want.has(id))e.open=wantOpen(B.turns.get(id),undefined,top);
-  const ids=[...B.turns.keys()].sort((a,b)=>(a===0)-(b===0)||b-a);
-  ids.forEach((id,i)=>{const e=B.els.get(id);if(box.children[i]!==e)box.insertBefore(e,box.children[i]||null)})}
-function brainMerge(d){
-  if((B.boot&&d.boot!==B.boot)||d.version<B.version){  // 程序重启过：这次的增量不可信，清空后从头拉
-    B.turns.clear();for(const e of B.els.values())e.remove();B.els.clear();B.want.clear();B.boot=d.boot;B.version=0;return}
-  B.boot=d.boot;B.version=d.version;for(const t of d.turns)B.turns.set(t.id,t);
-  if(d.oldest!=null)for(const id of [...B.turns.keys()])if(id!==0&&id<d.oldest){B.turns.delete(id);B.els.get(id)?.remove();B.els.delete(id)}
-  brainState(d.state||{});brainRender(d.turns.filter(t=>B.turns.has(t.id)))}
-$("brain-acted").onchange=e=>{B.acted=e.target.checked;for(const [id,x] of B.els)x.hidden=B.acted&&!acted(B.turns.get(id))};
-async function brainLoop(){let seen=false;
-  while(true){
-    try{const r=await fetch(`brain?after=${B.version}`,{cache:"no-store"});
-      if(r.status===404&&!seen)return;if(!r.ok)throw new Error(r.status);
-      const d=await r.json();seen=true;$("brain").hidden=false;brainMerge(d);
-    }catch(e){if(seen){const s=$("brain-state");s.textContent="连不上（程序停了？）";s.className="bad"}await new Promise(r=>setTimeout(r,1000))}
-  }
-}
-brainLoop();
+// ---- brain ----（时间线在共用的 brain_trace.js 里）
+if(window.mountBrainTrace)mountBrainTrace($("brain"),"brain");
 </script></body></html>
 """

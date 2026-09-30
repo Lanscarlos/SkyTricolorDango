@@ -456,6 +456,10 @@ class FakeEmotes:
     def __init__(self):
         self.done = []
         self.cooling = False  # 动作限速中
+        self.last_any = float("-inf")  # 同 EmotePlayer：任何动作最近一次（反射的 min_gap 用）
+
+    def on_wheel(self):
+        return ["鞠躬"]
 
     def available(self, ignore_interval=False):
         return [] if self.cooling and not ignore_interval else ["鞠躬"]
@@ -467,15 +471,13 @@ class FakeEmotes:
         pass
 
 
-def test_emote_refused_while_holding_unless_forced(clock):
+def test_emote_not_blocked_while_holding(clock):
     emotes = FakeEmotes()
     b, _, _, _ = body(clock, live=True, emotes=emotes)
     with pytest.raises(ToolError, match="能做的：鞠躬"):
         b.emote("跳舞")
     b.holding = "懒洋洋大王"
-    with pytest.raises(ToolError, match="force=true"):
-        b.emote("鞠躬")
-    assert b.emote("鞠躬", force=True) == "做了「鞠躬」" and emotes.done == ["鞠躬"]
+    assert b.emote("鞠躬") == "做了「鞠躬」" and emotes.done == ["鞠躬"]  # 做动作不会松开牵手（用户实测）
 
 
 def test_look_rate_limited_and_lists_names(clock):
@@ -654,7 +656,7 @@ def test_owner_window_relaxes_emote(clock):
     with pytest.raises(ToolError, match="现在做不了"):
         b.emote("鞠躬")
     owner_says(b, reader)
-    assert b.emote("鞠躬") == "做了「鞠躬」（主人命令模式）"  # 限速中、牵着手都不拦
+    assert b.emote("鞠躬") == "做了「鞠躬」（主人命令模式）"  # 限速中也不拦
     assert "能做的动作：鞠躬" in b.status()
     emotes.cooling = False
     b.holding = None
@@ -707,8 +709,7 @@ def test_live_emote_and_camera_in_dry_run(clock):
     b, _, _, _ = body(clock, emotes=emotes, camera=cam)
     assert b.emote("鞠躬", live=True) == "做了「鞠躬」" and emotes.done == ["鞠躬"]
     b.holding = "懒洋洋大王"
-    with pytest.raises(ToolError, match="force=true"):
-        b.emote("鞠躬", live=True)
+    assert b.emote("鞠躬", live=True) == "做了「鞠躬」"  # 牵着手也照做
     assert b.camera_move("left", 2, live=True) == "镜头现在：左转了 1 步" and cam.moves == [("left", 2)]
     assert not b.camera_reset(live=True).startswith("dry-run") and cam.resets == 1
     b.blackout = True

@@ -170,10 +170,10 @@ def test_farewell_writes_summary_to_inbox(clock, tmp_path):
     store = MemoryStore(tmp_path)
     session = FakeSession(ok("在雨林和懒懒 玩了一会儿"))
     brain, _, _, _ = make(clock, session, store=store)
-    assert brain.farewell() is True
+    assert brain.farewell() == "在雨林和懒懒 玩了一会儿"
     assert session.sent == [SUMMARY_REQUEST] and "在雨林和懒懒 玩了一会儿" in store.inbox()
     brain.failing_since = 0.0
-    assert brain.farewell() is False  # 正在失败：不再发
+    assert brain.farewell() == ""  # 正在失败：不再发
 
 
 # ---- 交给可视化网页的记录（trace） ----
@@ -198,7 +198,7 @@ def test_failed_wake_reports_error(clock):
 def test_farewell_reports_to_trace(clock, tmp_path):
     trace = FakeTrace()
     brain, _, _, _ = make(clock, FakeSession(ok("玩了一会儿")), store=MemoryStore(tmp_path), trace=trace)
-    assert brain.farewell() is True
+    assert brain.farewell() == "玩了一会儿"
     assert trace.calls[0] == ("begin", "farewell", SUMMARY_REQUEST)
     assert trace.calls[-1][0] == "finish"
 
@@ -292,3 +292,106 @@ def test_background_wake_does_not_reset_idle_heartbeat(clock):
     events.put("stranger", "陌生人都走开了")
     brain.wake(clock() + 20.0, "background")
     assert brain._idle == 3  # 只是周围在变、大脑也没做事：心跳照样往后退
+
+
+def test_last_turn_records_start_and_end(clock):
+    class Slow(FakeSession):  # send 时时间走 5 秒
+        def send(self, text):
+            clock.advance(5.0)
+            return super().send(text)
+
+    brain, _, _, _ = make(clock, Slow(ok(), ClaudeError("挂了")))
+    assert brain.last_turn == (float("-inf"), float("-inf"))
+    start = clock()
+    brain.wake(start, "heartbeat")
+    assert brain.last_turn == (start, start + 5.0)
+    brain.wake(clock(), "heartbeat")  # 失败的一轮也记
+    assert brain.last_turn == (start + 5.0, start + 10.0)
+
+
+def test_last_turn_starts_before_draining_events(clock):
+    """审查 I1：拼消息（status 要等身体线程）期间身体读到的新消息不在这一轮里，这一轮的开始要早于它。"""
+    brain, _, tb, _ = make(clock, FakeSession())
+    status = tb.status
+
+    def slow_status():
+        clock.advance(2.0)  # body.call(status) 要等身体线程下一圈
+        return status()
+
+    tb.status = slow_status
+    start = clock()
+    brain.wake(start, "events")
+    assert brain.last_turn[0] == start
+
+
+def test_heartbeat_slower_when_sleepy(clock):
+    brain, _, _, near = make(clock, FakeSession(), nearby=["阿花"])
+    assert brain.heartbeat(clock()) == 45
+    brain.slow = lambda: True
+    assert brain.heartbeat(clock()) == 90
+    brain._idle = 5
+    assert brain.heartbeat(clock()) == 180  # 不越界
+
+
+# ---- 沙盒计划 Task 2：in_turn、模拟时钟 ----
+def test_in_turn_only_during_a_wake(clock):
+    seen = []
+
+    class Peek(FakeSession):
+        def send(self, text):
+            seen.append(brain.in_turn)
+            return super().send(text)
+
+    brain, *_ = make(clock, Peek(ok(), ClaudeError("坏了"), RuntimeError("进程起不来")))
+    assert brain.in_turn is False
+    brain.wake(clock(), "heartbeat")
+    assert seen == [True] and brain.in_turn is False
+    brain.wake(clock(), "heartbeat")  # ClaudeError：退避
+    assert seen == [True, True] and brain.in_turn is False
+    with pytest.raises(RuntimeError):
+        brain.wake(clock(), "heartbeat")  # 别的异常：run() 兜住
+    assert seen == [True, True, True] and brain.in_turn is False
+
+
+def test_sim_clock_skip_then_chat_wakes_within_debounce():  # Review Focus 1：大脑和事件队列同一个钟
+    from skydango.sandbox.clock import SimClock
+
+    sim = SimClock()
+    events = EventQueue(clock=sim.clock)
+    session = FakeSession()
+    chat = ChatConfig()
+    brain = Brain(BrainConfig(heartbeat=[1e9]), chat, session, FakeToolBox(), events, lambda now: [],
+                  clock=sim.clock, wall=sim.wall)
+    stop = threading.Event()
+    t = threading.Thread(target=brain.run, args=(stop,), daemon=True)
+    t.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not session.sent and time.monotonic() < deadline:  # 刚上线马上醒一次
+            time.sleep(0.02)
+        assert len(session.sent) == 1
+        sim.skip(3600)
+        started = time.monotonic()
+        events.put("chat", "小明：在吗")
+        while len(session.sent) < 2 and time.monotonic() - started < chat.debounce + 3:
+            time.sleep(0.02)
+        assert len(session.sent) == 2 and "在吗" in session.sent[1]
+        assert time.monotonic() - started < chat.debounce + 1.5
+    finally:
+        stop.set()
+        t.join(3)
+
+
+def test_limit_left_only_after_quota_failure(clock):  # 沙盒计划 Task 4：状态里"额度用完，约 N 分钟后再试"
+    brain, *_ = make(clock, FakeSession(ClaudeError("额度用完", limit=True), ClaudeError("坏了"), ok()))
+    assert brain.limit_left(clock()) == 0
+    brain.wake(clock(), "heartbeat")
+    assert brain.limit_left(clock()) == brain.cfg.limit_retry
+    clock.advance(100)
+    assert brain.limit_left(clock()) == brain.cfg.limit_retry - 100
+    clock.advance(brain.cfg.limit_retry)
+    brain.wake(clock(), "heartbeat")  # 普通失败：不算额度
+    assert brain.limit_left(clock()) == 0
+    clock.advance(100)
+    brain.wake(clock(), "heartbeat")
+    assert brain.limit_left(clock()) == 0 and brain.limited is False
