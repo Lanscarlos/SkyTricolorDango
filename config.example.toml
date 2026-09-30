@@ -252,6 +252,16 @@ min_gap = 4.0                  # 任何两个动作之间至少隔几秒
 # wave = "挥手"
 # bow = "鞠躬"
 
+[inner]
+# 内心层第 1 期（大脑模式）：给好友记关系卡（见过几次、上次什么时候、待了多久、说过几句）、每次上线记一行（日子），
+# 大脑在“来到身边”、status、系统提示词「日子」里看到。存在 <memory_dir>/inner/，只在 --live 时写。数字都是估的，没在真机验证
+enabled = true                 # false = 完全照旧
+visit_gap = 1800.0             # 离上次在场超过这么多秒再出现，算新的一次见面
+session_gap = 7200.0           # 第一次启用时从 history.jsonl 回填：相邻两轮隔这么多秒算两次上线
+long_gap = 7.0                 # 超过这么多天没见算“好久没见”
+save_every = 60.0              # live 时每隔多少秒存一次（被强杀时最多丢这么久的账）
+max_step = 5.0                 # 算在一起待了多久时，单圈最多算几秒
+
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉
 # 关面板用 ESC（用户确认）；面板样子还没核对：先用 python -m skydango friend-check X Y 试，确认后再打开

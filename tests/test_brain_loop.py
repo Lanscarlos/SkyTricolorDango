@@ -170,10 +170,10 @@ def test_farewell_writes_summary_to_inbox(clock, tmp_path):
     store = MemoryStore(tmp_path)
     session = FakeSession(ok("在雨林和懒懒 玩了一会儿"))
     brain, _, _, _ = make(clock, session, store=store)
-    assert brain.farewell() is True
+    assert brain.farewell() == "在雨林和懒懒 玩了一会儿"
     assert session.sent == [SUMMARY_REQUEST] and "在雨林和懒懒 玩了一会儿" in store.inbox()
     brain.failing_since = 0.0
-    assert brain.farewell() is False  # 正在失败：不再发
+    assert brain.farewell() == ""  # 正在失败：不再发
 
 
 # ---- 交给可视化网页的记录（trace） ----
@@ -198,7 +198,7 @@ def test_failed_wake_reports_error(clock):
 def test_farewell_reports_to_trace(clock, tmp_path):
     trace = FakeTrace()
     brain, _, _, _ = make(clock, FakeSession(ok("玩了一会儿")), store=MemoryStore(tmp_path), trace=trace)
-    assert brain.farewell() is True
+    assert brain.farewell() == "玩了一会儿"
     assert trace.calls[0] == ("begin", "farewell", SUMMARY_REQUEST)
     assert trace.calls[-1][0] == "finish"
 

@@ -72,3 +72,25 @@ def open_ledger(
         log.exception("内心账本：读上线记录出错")
     log.info("内心账本：%d 个好友的关系卡、以前上线 %d 次%s", len(cards), len(history), "" if persist else "（dry-run，不写盘）")
     return Ledger(cfg, friends, now, cards, history, store, persist, backfilled)
+
+
+def show_lines(cfg: InnerConfig, directory: str | Path, friends: list[str], now: float) -> list[str]:
+    """memory show：关系卡 + 最近 10 次上线。只读：不建目录、坏文件也不改名。"""
+    from .days import recent_days
+    from .ledger import card_line
+
+    store = InnerStore(directory)
+    cards, _, ok = store.load_people(quarantine=False)
+    lines = ["===== 关系卡 ====="]
+    if not ok:
+        lines.append("（people.json 读不了）")
+    else:
+        names = [n for n in friends if n in cards] + [n for n in cards if n not in friends]
+        for n in names:
+            label = n if n in friends else f"{n}（不在好友名单里）"
+            lines.append(card_line(label, cards[n], now))
+        if not names:
+            lines.append("（空）")
+    lines.append("===== 最近 10 次上线 =====")
+    lines += recent_days(store.days(), 10) or ["（空）"]
+    return lines

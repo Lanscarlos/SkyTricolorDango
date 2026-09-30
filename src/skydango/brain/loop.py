@@ -146,10 +146,10 @@ class Brain:
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1
         self._log(result)
 
-    def farewell(self) -> bool:
-        """退出前让它写一份这次的经过，记进 inbox.md（只在 live、没在失败时）。"""
+    def farewell(self) -> str:
+        """退出前让它写一份这次的经过，记进 inbox.md（只在 live、没在失败时）；返回写出的经过，没写出来是空字符串。"""
         if self.store is None or self.failing_since is not None:
-            return False
+            return ""
         self.toolbox.begin_turn()
         self._trace("begin", "farewell", SUMMARY_REQUEST)
         start = self.clock()
@@ -158,17 +158,17 @@ class Brain:
         except ClaudeError as exc:
             self._trace("fail", str(exc), self.clock() - start)
             log.warning("退出前写经过失败：%s", exc)
-            return False
+            return ""
         except Exception as exc:
             self._trace("fail", f"{type(exc).__name__}: {exc}", self.clock() - start)
             raise
         self._trace("finish", result, self.clock() - start)
         text = " ".join((result.get("result") or "").split())
         if not text:
-            return False
+            return ""
         self.store.add_memos([f"{format_date(self.wall())} 的经过：{text}"])
         log.info("这次的经过记进了 inbox.md（%d 字）", len(text))
-        return True
+        return text
 
     # ---- 可视化网页的大脑时间线 ----
     def trace_state(self) -> dict:
