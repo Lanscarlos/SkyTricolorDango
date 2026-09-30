@@ -60,6 +60,7 @@ class Attention:
         self._streak_dir: str | None = None  # 转不动（同 track）：同方向连按几下、开始时离中线多远
         self._streak_n = 0
         self._streak_err = 0.0
+        self._stuck: dict[str, float] = {}  # 转不动的人卡在哪（x）：他挪开之前不再朝他按，留在原地看着
         self._thought = Thought(None, None, False, False, False)
         self._wander_due: float | None = None  # 下一次随意看的时间（None = 这一圈再排）
         self._wander_left = 0  # 这次随意看还剩几下
@@ -190,13 +191,25 @@ class Attention:
             return None, True
         return Turn(self._wander_dir, self.track.nudge_max), True
 
+    def external_move(self, now: float) -> None:
+        """别人（大脑、track、look_person 换角度、面板开关）刚动过镜头：位置都变了，等画面停稳再按，转不动重新算。"""
+        self._streak_dir, self._streak_n = None, 0
+        self._stuck.clear()
+        self._last_press = max(self._last_press, now)
+
     def _turn(self, cur: Target) -> Turn | None:
         half = self.width / 2
         err = abs(cur.x - half)
         direction = "right" if cur.x > half else "left"  # 按右键画面里的东西往左移：目标在右边就按右
+        stuck = self._stuck.get(cur.key)
+        if stuck is not None:
+            if abs(cur.x - stuck) < 2 * self.track.stall_px:
+                return None  # 还卡在那：看着他就好，别一直往一边按
+            del self._stuck[cur.key]  # 他挪开了，再试试
         if (direction == self._streak_dir and self._streak_n >= self.track.stall_nudges
                 and self._streak_err - err < self.track.stall_px):
             self._bored[cur.key] = min(1.0, self._bored.get(cur.key, 0.0) + self.cfg.stuck_bored)
+            self._stuck[cur.key] = cur.x
             self._streak_dir, self._streak_n = None, 0
             log.debug("注意力转不动 %s，看腻一截", cur.who or "陌生人")
             return None
@@ -212,7 +225,8 @@ class Attention:
                 self._wander_due = None  # 看完这一眼，下一圈重新排
             self._last_press = now
             return
-        if turn.direction != self._streak_dir or now - self._last_press > 3 * self.track.settle:
+        if (turn.direction != self._streak_dir or now - self._last_press > 3 * self.track.settle
+                or self._streak_err - self._err >= self.track.stall_px):  # 换方向 / 隔太久 / 有进展：重新计数（同 track）
             self._streak_dir, self._streak_n, self._streak_err = turn.direction, 0, self._err
         self._streak_n += 1
         self._last_press = now

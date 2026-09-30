@@ -163,6 +163,8 @@ class Body:
         self._gestures_seen: deque[tuple[str, str, float]] = deque(maxlen=20)  # (谁, 动作, 时间)：回礼反射取走了也留一份
         self._held_pending: str | None = None  # 先看一眼：推迟了哪个面板等待
         self._hold_until = float("-inf")
+        self._camera_moved_at = float("-inf")  # 别人（大脑工具、技能、换角度、环顾）最近一次动镜头
+        self._attn_seen_move = float("-inf")  # 注意力已经知道的那次
         self._said_at = float("-inf")  # 团子上次说话（clock）：“刚说完好友就接话”算在跟团子说
         self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在回聊天（取走了聊天的那一轮还没结束）：聊天面板别因为安静关掉
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
@@ -564,6 +566,10 @@ class Body:
         line = self.attention.describe()
         return line if line.startswith("注意力：") else f"注意力：{mode}（{line}）"
 
+    def _self_motion_window(self) -> float:
+        """注意力按键后多久内冒出的"走近"算自己转出来的：走近判断看 approach_window 内的框高变化。"""
+        return max(self.cfg.track.settle, self.cfg.perception.approach_window)
+
     def _attention_on(self) -> bool:
         """注意力有没有在算：开着、聊天面板是 auto 模式（always 模式下它从不动，也不占随机数）。"""
         return self.cfg.attention.enabled and self.panel.auto
@@ -579,7 +585,7 @@ class Body:
                 out.append(AttnTarget(key, "talk_friend" if t.friend else "talk_stranger", t.x, t.name, t.start))
         if hasattr(env, "recent_approaches"):
             for who, cx, t in env.recent_approaches(now):
-                if 0 <= t - self._attention_pressed_at < self.cfg.track.settle:
+                if 0 <= t - self._attention_pressed_at < self._self_motion_window():
                     continue  # 自己转镜头转出来的
                 stranger = who == "陌生人"
                 key = f"a:{round(cx / 50) * 50}" if stranger else f"n:{who}"
@@ -606,6 +612,14 @@ class Body:
             return "聊天面板不是 auto 模式"
         if self.reader.panel_closed_since is None:
             return "聊天面板开着"
+        if now - self._camera_moved_at < self.cfg.track.settle:
+            return "镜头刚被转过"
+        start, end = self.brain_turn()
+        if end < start and self._camera_moved_at >= start:  # 大脑这一轮动过镜头（先 camera 再 look）：这一轮别转回去
+            return "大脑在用镜头"
+        closed = self.reader.panel_closed_since
+        if closed is not None and 0 <= now - closed < self.cfg.track.settle:  # 刚关面板：画面整体横移过
+            return "聊天面板刚关上"
         holding_window = self._held_pending is not None and now < self._hold_until
         if not ignore_quiet and not holding_window and not self.panel.quiet(now, self.cfg.track.settle + 1):
             return "聊天面板马上要开"
@@ -654,13 +668,18 @@ class Body:
             return
         a = self.attention
         a.width = self.frame_width
+        if self.skills.active is not None:  # 技能（track）在动镜头
+            self._camera_moved_at = now
+        if self._camera_moved_at > self._attn_seen_move:
+            self._attn_seen_move = self._camera_moved_at
+            a.external_move(self._camera_moved_at)
         th = a.think(self._attention_targets(now), now, self.effects().wander)
         self._attention_look_first(th, now)
         self._attention_why = self._attention_blocked(now, check_ime=th.action is not None)
         if th.action is None or self._attention_why:
             return
         try:
-            self.camera.nudge(th.action.direction, th.action.seconds)
+            self.camera.nudge(th.action.direction, th.action.seconds, record=False)  # 原位挪到这里：不进复位账
         except Exception:
             log.exception("注意力转镜头出错")
             return
@@ -852,7 +871,7 @@ class Body:
             self.panel.bubble_seen(now)  # 好友头顶冒出"正在输入"：开着面板等他发出来
         if hasattr(self.env, "pop_approaches"):  # 有人朝团子走过来（眼睛不因此自动看，省额度）
             for who in self.env.pop_approaches():
-                if now - self._attention_pressed_at < self.cfg.track.settle:
+                if now - self._attention_pressed_at < self._self_motion_window():
                     continue  # 注意力刚转过镜头：框变大是自己转出来的，不算走近（也别把面板叫开）
                 self.panel.trigger("approach", now)
                 if who == self.holding:
@@ -1176,6 +1195,7 @@ class Body:
         finally:
             if pressed:
                 self._ref_thumb = None  # 自己转的，不算画面大变
+                self._camera_moved_at = self.clock()
                 self._forget_self()
         if reason in ("budget", "lost") and planner.enlarging:  # 已经露出来过（调大小时用完预算 / 拉近把人推没了）：用露出来那一帧
             reason = "revealed"
@@ -1214,6 +1234,7 @@ class Body:
                 frames = self.camera.around(self.device.screenshot)
         finally:
             self._ref_thumb = None  # 自己转的镜头，不算画面大变
+            self._camera_moved_at = self.clock()
         self.last_frame = frames[0]
         return frames
 
@@ -1233,6 +1254,7 @@ class Body:
                 result = self.env.sweep([(0.0, shot.before), *shot.frames], spin)
         finally:
             self._ref_thumb = None  # 自己转的镜头，不算画面大变
+            self._camera_moved_at = self.clock()
         self.last_frame = shot.after
         if not shot.panel_reopened:
             self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
@@ -1328,6 +1350,9 @@ class Body:
 
     def _peek_now(self) -> None:
         """聊天面板关着（闲着）时大脑要看聊天：马上打开看一眼，读到的照常变成事件。冷却中 / 黑屏打不开就算了。"""
+        if self._held_pending is not None:  # 空闲注意力在"先看一眼"：大脑要看聊天，别推迟了
+            self.panel.hold_off(None, self.clock())
+            self._held_pending = None
         self.panel.trigger("chat_log", self.clock())
         wait = self.panel.cfg.open_timeout + 1.0
         for _ in range(math.ceil(wait / max(self.cfg.vision.poll_interval, 0.05)) + 1):
@@ -1649,6 +1674,7 @@ class Body:
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        self._camera_moved_at = self.clock()
         self._forget_self()
         return "镜头现在：" + result + (OWNER_NOTE if owner and steps > CAMERA_MAX_STEPS else "") + stopped
 
@@ -1726,6 +1752,7 @@ class Body:
         with self._held("camera"):
             result = self.camera.reset()
         self._ref_thumb = None
+        self._camera_moved_at = self.clock()
         self._forget_self()
         return result + stopped
 

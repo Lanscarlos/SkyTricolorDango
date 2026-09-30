@@ -183,7 +183,7 @@ class PerceptionWatcher:
         self._frame_w = 1920  # 最近一帧的宽度（算在画面哪边用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
         self._approach_at: dict[str, float] = {}
-        self._approach_log: deque[tuple[str, float, float]] = deque()  # (谁, 框中心 x, 时间)：空闲注意力用，不取走
+        self._approach_log: deque[tuple[str, int, float]] = deque()  # (谁, 轨迹 id, 时间)：空闲注意力用，不取走
         self._typing: deque[tuple] = deque()  # (时间, 轨迹 id, 是好友, 没点火, 框中心 x, 框高, 画面宽, 画面高)
         self._strangers: deque[tuple[float, int]] = deque()  # (时间, 这一帧有几个陌生人)
         self._panel_visible = False
@@ -786,7 +786,7 @@ class PerceptionWatcher:
                 log.info("%s 朝团子走过来了", who)
                 with self._lock:
                     self._approaches.append(who)
-                    self._approach_log.append((who, hist[-1][2], now))
+                    self._approach_log.append((who, p.id, now))
                     while self._approach_log and now - self._approach_log[0][2] > 30.0:
                         self._approach_log.popleft()
 
@@ -833,9 +833,12 @@ class PerceptionWatcher:
         return out
 
     def recent_approaches(self, now: float, within: float = 5.0) -> list[tuple[str, float, float]]:
-        """within 秒内朝团子走过来的人：(谁, 框中心 x, 时间)；谁同 pop_approaches（好友名 / STRANGER）。不取走。"""
+        """within 秒内朝团子走过来的人：(谁, 现在的框中心 x, 时间)；谁同 pop_approaches（好友名 / STRANGER）。不取走。
+        x 按那条轨迹现在的位置取（人会接着走、镜头会转）；轨迹 1 秒没更新（走没了）就不报。"""
+        tracks = {t.id: t for t in list(self.last_tracks) if now - t.last <= 1.0}
         with self._lock:
-            return [a for a in self._approach_log if now - a[2] <= within]
+            log_ = [a for a in self._approach_log if now - a[2] <= within]
+        return [(who, tracks[tid].box.x + tracks[tid].box.w / 2, t) for who, tid, t in log_ if tid in tracks]
 
     def pop_gestures(self) -> list[tuple[str, str]]:
         """取走"谁对团子做了什么动作"，身体变成 gesture 事件。"""

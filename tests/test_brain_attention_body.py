@@ -45,7 +45,7 @@ class NudgeCam:
         self.nudges = []
         self.resets = 0
 
-    def nudge(self, direction, seconds):
+    def nudge(self, direction, seconds, record=True):
         self.nudges.append((direction, seconds))
         return seconds
 
@@ -255,3 +255,69 @@ def test_set_attention_rejects_unknown_mode(clock):
     b, *_ = attn_body(clock)
     with pytest.raises(ToolError, match="随意 / 好奇 / 专心 / 别动"):
         b.set_attention("发呆")
+
+
+# ---- 整分支评审修正 ----
+
+def test_chat_log_during_look_first_opens_panel(clock):  # 评审 3
+    b, dev, reader, events, env, cam = attn_body(clock)
+    friend_talking(env, clock())
+    b.step()
+    assert b.panel.pending == "bubble"  # 在先看一眼（推迟中）
+    b.chat_log()
+    assert reader.state.open
+
+
+def test_attention_presses_do_not_pile_up_in_reset_books(clock):  # 评审 4：注意力转完，原位挪到这里
+    from conftest import FakeDevice
+    from skydango.brain.camera import Camera
+
+    b, dev, reader, events, env, cam = attn_body(clock)
+    b.camera = real = Camera(dev, 0.25, None, sleep=lambda s: None)
+    friend_talking(env, clock())
+    for _ in range(4):
+        b._watch_attention(clock())
+        clock.advance(0.7)
+    assert [c for c in dev.calls if c[0] == "hw_hold"]
+    assert not any(real.turns.values()) and real.ref is None and real.at_home()
+
+
+def test_no_press_right_after_brain_moved_camera(clock):  # 评审 5
+    b, dev, reader, events, env, cam = attn_body(clock)
+    cam.move = lambda action, steps, max_steps=4: "左转了 1 步"
+    b.camera_move("left", 1, live=True)
+    friend_talking(env, clock())
+    b._watch_attention(clock())
+    assert cam.nudges == []
+    clock.advance(0.7)
+    b._watch_attention(clock())
+    assert cam.nudges
+
+
+def test_no_press_during_brain_turn_that_used_camera(clock):  # 评审 5：大脑先 camera 再 look 的这一轮里别转回去
+    b, dev, reader, events, env, cam = attn_body(clock)
+    cam.move = lambda action, steps, max_steps=4: "左转了 1 步"
+    start = clock()
+    b.brain_turn = lambda: (start, start - 10)  # 这一轮还没结束
+    b.camera_move("left", 1, live=True)
+    friend_talking(env, clock())
+    clock.advance(3.0)
+    b._watch_attention(clock())
+    assert cam.nudges == []
+    b.brain_turn = lambda: (start, clock())  # 这一轮结束了
+    clock.advance(0.1)
+    b._watch_attention(clock())
+    assert cam.nudges
+
+
+def test_self_caused_approach_window_covers_approach_window(clock):  # 上调的 Minor：走近判断看 1.5 s，自己转出来的也要按这么久算
+    b, dev, reader, events, env, cam = attn_body(clock)
+    friend_talking(env, clock())
+    b.step()
+    assert cam.nudges
+    env.talkers_list = []
+    clock.advance(1.0)  # 过了 settle（0.6），但在 approach_window（1.5）里
+    env.approaches = ["小红"]
+    env.approach_list = [("小红", 1500.0, clock())]
+    b.step()
+    assert "approach" not in [e.kind for e in events.drain()]

@@ -1515,3 +1515,19 @@ def test_recent_approaches_include_strangers():
 
 def test_bubble_gap_default():
     assert PerceptionConfig().bubble_gap == 1.0
+
+
+def test_recent_approaches_follow_current_position():  # 整分支评审 2：走近的人之后挪了 / 不见了
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    walk_up(w, det, 0.0)
+    for k in range(1, 6):  # 走到后接着往左挪（轨迹接得上）
+        x = 1000 - 20 * k
+        det.frames = [[Detection("player", Rect(x, 358, 90, 262), 0.9), tag(x - 10, 110, y=288)]]
+        w.process(frame(), 1.4 + 0.1 * k, panel_visible=False)
+    (who, cx, t), = w.recent_approaches(1.9)
+    assert cx == pytest.approx(945)  # 现在的位置
+    det.frames = [[]]
+    for i in range(30):  # 人走没了（轨迹过期）
+        w.process(frame(), 1.9 + i * 0.1, panel_visible=False)
+    assert w.recent_approaches(4.9) == []

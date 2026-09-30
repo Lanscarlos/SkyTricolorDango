@@ -91,9 +91,9 @@ def test_switch_needs_margin():
     assert th.current.key == "t:1"  # 0.8 没比 0.7 高出 0.2
 
 
-def test_stall_adds_boredom_and_moves_on():
+def test_stall_adds_boredom_and_moves_on():  # 转不动加一截看腻：别处有够意思的（走近 0.7 > 0.5 + 0.2）就换走
     a = attn()
-    targets = [tgt("t:1", "talk_friend", 1600, "小明", 0.0), tgt("t:2", "friend_present", 300, "小红")]
+    targets = [tgt("t:1", "talk_friend", 1600, "小明", 0.0), tgt("t:2", "approach", 300, "小红", 0.0)]
     t, keys = 0.0, []
     for _ in range(12):  # 偏差一直没变：转不动，每连按 stall_nudges 下加一截看腻，腻了就换
         th = a.think(targets, t)
@@ -277,3 +277,41 @@ def test_describe_with_mode_and_focus():
     assert a.describe() == "注意力：专心，关注小明；在看：小明（站在那）"
     a.set_mode("随意", "")
     assert a.focus is None and a.describe() == "在看：小明（站在那）"
+
+
+# ---- 整分支评审修正 ----
+
+def test_stall_after_progress_is_detected():  # 评审 1：先有进展再卡住，也要判出转不动
+    a = attn()
+    presses, t = 0, 0.0
+    for i in range(40):
+        x = 1600 - 50 * min(i, 2)  # 前两下有进展（1600 → 1500），之后卡在 1500
+        th = a.think([tgt("t:1", "talk_friend", x, "小明", 0.0)], t)
+        if th.action is not None:
+            a.pressed(th.action, t)
+            presses += 1
+        t += 0.7
+    assert presses <= 8  # 卡住后很快不再朝他按
+
+
+def test_stuck_target_waits_until_it_moves():  # 评审 1：卡住的人看腻恢复后也别接着按，等他挪了位置再说
+    a = attn()
+    t, presses_before = 0.0, 0
+    for _ in range(60):  # 42 秒，好友一直卡在 1500 说话（新气泡不断）
+        th = a.think([tgt("t:1", "talk_friend", 1500, "小明", t)], t)
+        if th.action is not None:
+            a.pressed(th.action, t)
+            presses_before += 1
+        t += 0.7
+    assert presses_before <= 4
+    th = a.think([tgt("t:1", "talk_friend", 1750, "小明", t)], t)  # 他挪开了
+    assert th.action is not None
+
+
+def test_external_move_waits_settle_and_resets_streak():  # 评审 5：别人刚转过镜头
+    a = attn()
+    targets = [tgt("t:1", "talk_friend", 1600, "小明", 0.0)]
+    a.think(targets, 0.0)
+    a.external_move(1.0)
+    assert a.think(targets, 1.2).action is None
+    assert a.think(targets, 1.7).action is not None
