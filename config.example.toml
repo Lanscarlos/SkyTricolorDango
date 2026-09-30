@@ -234,6 +234,31 @@ min_gap = 60.0                 # 两句主动的话之间至少隔几秒
 cold_after = 3                 # 连续几句主动的话没人接就暂停主动，等有好友说话
 self_names = ["团子", "三彩"]   # 聊天里出现这些字算“叫了你”
 
+[attention]
+# 空闲注意力（东张西望，spec docs/superpowers/specs/2026-09-30-idle-attention-design.md）：闲着时按兴趣小步转镜头
+# 看说话 / 走近 / 对团子做动作的人，没什么可看就随意看看；只在 [panel] mode = "auto"、聊天面板关着时动。数字都是估的
+enabled = true
+talk_friend = 1.0               # 基础兴趣：好友在说话
+act_on_me = 0.9                 # 有人对团子做动作
+approach = 0.7                  # 有人朝团子走过来
+talk_stranger = 0.4             # 陌生人在说话
+friend_present = 0.2            # 画面里站着的好友
+focus_interest = 1.0            # 大脑 attention(focus=…) 关注的人
+min_interest = 0.15             # 低于它不算目标
+bore_rate = 0.2                 # 在画面中间时每秒涨的看腻（0~1）
+recover_rate = 0.05             # 不在中间时每秒消的看腻
+stuck_bored = 0.5               # 转不动时加的看腻
+center_band = 0.4               # 画面中间多宽算"已经在看"
+gain = 0.1                      # 按键秒数 = gain × 偏差（半屏宽算 1），夹到 [track] nudge_min~nudge_max
+switch_margin = 0.2             # 新目标要高出这么多才换
+switch_hold = 2.0               # 刚换过目标这么多秒内不换
+look_first = 2.0                # 冒气泡 / 有人走近时先看这么久再让聊天面板开
+wander_min = 8.0                # 没什么可看时，隔 wander_min~wander_max 秒随意看一眼（再乘心情精力 / 模式的倍数）
+wander_max = 20.0
+wander_presses = [2, 4]         # 随意看一次连按几下
+wander_same_side = 2            # 往同一边连着随意看最多几次
+max_step = 1.0                  # 每圈时间差上限（沙盒模拟时钟会跳时间）
+
 [reflex]
 # 身体反射（大脑模式）：有人跟团子说话马上冒“正在输入”气泡、别人挥手回礼、闲着做小动作；只用轮盘上已有的动作。数字都是估的，没在真机验证
 enabled = true                 # false = 完全照旧

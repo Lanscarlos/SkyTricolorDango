@@ -530,6 +530,34 @@ class ProactiveConfig:
 
 
 @dataclass
+class AttentionConfig:
+    """空闲注意力（东张西望，spec 2026-09-30-idle-attention）：闲着时按兴趣小步转镜头看说话 / 走近 / 对团子做事的人，
+    没什么可看就随意看看；只在聊天面板 auto 模式、面板关着时动。数字都是估的，真机调。按键长短、settle、转不动沿用 [track]。"""
+
+    enabled: bool = True
+    talk_friend: float = 1.0  # 基础兴趣：好友在说话（头顶气泡）
+    act_on_me: float = 0.9  # 有人对团子做动作（挥手 / 鞠躬）
+    approach: float = 0.7  # 有人朝团子走过来
+    talk_stranger: float = 0.4  # 陌生人在说话
+    friend_present: float = 0.2  # 画面里站着的好友
+    focus_interest: float = 1.0  # 大脑 attention(focus=…) 关注的人
+    min_interest: float = 0.15  # 实际兴趣低于它不算目标
+    bore_rate: float = 0.2  # 目标在中间带里时每秒涨的看腻（0~1）
+    recover_rate: float = 0.05  # 不在中间带时每秒消的看腻
+    stuck_bored: float = 0.5  # 转不动时加的看腻
+    center_band: float = 0.4  # 画面中间多宽算"已经在看"（屏宽的比例）
+    gain: float = 0.1  # 按键秒数 = gain × 偏差（半屏宽算 1），夹到 [track] nudge_min~nudge_max
+    switch_margin: float = 0.2  # 新目标的实际兴趣要比当前高出这么多才换
+    switch_hold: float = 2.0  # 刚换过目标这么多秒内不再换
+    look_first: float = 2.0  # 冒气泡 / 有人走近时先看这么久再让聊天面板开
+    wander_min: float = 8.0  # 没什么可看时，隔 wander_min~wander_max 秒（再乘心情精力 / 模式的倍数）随意看一眼
+    wander_max: float = 20.0
+    wander_presses: list[int] = field(default_factory=lambda: [2, 4])  # 随意看一次连按几下
+    wander_same_side: int = 2  # 往同一边连着随意看最多几次
+    max_step: float = 1.0  # 每圈时间差上限（沙盒模拟时钟会一下跳几小时）
+
+
+@dataclass
 class ReflexConfig:
     """身体反射（见 docs/superpowers/specs/2026-09-30-body-reflex-design.md）：有人跟团子说话马上冒输入气泡、回礼、闲着做小动作。数字都是估的"""
 
@@ -637,6 +665,7 @@ class Config:
     brain: BrainConfig = field(default_factory=BrainConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     reflex: ReflexConfig = field(default_factory=ReflexConfig)
+    attention: AttentionConfig = field(default_factory=AttentionConfig)
     inner: InnerConfig = field(default_factory=InnerConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
