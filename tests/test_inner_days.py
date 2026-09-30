@@ -70,3 +70,10 @@ def test_ledger_days_prompt_uses_history_and_cards():
                  history=[Session(start=NOW - 7200, end=NOW - 3600, ended="normal")])
     text = led.days_prompt(NOW)
     assert "这是你第 2 次上线" in text and "很久没见的好友：阿花（10 天前）" in text
+
+
+def test_week_counts_calendar_days():  # 终审 #5：滚动窗口 + 日历日期会数出 8 天
+    wed_10 = time.mktime((2026, 9, 30, 10, 0, 0, 0, 0, -1))
+    history = [Session(start=wed_10 - 7 * 86400 + 3600, end=wed_10 - 7 * 86400 + 7200, ended="normal")]
+    history += [Session(start=wed_10 - d * 86400, end=wed_10 - d * 86400 + 60, ended="normal") for d in range(6, 0, -1)]
+    assert "最近 7 天上线了 7 天" in days_prompt(history, {}, FRIENDS, wed_10, 7)

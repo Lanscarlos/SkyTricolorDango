@@ -112,7 +112,7 @@ class Body:
         self.notes = notes
         self.run_dir = run
         self.ledger = ledger
-        self._arrive_notes: dict[str, str] = {}  # 这一圈算作新见面的好友 → 交情说明（arrive 事件用）
+        self._arrive_notes: dict[str, str] = {}  # 算作新见面、还没发 arrive 的好友 → 交情说明（跟踪中攒着，发 arrive / leave 时取走）
         self.clock = clock
         self.sleep = sleep
         self.wall = wall
@@ -333,7 +333,12 @@ class Body:
             self.chat.append((self.wall(), m.speaker, m.text))
         if self.ledger is not None:
             for m in fresh:
-                self._ledger_call("heard", m.speaker, m.text, self._addressed(m, now), self.wall())
+                try:
+                    to_me = self._addressed(m, now)
+                except Exception:  # 好友名单读不了之类：账少记一点，这批聊天照样变成事件
+                    log.exception("判断是不是在跟团子说话出错")
+                    to_me = False
+                self._ledger_call("heard", m.speaker, m.text, to_me, self.wall())
         self.heard = (self.heard + fresh)[-20:]
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
@@ -601,7 +606,8 @@ class Body:
         self._ref_thumb, self._ref_at = t, now
 
     def _watch_people(self, now: float) -> None:
-        self._arrive_notes = self._ledger_call("present", self.env.nearby(now), self.wall(), default={}) or {}  # 跟踪中也照记
+        near = self.env.nearby(now)  # 只取一次：账本和人来人走看的是同一份名单
+        self._arrive_notes.update(self._ledger_call("present", near, self.wall(), default={}) or {})  # 跟踪中也照记
         if getattr(self.skills.active, "quiet_people", False):
             # 跟踪中转镜头：人进出画面是自己转的，不是人来了 / 走了。不发人来人走的事件、不更新比较基准，技能结束后下一圈照常比较。
             # 转镜头时框变大变小会被当成"走过来"、动作也认不准：攒着的丢掉，免得跟踪结束后冒出过时的事件。
@@ -612,22 +618,23 @@ class Body:
             if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
                 self.panel.bubble_seen(now)
         else:
-            self._watch_comings(now)
+            self._watch_comings(now, near)
         self._watch_requests(now)
 
-    def _watch_comings(self, now: float) -> None:
+    def _watch_comings(self, now: float, near_list: list[str] | None = None) -> None:
         """人来人走：身边有谁、陌生人、正在输入的气泡、有人走过来、对团子做动作。"""
-        near = set(self.env.nearby(now))
+        near = set(self.env.nearby(now) if near_list is None else near_list)
         if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
             self.panel.trigger("arrive", now)
         for name in sorted(near - self._nearby):
             if now - self._left_at.get(name, float("-inf")) <= self.cfg.brain.rejoin:  # 走出画面又回来：不用再打招呼
                 self.events.put("return", f"{name} 回来了", who=name)
             else:
-                self.events.put("arrive", f"{name} 来到身边{self._arrive_notes.get(name, '')}", who=name)
+                self.events.put("arrive", f"{name} 来到身边{self._arrive_notes.pop(name, '')}", who=name)
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
             self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
+            self._arrive_notes.pop(name, None)
             self._left_at[name] = now
             if name == self.holding:  # 人都走开了，肯定没牵着了
                 self.events.put("released", f"（推测）和 {name} 分开了")

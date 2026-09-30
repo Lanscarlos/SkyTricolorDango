@@ -35,8 +35,9 @@ def open_ledger(
     try:
         crash = store.take_current() if persist else store.peek_current()
         if crash is not None:
-            crash.end = crash.saved or crash.start
-            crash.ended = "crash"
+            if not (crash.ended == "normal" and crash.end is not None):  # 落过账（checkpoint）的算正常下线，只是没写经过
+                crash.end = crash.saved or crash.start
+                crash.ended = "crash"
             if persist:
                 store.append_day(crash)
     except Exception:
@@ -47,7 +48,7 @@ def open_ledger(
     filled: list[Session] = []
     try:
         if store.people_exists():
-            cards, backfilled, _ = store.load_people()  # 读不了：改名放一边、空卡，不回填（免得错数据再算一遍）
+            cards, backfilled, _ = store.load_people(quarantine=persist)  # 读不了：改名放一边（dry-run 不动）、空卡，不回填
         else:
             cards, filled = backfill(turns(), friends(), cfg.session_gap)
             backfilled = now

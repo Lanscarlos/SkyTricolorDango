@@ -116,3 +116,44 @@ def test_status_falls_back_when_status_line_breaks(clock, tmp_path):
 def test_no_ledger_unchanged(clock):
     b, *_ = body(clock, env=FakeEnv())
     assert b.ledger is None and "身边的好友：没看到" in b.status()
+
+
+def test_dry_run_bad_people_json_untouched(tmp_path):  # 终审 #1
+    (tmp_path / "people.json").write_text("{坏", encoding="utf-8")
+    led = open_ledger(Config().inner, tmp_path, lambda: ["懒洋洋大王"], lambda: [], persist=False, now=WALL0)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["people.json"] and led.cards == {}
+
+
+def test_checkpoint_then_killed_is_not_crash(tmp_path):  # 终审 #2：farewell 途中被强杀
+    led = Ledger(Config().inner, lambda: FRIENDS, WALL0, store=InnerStore(tmp_path), persist=True)
+    led.present(["懒洋洋大王"], WALL0 + 10)
+    led.checkpoint(WALL0 + 20)  # 身体收尾之后、farewell 之前
+    again = open_ledger(Config().inner, tmp_path, lambda: FRIENDS, lambda: [], persist=True, now=WALL0 + 999)
+    assert [(s.ended, s.end) for s in again.history] == [("normal", WALL0 + 20)]
+    assert again.card("懒洋洋大王").visits == 1
+
+
+def test_friend_names_error_does_not_drop_chat(clock, tmp_path):  # 终审 #3
+    b, env, reader, events, _ = make(clock, tmp_path)
+
+    def broken():
+        raise UnicodeDecodeError("gbk", b"", 0, 1, "坏")
+
+    b.friend_names = broken
+    reader.batches = [[msg("在吗")]]
+    try:
+        b.step()
+    except Exception:
+        pass
+    assert [e.text for e in events.drain() if e.kind == "chat"] == ["聊天  懒洋洋大王：「在吗」"]
+
+
+def test_note_kept_until_arrive_after_track(clock, tmp_path):  # 终审 #4
+    b, env, _, events, _ = make(clock, tmp_path)
+    b.skills.active = SimpleNamespace(quiet_people=True, goal="盯着")
+    env.near = ["懒洋洋大王"]
+    b._watch_people(clock())
+    b.skills.active = None
+    clock.advance(1)
+    b._watch_people(clock())
+    assert [e.text for e in events.drain() if e.kind == "arrive"] == ["懒洋洋大王 来到身边（第一次在身边见到）"]

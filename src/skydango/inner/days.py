@@ -6,9 +6,8 @@ import time
 from collections.abc import Sequence
 
 from ..chat.memory import format_date
-from .ledger import Card, Session, ago, day_of
+from .ledger import Card, Session, ago, day_of, days_between
 
-WEEK = 7 * 86400
 MAX_LONG = 3  # “很久没见的好友”最多列几个
 SUMMARY_CHARS = 40
 ENDED = {"normal": "正常下线", "crash": "意外断了", "backfill": "回填"}
@@ -25,7 +24,7 @@ def days_prompt(history: list[Session], cards: dict[str, Card], friends: Sequenc
         nth_today = sum(1 for s in history if day_of(s.start) == today) + 1
         end = last.end if last.end is not None else (last.saved or last.start)
         crash = "（意外断了）" if last.ended == "crash" else ""
-        week = {day_of(s.start) for s in history if s.start >= now - WEEK} | {today}
+        week = {day_of(s.start) for s in history if days_between(day_of(s.start), today) < 7} | {today}  # 按日历日期数
         which = "今天第一次" if nth_today == 1 else f"今天第 {nth_today} 次"
         lines.append(
             f"{head}这是你第 {len(history) + 1} 次上线，{which}；上次下线是 {ago(now - end)}前{crash}。最近 7 天上线了 {len(week)} 天。"

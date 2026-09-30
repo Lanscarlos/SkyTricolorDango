@@ -210,6 +210,17 @@ class Ledger:
             self.store.write_current(self.session)
         return True
 
+    def checkpoint(self, now: float) -> None:
+        """身体收尾之后、让大脑写经过之前先落一次账：写经过时被强杀，下次启动也算正常下线（只丢经过）。"""
+        if not self.persist or self.store is None or self._closed:
+            return
+        with self._lock:
+            self.session.end = now
+            self.session.ended = "normal"
+            self.session.saved = now
+            self.store.write_people(self.cards, self.backfilled)
+            self.store.write_current(self.session)
+
     def close(self, summary: str, now: float) -> None:
         """退出：这一次追加进 days.jsonl、写 people.json、删 current.json。只生效一次；不写盘时什么都不做。"""
         if self._closed:

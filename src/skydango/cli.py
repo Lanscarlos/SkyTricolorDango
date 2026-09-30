@@ -1582,6 +1582,11 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             panels.close()
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
         brain_thread.join(timeout=5)
+        if ledger is not None:
+            try:
+                ledger.checkpoint(time.time())  # 写经过可能很慢、被强杀：先落账，别被当成意外断了
+            except Exception:
+                log.exception("内心账本落账出错")
         summary = ""
         if live_store is not None and not brain_thread.is_alive():
             try:
