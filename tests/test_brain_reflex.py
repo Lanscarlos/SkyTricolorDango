@@ -85,3 +85,18 @@ def test_example_config_has_reflex():
     cfg = load_config(ROOT / "config.example.toml")
     assert cfg.reflex.enabled is True and cfg.reflex.bubble is True and cfg.reflex.idle == []
     assert Config().reflex.min_gap == 4.0 and Config().reflex.bubble_max == 45.0
+
+
+def test_addressed_scale():
+    cfg = ReflexConfig(addressed=["点头"])
+    r = Reflexes(cfg, Rng(0.5), 0.0)
+    assert r.pick_addressed(0.0, ["点头"]) is None  # 0.5 ≥ 0.3
+    assert r.pick_addressed(0.0, ["点头"], scale=2) == "点头"  # 0.5 < 0.6
+    assert Reflexes(cfg, Rng(0.0), 0.0).pick_addressed(0.0, ["点头"], scale=0) is None
+
+
+def test_idle_scale():
+    cfg = ReflexConfig(idle=["坐下"], idle_min=100, idle_max=100)
+    r = Reflexes(cfg, Rng(0.5), 0.0)
+    r.stir(0.0, scale=0.5)
+    assert r.pick_idle(49.0, ["坐下"]) is None and r.pick_idle(50.0, ["坐下"]) == "坐下"

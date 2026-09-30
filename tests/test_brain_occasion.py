@@ -102,3 +102,12 @@ def test_quota_wait_when_level_drops():
     o = occ(spoken=[said(500), said(400), said(300)], chat=[line(450, "阿花")])  # 中间有人接，不算冷场
     assert o.level == "quiet"
     assert o.blocked == "最近 10 分钟已经主动说了 3 句，200 秒后才能再主动开口"
+
+
+def test_quota_scale():
+    quiet = assess(CFG, NOW, ["阿花"], 0, [], [said(300)], FRIEND, quota_scale=0.5)
+    assert quiet.left == 0 and quiet.blocked  # 安静 2 × 0.5 = 1，已经主动说过 1 句
+    assert assess(CFG, NOW, ["阿花"], 0, [], [], FRIEND, quota_scale=0.25).left == 1  # 至少 1
+    busy_chat = [line(10 * i + 5, "阿花") for i in range(5)]
+    assert assess(CFG, NOW, ["阿花"], 0, busy_chat, [], FRIEND, quota_scale=1.5).left == 6
+    assert assess(CFG, NOW, ["阿花"], 0, busy_chat, [], FRIEND).left == 4

@@ -322,3 +322,12 @@ def test_last_turn_starts_before_draining_events(clock):
     start = clock()
     brain.wake(start, "events")
     assert brain.last_turn[0] == start
+
+
+def test_heartbeat_slower_when_sleepy(clock):
+    brain, _, _, near = make(clock, FakeSession(), nearby=["阿花"])
+    assert brain.heartbeat(clock()) == 45
+    brain.slow = lambda: True
+    assert brain.heartbeat(clock()) == 90
+    brain._idle = 5
+    assert brain.heartbeat(clock()) == 180  # 不越界

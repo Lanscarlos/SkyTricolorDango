@@ -46,6 +46,7 @@ class Brain:
         run=None,  # runlog.RunDir
         store=None,  # chat.memory.MemoryStore：live 时退出前把经过记进 inbox.md
         trace=None,  # brain.trace.BrainTrace：可视化网页的大脑时间线（run --brain --view）
+        slow: Callable[[], bool] | None = None,  # 困了：没事时醒得慢一档（内心层第 2 期）
     ) -> None:
         self.cfg = cfg
         self.chat = chat
@@ -59,6 +60,7 @@ class Brain:
         self.run_dir = run
         self.store = store
         self.trace = trace
+        self.slow: Callable[[], bool] = slow or (lambda: False)
         if trace is not None:
             trace.state = self.trace_state
         self.last_wake = float("-inf")  # 刚上线马上醒一次
@@ -77,7 +79,12 @@ class Brain:
     def heartbeat(self, now: float) -> float:
         beats = self.cfg.heartbeat
         start = 0 if self.nearby(now) else 1  # 身边有好友时醒得勤一点
-        return beats[min(start + self._idle, len(beats) - 1)]
+        try:
+            sleepy = 1 if self.slow() else 0
+        except Exception:
+            log.debug("算困不困出错", exc_info=True)
+            sleepy = 0
+        return beats[min(start + self._idle + sleepy, len(beats) - 1)]
 
     def due(self, now: float) -> str | None:
         if now < self.backoff_until:
