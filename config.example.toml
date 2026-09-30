@@ -195,7 +195,7 @@ poll = 0.15                     # 等画面停稳后，每隔这么久看一次�
 # 识别可视化网页：python -m skydango view（只看不动）或 run --view，浏览器里实时看画面 + 识别框
 # 画面里有好友昵称和聊天：默认只给本机看。改成 "0.0.0.0" 手机也能看，但同一局域网的人都能看
 host = "127.0.0.1"
-port = 8765
+port = 19399
 fps = 10.0                      # 最多每秒更新几帧（run --view 时受身体主循环限制，约 6~7 帧）
 width = 1280                    # 发给浏览器的图缩到这么宽
 quality = 70                    # JPEG 质量
@@ -308,5 +308,5 @@ close_with_back = true         # 发完按 BACK 关掉输入框，否则头顶�
 # [console]
 # 管理面板（python -m skydango console）。其余项（上次的启动选项等）由面板写进 console.toml，
 # 面板里改的设置也写在 console.toml（叠加在本文件之后），密钥写在 secrets.toml；两个文件都不进 git
-# port = 8760          # 面板端口
-# child_port = 8761    # 面板起的团子子进程的 viewer 端口
+# port = 19390        # 面板端口
+# child_port = 19391  # 面板起的团子子进程的 viewer 端口

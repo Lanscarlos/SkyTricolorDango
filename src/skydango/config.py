@@ -413,7 +413,7 @@ class ViewerConfig:
     """识别过程可视化：本机网页实时显示画面 + 识别框（`run --view` 或 `python -m skydango view`）。"""
 
     host: str = "127.0.0.1"  # 只给本机看：画面里有好友昵称和聊天
-    port: int = 8765
+    port: int = 19399
     fps: float = 10.0  # 最多每秒更新几帧
     width: int = 1280  # 发给浏览器的图缩到这么宽
     quality: int = 70  # JPEG 质量
@@ -565,8 +565,8 @@ class InnerConfig:
 class ConsoleConfig:
     """管理面板（`console`，见 docs/superpowers/specs/2026-09-29-console-design.md）。启动选项由面板写进 console.toml，只影响面板启动的团子。"""
 
-    port: int = 8760  # 面板端口；和 view 的 8765 错开，可以同时开
-    child_port: int = 8761  # 面板起的团子子进程的 viewer 端口
+    port: int = 19390  # 面板端口；和 view 的 19399 错开，可以同时开
+    child_port: int = 19391  # 面板起的团子子进程的 viewer 端口
     stop_timeout: float = 60.0  # 停止时最多等几秒（live 大脑退出前要写记忆），超了强杀
     log_lines: int = 500  # 日志尾巴保留几行
     # 上次的启动选项，面板写

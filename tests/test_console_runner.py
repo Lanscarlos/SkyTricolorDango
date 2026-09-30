@@ -54,9 +54,9 @@ SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
 
 
 def test_build_command_is_explicit():
-    cmd = build_command(LaunchOptions(brain=False, live=False, emotes=False, duration=90), Path("c.toml"), 8761, 42, python="py")
+    cmd = build_command(LaunchOptions(brain=False, live=False, emotes=False, duration=90), Path("c.toml"), 19391, 42, python="py")
     assert cmd == ["py", "-m", "skydango", "-c", "c.toml", "run", "--no-brain", "--dry-run", "--no-emotes", "--duration", "90.0",
-                   "--view", "--viewer-port", "8761", "--no-browser", "--parent-pid", "42"]
+                   "--view", "--viewer-port", "19391", "--no-browser", "--parent-pid", "42"]
     assert "--live" in build_command(LaunchOptions(live=True), Path("c.toml"), 1, 2)
     assert "--no-brain" not in build_command(LaunchOptions(), Path("c.toml"), 1, 2)
     assert "--duration" not in build_command(LaunchOptions(), Path("c.toml"), 1, 2)

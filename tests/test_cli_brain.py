@@ -310,8 +310,8 @@ def test_run_viewer_port_forces_local_and_no_browser(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: None)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.toml").write_text('[viewer]\nhost = "0.0.0.0"\n', encoding="utf-8")
-    cli.main(["run", "--view", "--viewer-port", "8761", "--no-browser"])
-    assert seen == {"host": "127.0.0.1", "port": 8761, "open": False}
+    cli.main(["run", "--view", "--viewer-port", "19391", "--no-browser"])
+    assert seen == {"host": "127.0.0.1", "port": 19391, "open": False}
 
 
 def test_run_parent_pid_starts_watchdog(tmp_path, monkeypatch):
