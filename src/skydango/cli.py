@@ -1543,7 +1543,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     )
     body.friend_names = _friend_names(cfg)
     if store is not None:  # 反思用的人设和笔记（dry-run 也读）
-        body.persona = lambda: store.profile() or cfg.reply.persona
+        body.profile_text = lambda: store.profile() or cfg.reply.persona
         body.memory_notes = lambda: f"{store.notes()}\n{store.inbox()}"
     events.subscribe(eyes.notice)
     toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store)  # recall 只读，dry-run 也给
