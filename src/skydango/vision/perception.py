@@ -56,6 +56,7 @@ FAR_MISSES = 3  # 远处二次检测连着这么多次没找到名字标签…�
 FAR_BACKOFF = 5.0  # ……之后这么久才再裁一次
 FAR_DUP_IOU = 0.3  # 二次检测找到的框和原图里已有的同类框重叠这么多就算同一个
 UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记下（三期 §5）
+REQUEST_HOLD = 1.5  # 陌生人的圆圈还在原地、只是这一帧没认出图标（火焰会晃）：请求再留这么久，免得一闪就没、身体来不及点
 PEOPLE_STALE = 1.0  # people()：最近一帧比这更旧（被挡住、没跑检测）就不再报里面的人
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
 
@@ -87,6 +88,10 @@ def far_region(p: Rect, width: int, height: int) -> Rect | None:
     if x2 - x1 < 8 or y2 - y1 < 8:
         return None
     return Rect(x1, y1, x2 - x1, y2 - y1)
+
+
+def _near(a: tuple[int, int], b: tuple[int, int], dist: int = 80) -> bool:
+    return abs(a[0] - b[0]) <= dist and abs(a[1] - b[1]) <= dist
 
 
 def one_self(dets: list[Detection]) -> list[Detection]:
@@ -432,10 +437,15 @@ class PerceptionWatcher:
             if is_request(kind):
                 stranger_req = Request(STRANGER, kind, self._ring_center(ring), now)
                 break
+        old = self.requests.get(STRANGER)
         if stranger_req is not None:
-            if STRANGER not in self.requests or self.requests[STRANGER].kind != stranger_req.kind:
+            if old is None or old.kind != stranger_req.kind:
                 log.info("陌生人发起了互动：%s", stranger_req.kind)
             self.requests[STRANGER] = stranger_req
+        elif old is not None and now - old.seen_at <= REQUEST_HOLD and any(
+            ring.data.get("kind") is None and _near(self._ring_center(ring), old.pos) for ring in orphans
+        ):
+            pass  # 圆圈还在原地、这一帧没认出图标：先留着（seen_at 不更新，最多留 REQUEST_HOLD 秒）
         else:
             self.requests.pop(STRANGER, None)
 

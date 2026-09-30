@@ -259,6 +259,26 @@ def test_ring_without_tag_is_a_stranger_request():
     assert STRANGER not in w.requests
 
 
+def test_stranger_request_survives_a_frame_where_the_icon_is_unclear():
+    """实测（2026-09-30 22:56）：火焰图标会晃，这一帧认出、下一帧认不出，请求一闪就没，身体来不及去点。
+    圆圈还在原地、只是这一帧没认出图标：请求留 REQUEST_HOLD 秒；圆圈没了 / 认成别的就马上撤。"""
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    icons = FakeIcons({"next": "candle"})
+    w = watcher(det, icons=icons)
+    w.process(frame(), 0.0, panel_visible=False)
+    icons.kinds["next"] = None  # 这一帧没认出
+    w.process(frame(), 0.3, panel_visible=False)
+    assert w.requests[STRANGER].kind == "candle"
+    w.process(frame(), 2.0, panel_visible=False)  # 一直认不出：过了 1.5 秒就撤
+    assert STRANGER not in w.requests
+    icons.kinds["next"] = "candle"
+    w.process(frame(), 2.1, panel_visible=False)
+    icons.kinds["next"] = "stranger"  # 放下蜡烛了：图标换成了别的
+    w.process(frame(), 2.2, panel_visible=False)
+    assert STRANGER not in w.requests
+
+
 def test_panel_area_and_bottom_bar_are_ignored():
     det = FakeDetector()
     det.frames = [[tag(100, 110), tag(990, 120, y=1000)]]  # 面板里的"- 名字"、底部输入栏
