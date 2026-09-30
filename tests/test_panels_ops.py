@@ -113,6 +113,14 @@ def test_close_gives_up():
     assert device.calls == [] and w.closed == []
 
 
+def test_close_disconnect_taps_nothing():  # 掉线弹框：重试 / 取消都不按，也没有别的关法
+    panel = Panel("disconnect", "掉线弹框（连接错误）", Rect(200, 100, 800, 500), False, 100)
+    w = FakeWatcher()
+    o, device = ops(w)
+    assert not o.close(panel, reading(Button("取消", Rect(300, 400, 60, 30), "never"), Button("重试", Rect(500, 400, 60, 30), "never"), panel=panel))
+    assert taps(device) == [] and w.closed == []
+
+
 def test_close_fails_after_all_ways():
     w = FakeWatcher(present=[True, True])
     o, device = ops(w)

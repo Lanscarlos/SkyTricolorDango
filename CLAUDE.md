@@ -82,7 +82,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/sweep.py` | 感知层二期：环绕扫描的纯计算（方位角、8 方位、多帧合并、转圈认团子、远近分档） |
 | `src/skydango/vision/places.py` `unknownnames.py` `gesture.py` | 感知层三期：认地图（参考截图匹配）、没认出的名字清单、别人对团子做的动作（研究性质：切片段、评估、ONNX 接口） |
 | `src/skydango/vision/viewer.py` | 识别可视化网页（`view` / `run --view`）：标准库 HTTP 服务，画面 + 识别框 + 状态放在同一份快照里，框和中文标签由浏览器画 |
-| `src/skydango/vision/panels.py` `game/panels.py` `assets/panels/` | 面板识别：特征卡快看 + OCR 细读 + 通用兜底认出开着哪些面板（`vision`）；按卡片关面板、点按钮（`game`）；五张特征卡（见「面板识别」） |
+| `src/skydango/vision/panels.py` `game/panels.py` `assets/panels/` | 面板识别：特征卡快看 + OCR 细读 + 通用兜底认出开着哪些面板（`vision`）；按卡片关面板、点按钮（`game`）；六张特征卡（见「面板识别」） |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
@@ -209,7 +209,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   **遮挡护栏** `clear_view`：转镜头、做动作、点人、接互动、说话前，已核对且 `auto` 的面板顺手关掉，别的拒绝、交给大脑
 - 大脑工具 `panel_read` / `panel_press` / `panel_close`（按之前会再读一次，面板换了就要求重读）；按钮规则：撤退类（整个按钮就是关闭 / 取消……）直接按，别的要卡洛在聊天里 `#允许 <按钮>`（60 秒、用一次作废），
   `[panels] never` 和卡片 `never`（花钱、删好友、退出、共享空间"加入"……）**放行了也不按**
-- **五张卡（聊天记录面板、动作面板、轮盘编辑、好友树、共享空间邀请）都还没在真机核对、缺模板图**：未核对的只报告不自动关，
+- **掉线弹框**（`disconnect`，靠文字"连接错误 / 网络连接失败"认）："重试""取消"都在卡的 `never` 里、没有关法：身体记一条 WARNING、
+  告诉大脑"游戏掉线了，按钮都别按，等卡洛自己点重试"（2026-09-30 晚真机掉线过一次，当时"重试"被当成正文、大脑连按灰的"取消"）
+- **六张卡（聊天记录面板、动作面板、轮盘编辑、好友树、共享空间邀请、掉线弹框）都还没在真机核对、缺模板图 / 截图**：未核对的只报告不自动关，
   录样本后用 `panels scan` / `cut` / `read` 核对再改 `verified = true`
 
 ## 管理面板（`[console]`，`console`）

@@ -126,6 +126,39 @@ def test_text_card_open_event_has_reading(clock):
     assert texts(events) == ["开了：共享空间邀请（未核对）：这位旅人正在共享空间内，按钮：取消"]
 
 
+DISCONNECT = Panel("disconnect", "掉线弹框（连接错误）", Rect(460, 407, 1000, 265), False, 100)
+DISCONNECT_READING = PanelReading(
+    DISCONNECT,
+    "连接错误",
+    "网络连接失败。 (错误码：140)\n请确认您的网络连接状态",
+    (Button("取消", Rect(1245, 609, 50, 30), "never"), Button("重试", Rect(1357, 609, 50, 30), "never")),
+    100.0,
+)
+
+
+def test_disconnect_open_reports(clock, caplog):
+    b, panels, _, _, events = setup(clock)
+    panels.changes = [PanelChange("open", DISCONNECT, DISCONNECT_READING)]
+    panels.state = PanelState((DISCONNECT,))
+    with caplog.at_level("WARNING", logger="skydango.brain.body"):
+        b.step()
+    [text] = texts(events)
+    assert text.startswith("开了：掉线弹框（连接错误）（未核对）：「连接错误」")
+    assert "游戏掉线了" in text and "等卡洛" in text
+    assert any("掉线" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_disconnect_buttons_not_pressed(clock):
+    b, panels, ops, _ = dialog(clock, reading=DISCONNECT_READING)
+    panels.state = PanelState((DISCONNECT,))
+    panels.readings = {"disconnect": DISCONNECT_READING}
+    b.panel_read()
+    for word in ("重试", "取消"):
+        with pytest.raises(ToolError, match="不能按"):
+            b.panel_press(word)
+    assert ops.pressed == []
+
+
 def test_env_held_while_panel_open(clock):
     env = FakeEnv()
     b, panels, _, _, _ = setup(clock, env=env)

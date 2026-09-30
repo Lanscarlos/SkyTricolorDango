@@ -28,7 +28,7 @@ from ..config import Config
 from ..game.social import IDLE, KIND_NAMES, PASSIVE
 from ..imageio import imwrite
 from ..vision.bubbles import Rect, roi_rect
-from ..vision.panels import UNKNOWN, Button, PanelReading, describe_reading
+from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people, describe_things
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
@@ -759,6 +759,10 @@ class Body:
                 self.events.put("panel", f"关了：{p.label}")
             elif p.name == UNKNOWN:
                 self.events.put("panel", "出现不认识的面板：" + (describe_reading(change.reading) if change.reading else "（还没读）"))
+            elif p.name == DISCONNECT:  # 掉线了：按钮都不按（卡上 never），只报告，等卡洛自己点重试
+                what = describe_reading(change.reading) if change.reading else "还没读"
+                log.warning("游戏掉线了（%s），要手动点「重试」", what)
+                self.events.put("panel", f"开了：{p.describe()}：{what}。游戏掉线了：弹框上的按钮都别按，等卡洛自己点重试")
             elif change.reading is not None:
                 self.events.put("panel", f"开了：{p.describe()}：{describe_reading(change.reading)}")
             else:

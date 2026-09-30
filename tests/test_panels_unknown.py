@@ -10,6 +10,13 @@ from skydango.vision.panels import UNKNOWN, PanelWatcher, load_cards, looks_like
 
 DIALOG = [line("出错了", 300, 20), line("网络连接断开，请重试", 200, 90), line("确定", 330, 300)]
 INVITE = [line("这位旅人正在共享空间内，你想一起加入吗？", 100, 60), line("取消", 100, 300), line("加入", 500, 300)]
+DISCONNECT = [  # 2026-09-30 真机掉线弹框：「取消」是灰的、「重试」是蓝的
+    line("连接错误", 300, 20),
+    line("网络连接失败。 (错误码：140)", 200, 90),
+    line("请确认您的网络连接状态", 200, 130),
+    line("取消", 400, 300),
+    line("重试", 500, 300),
+]
 
 
 def watcher(ocr, background=False):
@@ -103,6 +110,21 @@ def test_text_card_identified(clock):
     [c] = w.pop_changes()
     assert c.panel.name == "shared_invite" and c.panel.label == "共享空间邀请" and c.panel.layer == 90
     assert [(b.text, b.kind) for b in c.reading.buttons] == [("取消", "retreat"), ("加入", "never")]
+
+
+def test_disconnect_card_identified(clock):
+    w = watcher(ListOcr(DISCONNECT))
+    w.observe(scene(), clock())
+    [c] = w.pop_changes()
+    assert c.panel.name == "disconnect" and c.panel.layer == 100
+    assert [(b.text, b.kind) for b in c.reading.buttons] == [("取消", "never"), ("重试", "never")]
+
+
+def test_disconnect_card_without_grey_cancel(clock):  # OCR 漏读灰色的「取消」
+    w = watcher(ListOcr([ln for ln in DISCONNECT if ln.text != "取消"]))
+    w.observe(scene(), clock())
+    [c] = w.pop_changes()
+    assert c.panel.name == "disconnect" and [(b.text, b.kind) for b in c.reading.buttons] == [("重试", "never")]
 
 
 def test_unknown_closes_when_rescan_finds_nothing(clock):

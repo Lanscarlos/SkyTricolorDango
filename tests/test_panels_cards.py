@@ -25,7 +25,7 @@ def basic(verified: bool = False) -> str:
 
 def test_real_cards_load():
     cards = {c.name: c for c in load_cards(CARDS)}
-    assert set(cards) == {"chat_log", "emote_panel", "wheel_editor", "friend_tree", "shared_invite"}
+    assert set(cards) == {"chat_log", "emote_panel", "wheel_editor", "friend_tree", "shared_invite", "disconnect"}
     assert not any(c.verified for c in cards.values())
     assert cards["chat_log"].allows == ACTIONS
     assert "move" in ACTIONS  # WASD 在聊天记录面板开着时也能走（game-ops §2）
@@ -33,6 +33,8 @@ def test_real_cards_load():
     assert cards["shared_invite"].quick == ()
     assert cards["emote_panel"].close_ways == ("key:18",) and cards["emote_panel"].close_auto
     assert cards["wheel_editor"].close_ways == ("tap:0.983,0.03",)
+    assert cards["disconnect"].never == ("重试", "取消") and cards["disconnect"].close_ways == ()
+    assert not cards["disconnect"].close_auto and cards["disconnect"].layer == 100
 
 
 def test_unverified_missing_template_warns(tmp_path, caplog):
