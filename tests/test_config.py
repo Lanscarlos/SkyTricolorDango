@@ -65,9 +65,10 @@ def test_track_section(tmp_path):
     t = load_config(p).track
     assert t.gain == 0.2
     assert (t.deadband, t.nudge_min, t.nudge_max, t.settle, t.lost_after, t.max_age) == (0.15, 0.02, 0.1, 0.6, 3.0, 0.5)
-    assert (t.stall_nudges, t.stall_px, t.max_seconds) == (3, 20.0, 60)
+    assert (t.stall_nudges, t.stall_px, t.max_seconds, t.chase_max) == (3, 20.0, 60, 0.15)
     example = load_config(ROOT / "config.example.toml").track
-    assert (example.deadband, example.gain, example.settle, example.max_seconds) == (0.15, 0.1, 0.6, 60)
+    assert (example.deadband, example.gain, example.settle, example.max_seconds) == (0.15, 0.15, 0.6, 60)
+    assert (example.nudge_max, example.chase_max) == (0.1, 0.15)
 
 
 def test_spin_section(tmp_path):
