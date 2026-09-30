@@ -297,6 +297,7 @@ class PerceptionConfig:
     approach_cooldown: float = 60.0  # 同一个人这么久内只报一次（陌生人整体算一个）
     approach_strangers: bool = True  # 陌生人走过来也报（陌生人多的地方嫌吵就关掉）
     typing_window: float = 8.0  # 陌生人的消息：这么久内头顶冒过"正在输入"气泡的人才算可能的说话人（待标定）
+    bubble_gap: float = 1.0  # 同一个人的气泡消失超过这么久再出现，算新的一句（空闲注意力：新的一句让团子不再看腻）
     # 三期 §1：远处小目标二次检测（名字标签太小，YOLO 框不到）
     far_height: float = 0.08  # 人物框高 < 截图高 × 这个、又没挂上名字标签时，在它头顶裁一块再检测一次
     far_crops: int = 3  # 每帧最多裁几块（同一条轨迹每秒最多一次）；0 = 关

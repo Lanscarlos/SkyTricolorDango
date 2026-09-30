@@ -27,6 +27,7 @@ import logging
 import threading
 import time
 from collections import Counter, deque
+from dataclasses import dataclass
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
@@ -109,6 +110,18 @@ def _inside(point: tuple[float, float], rect: Rect) -> bool:
     return rect.x <= point[0] < rect.x2 and rect.y <= point[1] < rect.y2
 
 
+@dataclass(frozen=True)
+class Talker:
+    """头顶正冒着气泡的人（空闲注意力用）。"""
+
+    track_id: int
+    name: str | None  # 好友名；陌生人 None
+    friend: bool
+    x: float  # 人物框中心 x（整图像素）
+    last: float  # 最近一次看到气泡
+    start: float  # 这次气泡开始（气泡断开超过 bubble_gap 再出现算新的一句）
+
+
 class PerceptionWatcher:
     def __init__(
         self,
@@ -170,6 +183,7 @@ class PerceptionWatcher:
         self._frame_w = 1920  # 最近一帧的宽度（算在画面哪边用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
         self._approach_at: dict[str, float] = {}
+        self._approach_log: deque[tuple[str, float, float]] = deque()  # (谁, 框中心 x, 时间)：空闲注意力用，不取走
         self._typing: deque[tuple] = deque()  # (时间, 轨迹 id, 是好友, 没点火, 框中心 x, 框高, 画面宽, 画面高)
         self._strangers: deque[tuple[float, int]] = deque()  # (时间, 这一帧有几个陌生人)
         self._panel_visible = False
@@ -739,6 +753,8 @@ class PerceptionWatcher:
             owner = self._person_below(b.box, players)
             if owner is None:
                 continue
+            if now - owner.data.get("typing_at", float("-inf")) > self.cfg.bubble_gap:
+                owner.data["bubble_start"] = now  # 新的一句
             owner.data["typing_at"] = now
             friend = bool(owner.data.get("name") or owner.data.get("tagged"))
             self._typing.append((now, owner.id, friend, owner.cls == UNLIT, owner.box.x + owner.box.w / 2, owner.box.h,
@@ -762,6 +778,9 @@ class PerceptionWatcher:
                 log.info("%s 朝团子走过来了", who)
                 with self._lock:
                     self._approaches.append(who)
+                    self._approach_log.append((who, hist[-1][2], now))
+                    while self._approach_log and now - self._approach_log[0][2] > 30.0:
+                        self._approach_log.popleft()
 
     def _watch_gestures(self, frame: np.ndarray, players: list[Track], now: float, width: int, height: int) -> None:
         """三期 §3：认出名字、近 / 中、在画面中间的好友，攒够一段（frames 张）后每 interval 秒判一次动作。"""
@@ -792,6 +811,23 @@ class PerceptionWatcher:
             log.info("%s 对团子做了动作：%s（%.2f）", name, label, prob)
             with self._lock:
                 self._gestures.append(key)
+
+    def talkers(self, now: float) -> list[Talker]:
+        """1 秒内头顶冒着气泡的人（不含团子自己），带位置和这次气泡开始的时间。"""
+        out = []
+        for t in list(self.last_tracks):
+            at = t.data.get("typing_at")
+            if at is None or now - at > 1.0:
+                continue
+            name = t.data.get("name")
+            friend = bool(name or t.data.get("tagged"))
+            out.append(Talker(t.id, name, friend, t.box.x + t.box.w / 2, at, t.data.get("bubble_start", at)))
+        return out
+
+    def recent_approaches(self, now: float, within: float = 5.0) -> list[tuple[str, float, float]]:
+        """within 秒内朝团子走过来的人：(谁, 框中心 x, 时间)；谁同 pop_approaches（好友名 / STRANGER）。不取走。"""
+        with self._lock:
+            return [a for a in self._approach_log if now - a[2] <= within]
 
     def pop_gestures(self) -> list[tuple[str, str]]:
         """取走"谁对团子做了什么动作"，身体变成 gesture 事件。"""

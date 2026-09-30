@@ -1425,3 +1425,76 @@ def test_scene_boxes_for_places_add_skip_objects(tmp_path, monkeypatch):
     cfg = Config()
     cfg.perception.model = str(model)
     assert cli._scene_boxes(cfg)(frame()) == [Rect(1000, 400, 90, 220)]
+
+
+# ---- 空闲注意力用：谁在说话、谁走近了（plan 2026-09-30-idle-attention Task 2） ----
+
+def friend_typing(w, det, t, bubble_on=True):
+    det.frames = [[player(1000), tag(990, 110)] + ([bubble(1005, y=260)] if bubble_on else [])]
+    w.process(frame(), t, panel_visible=False)
+
+
+def test_talkers_reports_friend_with_bubble_and_position():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    friend_typing(w, det, 10.0)
+    t = w.talkers(10.0)
+    assert [(x.name, x.friend) for x in t] == [("懒洋洋大王", True)]
+    assert t[0].x == pytest.approx(1045) and t[0].last == 10.0 and t[0].start == 10.0
+
+
+def test_talkers_reports_stranger_without_name():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert [(x.name, x.friend) for x in w.talkers(10.0)] == [(None, False)]
+
+
+def test_talker_bubble_start_resets_after_gap():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    for i in range(6):  # 10.0 ~ 10.5 一直有气泡
+        friend_typing(w, det, 10.0 + i * 0.1)
+    assert w.talkers(10.5)[0].start == 10.0
+    for i in range(15):  # 气泡消失 1.5 秒
+        friend_typing(w, det, 10.6 + i * 0.1, bubble_on=False)
+    friend_typing(w, det, 12.2)
+    assert w.talkers(12.2)[0].start == 12.2  # 新的一句
+
+
+def test_talker_continuous_bubble_longer_than_typing_window_keeps_start():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    for i in range(121):  # 连续打 12 秒（typing_window 8 秒）
+        friend_typing(w, det, 10.0 + i * 0.1)
+    assert w.talkers(22.0)[0].start == 10.0
+
+
+def test_talkers_excludes_stale():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    friend_typing(w, det, 10.0)
+    assert w.talkers(11.5) == []
+
+
+def test_recent_approaches_keep_position_and_pop_still_works():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    walk_up(w, det, 0.0)
+    (who, cx, t), = w.recent_approaches(1.5)
+    assert who == "懒洋洋大王" and cx == pytest.approx(1045) and 0.0 < t <= 1.4
+    assert w.pop_approaches() == ["懒洋洋大王"]
+    assert w.recent_approaches(1.5)  # pop 不影响
+    assert w.recent_approaches(t + 6.0) == []  # 默认只要 5 秒内的
+
+
+def test_recent_approaches_include_strangers():
+    det = FakeDetector()
+    w = watcher(det)
+    walk_up(w, det, 0.0, tagged=False)
+    assert [a[0] for a in w.recent_approaches(1.5)] == [STRANGER]
+
+
+def test_bubble_gap_default():
+    assert PerceptionConfig().bubble_gap == 1.0
