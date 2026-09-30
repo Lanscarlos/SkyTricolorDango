@@ -102,6 +102,7 @@ def assess(
     chat: Chat,
     spoken: Sequence[Spoken],
     is_friend: Callable[[str], bool],
+    quota_scale: float = 1.0,  # 心情 / 精力的倍数（内心层第 2 期）；额度至少 1
 ) -> Occasion:
     others = sum(1 for t, who, _ in chat if who != ME and now - cfg.busy_window <= t <= now)
     if not friends:
@@ -121,7 +122,7 @@ def assess(
     since = [st for s, (st, _) in zip(mine, states) if s.t > heard_at]
     tail = since[-cfg.cold_after :] if cfg.cold_after > 0 else []
     cold = cfg.cold_after > 0 and len(tail) == cfg.cold_after and all(st == "none" for st in tail)
-    limit = cfg.quota_busy if level == "busy" else cfg.quota_quiet
+    limit = max(1, int((cfg.quota_busy if level == "busy" else cfg.quota_quiet) * quota_scale))
     left = 0 if level == "alone" or cold else max(0, limit - recent)
 
     blocked = ""

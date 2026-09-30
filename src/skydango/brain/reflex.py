@@ -50,21 +50,21 @@ class Reflexes:
         self._idle_due = now
         self.stir(now)
 
-    def stir(self, now: float) -> None:
-        """有动静（有人说话、团子说话或做事）：闲着的计时从现在重新算。"""
+    def stir(self, now: float, scale: float = 1.0) -> None:
+        """有动静（有人说话、团子说话或做事）：闲着的计时从现在重新算。scale：困的时候 < 1，更勤。"""
         span = max(0.0, self.cfg.idle_max - self.cfg.idle_min)
-        self._idle_due = now + self.cfg.idle_min + self.rng.random() * span
+        self._idle_due = now + (self.cfg.idle_min + self.rng.random() * span) * scale
 
     def left(self, now: float) -> int:
         while self.used and now - self.used[0] >= self.cfg.quota_window:
             self.used.popleft()
         return max(0, self.cfg.quota - len(self.used))
 
-    def done(self, now: float, text: str) -> None:
+    def done(self, now: float, text: str, scale: float = 1.0) -> None:
         self.left(now)
         self.used.append(now)
         self.recent.append((now, text))
-        self.stir(now)
+        self.stir(now, scale)
 
     @staticmethod
     def usable(names: Sequence[str], on_wheel: Sequence[str]) -> list[str]:
@@ -73,9 +73,10 @@ class Reflexes:
     def _chance(self, p: float) -> bool:
         return self.rng.random() < p
 
-    def pick_addressed(self, now: float, on_wheel: Sequence[str]) -> str | None:
+    def pick_addressed(self, now: float, on_wheel: Sequence[str], scale: float = 1.0) -> str | None:
+        """scale：心情的倍数（开心 1.5、烦 0）。"""
         names = self.usable(self.cfg.addressed, on_wheel)
-        if not names or not self.left(now) or not self._chance(self.cfg.addressed_chance):
+        if not names or not self.left(now) or not self._chance(min(1.0, self.cfg.addressed_chance * scale)):
             return None
         return self.rng.choice(names)
 

@@ -559,6 +559,19 @@ class InnerConfig:
     long_gap: float = 7.0  # 超过这么多天没见算“好久没见”
     save_every: float = 60.0  # live 时每隔多少秒存一次 people.json / current.json
     max_step: float = 5.0  # 算在一起待了多久时，单圈最多算几秒（卡顿时不一下加一大截）
+    # 第 2 期：反思（docs/superpowers/specs/2026-09-30-inner-phase2-design.md）
+    reflect: bool = True  # 反思总开关（心情、精力、别扭、心愿、日记）；false = 第 1 期原样
+    reflect_model: str = "sonnet"  # 反思用的模型（一次性 claude -p，令牌同大脑）
+    reflect_every: float = 1200.0  # 有动静时多久反思一次（秒）
+    reflect_after_quiet: float = 180.0  # 好友说够 reflect_min_lines 句后安静多久反思
+    reflect_min_lines: int = 6
+    reflect_timeout: float = 90.0  # 一次反思最多等多久（下线那次也是）
+    rest_gap: float = 3600.0  # 两次上线隔多久算睡过一觉（不到就接着上次的累算）
+    grudge_min_days: int = 3  # 一起玩过几天才可能闹别扭
+    grudge_max: float = 7200.0  # 别扭最长多久（秒），到点自己消气
+    wants_max: int = 3  # 心愿 / 惦记的事最多几条
+    want_days: float = 7.0  # 心愿几天后过期
+    diary_prompt: int = 1  # 「日子」带几篇日记
 
 
 @dataclass

@@ -352,6 +352,7 @@ def test_run_brain_live_writes_inner_ledger(tmp_path, monkeypatch):
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
+    cfg.inner.reflect = False  # 第 1 期的路径：大脑写经过（反思开着时由最终反思写，见下面几条）
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
     (day,) = InnerStore(tmp_path / "memory" / "inner").days()
     assert day.ended == "normal" and day.summary.startswith("收到：")  # 假大脑把退出前的经过原样回过来
@@ -386,3 +387,56 @@ def test_memory_show_prints_inner(tmp_path, capsys):
     cli.cmd_memory(cfg, argparse.Namespace(action="show"))
     out = capsys.readouterr().out
     assert "===== 关系卡 =====" in out and "===== 最近 10 次上线 =====" in out
+
+
+def _claude_log(log):
+    return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
+
+
+def test_run_brain_live_final_reflection_replaces_farewell(tmp_path, monkeypatch):
+    from skydango.brain.prompt import MIND_RULES, SUMMARY_REQUEST
+    from skydango.inner.reflect import REFLECT_SYSTEM
+    from skydango.inner.store import InnerStore
+
+    cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    lines = _claude_log(log)
+    systems = [l["args"][l["args"].index("--system-prompt") + 1] for l in lines if "args" in l and "--system-prompt" in l["args"]]
+    assert REFLECT_SYSTEM in systems  # 下线前的最终反思
+    assert not any(SUMMARY_REQUEST in l.get("message", "") for l in lines)  # 不再让大脑写经过
+    (day,) = InnerStore(tmp_path / "memory" / "inner").days()
+    assert day.ended == "normal"  # 假模型回的不是 JSON：summary 空，照样 close
+    assert MIND_RULES in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+
+
+def test_run_brain_reflect_off_uses_farewell(tmp_path, monkeypatch):
+    from skydango.brain.prompt import MIND_RULES, SUMMARY_REQUEST
+
+    cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False
+    cfg.inner.reflect = False
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert any(SUMMARY_REQUEST in l.get("message", "") for l in _claude_log(log))
+    assert MIND_RULES not in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+
+
+def test_run_brain_dry_run_reflect_writes_nothing(tmp_path, monkeypatch):
+    from skydango.brain.prompt import MIND_RULES
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    assert not (tmp_path / "memory" / "inner").exists()
+    assert MIND_RULES in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+
+
+def test_final_reflection_timeout_fits_console_stop():  # 终审 I7
+    cfg = Config()
+    assert cli._final_timeout(cfg) == 35.0  # stop_timeout 60 − 25（身体收尾、等大脑线程）
+    cfg.console.stop_timeout = 20
+    assert cli._final_timeout(cfg) == 10.0
+    cfg.console.stop_timeout = 600
+    assert cli._final_timeout(cfg) == cfg.inner.reflect_timeout

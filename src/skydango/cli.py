@@ -1502,6 +1502,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every)
     live_store = None if cfg.reply.dry_run else store
     ledger = _inner_ledger(cfg, store)
+    mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
     env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
@@ -1520,7 +1521,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
         env=env, social=social, emotes=emotes, camera=camera, locomotion=Locomotion(dev, cfg.brain.move_step), friend_checker=friend_checker,
         fallback=fallback, store=live_store, notes=notes, run=run, viewer=viewer, panel=panel, panels=panels, panel_ops=panel_ops,
-        ledger=ledger,
+        ledger=ledger, mind=mind, reflector=reflector,
     )
     work = run.path / "brain"
     eyes = Eyes(
@@ -1536,6 +1537,9 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         on_news=body.news,
     )
     body.friend_names = _friend_names(cfg)
+    if store is not None:  # 反思用的人设和笔记（dry-run 也读）
+        body.persona = lambda: store.profile() or cfg.reply.persona
+        body.memory_notes = lambda: f"{store.notes()}\n{store.inbox()}"
     events.subscribe(eyes.notice)
     toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store)  # recall 只读，dry-run 也给
     server = SkyServer(toolbox)
@@ -1545,14 +1549,14 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         base, claude_vars, work / "session", server.url, brain_prompt(
             cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns,
             proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
-            days=_days_prompt(ledger), inner=ledger is not None,
+            days=_days_prompt(ledger, cfg), inner=ledger is not None, mind=reflector is not None,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
     )
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
-        eyes=eyes, run=run, store=live_store, trace=trace,
+        eyes=eyes, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
     )
     if viewer is not None:
         viewer.brain = trace
@@ -1588,7 +1592,9 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             except Exception:
                 log.exception("内心账本落账出错")
         summary = ""
-        if live_store is not None and not brain_thread.is_alive():
+        if reflector is not None:  # 下线前的最终反思：写日记和要点，代替大脑写经过（dry-run 照跑、不写盘）
+            summary = _final_reflection(cfg, body, reflector, ledger, live_store)
+        elif live_store is not None and not brain_thread.is_alive():
             try:
                 summary = brain.farewell()  # 把这次的经过记进 inbox.md
             except Exception:
@@ -1617,11 +1623,50 @@ def _inner_ledger(cfg: Config, store):
         return None
 
 
-def _days_prompt(ledger) -> str:
+def _inner_mind(cfg: Config, ledger, base, claude_vars, run):
+    """内心层第 2 期：(Mind, Reflector)；没有账本或 [inner] reflect = false 时 (None, None)。"""
+    if ledger is None or not cfg.inner.reflect:
+        return None, None
+    from .brain.claude import ClaudeLlm
+    from .inner.reflect import Reflector
+
+    try:
+        mind = ledger.store.load_mind(quarantine=ledger.persist)
+        if mind.wake(time.time(), cfg.inner.rest_gap):
+            log.info("睡过一觉：心情回到平常")
+        llm = ClaudeLlm(base, claude_vars, cfg.inner.reflect_model, run.path / "brain" / "reflect", cfg.inner.reflect_timeout)
+        return mind, Reflector(cfg.inner, llm)
+    except Exception:
+        log.exception("反思打不开，这次不反思")
+        return None, None
+
+
+def _final_timeout(cfg: Config) -> float:
+    """下线反思最多等多久：管理面板 stop_timeout 到了会强杀，留 25 秒给身体收尾和等大脑线程。"""
+    return min(cfg.inner.reflect_timeout, max(10.0, cfg.console.stop_timeout - 25))
+
+
+def _final_reflection(cfg: Config, body, reflector, ledger, live_store) -> str:
+    from .inner import finish_reflection
+
+    try:
+        if hasattr(reflector.llm, "timeout"):
+            reflector.llm.timeout = _final_timeout(cfg)
+        result = reflector.final(body.reflect_materials(True))
+        return finish_reflection(
+            result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist, time.time(), cfg.inner,
+        )
+    except Exception:
+        log.exception("下线前的反思出错")
+        return ""
+
+
+def _days_prompt(ledger, cfg: Config | None = None) -> str:
     if ledger is None:
         return ""
     try:
-        return ledger.days_prompt(time.time())
+        diaries = ledger.store.last_diaries(cfg.inner.diary_prompt) if cfg is not None and cfg.inner.reflect else None
+        return ledger.days_prompt(time.time(), diaries=diaries)
     except Exception:
         log.exception("拼「日子」一节出错")
         return ""

@@ -13,7 +13,13 @@ SUMMARY_CHARS = 40
 ENDED = {"normal": "正常下线", "crash": "意外断了", "backfill": "回填"}
 
 
-def days_prompt(history: list[Session], cards: dict[str, Card], friends: Sequence[str], now: float, long_gap_days: float) -> str:
+DIARY_CHARS = 200
+
+
+def days_prompt(
+    history: list[Session], cards: dict[str, Card], friends: Sequence[str], now: float, long_gap_days: float,
+    diaries: list[str] | None = None,  # 最近几篇日记（第 2 期）：有就代替“上次的经过”
+) -> str:
     today = day_of(now)
     lines = ["## 日子"]
     head = f"今天 {format_date(now)}。"
@@ -32,10 +38,12 @@ def days_prompt(history: list[Session], cards: dict[str, Card], friends: Sequenc
         last_bits = []
         if last.friends:
             last_bits.append(f"上次见到了：{'、'.join(last.friends)}。")
-        if last.summary:
+        if last.summary and not diaries:
             last_bits.append(f"上次的经过：{last.summary}")
         if last_bits:
             lines.append("".join(last_bits))
+    if diaries:
+        lines.append("上次的日记：" + " ".join(d.strip() for d in diaries)[:DIARY_CHARS])
     far = sorted(
         (now - cards[n].last_seen, n)
         for n in dict.fromkeys(friends)

@@ -324,7 +324,7 @@ async function pullLogs(){
 }
 
 /* ---- 状态卡片（子进程 viewer 的 /status） ---- */
-const CARDS=["身边的好友","陌生人","互动请求","开着的面板","牵着手","正在做","刚说过","场合","聊天面板","画面"];
+const CARDS=["身边的好友","陌生人","互动请求","开着的面板","牵着手","正在做","刚说过","场合","心情","精力","聊天面板","画面"];
 function renderCards(){
   const dl=$("cards");dl.textContent="";const info=S.info;
   if(!info){const d=el("div","card lone");d.append(el("dt","","团子的状态"),el("dd","","叫醒之后这里显示身边有谁、在做什么。"));dl.append(d);return}

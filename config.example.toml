@@ -261,6 +261,19 @@ session_gap = 7200.0           # 第一次启用时从 history.jsonl 回填：�
 long_gap = 7.0                 # 超过这么多天没见算“好久没见”
 save_every = 60.0              # live 时每隔多少秒存一次（被强杀时最多丢这么久的账）
 max_step = 5.0                 # 算在一起待了多久时，单圈最多算几秒
+# 第 2 期：反思（心情、精力、闹别扭、惦记的事，下线写日记代替大脑写的经过）。数字都是估的，没在真机验证
+reflect = true                 # false = 只记账（第 1 期原样）
+reflect_model = "sonnet"       # 反思用的模型（一次性 claude -p，令牌同大脑）
+reflect_every = 1200.0         # 有动静（有人说话 / 好友来去）时多久反思一次
+reflect_after_quiet = 180.0    # 好友说够 reflect_min_lines 句后安静这么久也反思一次
+reflect_min_lines = 6
+reflect_timeout = 90.0         # 一次反思最多等多久（下线那次也是）
+rest_gap = 3600.0              # 两次上线隔多久算睡过一觉（不到就接着上次的累算）
+grudge_min_days = 3            # 一起玩过几天的好友才可能闹别扭
+grudge_max = 7200.0            # 别扭最长多久，到点自己消气
+wants_max = 3                  # 心愿 / 惦记的事最多几条
+want_days = 7.0                # 心愿几天后过期
+diary_prompt = 1               # 启动时「日子」里带几篇日记
 
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉
