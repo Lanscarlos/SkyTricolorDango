@@ -75,6 +75,14 @@ AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令�
 PEEK_TIMEOUT = 30.0  # look_person 被挡住时边转边看：最多 [peek] max_seconds（8 s）+ 最后一下等画面停稳、截图裁图
 RESET_TIMEOUT = 60.0  # 镜头闭环复位：粗转 + 细调最多 60 下、每下等 0.4 s 画面停稳，最坏三十多秒（一般几秒）
 
+SANDBOX_NO_PERSON = "沙盒里看不到人，只能靠聊天和场景"
+SANDBOX_NO_IMAGE = "沙盒里没有画面可以放大看，只能靠聊天和场景"
+SANDBOX_MISSING = {  # 沙盒里没有的部件：工具直接回"沙盒里没有这个"（别让大脑以为是身体坏了）
+    "camera": "镜头", "camera_reset": "镜头", "track": "镜头", "look_around": "镜头（转不了身，看场景用 look）",
+    "check_friend": "好友树", "panel_read": "面板", "panel_press": "面板", "panel_close": "面板",
+    "set_request_policy": "互动请求（牵手、拥抱……）",
+}
+
 _MISSING = object()
 
 
@@ -100,9 +108,13 @@ def _bool(args: dict, key: str, default=_MISSING) -> bool:
 
 
 class ToolBox:
-    def __init__(self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None) -> None:
+    def __init__(
+        self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None, text_only: bool = False, sandbox: bool = False,
+    ) -> None:
         self.body = body
         self.eyes = eyes
+        self.text_only = text_only  # 沙盒：没有画面，look 只给眼睛的文字、look_person / look_at 只回一句话
+        self.sandbox = sandbox  # 沙盒：镜头、好友树、面板、互动请求这些工具回"沙盒里没有这个"
         self.memory = memory  # chat.memory.MemoryStore：recall 用（只读，dry-run 也给）
         self.max_steps = max_steps
         self.max_says = max_says
@@ -152,8 +164,12 @@ class ToolBox:
 
     def _exec(self, name: str, a: dict):
         b = self.body
+        if self.sandbox and name in SANDBOX_MISSING:
+            raise ToolError(f"沙盒里没有这个：{SANDBOX_MISSING[name]}")
         if name == "look":
-            image = _bool(a, "image", False)
+            image = _bool(a, "image", False) and not self.text_only
+            if self.text_only and self.eyes is None:
+                raise ToolError("沙盒里没开眼睛")
             if image or self.eyes is None:
                 return b.call(b.look)
             now = b.clock()
@@ -178,7 +194,12 @@ class ToolBox:
         if name == "camera_reset":
             return b.call(b.camera_reset, timeout=RESET_TIMEOUT)
         if name == "look_person":
+            if self.text_only:
+                _str(a, "name")
+                return SANDBOX_NO_PERSON
             return b.call(self._bind(name, a), timeout=PEEK_TIMEOUT)
+        if name == "look_at" and self.text_only:
+            return SANDBOX_NO_IMAGE
         return b.call(self._bind(name, a))
 
     def _bind(self, name: str, a: dict) -> Callable[[], object]:

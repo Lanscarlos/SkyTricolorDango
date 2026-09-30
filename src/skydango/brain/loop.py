@@ -68,7 +68,9 @@ class Brain:
         self.failures = 0
         self.failing_since: float | None = None
         self.backoff_until = float("-inf")
+        self.limited = False  # 最近一次失败是订阅额度用完（沙盒状态里显示还要等多久）
         self.last_turn = (float("-inf"), float("-inf"))  # 最近一轮（成功或失败）的 (开始, 结束)：身体据此关掉替大脑开的输入框
+        self.in_turn = False  # 正在一轮里（wake 开始到结束，成功 / 失败都算）：沙盒判断安静了没有用
         self.chat_turn = False  # 正在回聊天（这一轮取走了聊天 / 主人命令，还没结束）：身体据此别把聊天面板当成安静关掉
 
     # ---- 什么时候醒 ----
@@ -128,6 +130,13 @@ class Brain:
         return "\n".join(lines)
 
     def wake(self, now: float, reason: str) -> None:
+        self.in_turn = True
+        try:
+            self._wake(now, reason)
+        finally:
+            self.in_turn = False
+
+    def _wake(self, now: float, reason: str) -> None:
         self.last_wake = now
         began = self.clock()  # 取事件之前：之后身体才读到的消息不在这一轮里（last_turn 用）
         events = self.events.drain()
@@ -203,6 +212,7 @@ class Brain:
         if self.failing_since is None:
             self.failing_since = now
         limit = bool(getattr(exc, "limit", False))
+        self.limited = limit
         delay = self.cfg.limit_retry if limit else BACKOFF[min(self.failures, len(BACKOFF)) - 1]
         self.backoff_until = now + delay
         what = "订阅额度用完了" if limit else "大脑这一轮失败"
@@ -212,6 +222,11 @@ class Brain:
         self.failures = 0
         self.failing_since = None
         self.backoff_until = float("-inf")
+        self.limited = False
+
+    def limit_left(self, now: float) -> float:
+        """额度用完时离再试还有几秒；不是额度问题（或已经能再试了）是 0。"""
+        return max(0.0, self.backoff_until - now) if self.limited else 0.0
 
     def _log(self, result: dict) -> None:
         text = (result.get("result") or "").strip()

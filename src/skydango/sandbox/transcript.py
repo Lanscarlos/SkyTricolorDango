@@ -19,12 +19,15 @@ class Transcript:
         self.version = 0
         self._rows: deque[dict] = deque(maxlen=limit)
 
-    def add(self, kind: str, text: str, who: str = "") -> dict:
+    def add(self, kind: str, text: str, who: str = "", why: str = "") -> dict:
+        """why：blocked 行被拦下的原因（有才带这个键）。"""
         if kind not in KINDS:
             raise ValueError(f"不认识的聊天记录类型：{kind}")
         with self.cond:
             self.version += 1
             row = {"seq": self.version, "t": self.clock.wall(), "kind": kind, "who": who, "text": text}
+            if why:
+                row["why"] = why
             self._rows.append(row)
             self.cond.notify_all()
         return row

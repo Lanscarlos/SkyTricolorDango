@@ -518,3 +518,45 @@ def test_memory_show_prints_persona(tmp_path, capsys):
     cfg.inner.persona = False
     cli.cmd_memory(cfg, argparse.Namespace(action="show"))
     assert "===== 性格档案 =====" not in capsys.readouterr().out
+
+
+# ---- 沙盒计划 Task 2：_run_brain 拆出 World ----
+def test_run_brain_takes_time_from_world(tmp_path, monkeypatch):
+    from skydango.brain.body import Body
+    from skydango.brain.world import BrainParts
+    from skydango.inner.store import InnerStore
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "mem")
+    cfg.reply.dry_run = False
+    world = cli._game_world(cfg, run, True)
+    fixed = 1_790_000_000.0
+    world.wall = lambda: fixed
+    world.clock = lambda: time.monotonic()  # 换一个认得出的钟
+    seen = []
+    cli._run_brain(cfg, run, world, 3.0, on_ready=seen.append)
+    (day,) = InnerStore(tmp_path / "mem" / "inner").days()
+    assert day.start == fixed and day.end == fixed  # 账本用的是 world 的墙上时间
+    assert len(seen) == 1 and isinstance(seen[0], BrainParts) and isinstance(seen[0].body, Body)
+    parts = seen[0]
+    assert parts.body.clock is world.clock and parts.body.wall is world.wall
+    assert parts.events.clock is world.clock and parts.eyes.clock is world.clock
+    assert parts.brain.clock is world.clock and parts.brain.wall is world.wall  # 大脑和事件队列同一个钟
+    assert parts.reflector.clock is world.clock and parts.ledger is not None and parts.trace is None
+
+
+def test_run_brain_still_builds_the_game_world(tmp_path, monkeypatch):
+    seen = []
+    real = cli._game_world
+    monkeypatch.setattr(cli, "_game_world", lambda cfg, run, no_emotes: seen.append(no_emotes) or real(cfg, run, no_emotes))
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0)
+    assert seen == [True]
+
+
+def test_cmd_run_builds_world_after_token_check(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli, "_run_brain", lambda cfg, run, world=None, *a, **k: seen.update(world=world, k=k))
+    monkeypatch.chdir(tmp_path)
+    cli.main(["run", "--no-emotes"])
+    assert seen["world"] is None and seen["k"].get("no_emotes") is True  # 世界（连设备）在 _run_brain 里、令牌检查之后建
