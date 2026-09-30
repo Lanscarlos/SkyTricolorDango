@@ -530,8 +530,9 @@ class ConsoleServer:
         if probe_status(self.sandbox_port()):
             return 409, {"ok": False, "error": "上次留下的沙盒还在跑（占着沙盒端口），先让它退出再删"}
         try:
+            # "别处在跑"按真实时间比 mtime；流水账这一条记沙盒时间（和沙盒自己记的排在一条线上）
             return 200, forget_offline(self.sandbox_dir() / "memory" / "inner", clean, time.time(),
-                                       self.store._fallback().inner.save_every * 3)
+                                       self.store._fallback().inner.save_every * 3, at=self._sandbox_now())
         except ValueError as exc:
             return 400, {"ok": False, "error": str(exc)}
 

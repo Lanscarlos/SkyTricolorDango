@@ -108,10 +108,11 @@ def inner_state(inner_dir: Path, friends: list[str], state: str, live: Callable[
 ELSEWHERE_ERROR = "团子好像在别处跑着（current.json 刚更新过，可能是终端里的 run --live），先停掉它再删"
 
 
-def forget_offline(inner_dir: Path, req: dict, now: float, alive_within: float = 180.0) -> dict:
+def forget_offline(inner_dir: Path, req: dict, now: float, alive_within: float = 180.0, at: float | None = None) -> dict:
     """团子没在跑：直接改 persona.json（原子写）+ 流水账记一条 forget。请求不对抛 ValueError。
     current.json 在 alive_within 秒内更新过 = 别处有 live 团子在跑（它每 save_every 秒写一次）：不改，
-    否则它下次反思会把内存里的性格档案整个写回去，删掉的又回来了。"""
+    否则它下次反思会把内存里的性格档案整个写回去，删掉的又回来了。
+    now 是真实时间（和文件的 mtime 比）；at 是流水账里这一条的时间（沙盒传沙盒时间），默认 = now。"""
     kind, text, who, topic = parse_forget(req)
     store = InnerStore(inner_dir)
     try:
@@ -125,6 +126,6 @@ def forget_offline(inner_dir: Path, req: dict, now: float, alive_within: float =
     if not persona.remove(kind, text, who, topic):
         return forget_result("找不到这条（可能已经淡出了）")
     store.write_persona(persona)
-    MindLog(store.dir / "mind_log.jsonl", persist=True).forget(now, kind, text, who, topic)
+    MindLog(store.dir / "mind_log.jsonl", persist=True).forget(now if at is None else at, kind, text, who, topic)
     log.info("管理面板删了性格条目：%s %s%s", kind, topic or who, text)
     return forget_result("")
