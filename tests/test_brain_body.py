@@ -2128,6 +2128,15 @@ def test_look_person_ignores_self_box_off_center(clock):  # YOLO 把旁边的人
     assert presses(device) == []
 
 
+def test_self_box_well_right_of_center_still_counts(clock):
+    """实测（2026-09-30 22:28）：镜头没跟正，团子站在画面右边（框中心 x≈1510，偏中线 29% 屏宽），
+    YOLO 认得很稳（0.96），旧规定"偏 15% 以内"把它丢了 → 团子框 None，peek 永远不触发。"""
+    b, _, env = peek_body(clock, [((1450, 420, 120, 36), None)])
+    env.me = Rect(1446, 518, 130, 309)
+    env._apply()
+    assert "被你挡住：小明" in b.status()
+
+
 def test_look_person_peek_clears_scene_change_reference(clock):
     b, _, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 380, 120, 36), CLEAR_BODY)])
     b._ref_thumb = np.zeros((9, 16), np.uint8)

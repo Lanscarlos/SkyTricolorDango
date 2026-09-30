@@ -158,6 +158,13 @@ def test_handle_accepts_friend_requests_with_cooldown_and_skips_strangers():
     assert h.handle({"路人": Request("路人", "hand", (1400, 400), 5.0)}, now=5.5) == []  # 陌生人的牵手不接
 
 
+def test_friend_holding_up_a_candle_is_accepted_by_default():
+    """用户 2026-09-30：好友举着蜡烛凑过来也回应（以前默认只接陌生人的点火）。"""
+    device = AcceptDevice(kind="candle")
+    h, _ = handler(device)
+    assert h.handle({"懒洋洋大王": Request("懒洋洋大王", "candle", (1400, 400), 0.0)}, now=0.5) == ["懒洋洋大王:candle"]
+
+
 def test_handle_waits_while_typing():
     device = AcceptDevice()
     device.shown = True  # 输入框开着：正在打字，点屏幕会打断
