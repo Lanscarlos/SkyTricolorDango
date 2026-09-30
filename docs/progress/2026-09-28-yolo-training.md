@@ -126,6 +126,9 @@
    缺：Q 键呼唤（先真机实测按 Q 会发生什么）、"看不见好友"事件、心情 / 请求方针写进记忆（重启不丢）。要走 brainstorming
 4. **聊天气泡**（待办）：`typing` 类还没有标注（物品模式已经能标，见上面「物品识别」）；设想平时关聊天栏，看到好友气泡或每 20~30 秒打开一次。前提要真机确认关面板时消息是否仍记录
 5. 单独的任务（已开任务卡片）：大脑 / 眼睛的 `claude -p` 很可能也读到项目 CLAUDE.md（同辅助标注的问题）；`test_viewer.py::test_port_in_use_raises` 在 Windows 上偶发失败
-6. 辅助标注审查留下的小问题（没修）：`boxes` 返回成列表时整帧当"不是人"并写进缓存；坐标 NaN 让命令崩；额度用完后排队批次仍起进程；
-   帧名带 `.jpg` / "帧 " 前缀时整批丢；会话记录堆在 `.brain-claude/projects/`；提示词写死 1920×1080；`_perception_label` 里两个没用的导入
+6. ~~辅助标注审查留下的小问题~~（09-30 已修，标人和物品模式都改了）：`boxes` 回成列表按顺序当编号、看不懂的当没核对不写缓存；
+   坐标 NaN / inf 丢掉并列进清单；额度用完后排队的批次不再起进程；帧名带 `.jpg` / "帧 " 前缀照样认；
+   辅助标注的 `claude -p` 加了 `--no-session-persistence`（不再往 `.brain-claude/projects/` 堆会话记录；**以前堆下的**
+   `…-skydango-assist-claude`、`…-tmp-assist-claude` 两个目录没删，要的话手动删）；提示词按实际帧尺寸写（1920×1080 一字不变，缓存照旧有效）；
+   删了 `_perception_label` 里没用的 `roi_rect`（`Rect` 在类型注解里用着，留下）。眼睛 / 记忆整理的一次性 `claude -p` 也会留会话记录，没动
 7. 未跟踪、没动的文件：`emotes/`（用户的图标库，没提交也没 gitignore，要问用户）、`.claude/launch.json`、`docs/superpowers/plans/2026-09-27-brain-move-owner.md`

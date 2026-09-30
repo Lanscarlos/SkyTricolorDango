@@ -1084,7 +1084,7 @@ def _perception_label(cfg: Config, args) -> None:
     """用现有识别器给录下来的画面出弱标注（名字标签 + 圆圈），写成 YOLO 数据集。"""
     import cv2
 
-    from .vision.bubbles import Rect, roi_rect
+    from .vision.bubbles import Rect
     from .vision.ocr import make_ocr
     from .vision.weaklabel import (
         CLASH_REASON, data_yaml, dataset_clash, hard_images, label_items, merge_labels, ring_labels, split_of, with_self,

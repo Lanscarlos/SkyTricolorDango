@@ -447,3 +447,108 @@ def test_assist_command_system_prompt():
 
     cmd = assist_command(["claude"], AssistConfig(), system="X")
     assert cmd[cmd.index("--system-prompt") + 1] == "X"
+
+
+# ---- 辅助标注审查留下的小问题（进度文档「没做完 / 待办」第 6 条） ----
+def test_parse_boxes_as_list_uses_order_as_ids():
+    """Claude 把 boxes 回成列表时按顺序当编号 1、2…，不能整帧当"全不是人"。"""
+    text = '{"a": {"boxes": [{"cls": "self"}, {"cls": "player_unlit", "fixed_box": [0, 0, 50, 90]}], "missing": [], "unsure": ""}}'
+    r = parse_review(text, {"a": 2}, 1920, 1080)["a"]
+    assert r.verdicts[1].cls == "self" and r.verdicts[2].cls == "player_unlit"
+    assert r.verdicts[2].fixed == Rect(0, 0, 50, 90) and r.problems == []
+
+
+def test_parse_unreadable_boxes_means_not_reviewed():
+    """boxes 既不是对象也不是列表：这帧当没核对（不在结果里），不能当全不是人。"""
+    text = '{"a": {"boxes": "1 号是玩家", "missing": [], "unsure": ""}, "b": {"boxes": {"1": {"cls": "player"}}}}'
+    assert parse_review(text, {"a": 1, "b": 1}, 1920, 1080).keys() == {"b"}
+
+
+def test_reviewer_does_not_cache_unreadable_boxes(tmp_path):
+    def run(content):
+        return {"result": json.dumps({"f0": {"boxes": "看不懂", "missing": [], "unsure": ""}}), "usage": {}}
+
+    out = Reviewer(run, tmp_path, AssistConfig(batch=5, jobs=1), "m").review(_frames(1))
+    assert out == {"f0": None} and not (tmp_path / "f0.json").exists()
+
+
+def test_old_cache_with_list_boxes_now_reads_verdicts(tmp_path):
+    """修之前把列表回答原样写进了缓存：再读时按顺序解析，不用重核。"""
+    (tmp_path / "f0.json").write_text(json.dumps({
+        "prompt_version": PROMPT_VERSION, "source": "m", "candidates": [[0, 0, 10, 10]],
+        "review": {"boxes": [{"cls": "player"}], "missing": [], "unsure": ""}}), encoding="utf-8")
+    calls = []
+    out = Reviewer(_fake_run(calls), tmp_path, AssistConfig(batch=5, jobs=1), "m").review(_frames(1))
+    assert calls == [] and out["f0"].verdicts[1].cls == "player"
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity", '"nan"'])
+def test_parse_nonfinite_coordinates_are_dropped_as_problems(bad):
+    text = ('{"a": {"boxes": {"1": {"cls": "player", "fixed_box": [0, 0, %s, 90]}}, '
+            '"missing": [{"cls": "player", "box": [%s, 1, 50, 50]}, {"cls": "player", "box": [300, 300, 340, 400]}], '
+            '"unsure": ""}}') % (bad, bad)
+    r = parse_review(text, {"a": 1}, 1920, 1080)["a"]
+    assert r.verdicts[1].cls == "player" and r.verdicts[1].fixed is None
+    assert r.missing == [("player", Rect(300, 300, 40, 100), "")]
+    assert len(r.problems) == 2 and all("坐标" in p for p in r.problems)
+
+
+def test_reviewer_skips_queued_batches_after_limit(tmp_path):
+    """额度用完后，排队还没开始的批次不再起 claude -p；已缓存的照旧返回，最后照样抛 AssistLimit。"""
+    cfg = AssistConfig(batch=1, jobs=1)
+    Reviewer(_fake_run([]), tmp_path, cfg, "m").review(_frames(1))  # f0 先缓存
+    calls = []
+    with pytest.raises(AssistLimit):
+        Reviewer(_fake_run(calls, limit=True), tmp_path, cfg, "m").review(_frames(4))
+    assert calls == [["f1"]]  # f1 撞上额度；f2、f3 不再起进程；f0 走缓存
+
+
+@pytest.mark.parametrize("key", ["帧 a", "a.jpg", "帧 a.jpg", " 帧a.PNG ", "帧：a"])
+def test_parse_normalizes_frame_names(key):
+    text = json.dumps({key: {"boxes": {"1": {"cls": "player"}}, "missing": [], "unsure": ""}}, ensure_ascii=False)
+    assert parse_review(text, {"a": 1}, 1920, 1080)["a"].verdicts[1].cls == "player"
+
+
+def test_reviewer_caches_frames_answered_with_prefixed_names(tmp_path):
+    calls = []
+
+    def run(content):
+        calls.append(1)
+        body = {f"帧 f{i}.jpg": {"boxes": {"1": {"cls": "player"}}, "missing": [], "unsure": ""} for i in range(2)}
+        return {"result": json.dumps(body, ensure_ascii=False), "usage": {}}
+
+    cfg = AssistConfig(batch=5, jobs=1)
+    out = Reviewer(run, tmp_path, cfg, "m").review(_frames(2))
+    assert out["f0"].verdicts[1].cls == out["f1"].verdicts[1].cls == "player"
+    assert Reviewer(run, tmp_path, cfg, "m").review(_frames(2))["f1"].verdicts[1].cls == "player"
+    assert len(calls) == 1  # 第二次全部命中缓存
+
+
+def test_assist_command_does_not_persist_sessions():
+    """一次性 claude -p 不在配置目录的 projects/ 下留会话记录（--no-session-persistence 只配 --print）。"""
+    cmd = assist_command(["claude"], AssistConfig())
+    assert "--no-session-persistence" in cmd and "-p" in cmd
+
+
+def test_build_message_uses_actual_frame_size():
+    small = np.zeros((720, 1280, 3), np.uint8)
+    rules = build_message([("a", small, [])], "背包")[0]["text"]
+    assert "原图 1280×720" in rules and "1920×1080" not in rules
+    full = build_message([("a", np.zeros((1080, 1920, 3), np.uint8), [])], "背包")[0]["text"]
+    assert "原图 1920×1080" in full and PROMPT_VERSION == 3
+
+
+def test_perception_label_has_no_unused_imports():
+    """cli 里 perception label 相关函数的局部导入都要用上。"""
+    import ast
+    import inspect
+    import textwrap
+
+    from skydango import cli
+
+    for fn in (cli._perception_label, cli._perception_label_assist, cli._perception_label_objects):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        body = tree.body[0].body
+        names = {(a.asname or a.name).split(".")[0] for n in body if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        assert names <= used, (fn.__name__, names - used)
