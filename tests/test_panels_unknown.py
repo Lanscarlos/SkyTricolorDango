@@ -40,6 +40,11 @@ def test_looks_like_panel():
     assert not looks_like_panel([line("确定", 10, 10), line("好", 10, 60)], cfg)  # 正文太短
 
 
+def test_looks_like_panel_with_only_retry():  # 掉线弹框：OCR 漏读灰色的「取消」
+    lines = [line("连接错误", 300, 20), line("网络连接失败。 (错误码：140)", 200, 90), line("重试", 500, 300)]
+    assert looks_like_panel(lines, PanelsConfig())
+
+
 def test_scene_change_triggers_scan_and_opens_unknown(clock):
     w = watcher(ListOcr([], DIALOG))
     w.observe(scene(), clock())

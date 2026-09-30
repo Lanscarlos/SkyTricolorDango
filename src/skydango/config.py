@@ -398,7 +398,7 @@ class PanelsConfig:
     change: float = 0.25  # 画面变化触发阈值（和 brain.scene_change 同一种度量，实测后调）
     button_max_chars: int = 6  # 按钮最多几个字
     button_words: list[str] = field(
-        default_factory=lambda: ["确定", "取消", "关闭", "加入", "同意", "好的", "知道了", "返回", "拒绝", "稍后", "以后再说", "确认"]
+        default_factory=lambda: ["确定", "取消", "关闭", "加入", "同意", "好的", "知道了", "返回", "拒绝", "稍后", "以后再说", "确认", "重试"]
     )
     retreat: list[str] = field(default_factory=lambda: ["关闭", "取消", "返回", "拒绝", "稍后", "知道了", "以后再说"])  # 撤退类：大脑可以直接按
     never: list[str] = field(
