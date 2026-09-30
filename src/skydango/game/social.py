@@ -30,8 +30,11 @@ log = logging.getLogger(__name__)
 KIND_NAMES = {
     "hand": "牵手", "hug": "拥抱", "highfive": "击掌", "piggyback": "背背",
     "candle": "点火",  # 火焰：陌生人举着蜡烛走到团子旁边，要给团子点火（2026-09-28 用户说明）
+    "light": "点亮陌生人",  # 团子举蜡烛给身边没点火的黑影点火（2026-10-01，身体按 3 号键做，见 brain/body.py）
     "stranger": "陌生人", "eye": "在看留影 / 听音乐", "shared": "共享空间",
 }
+LIGHT = "light"
+LIGHT_KEY = "陌生人·点亮"  # 感知层 requests 里"团子该举蜡烛点亮身边这个黑影"的键（和陌生人举蜡烛的 "陌生人" 分开，两件事可能同时有）
 IDLE = "star"  # 没有请求时圆圈里是 ✦
 # 只是状态、不是请求的图标：没点火的陌生人平时是蜡烛 + 两只手；眼睛 = 在看留影蜡烛或听音乐；
 # 深色实心圆里的飞人 = 在其他共享空间（点了会问要不要加入，绝不能点）
@@ -66,9 +69,10 @@ def load_icons(directory: str | Path) -> dict[str, np.ndarray]:
 @dataclass(frozen=True)
 class Request:
     name: str  # 发起人的游戏昵称
-    kind: str  # hand / hug / highfive / candle
-    pos: tuple[int, int]  # 圆圈中心（整张截图坐标）
+    kind: str  # hand / hug / highfive / candle / light
+    pos: tuple[int, int]  # 圆圈中心（整张截图坐标）；light 是火焰圆盘的中心
     seen_at: float
+    track: int | None = None  # light：那个黑影的轨迹 id（感知层）
 
 
 def touch_mode(frame: np.ndarray) -> bool:
@@ -152,7 +156,7 @@ class SocialHandler:
         dry_run: bool = False,
         panel=None,  # chat.panel.PanelManager：点屏幕会关掉聊天记录面板，借着点、完了归还
     ) -> None:
-        self.dry_run = dry_run  # 只打印“将会接受”，不点屏幕
+        self.dry_run = dry_run  # 只打印"将会接受"，不点屏幕
         self.panel = panel
         self.device = device
         self.cfg = cfg
@@ -189,11 +193,13 @@ class SocialHandler:
         return base + ("；" + "；".join(rules) if rules else "")
 
     def handle(self, requests: dict[str, Request], now: float) -> list[str]:
-        """主循环每轮调一次：把还新鲜、允许、不在冷却里的请求接受掉。返回处理了哪些（“谁:什么”）。"""
+        """主循环每轮调一次：把还新鲜、允许、不在冷却里的请求接受掉。返回处理了哪些（"谁:什么"）。"""
         handled = []
         if now < self._backoff_until:
             return handled
         for req in list(requests.values()):
+            if req.kind == LIGHT:  # 举蜡烛点亮陌生人：身体按 3 号键做，这里不点屏幕（点圆盘会跟着人走）
+                continue
             key = (req.name, req.kind)
             if now - req.seen_at > self.cfg.max_age or not self.allowed(req):
                 continue

@@ -277,3 +277,23 @@ def test_only_real_requests_count():
 
     assert all(is_request(k) for k in ("candle", "hand", "hug", "highfive", "piggyback"))
     assert not any(is_request(k) for k in ("star", "stranger", "eye", "shared", None))
+
+
+def test_light_is_not_handled_by_social_handler():
+    """light（团子举蜡烛点亮陌生人）由身体按 3 号键做，SocialHandler 不点屏幕。"""
+    from skydango.game.social import LIGHT, Request
+
+    dev = FakeDevice([np.zeros((1080, 1920, 3), np.uint8)])
+    h = SocialHandler(dev, SocialConfig(), IconClassifier(ICONS), lambda: [])
+    req = Request("陌生人", LIGHT, (990, 620), 0.0, track=7)
+    assert h.allowed(req)  # 默认 accept_strangers 里有 light
+    assert h.handle({"陌生人·点亮": req}, 0.1) == []
+    assert not [c for c in dev.calls if c[0] == "tap"]
+
+
+def test_light_policy_can_turn_it_off():
+    from skydango.game.social import LIGHT, Request
+
+    h = SocialHandler(FakeDevice([np.zeros((10, 10, 3), np.uint8)]), SocialConfig(), IconClassifier(ICONS), lambda: [])
+    h.set_policy("stranger", LIGHT, False)
+    assert not h.allowed(Request("陌生人", LIGHT, (0, 0), 0.0, track=1))
