@@ -696,8 +696,8 @@ def test_shutdown_404_without_hook():
 
 
 def test_is_local_host():
-    assert is_local_host("127.0.0.1:8761", 8761) and is_local_host("[::1]:8761", 8761) and is_local_host("localhost:8761", 8761)
-    assert not is_local_host("evil.com:8761", 8761) and not is_local_host("127.0.0.1:80", 8761) and not is_local_host("", 8761)
+    assert is_local_host("127.0.0.1:19391", 19391) and is_local_host("[::1]:19391", 19391) and is_local_host("localhost:19391", 19391)
+    assert not is_local_host("evil.com:19391", 19391) and not is_local_host("127.0.0.1:80", 19391) and not is_local_host("", 19391)
 
 
 def test_describe_env_lists_things():

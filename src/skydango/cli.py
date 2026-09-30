@@ -1899,7 +1899,7 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_view)
 
     p = sub.add_parser("console", help="管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面")
-    p.add_argument("--port", type=int, help="面板端口（默认 [console] port = 8760）")
+    p.add_argument("--port", type=int, help="面板端口（默认 [console] port = 19390）")
     p.add_argument("--no-browser", action="store_true", help="不打开浏览器")
     p.set_defaults(func=cmd_console)
 
