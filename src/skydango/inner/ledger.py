@@ -133,6 +133,7 @@ class Ledger:
         history: list[Session] | None = None,  # 以前的上线（旧到新）
         store=None,  # inner.store.InnerStore
         persist: bool = False,  # 只有 live 写盘
+        backfilled: float | None = None,  # people.json 是什么时候回填的（写回去时带上）
     ) -> None:
         self.cfg = cfg
         self.friends = friends
@@ -140,7 +141,10 @@ class Ledger:
         self.history: list[Session] = list(history or [])
         self.store = store
         self.persist = persist
+        self.backfilled = backfilled
         self.session = Session(start=now, live=persist)
+        self._saved_at = float("-inf")
+        self._closed = False
         self._prev: dict[str, float] = {}  # 每个好友上一次 present 的时刻（算时长）
         self._lock = threading.Lock()
 
@@ -194,6 +198,34 @@ class Ledger:
     def said(self, now: float) -> None:
         with self._lock:
             self.session.said += 1
+
+    def save(self, now: float) -> bool:
+        """live 时每 save_every 秒写一次 people.json + current.json（身体主循环每圈调）；返回写了没有。"""
+        if not self.persist or self.store is None or self._closed or now - self._saved_at < self.cfg.save_every:
+            return False
+        with self._lock:
+            self._saved_at = now
+            self.session.saved = now
+            self.store.write_people(self.cards, self.backfilled)
+            self.store.write_current(self.session)
+        return True
+
+    def close(self, summary: str, now: float) -> None:
+        """退出：这一次追加进 days.jsonl、写 people.json、删 current.json。只生效一次；不写盘时什么都不做。"""
+        if self._closed:
+            return
+        self._closed = True
+        if not self.persist or self.store is None:
+            return
+        with self._lock:
+            self.session.end = now
+            self.session.ended = "normal"
+            self.session.summary = summary or ""
+            self.session.saved = now
+            self.store.write_people(self.cards, self.backfilled)
+            self.store.append_day(self.session)
+            self.store.drop_current()
+            self.history.append(self.session)
 
     # ---- 给大脑看的 ----
     def status_line(self, names: Sequence[str], now: float) -> str:
