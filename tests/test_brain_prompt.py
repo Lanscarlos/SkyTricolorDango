@@ -195,3 +195,13 @@ def test_days_before_recent_turns(tmp_path):
     now = time.time()
     text = brain_prompt(ReplyConfig(), _history_store(tmp_path, now), history_turns=3, now=now, days="## 日子\n今天……", inner=True)
     assert text.index("## 日子") < text.index("## 上次聊到哪")
+
+
+def test_mind_rules_after_inner_rules():
+    from skydango.brain.prompt import INNER_RULES, MIND_RULES
+
+    text = brain_prompt(ReplyConfig(), None, inner=True, mind=True)
+    assert text.index(INNER_RULES) < text.index(MIND_RULES) < text.index("- 记住聊过的内容和对方的名字")
+    assert "别扭立刻作废" in MIND_RULES and "牵手" in MIND_RULES
+    assert brain_prompt(ReplyConfig(), None, inner=True) == brain_prompt(ReplyConfig(), None, inner=True, mind=False)
+    assert MIND_RULES not in brain_prompt(ReplyConfig(), None, inner=True)

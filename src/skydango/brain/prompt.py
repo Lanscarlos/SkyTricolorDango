@@ -124,6 +124,11 @@ INNER_RULES = """- 状态和事件里写了你和每个好友的交情（见过�
 - 别报数字（不说“我们见过 13 次”“你今天待了 40 分钟”）。
 - 他上次提过的事可以接着问（“考试怎么样了”），拿不准先 recall。
 """
+MIND_RULES = """- 状态里的“心里”是你现在的心情、精力、别扭和惦记的事。照着它说话：开心可以皮一点，低落、困了话短、兴致不高，困了可以说困；别每句都提自己的心情。
+- 跟谁闹别扭：可以嘲两句、慢点接、装作不在乎；他认真问、说难过、说不舒服、真的生气了，别扭立刻作废，照常关心他。不骂人、不翻旧账、不拿牵手拥抱这些互动冷落人。
+- 惦记的事：见到那个人、场合合适时自然地问一句，别一见面就查户口。
+- 想做的事、小心思：场合合适时提，别硬塞；做不到的（坐下、弹琴、自己去远处）只能说想，请别人配合。
+"""
 REMEMBER_ANCHOR = "- 记住聊过的内容和对方的名字"  # 交情规矩、按需面板的说明都插在这一条前面
 
 SUMMARY_REQUEST = """（身体）要下线了。用不超过 300 字写一份这次的经过，留给下次的你：在哪、和谁玩了什么、聊了什么、答应过什么、要注意的事。
@@ -186,6 +191,7 @@ def brain_prompt(
     bubble: bool = False,
     days: str = "",
     inner: bool = False,
+    mind: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -194,7 +200,7 @@ def brain_prompt(
     history_turns：带上 history.jsonl 最近几轮原话（重启后接得上话），0 不带。
     proactive：看场合主动开口（[proactive] enabled）。
     bubble：身体反射替大脑冒输入气泡（[reflex] enabled 且 bubble）。
-    days：「日子」一节（内心层，放在「上次聊到哪」之前）；inner：内心层开着（加交情规矩）。"""
+    days：「日子」一节（内心层，放在「上次聊到哪」之前）；inner：内心层开着（加交情规矩）；mind：反思开着（加心情 / 别扭 / 惦记的规矩）。"""
     rules = static_prompt(reply, proactive)
     if bubble:
         rules = rules.replace(SAY_FIRST, SAY_FIRST + BUBBLE_NOTE, 1)
@@ -204,4 +210,6 @@ def brain_prompt(
         rules = rules.replace(REMEMBER_ANCHOR, PANEL_AUTO_NOTE + REMEMBER_ANCHOR, 1)
     if inner:
         rules = rules.replace(REMEMBER_ANCHOR, INNER_RULES + REMEMBER_ANCHOR, 1)
+    if mind:  # 插在交情规矩之后
+        rules = rules.replace(REMEMBER_ANCHOR, MIND_RULES + REMEMBER_ANCHOR, 1)
     return memory_prompt(reply, store, history_turns, now, days) + "\n\n" + rules

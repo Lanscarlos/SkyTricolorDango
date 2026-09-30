@@ -77,3 +77,24 @@ def test_week_counts_calendar_days():  # 终审 #5：滚动窗口 + 日历日期
     history = [Session(start=wed_10 - 7 * 86400 + 3600, end=wed_10 - 7 * 86400 + 7200, ended="normal")]
     history += [Session(start=wed_10 - d * 86400, end=wed_10 - d * 86400 + 60, ended="normal") for d in range(6, 0, -1)]
     assert "最近 7 天上线了 7 天" in days_prompt(history, {}, FRIENDS, wed_10, 7)
+
+
+def test_days_prompt_with_diary():
+    history = [Session(start=NOW - 7200, end=NOW - 3600, ended="normal", friends=["小明"], summary="要点")]
+    lines = days_prompt(history, {}, FRIENDS, NOW, 7, diaries=["今天和小明看了日落。" + "啊" * 300]).splitlines()
+    assert lines[2] == "上次见到了：小明。"
+    assert lines[3].startswith("上次的日记：今天和小明看了日落。") and len(lines[3]) == len("上次的日记：") + 200
+    assert days_prompt(history, {}, FRIENDS, NOW, 7) == days_prompt(history, {}, FRIENDS, NOW, 7, diaries=[])
+
+
+def test_days_prompt_diary_on_first_time_and_several():
+    text = days_prompt([], {}, FRIENDS, NOW, 7, diaries=["前天。", "昨天。"])
+    assert "上次的日记：前天。 昨天。" in text
+
+
+def test_ledger_days_prompt_passes_diaries():
+    from skydango.config import InnerConfig
+    from skydango.inner.ledger import Ledger
+
+    led = Ledger(InnerConfig(), lambda: FRIENDS, NOW, history=[Session(start=NOW - 7200, end=NOW - 3600, ended="normal")])
+    assert "上次的日记：嗯。" in led.days_prompt(NOW, diaries=["嗯。"])
