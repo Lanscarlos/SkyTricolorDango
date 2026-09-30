@@ -529,6 +529,26 @@ class ProactiveConfig:
 
 
 @dataclass
+class ReflexConfig:
+    """身体反射（见 docs/superpowers/specs/2026-09-30-body-reflex-design.md）：有人跟团子说话马上冒输入气泡、回礼、闲着做小动作。数字都是估的"""
+
+    enabled: bool = True  # false = 完全照旧（不开框、不做反射动作、gesture 照旧交给大脑）
+    bubble: bool = True  # 有人跟团子说话时身体马上打开输入框（头顶“正在输入”），大脑想好了用这个框发
+    followup_window: float = 30.0  # 团子说完多少秒内好友接话，算“在跟团子说”
+    bubble_max: float = 45.0  # 替大脑开的框最长开多久（秒）
+    addressed: list[str] = field(default_factory=list)  # 被叫到时开框前偶尔做的小动作（轮盘上的动作名）
+    addressed_chance: float = 0.3
+    return_map: dict[str, str] = field(default_factory=dict)  # 回礼：[gesture] labels 里的标签 → 动作名，比如 wave = "挥手"
+    return_chance: float = 0.7
+    idle: list[str] = field(default_factory=list)  # 闲着时的小动作
+    idle_min: float = 180.0  # 闲着多久做一个（秒，在 idle_min~idle_max 之间随机）
+    idle_max: float = 420.0
+    quota_window: float = 600.0  # 反射动作额度的时间窗口（秒）
+    quota: int = 4  # 窗口内反射最多做几个动作
+    min_gap: float = 4.0  # 任何两个动作（反射或大脑）之间至少隔几秒，给动画留时间
+
+
+@dataclass
 class ConsoleConfig:
     """管理面板（`console`，见 docs/superpowers/specs/2026-09-29-console-design.md）。启动选项由面板写进 console.toml，只影响面板启动的团子。"""
 
@@ -570,6 +590,7 @@ class Config:
     peek: PeekConfig = field(default_factory=PeekConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    reflex: ReflexConfig = field(default_factory=ReflexConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
 
 
