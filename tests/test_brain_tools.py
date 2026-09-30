@@ -49,6 +49,10 @@ class FakeBody:
         self.calls.append(("track", name, seconds))
         return f"开始盯着{name}了"
 
+    def set_attention(self, mode, focus=None):
+        self.calls.append(("set_attention", mode, focus))
+        return "注意力：" + mode
+
     def chat_log(self, n):
         self.calls.append(("chat_log", n))
         return "log"
@@ -96,7 +100,7 @@ class FakeEyes:
 def test_tool_names_and_actions():
     assert TOOL_NAMES == [
         "look", "look_at", "look_person", "look_around", "status", "chat_log", "recall", "say", "emote", "set_request_policy", "camera",
-        "camera_reset", "move", "check_friend", "track", "stop_task", "panel_read", "panel_press", "panel_close",
+        "camera_reset", "attention", "move", "check_friend", "track", "stop_task", "panel_read", "panel_press", "panel_close",
     ]
     assert ACTIONS == {
         "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task",
@@ -308,3 +312,21 @@ def test_sandbox_says_missing_parts():  # 沙盒计划 Task 5：镜头、好友�
     assert body.calls == []
     assert tb.run("emote", {"name": "鞠躬"}) == ("ok", False)  # 别的照旧
     assert ToolBox(FakeBody()).run("camera", {"action": "left"}) == ("ok", False)
+
+
+def test_attention_tool_is_listed_and_not_an_action():
+    from skydango.brain.tools import DESCRIPTIONS
+
+    assert "attention" in DESCRIPTIONS and "attention" not in ACTIONS  # 不在游戏里做事：不让心跳退档归零
+    assert "随意" in DESCRIPTIONS["attention"] and "别动" in DESCRIPTIONS["attention"]
+
+
+def test_attention_tool_calls_body():
+    body = FakeBody()
+    tb = ToolBox(body)
+    out, err = tb.run("attention", {"mode": "专心", "focus": "小明"})
+    assert not err and body.calls[-1] == ("set_attention", "专心", "小明")
+    tb.run("attention", {"mode": "随意", "focus": ""})
+    assert body.calls[-1] == ("set_attention", "随意", None)
+    tb.run("attention", {"mode": "好奇"})
+    assert body.calls[-1] == ("set_attention", "好奇", None)

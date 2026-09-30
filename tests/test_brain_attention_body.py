@@ -238,3 +238,20 @@ def test_friends_use_name_keys_across_sources(clock):
     env.people_list = [Person(7, "friend", "小明", Rect(1550, 400, 100, 300), "右边", "近")]
     keys = {t.key for t in b._attention_targets(clock())}
     assert keys == {"n:小明"}
+
+
+# ---- Task 6：大脑定注意力模式 ----
+
+def test_set_attention_changes_mode_and_status(clock):
+    b, dev, reader, events, env, cam = attn_body(clock)
+    out = b.set_attention("专心", "小明")
+    assert out.startswith("注意力：专心，关注小明")
+    assert "注意力：专心，关注小明" in b.status()
+    b.set_attention("随意", "")
+    assert "注意力：" not in b.status()
+
+
+def test_set_attention_rejects_unknown_mode(clock):
+    b, *_ = attn_body(clock)
+    with pytest.raises(ToolError, match="随意 / 好奇 / 专心 / 别动"):
+        b.set_attention("发呆")

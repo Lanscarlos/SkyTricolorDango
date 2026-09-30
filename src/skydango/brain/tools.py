@@ -38,6 +38,7 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "steps 1~4，默认 1。转之前身体会关掉聊天记录面板，转完再打开。"
     ),
     "camera_reset": "把镜头转回原位（按之前转过的反着转回去，再和转之前的画面比对着对准）。",
+    "attention": "改你闲着时东张西望的习惯：mode 随意（默认）/ 好奇（多看看）/ 专心（只看跟你说话、冲你来的人）/ 别动（不转镜头）；focus 填一个名字表示更想看他（空 = 不特别关注）。身体闲着会自己看，只在想改习惯时设，不用每轮设。",
     "move": (
         "小步走动，direction：forward 前进 / back 后退 / left 向左 / right 向右（相对镜头朝向）；steps 1~3，默认 1。"
         "走完用 status / look 看看走到哪了再决定接着走不走；两次之间要隔几秒。走出去回不去（没有复位），"
@@ -229,6 +230,10 @@ class ToolBox:
             return lambda: b.camera_move(action, steps)
         if name == "camera_reset":
             return b.camera_reset
+        if name == "attention":
+            mode, focus = _str(a, "mode"), a.get("focus")
+            focus = focus.strip() if isinstance(focus, str) and focus.strip() else None
+            return lambda: b.set_attention(mode, focus)
         if name == "move":
             direction, steps, force = _str(a, "direction"), _int(a, "steps", 1), _bool(a, "force", False)
             return lambda: b.move(direction, steps, force)

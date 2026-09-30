@@ -253,3 +253,8 @@ def test_go_on_line_does_not_contradict_proactive():  # 终审：别和“别硬
     assert "换个话头" not in GO_ON_NEW
     text = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True, proactive=True)
     assert GO_ON_NEW in text
+
+
+def test_prompt_mentions_idle_looking():
+    text = static_prompt(ReplyConfig())
+    assert "东张西望" in text and "attention" in text

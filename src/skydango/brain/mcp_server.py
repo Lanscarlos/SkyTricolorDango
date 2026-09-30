@@ -93,6 +93,10 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     def camera_reset():
         return call("camera_reset")
 
+    @srv.tool(name="attention", description=DESCRIPTIONS["attention"])
+    def attention(mode: str, focus: str = ""):
+        return call("attention", mode=mode, focus=focus)
+
     @srv.tool(name="move", description=DESCRIPTIONS["move"])
     def move(direction: str, steps: int = 1, force: bool = False):
         return call("move", direction=direction, steps=steps, force=force)

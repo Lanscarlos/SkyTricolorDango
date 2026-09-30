@@ -554,6 +554,16 @@ class Body:
             log.debug("关掉替大脑开的输入框：%s", why)
 
     # ---- 空闲注意力（东张西望，spec 2026-09-30-idle-attention） ----
+    def set_attention(self, mode: str, focus: str | None = None) -> str:
+        """大脑的 attention 工具：定东张西望的模式和关注谁（本次运行有效）。"""
+        try:
+            self.attention.set_mode(mode, focus)
+        except ValueError:
+            raise ToolError("模式只能是：随意 / 好奇 / 专心 / 别动") from None
+        log.info("注意力模式：%s%s", mode, f"，关注{self.attention.focus}" if self.attention.focus else "")
+        line = self.attention.describe()
+        return line if line.startswith("注意力：") else f"注意力：{mode}（{line}）"
+
     def _attention_on(self) -> bool:
         """注意力有没有在算：开着、聊天面板是 auto 模式（always 模式下它从不动，也不占随机数）。"""
         return self.cfg.attention.enabled and self.panel.auto
