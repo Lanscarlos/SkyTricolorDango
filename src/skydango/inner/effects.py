@@ -14,18 +14,21 @@ class Effects:
     addressed: float = 1.0  # 被叫到时做小动作的概率
     idle: float = 1.0  # 闲着的小动作间隔（< 1 更勤）
     slow: bool = False  # 没事时醒得慢一档（困）
+    wander: float = 1.0  # 空闲注意力随意看的间隔（> 1 看得少；困了看得少，和 idle 方向相反）
 
 
 NEUTRAL = Effects()
 
-# 档位 → (额度, 被叫到的小动作, 闲着间隔, 心跳慢一档)
-_MOOD = {"开心": (1.5, 1.5, 1.0, False), "平常": (1.0, 1.0, 1.0, False), "低落": (0.5, 1.0, 1.0, False), "烦": (0.5, 0.0, 1.0, False)}
-_ENERGY = {"精神": (1.0, 1.0, 1.0, False), "还行": (1.0, 1.0, 1.0, False), "有点累": (0.75, 1.0, 1.0, False), "困": (0.5, 1.0, 0.6, True)}
-_PLAIN = (1.0, 1.0, 1.0, False)
+# 档位 → (额度, 被叫到的小动作, 闲着间隔, 心跳慢一档, 随意看的间隔)
+_MOOD = {"开心": (1.5, 1.5, 1.0, False, 0.8), "平常": (1.0, 1.0, 1.0, False, 1.0), "低落": (0.5, 1.0, 1.0, False, 1.5),
+         "烦": (0.5, 0.0, 1.0, False, 1.2)}
+_ENERGY = {"精神": (1.0, 1.0, 1.0, False, 1.0), "还行": (1.0, 1.0, 1.0, False, 1.0), "有点累": (0.75, 1.0, 1.0, False, 1.3),
+           "困": (0.5, 1.0, 0.6, True, 2.0)}
+_PLAIN = (1.0, 1.0, 1.0, False, 1.0)
 
 
 def effects(mood_level: str, energy_level: str) -> Effects:
     """心情和精力的倍数相乘；额度下限 QUOTA_FLOOR。认不出的档位当平常 / 精神。"""
     m = _MOOD.get(mood_level, _PLAIN)
     e = _ENERGY.get(energy_level, _PLAIN)
-    return Effects(max(QUOTA_FLOOR, m[0] * e[0]), m[1] * e[1], m[2] * e[2], m[3] or e[3])
+    return Effects(max(QUOTA_FLOOR, m[0] * e[0]), m[1] * e[1], m[2] * e[2], m[3] or e[3], m[4] * e[4])

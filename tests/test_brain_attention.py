@@ -167,3 +167,113 @@ def test_describe_lines():
     assert a.describe() == "在看：小明（在说话）"
     a.think([tgt("a:1600", "approach", 1600, None, 1.0)], 1.0)
     assert a.describe() == "在看：陌生人（朝你走过来）"
+
+
+# ---- Task 4：随意看、模式、focus ----
+
+def run_idle(a, t0, t1, step=0.7, targets=()):
+    """空转：每圈 think，给了按键就当真按了；返回 [(时间, Thought)]。"""
+    out, t = [], t0
+    while t <= t1:
+        th = a.think(list(targets), t)
+        if th.action is not None:
+            a.pressed(th.action, t)
+        out.append((t, th))
+        t += step
+    return out
+
+
+def test_wander_after_random_quiet_interval():
+    a = attn()
+    log = run_idle(a, 0.0, 40.0)
+    starts = [t for (t, th), (_, prev) in zip(log[1:], log) if th.wandering and not prev.wandering]
+    assert starts and 8.0 <= starts[0] <= 20.0 + 0.7
+    first = [th for t, th in log if th.wandering][:6]
+    assert all(th.action is None or th.action.seconds == Config().track.nudge_max for th in first)
+    presses = 0
+    for (t, th), (_, nxt) in zip(log, log[1:]):
+        presses += th.action is not None
+        if th.wandering and not nxt.wandering:
+            break
+    assert 2 <= presses <= 4
+    assert a.describe() in ("闲着随意看", "没在看什么")
+
+
+def test_wander_never_same_side_more_than_limit():
+    a = attn(wander_min=1.0, wander_max=1.0, wander_presses=[1, 1])
+    sides = [th.action.direction for t, th in run_idle(a, 0.0, 200.0) if th.wandering and th.action is not None]
+    assert len(sides) >= 10
+    run = longest = 1
+    for x, y in zip(sides, sides[1:]):
+        run = run + 1 if x == y else 1
+        longest = max(longest, run)
+    assert longest <= 2
+
+
+def test_target_interrupts_wander():
+    a = attn(wander_min=1.0, wander_max=1.0, wander_presses=[4, 4])
+    log = run_idle(a, 0.0, 3.0)
+    assert any(th.wandering for t, th in log)
+    th = a.think([tgt("t:1", "talk_friend", 1600, "小明", 3.5)], 3.7)
+    assert not th.wandering and th.current.key == "t:1"
+
+
+def first_wander(a):
+    return next(t for t, th in run_idle(a, 0.0, 200.0, step=0.5) if th.wandering)
+
+
+def test_wander_scale_and_curious_mode_shorten_interval():
+    base = first_wander(attn(seed=3))
+    slow = attn(seed=3)
+    assert next(t for t, th in [(t, slow.think([], t, wander_scale=2.0)) for t in [i * 0.5 for i in range(400)]] if th.wandering) > base
+    curious = attn(seed=3)
+    curious.set_mode("好奇", None)
+    assert first_wander(curious) < base
+
+
+def test_focused_mode_ignores_low_interest_and_no_wander():
+    a = attn(wander_min=1.0, wander_max=1.0)
+    a.set_mode("专心", None)
+    log = run_idle(a, 0.0, 10.0, targets=[tgt("t:1", "friend_present", 1600, "小红")])
+    assert all(th.current is None and th.action is None and not th.wandering for t, th in log)
+    th = a.think([tgt("t:2", "talk_friend", 1600, "小明", 11.0)], 11.0)
+    assert th.current.key == "t:2"
+
+
+def test_still_mode_never_moves_nor_looks_first():
+    a = attn(wander_min=1.0, wander_max=1.0)
+    a.set_mode("别动", None)
+    for t, th in run_idle(a, 0.0, 10.0, targets=[tgt("t:1", "talk_friend", 1600, "小明", 0.0)]):
+        assert th.action is None and not th.look_first
+    assert a.describe().startswith("注意力：别动；在看：小明")
+
+
+def test_curious_raises_stranger_talk():
+    a = attn()
+    a.set_mode("好奇", None)
+    th = a.think([tgt("t:1", "talk_stranger", 1600), tgt("n:小红", "approach", 300, "小红", 0.0)], 0.0)
+    assert a.interest(th.current) == pytest.approx(0.7)
+
+
+def test_focus_boosts_person_and_slows_boredom():
+    a = attn()
+    a.set_mode("随意", "懒洋洋大王")
+    th = a.think([tgt("t:1", "friend_present", 960, "懒洋洋大玉"), tgt("a:300", "approach", 300, None, 0.0)], 0.0)  # OCR 错一个字也认
+    assert th.current.key == "t:1"
+    for i in range(1, 9):  # 看了 4 秒：普通人已经腻到 0.8，关注的人只腻一半
+        a.think([tgt("t:1", "friend_present", 960, "懒洋洋大玉")], i * 0.5)
+    assert a._bored["t:1"] == pytest.approx(0.4, abs=0.05)
+
+
+def test_set_mode_rejects_unknown():
+    with pytest.raises(ValueError):
+        attn().set_mode("发呆", None)
+
+
+def test_describe_with_mode_and_focus():
+    a = attn()
+    a.set_mode("专心", "小明")
+    a.think([tgt("t:1", "friend_present", 960, "小明")], 0.0)
+    assert a.describe() == "注意力：专心，关注小明；在看：小明（站在那）"
+    a.set_mode("随意", "")
+    assert a.focus is None and a.describe() == "在看：小明（站在那）"
