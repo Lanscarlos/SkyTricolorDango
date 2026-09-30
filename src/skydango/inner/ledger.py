@@ -239,6 +239,13 @@ class Ledger:
                 parts.append(describe(name, card, now) if card is not None else raw)
         return "、".join(parts)
 
+    def days_prompt(self, now: float) -> str:
+        """系统提示词的「日子」一节（启动时算一次）。"""
+        from .days import days_prompt
+
+        with self._lock:
+            return days_prompt(self.history, self.cards, self.friends(), now, self.cfg.long_gap)
+
     # ---- 内部 ----
     def _touch(self, card: Card, name: str, now: float) -> None:
         today = day_of(now)

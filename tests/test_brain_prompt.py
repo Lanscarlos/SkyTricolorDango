@@ -173,3 +173,25 @@ BUBBLE = "有人跟你说话时，身体已经替你冒了输入气泡"
 def test_bubble_note_only_when_enabled():
     assert BUBBLE in brain_prompt(ReplyConfig(), None, bubble=True)
     assert BUBBLE not in brain_prompt(ReplyConfig(), None)
+
+
+def test_brain_prompt_inner_adds_days_and_rules():
+    from skydango.brain.prompt import INNER_RULES
+
+    text = brain_prompt(ReplyConfig(), None, days="## 日子\n今天……", inner=True)
+    assert "## 日子\n今天……" in text and INNER_RULES in text
+    assert text.index(INNER_RULES) < text.index("- 记住聊过的内容和对方的名字")
+    assert "别报数字" in INNER_RULES
+
+
+def test_brain_prompt_inner_off_unchanged():
+    assert brain_prompt(ReplyConfig(), None) == brain_prompt(ReplyConfig(), None, days="", inner=False)
+    assert "## 日子" not in brain_prompt(ReplyConfig(), None)
+
+
+def test_days_before_recent_turns(tmp_path):
+    import time
+
+    now = time.time()
+    text = brain_prompt(ReplyConfig(), _history_store(tmp_path, now), history_turns=3, now=now, days="## 日子\n今天……", inner=True)
+    assert text.index("## 日子") < text.index("## 上次聊到哪")
