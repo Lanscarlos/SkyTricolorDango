@@ -72,6 +72,18 @@ def test_bad_json_is_none(clock):
     assert r.poll() is None
 
 
+def test_bad_json_logs_full_text(clock, caplog):  # 2026-09-30 下线反思坏了，日志只有前 120 字，看不出坏在哪
+    raw = '{"mood": {"level": "开心", "text": "好"}, "diary": "' + "今天玩得很开心" * 20 + '他说"来找我"了"}'
+    r = Reflector(CFG, FakeLlm(raw), clock, threaded=False)
+    with caplog.at_level("DEBUG", logger="skydango.inner.reflect"):
+        assert r.final("x") is None
+    assert any(rec.levelname == "DEBUG" and "来找我" in rec.getMessage() for rec in caplog.records)
+
+
+def test_system_prompt_asks_for_corner_quotes():
+    assert "「」" in REFLECT_SYSTEM
+
+
 def test_only_one_at_a_time(clock):
     gate = threading.Event()
     r = Reflector(CFG, FakeLlm("{}", wait=gate), clock)

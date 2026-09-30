@@ -32,6 +32,7 @@ REFLECT_SYSTEM = """你是《光遇》里的三彩团子（人设见材料），
 
 只输出一个 JSON 对象，不要解释：
 {"mood": {"level": "...", "text": "..."}, "grudge": "keep", "wants_add": [{"kind": "...", "text": "...", "who": "..."}], "wants_done": ["..."], "diary": "", "memos": []}
+字符串里引用别人的话用「」，不要用英文双引号（会把 JSON 弄坏）。
 
 材料最后说“这是今天下线前的最后一次”时，再写：diary = 一段第一人称日记（不超过 200 字，口语，写今天和谁玩了什么、心情怎么样）；memos = 给以后的自己的要点（不超过 5 条，每条不超过 30 字，写清楚是谁、具体日期，只记以后用得上的）。其他时候这两项留空。"""
 
@@ -174,4 +175,5 @@ class Reflector:
         result = parse_reflection(raw)
         if result is None:
             log.warning("反思的回答不是 JSON，沿用上一份：%s", (raw or "")[:120])
+            log.debug("反思的原文：%s", raw)  # WARNING 只有开头，坏在哪要看全文
         return result
