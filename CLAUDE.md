@@ -363,7 +363,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   真机是 `cli._game_world`（原样搬的，`world=None` 时在检查完令牌之后才建），沙盒是 `sandbox/world.py` 的 `sandbox_world`。身体、事件队列、眼睛、反思器、大脑循环、账本都用 world 的钟
 - **沙盒世界**：模拟时钟 `SimClock`（只往前拨；起始时间不早于 `clock.json` / 沙盒 `days.jsonl` 最后一次下线）、中灰截图（不算黑屏）、队列读聊天、名单当身边、手写场景当眼睛（空 = 看不清，不调 Haiku）；
   说话 / 动作 / 走路 / 气泡都写进沙盒聊天记录（`sandbox/transcript.py`）；没有镜头、好友树、面板、互动请求（工具回"沙盒里没有这个"）；`look` / `look_person` 只给文字（`World.text_only`）
-- **总是 live，但只写 `sandbox/memory/`**（`[sandbox] dir`，整个 `sandbox/` 不进 git）：真的 `memory/` 永远不碰（端到端测试比 sha256）。随手记、反思、日记都真的调 Claude，和真机一样花额度
+- **总是 live，但只写 `sandbox/memory/`**（`[sandbox] dir`，整个 `sandbox/` 不进 git）：真的 `memory/` 永远不碰（端到端测试比 sha256）；
+  沙盒记忆目录和 `reply.memory_dir` 重合（相同或互相包含，比如 `dir = "."`）时，重置和启动都拒绝。`--duration` 按真实时间，快进不会提前下线。随手记、反思、日记都真的调 Claude，和真机一样花额度
 - **子进程** `python -m skydango sandbox --port 19392 [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]`：只给 JSON 接口（`sandbox/server.py`：`/status` `/state` 长轮询 `/op` `/brain` `/inner` `/inner/forget` `/shutdown`，本机 Host + `post_guard`）；
   操作经 `body.call` 在身体线程做（`sandbox/control.py`：冒充发言、来去、陌生人、地名、场景、新鲜事、快进、拨时间、立刻反思）；下线 = `/shutdown`，走最终反思 → 日记 → 合账本，再存 `clock.json`
 - **管理面板**：子进程槽带 kind（团子 / 沙盒），**同一时间只能有一个**（共用令牌和 `.brain-claude/`），另一个在跑时拒绝并提示先停；`/sandbox/*` 转发、`/live/*` 只在团子时转。
@@ -376,9 +377,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   - 身体正在执行 say 这类命令时点「下线」，中断会经 Future 传进 MCP 线程报一段未处理异常（`run` 原来就这样）
   - 大脑时间线每轮的开始时间是真实时间，大脑收到的消息里是沙盒时间
   - 好友一直在身边时快进超过 `visit_gap`，关系卡会多记一次"见过"
-  - 沙盒停着时在「内心」页删性格条目，流水账那一条记的是真实时间，排序可能跑到沙盒时间前面
-  - 记忆整理提示里的"今天是"、`recall` 的天数窗口还用真实时间
   - 回放时的操作不录；回放完接着手动玩的从 `memory = "keep"` 起录，存不成"回放 + 手动"一整个剧本
+  - 额度用完时 idle 不看事件队列（大脑醒不来，事件会一直积着）：回放照样往下走、报告里那一步标"额度用完"，这段时间团子的反应其实没测到
 - **要用真 Claude 验证**（spec「验证」，都没做）：
   1. 重置记忆、启动，冒充好友聊几句：聊天记录、"现在"、大脑时间线都在动
   2. 快进到 23:30：精力变困、主动开口变少（聊天记录里 blocked 或干脆不说）；额度用完时顶上写"额度用完，约 N 分钟后再试"
