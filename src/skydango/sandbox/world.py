@@ -279,4 +279,5 @@ def sandbox_world(cfg, sim, transcript: Transcript, scene: Scene) -> World:
         wall=sim.wall,
         describe=scene.describe,
         name="sandbox",
+        text_only=True,
     )

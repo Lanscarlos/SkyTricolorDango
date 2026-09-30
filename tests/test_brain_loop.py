@@ -331,3 +331,52 @@ def test_heartbeat_slower_when_sleepy(clock):
     assert brain.heartbeat(clock()) == 90
     brain._idle = 5
     assert brain.heartbeat(clock()) == 180  # 不越界
+
+
+# ---- 沙盒计划 Task 2：in_turn、模拟时钟 ----
+def test_in_turn_only_during_a_wake(clock):
+    seen = []
+
+    class Peek(FakeSession):
+        def send(self, text):
+            seen.append(brain.in_turn)
+            return super().send(text)
+
+    brain, *_ = make(clock, Peek(ok(), ClaudeError("坏了"), RuntimeError("进程起不来")))
+    assert brain.in_turn is False
+    brain.wake(clock(), "heartbeat")
+    assert seen == [True] and brain.in_turn is False
+    brain.wake(clock(), "heartbeat")  # ClaudeError：退避
+    assert seen == [True, True] and brain.in_turn is False
+    with pytest.raises(RuntimeError):
+        brain.wake(clock(), "heartbeat")  # 别的异常：run() 兜住
+    assert seen == [True, True, True] and brain.in_turn is False
+
+
+def test_sim_clock_skip_then_chat_wakes_within_debounce():  # Review Focus 1：大脑和事件队列同一个钟
+    from skydango.sandbox.clock import SimClock
+
+    sim = SimClock()
+    events = EventQueue(clock=sim.clock)
+    session = FakeSession()
+    chat = ChatConfig()
+    brain = Brain(BrainConfig(heartbeat=[1e9]), chat, session, FakeToolBox(), events, lambda now: [],
+                  clock=sim.clock, wall=sim.wall)
+    stop = threading.Event()
+    t = threading.Thread(target=brain.run, args=(stop,), daemon=True)
+    t.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not session.sent and time.monotonic() < deadline:  # 刚上线马上醒一次
+            time.sleep(0.02)
+        assert len(session.sent) == 1
+        sim.skip(3600)
+        started = time.monotonic()
+        events.put("chat", "小明：在吗")
+        while len(session.sent) < 2 and time.monotonic() - started < chat.debounce + 3:
+            time.sleep(0.02)
+        assert len(session.sent) == 2 and "在吗" in session.sent[1]
+        assert time.monotonic() - started < chat.debounce + 1.5
+    finally:
+        stop.set()
+        t.join(3)
