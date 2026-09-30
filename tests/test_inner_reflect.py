@@ -5,7 +5,7 @@ from conftest import FakeLlm
 
 from skydango.brain.claude import ClaudeError
 from skydango.config import InnerConfig
-from skydango.inner.reflect import REFLECT_SYSTEM, Reflector, materials
+from skydango.inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM, Reflector, materials
 
 CFG = InnerConfig()
 T0 = time.mktime((2026, 9, 30, 20, 0, 0, 0, 0, -1))
@@ -132,3 +132,25 @@ def test_materials_keeps_latest_80_lines():
 def test_system_prompt_rules():
     for s in ("JSON", "mood", "grudge", "wants_add", "wants_done", "diary", "memos", "不编", "keep"):
         assert s in REFLECT_SYSTEM
+
+
+# ---- 第 3 期：反思带上性格 ----
+def test_reflector_uses_given_system(clock):
+    llm = FakeLlm("{}")
+    r = Reflector(CFG, llm, clock, threaded=False, system="系统X")
+    r.stirred(clock()); clock.advance(1300); r.start("m", clock())
+    assert llm.calls[0][0] == "系统X"
+
+
+def test_persona_system_mentions_keys():
+    for s in ("persona_add", "persona_used", "catchphrases", "jokes", "opinions", "外貌"):
+        assert s in PERSONA_SYSTEM
+
+
+def test_materials_traits_section():
+    base = dict(now=T0, energy_note="", mind_line="", chat=[], comings=[], cards=[], notes=[], persona="", final=False)
+    assert "你攒下的性格" not in materials(**base)  # Review Focus 5：不传和第 2 期一样
+    assert materials(**base) == materials(**base, traits=None)
+    assert "你攒下的性格：\n（还没有）" in materials(**base, traits="")
+    text = materials(**base, traits="口头禅：害")
+    assert "口头禅：害" in text and text.index("你攒下的性格") < text.index("相关的好友")
