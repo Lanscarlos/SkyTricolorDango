@@ -35,6 +35,10 @@ from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
 from .reflex import Reflexes, addressed
+from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
+from ..inner.energy import Energy, awake_minutes, energy as inner_energy
+from ..inner.ledger import card_line, match_friend
+from ..inner.reflect import materials as reflect_materials_text
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
 from .skills import SkillRunner
 from .track import TrackSkill
@@ -82,6 +86,8 @@ class Body:
         run=None,  # runlog.RunDir
         panel=None,  # chat.panel.PanelManager：cli 建一个、和镜头 / 轮盘 / 互动共用；None = 自己建
         ledger=None,  # inner.ledger.Ledger：内心账本（好友关系卡、这次上线）；None = 不记
+        mind=None,  # inner.mind.Mind：心情、别扭、心愿（内心层第 2 期）；None = 没有
+        reflector=None,  # inner.reflect.Reflector：反思；None = 不反思
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
@@ -112,6 +118,17 @@ class Body:
         self.notes = notes
         self.run_dir = run
         self.ledger = ledger
+        self.mind = mind
+        self.reflector = reflector
+        self.persona: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
+        self.memory_notes: Callable[[], str] = lambda: ""  # 反思用的笔记（cli 设成 notes.md + inbox.md）
+        self._energy: Energy | None = None  # 这一圈的精力（每圈算一次）
+        self._born_wall = wall()
+        self._cheered_at = float("-inf")  # 最近一次有好友跟团子说话（墙上时间）
+        self._busy_log: deque[tuple[float, float]] = deque()  # (墙上时间, 秒)：热闹的时段，只留一小时
+        self._last_tick_wall: float | None = None
+        self._reflect_chat: list[tuple[float, str, str]] = []  # 上次反思以来听到的 / 说出的
+        self._reflect_comings: list[str] = []
         self._arrive_notes: dict[str, str] = {}  # 算作新见面、还没发 arrive 的好友 → 交情说明（跟踪中攒着，发 arrive / leave 时取走）
         self.clock = clock
         self.sleep = sleep
@@ -202,6 +219,7 @@ class Body:
         self._watch_bubble(self.clock())
         self._watch_idle(self.clock())
         self._fallback(now)
+        self._inner_tick()
         self._ledger_call("save", self.wall())
 
     def _show(self, frame, now: float, fresh: list[Message]) -> None:
@@ -224,6 +242,9 @@ class Body:
             except Exception:
                 log.debug("算场合出错", exc_info=True)
                 info["场合"] = "算不出来"
+        if self.mind is not None:
+            info["心情"] = self.mind.mood.text or self.mind.mood.level
+            info["精力"] = self._energy.note if self._energy is not None else "算不出来"
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
             self.viewer.update(
@@ -339,6 +360,14 @@ class Body:
                     log.exception("判断是不是在跟团子说话出错")
                     to_me = False
                 self._ledger_call("heard", m.speaker, m.text, to_me, self.wall())
+                if to_me:
+                    self._cheered_at = self.wall()
+        if self.mind is not None:
+            friends = self._safe_friends()
+            for m in fresh:
+                self._reflect_chat.append((self.wall(), m.speaker, m.text))
+                if self.reflector is not None:
+                    self.reflector.heard(match_friend(m.speaker, friends) is not None, now)
         self.heard = (self.heard + fresh)[-20:]
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
@@ -371,8 +400,11 @@ class Body:
 
     def _on_heard(self, fresh: list[Message], now: float) -> None:
         """有人在跟团子说话：偶尔先做个小动作，再马上冒输入气泡，大脑想好了用这个框发。一批最多一次。"""
-        self.reflexes.stir(now)
+        self.reflexes.stir(now, scale=self.effects().idle)
         if not any(self._addressed(m, now) for m in fresh):
+            return
+        if self._all_from_grudge(fresh):  # 在跟他闹别扭：故意晚点接（不冒气泡、不做小动作），大脑照常收到消息
+            log.debug("在跟 %s 闹别扭，不冒输入气泡", self.mind.grudge.who)
             return
         if self.skills.active is not None:  # 技能在按方向键：框开着按键会变成打字，动作也会打断它
             log.debug("正在%s，不冒输入气泡", self.skills.active.goal)
@@ -381,7 +413,7 @@ class Body:
         if busy:  # 开了也会马上被关掉（气泡来回闪），或者会在别的面板上按 Enter
             log.debug("不冒输入气泡：%s", busy)
             return
-        name = self.reflexes.pick_addressed(now, self._wheel())
+        name = self.reflexes.pick_addressed(now, self._wheel(), scale=self.effects().addressed)
         if name:
             self._reflex_emote(name, f"有人叫你，你下意识{name}", now)
         if not self.cfg.reflex.bubble:
@@ -561,7 +593,7 @@ class Body:
         返回 dry-run 时要附加的说明（"真执行时会先关掉……"）。"""
         if action != "say":  # 框开着时按键会变成打字、点屏幕会先收起键盘：身体替大脑开的框先关掉
             self._close_bubble(action)
-        self.reflexes.stir(self.clock())  # 有动静：闲着的小动作重新计时
+        self.reflexes.stir(self.clock(), scale=self.effects().idle)  # 有动静：闲着的小动作重新计时
         if self.panels is None:
             return ""
         notes = []
@@ -630,11 +662,15 @@ class Body:
             if now - self._left_at.get(name, float("-inf")) <= self.cfg.brain.rejoin:  # 走出画面又回来：不用再打招呼
                 self.events.put("return", f"{name} 回来了", who=name)
             else:
-                self.events.put("arrive", f"{name} 来到身边{self._arrive_notes.pop(name, '')}", who=name)
+                want = self._inner_call(lambda: self.mind.want_note(name), default="") if self.mind is not None else ""
+                text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}"
+                self.events.put("arrive", text, who=name)
+                self._reflect_note(f"{name} 来到身边")
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
             self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
             self._arrive_notes.pop(name, None)
+            self._reflect_note(f"{name} 走开了")
             self._left_at[name] = now
             if name == self.holding:  # 人都走开了，肯定没牵着了
                 self.events.put("released", f"（推测）和 {name} 分开了")
@@ -1090,6 +1126,10 @@ class Body:
             except Exception:
                 log.exception("算场合出错")
                 parts.append("场合：算不出来（详见日志）")
+        if self.mind is not None:
+            heart = self._inner_call(lambda: self.mind.line(self.wall(), self._energy))
+            if heart:
+                parts.append("心里：" + heart)
         parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
             parts.append("dry-run（说话、动作、转视角、走动都不会真的执行）")
@@ -1102,7 +1142,7 @@ class Body:
         strangers = self.env.strangers(now) if hasattr(self.env, "strangers") else 0
         return assess(
             self.cfg.proactive, self.wall(), friends, strangers, list(self.chat), list(self.spoken),
-            is_friend_fn(self.friend_names()),
+            is_friend_fn(self.friend_names()), quota_scale=self.effects().quota,
         )
 
     def chat_log(self, n: int = 20) -> str:
@@ -1146,9 +1186,13 @@ class Body:
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
         self._said_at = now
-        self.reflexes.stir(now)
+        self.reflexes.stir(now, scale=self.effects().idle)
         self.said.append(full)
         self._ledger_call("said", self.wall())
+        if self.mind is not None:
+            self._reflect_chat.append((self.wall(), "我", full))
+            if self.reflector is not None:
+                self.reflector.stirred(now)
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
         if not live:
@@ -1501,6 +1545,114 @@ class Body:
         self._ref_thumb = None
         self._forget_self()
         return result + stopped
+
+    # ---- 内心层第 2 期：心情、精力、反思（spec 2026-09-30-inner-phase2）----
+    def _inner_call(self, fn: Callable[[], Any], default=None):
+        """内心层出错只记日志，不影响身体。"""
+        try:
+            return fn()
+        except Exception:
+            log.exception("内心层出错")
+            return default
+
+    def effects(self) -> Effects:
+        """心情和精力的倍数（主动额度、反射、心跳）；没有内心层或出错时是中性的。"""
+        if self.mind is None:
+            return NEUTRAL
+        try:
+            return inner_effects(self.mind.mood.level, self._energy.level if self._energy is not None else "精神")
+        except Exception:
+            log.exception("算心情的后果出错")
+            return NEUTRAL
+
+    def energy_now(self) -> Energy:
+        wall = self.wall()
+        t = time.localtime(wall)
+        if self.ledger is not None:
+            awake = awake_minutes(wall, self.ledger.session.start, self.ledger.history, self.cfg.inner.rest_gap)
+        else:
+            awake = max(0.0, wall - self._born_wall) / 60
+        busy = sum(sec for at, sec in self._busy_log if wall - at <= 3600) / 60
+        return inner_energy(t.tm_hour + t.tm_min / 60, awake, wall - self._cheered_at < 600, busy)
+
+    def _safe_friends(self) -> list[str]:
+        try:
+            return list(self.friend_names())
+        except Exception:
+            log.exception("读好友名单出错")
+            return []
+
+    def _all_from_grudge(self, fresh: list[Message]) -> bool:
+        if self.mind is None or self.mind.grudge is None:
+            return False
+        wall, friends = self.wall(), self._safe_friends()
+        return all(self.mind.grudge_on(match_friend(m.speaker, friends) or m.speaker, wall) for m in fresh)
+
+    def _reflect_note(self, text: str) -> None:
+        if self.mind is None:
+            return
+        self._reflect_comings.append(text)
+        if self.reflector is not None:
+            self.reflector.stirred(self.clock())
+
+    def _inner_tick(self) -> None:
+        """每圈：别扭 / 心愿到期、算精力、记热闹、取回反思结果、该反思了就开始。"""
+        if self.mind is None:
+            return
+        wall, now = self.wall(), self.clock()
+        self._inner_call(lambda: self.mind.expire(wall))
+        self._energy = self._inner_call(self.energy_now)
+        self._inner_call(lambda: self._track_busy(wall))
+        if self.reflector is None:
+            return
+        result = self._inner_call(self.reflector.poll)
+        if result is not None:
+            self._inner_call(lambda: self.apply_reflection(result))
+        if self._inner_call(lambda: self.reflector.due(now), default=False):
+            content = self._inner_call(lambda: self.reflect_materials(False))
+            if content is not None:
+                self._reflect_chat, self._reflect_comings = [], []
+                self._inner_call(lambda: self.reflector.start(content, now))
+
+    def _track_busy(self, wall: float) -> None:
+        last, self._last_tick_wall = self._last_tick_wall, wall
+        if last is not None and self.occasion().level == "busy":
+            self._busy_log.append((wall, min(max(0.0, wall - last), self.cfg.inner.max_step)))
+        while self._busy_log and wall - self._busy_log[0][0] > 3600:
+            self._busy_log.popleft()
+
+    def reflect_materials(self, final: bool) -> str:
+        """拼给反思的材料：上次反思以来的聊天和来去、相关好友的关系卡、笔记里提到他们的行。"""
+        wall = self.wall()
+        friends = self._safe_friends()
+        names = list(dict.fromkeys(
+            [n for n in (match_friend(who, friends) for _, who, _ in self._reflect_chat) if n]
+            + [n for n in (match_friend(x, friends) for x in (self.env.nearby(self.clock()) if self.env is not None else [])) if n]
+        ))
+        cards = []
+        for n in names:
+            card = self.ledger.card(n) if self.ledger is not None else None
+            if card is not None:
+                cards.append(card_line(n, card, wall))
+        notes = [line.strip() for line in (self.memory_notes() or "").splitlines()
+                 if line.strip() and not line.startswith("#") and any(n in line for n in names)][:10]
+        mind_line = self.mind.line(wall, self._energy) if self.mind is not None else ""
+        return reflect_materials_text(
+            wall, self._energy.note if self._energy is not None else "", mind_line, list(self._reflect_chat),
+            list(self._reflect_comings), cards, notes, self.persona() or "", final,
+        )
+
+    def apply_reflection(self, result: dict) -> None:
+        """反思结果套进 Mind（身体线程里）；live 时写 mind.json。"""
+        if self.mind is None:
+            return
+        cards = self.ledger.cards if self.ledger is not None else {}
+        dropped = self.mind.apply(result, cards, self._safe_friends(), self.wall(), self.cfg.inner)
+        for why in dropped:
+            log.info("反思：%s", why)
+        log.info("反思完了，心里：%s", self.mind.line(self.wall(), self._energy))
+        if self.ledger is not None and self.ledger.persist and self.ledger.store is not None:
+            self.ledger.store.write_mind(self.mind)
 
     def _ledger_call(self, method: str, *args, default=None):
         """内心账本（spec 2026-09-30-inner-phase1 §5）：出错只记日志，不影响身体。"""
