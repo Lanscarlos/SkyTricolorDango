@@ -209,16 +209,16 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 
 ## 管理面板（`[console]`，`console`）
 
-设计见 `docs/superpowers/specs/2026-09-29-console-design.md`，计划 `docs/superpowers/plans/2026-09-29-console.md`。`python -m skydango console` → 浏览器开 `http://127.0.0.1:8760/`：
+设计见 `docs/superpowers/specs/2026-09-29-console-design.md`，计划 `docs/superpowers/plans/2026-09-29-console.md`。`python -m skydango console` → 浏览器开 `http://127.0.0.1:19390/`：
 总览（启动选项 + 叫醒 / 停止 + 状态卡片 + 日志尾巴）、实时画面（iframe 嵌子进程的 viewer）、设置、设备检测。**还没在真机上用过**（spec §8 真机验证 1~6）。
 - **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
   加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
   `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程
-- **父子进程**：面板起 `python -m skydango -c <config> run [--no-brain] --live|--dry-run [--no-emotes] [--duration N] --view --viewer-port 8761 --no-browser --parent-pid <面板>`；
+- **父子进程**：面板起 `python -m skydango -c <config> run [--no-brain] --live|--dry-run [--no-emotes] [--duration N] --view --viewer-port 19391 --no-browser --parent-pid <面板>`；
   模式和真发 / 只看总是显式传，`config.toml` 的 `reply.dry_run` 不会改掉面板上的选择。同一时间只有一个子进程
 - **停止**：面板 `POST /shutdown` 给子进程的 viewer → `interrupt_main()`，走和 Ctrl+C 一样的收尾；`[console] stop_timeout`（60 秒）还没退就按进程树强杀，页面提示检查轮盘。
   子进程每 2 秒看父进程还在不在（`--parent-pid`），面板没了就自己正常退出；`/shutdown` 和看门狗共用一个**只中断一次**的钩子（`watchdog.once`），第二次中断不会打断收尾；
-  面板终端里等收尾时再按一次 Ctrl+C = 强杀。8761 已经有人响应（上次留下的团子）时提示并能让它退出，**这时不让启动新的**（免得两个团子同时在线）
+  面板终端里等收尾时再按一次 Ctrl+C = 强杀。19391 已经有人响应（上次留下的团子）时提示并能让它退出，**这时不让启动新的**（免得两个团子同时在线）
 - Windows 上子进程用 `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`：有自己的隐藏控制台，关掉面板终端窗口不会把团子直接结束（**未在真机验证**）。
   面板到子进程的本机请求都**不走代理**（开着 Clash 时 urllib 默认会把 127.0.0.1 也转走）；`console.toml` / `secrets.toml` 坏了面板照样能开，在设置页和预检里报错
 - **安全**：只监听 127.0.0.1；`/api/*`、`/live/*` 都校验 Host（防 DNS 重绑定）；POST 要 `X-Skydango: 1` + JSON + ≤ 64 KB（和 viewer 共用 `is_local_host` / `post_guard`）。

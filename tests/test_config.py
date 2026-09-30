@@ -130,7 +130,7 @@ def test_console_defaults():
     from skydango.config import Config
 
     c = Config().console
-    assert (c.port, c.child_port, c.stop_timeout, c.log_lines) == (8760, 8761, 60.0, 500)
+    assert (c.port, c.child_port, c.stop_timeout, c.log_lines) == (19390, 19391, 60.0, 500)
     assert (c.brain, c.live, c.emotes, c.duration) == (True, False, True, 0.0)
 
 
