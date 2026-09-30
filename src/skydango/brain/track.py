@@ -4,15 +4,17 @@
 每圈按名字重新找目标，不依赖轨迹 id；转镜头之后不平移轨迹框（D0：近处的人和远处的背景横移差好几倍）。
 
 - 方向：右转画面里的东西往左移 → 目标在中线右边就按右键
-- 比例控制：按键秒数 = gain × 偏差，夹到 nudge_min ~ nudge_max；偏差在死区里不动
+- 比例控制：按键秒数 = gain × 偏差，夹到 nudge_min ~ chase_max；偏差在死区里不动
 - 按完等 settle 秒画面停稳再看（不 sleep：记下按键时间，之后几圈不动）；刚开始也先等 settle（借面板的动画、画面横移）
 - 离团子太近的人转镜头时横移有上限，可能永远进不了死区：同方向连续按 stall_nudges 次误差没缩小 stall_px，就停手，
-  直到目标相对停手时挪出死区宽度再重新开始
+  直到目标相对停手时挪出死区宽度再重新开始。误差越按越大（多了 stall_px 以上）是目标跑得比镜头快，不算转不动，接着追
+- 目标从画面边上（死区外）出去了：看不到的这几秒里接着往那边按（像玩家追着转过去找）；在中间被挡住不转
 - lost_after 秒看不到 → 跟丢；到时间 → 做完。结束时不复原镜头（交给 camera_reset）
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -21,6 +23,8 @@ from ..vision.people import side_of
 from .skills import SkillStep
 
 EPS = 1e-6  # 时间比较留一点余量（浮点）
+
+log = logging.getLogger(__name__)
 
 
 class TrackSkill:
@@ -46,6 +50,7 @@ class TrackSkill:
         self._run_len = 0
         self._run_err = 0.0
         self._stalled_cx: float | None = None  # 停手时目标的 x；None = 没停手
+        self._last_cx: float | None = None  # 最后一次看到目标的 x（出了画面往哪边找）
 
     def tick(self, body: Any, frame: np.ndarray, now: float) -> SkillStep:
         cfg = self.cfg
@@ -54,6 +59,7 @@ class TrackSkill:
         found = body.target_x(self.target, now)
         if found is not None:
             cx = found[0]
+            self._last_cx = cx
             self._seen_at, self._seen, self._side = now, True, side_of(cx, width)
         else:
             self._seen = False
@@ -69,11 +75,22 @@ class TrackSkill:
             return SkillStep("running", "等聊天面板关上")
         if found is None:
             if now - self._seen_at > cfg.lost_after:
+                log.debug("盯%s：%.1f 秒没看到（人物框和 %.1f 秒内的名字标签都没有）", self.target, now - self._seen_at, cfg.max_age)
                 return SkillStep("failed", f"跟丢了（最后在{self._side}）")
-            return SkillStep("running", f"看不到{self.target}，等一下")
+            last_err = (self._last_cx - half) if self._last_cx is not None else 0.0
+            if abs(last_err) < cfg.deadband * half or body.camera is None or not self._settled(now):
+                return SkillStep("running", f"看不到{self.target}，等一下")
+            direction = "right" if last_err > 0 else "left"  # 从边上出去的：接着往那边转去找
+            seconds = self._press(last_err, half)
+            log.debug("盯%s：看不到了，最后在 x=%.0f，往%s按 %.2f 秒找", self.target, self._last_cx,
+                      "右" if direction == "right" else "左", seconds)
+            body.camera.nudge(direction, seconds)
+            self._last_nudge = now
+            self._run_dir, self._run_len = None, 0
+            return SkillStep("running", f"看不到{self.target}，往{'右' if direction == 'right' else '左'}转找一找")
         if body.camera is None:
             return SkillStep("failed", "没有镜头，转不了")
-        if any(now - t < cfg.settle - EPS for t in (self._start, self._last_nudge, self._blocked_at)):
+        if not self._settled(now):
             return SkillStep("running", f"盯着{self.target}（{self._side}）")
 
         err = cx - half
@@ -89,15 +106,28 @@ class TrackSkill:
         if direction != self._run_dir:
             self._run_dir, self._run_len, self._run_err = direction, 0, abs(err)
         elif self._run_len >= cfg.stall_nudges:
-            if self._run_err - abs(err) < cfg.stall_px:  # 按了几下误差几乎没变：转不动
+            if abs(err) - self._run_err > cfg.stall_px:  # 越按越远：目标跑得比镜头快，接着追
+                self._run_len, self._run_err = 0, abs(err)
+            elif self._run_err - abs(err) < cfg.stall_px:  # 按了几下误差几乎没变：转不动
                 self._stalled_cx, self._run_dir, self._run_len = cx, None, 0
                 return SkillStep("running", f"{self.target}就在旁边，转不动了")
-            self._run_len, self._run_err = 0, abs(err)  # 在变近：重新数下一串
-        seconds = min(max(cfg.gain * abs(err) / half, cfg.nudge_min), cfg.nudge_max)
+            else:
+                self._run_len, self._run_err = 0, abs(err)  # 在变近：重新数下一串
+        seconds = self._press(err, half)
+        log.debug("盯%s：%s x=%.0f 偏差 %+.0f，往%s按 %.2f 秒", self.target, found[1], cx, err,
+                  "右" if direction == "right" else "左", seconds)
         body.camera.nudge(direction, seconds)
         self._last_nudge = now
         self._run_len += 1
         return SkillStep("running", f"{self.target}在{self._side}，往{'右' if direction == 'right' else '左'}转一点")
+
+    def _settled(self, now: float) -> bool:
+        """刚开始、刚按完、聊天面板刚关上都要等 settle 秒画面停稳。"""
+        return all(now - t >= self.cfg.settle - EPS for t in (self._start, self._last_nudge, self._blocked_at))
+
+    def _press(self, err: float, half: float) -> float:
+        cfg = self.cfg
+        return min(max(cfg.gain * abs(err) / half, cfg.nudge_min), cfg.chase_max)
 
     @staticmethod
     def _panel_open(body: Any) -> bool:

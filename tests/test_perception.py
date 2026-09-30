@@ -1260,6 +1260,23 @@ def test_one_name_tag_names_only_one_player():
     assert w.strangers(2.0) == 1  # 另一个没挂上名字，过了 stranger_after 算陌生人
 
 
+def test_name_leaves_a_player_when_its_tag_shows_up_elsewhere():
+    """实测（2026-09-30 盯人）：好友走到镜头前的大个陌生人身后，名字标签挂到了陌生人身上；
+    好友走远后标签清清楚楚在别处，陌生人还顶着好友的名字，track 就去盯陌生人、把好友转出画面。"""
+    det = FakeDetector()
+    big = player(0, y=350, w=760, h=720)  # 离镜头很近的陌生人
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), stranger_after=1.0)
+    det.frames = [[big, tag(300, 110, y=300)]]  # 好友在他身后：标签落在他头顶的范围里
+    w.process(frame(), 0.0, panel_visible=False)
+    assert [t.data.get("name") for t in w.last_tracks if t.cls == "player"] == ["懒洋洋大王"]
+    det.frames = [[big, tag(1400, 110, y=250)]]  # 好友走远了（远处的小人 YOLO 没框出来）
+    for t in (0.5, 1.0, 1.5, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    assert [t.data.get("name") for t in w.last_tracks if t.cls == "player"] == [None]
+    assert [p.kind for p in w.people(2.0)] == ["stranger"]  # 没了标签，过了 stranger_after 照常算陌生人
+    assert w.labels["懒洋洋大王"][0] == 1400
+
+
 def test_people_lists_side_and_distance_left_to_right():
     from skydango.vision.people import describe_people
 
@@ -1425,3 +1442,92 @@ def test_scene_boxes_for_places_add_skip_objects(tmp_path, monkeypatch):
     cfg = Config()
     cfg.perception.model = str(model)
     assert cli._scene_boxes(cfg)(frame()) == [Rect(1000, 400, 90, 220)]
+
+
+# ---- 空闲注意力用：谁在说话、谁走近了（plan 2026-09-30-idle-attention Task 2） ----
+
+def friend_typing(w, det, t, bubble_on=True):
+    det.frames = [[player(1000), tag(990, 110)] + ([bubble(1005, y=260)] if bubble_on else [])]
+    w.process(frame(), t, panel_visible=False)
+
+
+def test_talkers_reports_friend_with_bubble_and_position():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    friend_typing(w, det, 10.0)
+    t = w.talkers(10.0)
+    assert [(x.name, x.friend) for x in t] == [("懒洋洋大王", True)]
+    assert t[0].x == pytest.approx(1045) and t[0].last == 10.0 and t[0].start == 10.0
+
+
+def test_talkers_reports_stranger_without_name():
+    det = FakeDetector()
+    det.frames = [[unlit(1500), bubble(1505)]]
+    w = watcher(det)
+    w.process(frame(), 10.0, panel_visible=False)
+    assert [(x.name, x.friend) for x in w.talkers(10.0)] == [(None, False)]
+
+
+def test_talker_bubble_start_resets_after_gap():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    for i in range(6):  # 10.0 ~ 10.5 一直有气泡
+        friend_typing(w, det, 10.0 + i * 0.1)
+    assert w.talkers(10.5)[0].start == 10.0
+    for i in range(15):  # 气泡消失 1.5 秒
+        friend_typing(w, det, 10.6 + i * 0.1, bubble_on=False)
+    friend_typing(w, det, 12.2)
+    assert w.talkers(12.2)[0].start == 12.2  # 新的一句
+
+
+def test_talker_continuous_bubble_longer_than_typing_window_keeps_start():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    for i in range(121):  # 连续打 12 秒（typing_window 8 秒）
+        friend_typing(w, det, 10.0 + i * 0.1)
+    assert w.talkers(22.0)[0].start == 10.0
+
+
+def test_talkers_excludes_stale():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    friend_typing(w, det, 10.0)
+    assert w.talkers(11.5) == []
+
+
+def test_recent_approaches_keep_position_and_pop_still_works():
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    walk_up(w, det, 0.0)
+    (who, cx, t), = w.recent_approaches(1.5)
+    assert who == "懒洋洋大王" and cx == pytest.approx(1045) and 0.0 < t <= 1.4
+    assert w.pop_approaches() == ["懒洋洋大王"]
+    assert w.recent_approaches(1.5)  # pop 不影响
+    assert w.recent_approaches(t + 6.0) == []  # 默认只要 5 秒内的
+
+
+def test_recent_approaches_include_strangers():
+    det = FakeDetector()
+    w = watcher(det)
+    walk_up(w, det, 0.0, tagged=False)
+    assert [a[0] for a in w.recent_approaches(1.5)] == [STRANGER]
+
+
+def test_bubble_gap_default():
+    assert PerceptionConfig().bubble_gap == 1.0
+
+
+def test_recent_approaches_follow_current_position():  # 整分支评审 2：走近的人之后挪了 / 不见了
+    det = FakeDetector()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    walk_up(w, det, 0.0)
+    for k in range(1, 6):  # 走到后接着往左挪（轨迹接得上）
+        x = 1000 - 20 * k
+        det.frames = [[Detection("player", Rect(x, 358, 90, 262), 0.9), tag(x - 10, 110, y=288)]]
+        w.process(frame(), 1.4 + 0.1 * k, panel_visible=False)
+    (who, cx, t), = w.recent_approaches(1.9)
+    assert cx == pytest.approx(945)  # 现在的位置
+    det.frames = [[]]
+    for i in range(30):  # 人走没了（轨迹过期）
+        w.process(frame(), 1.9 + i * 0.1, panel_visible=False)
+    assert w.recent_approaches(4.9) == []

@@ -85,7 +85,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/panels.py` `game/panels.py` `assets/panels/` | 面板识别：特征卡快看 + OCR 细读 + 通用兜底认出开着哪些面板（`vision`）；按卡片关面板、点按钮（`game`）；五张特征卡（见「面板识别」） |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
-| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
+| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析 |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、页面 `static/console.html`（见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、聊天记录 `transcript.py`、操作和状态 `control.py`、JSON 接口 `server.py` |
@@ -241,7 +241,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 设计见 `docs/superpowers/specs/2026-09-27-brain-claude-code-design.md`（身体部分见 `2026-09-27-brain-design.md`）。
 - **`run` 默认就是大脑模式**；`run --no-brain` 进旧的普通 Agent（`agent.py`），只留作调试（`--brain` 保留兼容，不用加）
 - 大脑 = 常驻的无界面 Claude Code（`claude -p` stream-json，订阅登录，`--model sonnet --effort low`）；身体的工具经本机 MCP 服务（`sky`）给它，
-  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / move / check_friend / track / stop_task / panel_read / panel_press / panel_close
+  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / attention / move / check_friend / track / stop_task / panel_read / panel_press / panel_close
 - **和用户自己的 Claude Code 隔离**：单独配置目录 `.brain-claude/` + `claude setup-token` 生成的令牌（用户环境变量 `SKYDANGO_CLAUDE_TOKEN`）。
   沿用用户登录会把用户的插件、钩子、技能一起加载进大脑（实测）。子进程里去掉 `ANTHROPIC_API_KEY`（有它时 `-p` 一定用它）
 - 眼睛 = 一次性 `claude -p --model haiku`：有人来 / 走、画面大变（隔 ≥20 秒）或 3 分钟没看时，把身体最近一帧写成文字；大脑醒来的消息里只有文字，要原图才 `look(image=true)`
@@ -263,12 +263,18 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   状态里的"画面里：小明（左边·近）…"来自感知层 `people()`（暂停中或最近一帧超过 1 秒就是空的）
 - **`track(名字, 秒)`**（技能 D，`brain/track.py`，计划 `docs/superpowers/plans/2026-09-29-brain-track.md`；**代码已完成，待真机验收**）：要打开感知层、有镜头、开始时画面里认得出这个人，dry-run 拒绝（手动控制照做）；秒数夹到 1~60。
   每圈按名字找目标（人物框优先，框不稳用 `max_age` 秒内的名字标签 x），偏出死区就 `Camera.nudge` 短按 0.02~0.1 s（`hw_key_hold`：一条 adb 命令、sleep 在模拟器里），按完等 `settle` 秒；
-  离得太近转不动（同方向按 3 次误差没缩小 20 px）就停手；`lost_after` 秒看不到算跟丢；聊天记录面板开着时只等（不按键、不算转不动 / 跟丢）。
+  离得太近转不动（同方向按 3 次误差没缩小 20 px；越按越大是追不上、接着追）就停手；从画面边上出去的，看不到的这几秒里接着往那边转去找（在中间被挡住不转）；`lost_after` 秒看不到算跟丢；盯人单独的最长按键 `chase_max`（0.15 s，2026-09-30 真机后从 0.1 提上来，`gain` 也提到 0.15）；聊天记录面板开着时只等（不按键、不算转不动 / 跟丢）。
   跟踪期间身体不发 `arrive` / `leave` / `stranger`、丢掉攒着的 `approach` / `gesture`、不报画面大变，也不调 `env.held()`；互动请求、自动接受、牵手状态照常。
   跟踪中调 `camera` / `camera_reset` / `look_around` / `check_friend` 会先停下 track（结果里写"先停下了盯着…"）。数字在 `[track]`（`gain` 是估的）。
   **`camera_reset` 现在是闭环**：每次离开原位前只拍一张参照缩略图（画面上半、避开聊天面板）；nudge 按时长分别记净次数（转动和时长不成比例、左右对称，D0），
   复位时按同样的时长逐次反向重放，再左右 0.02 s 小步比相似度（最多 30 步），最高相似度 < 0.5 就退回粗转位置、结果里说"没对准"。
   身体走动过、黑屏过之后参照图作废（只粗转）。工具 / 手动控制的 `camera_reset` 等 60 秒（`RESET_TIMEOUT`）；退出时先恢复轮盘、再复位镜头，细调限 8 秒
+- **空闲注意力（东张西望）**（`[attention]`，`brain/attention.py` 纯决策 + `Body._watch_attention`；spec `docs/superpowers/specs/2026-09-30-idle-attention-design.md`、计划 `docs/superpowers/plans/2026-09-30-idle-attention.md`；**未在真机验证，数字都是估的**）：
+  **只在 `[panel] mode = "auto"`、聊天面板关着、身体闲着时动**（always 模式下完全不动）。身体做反射、大脑定模式：候选目标（好友 / 陌生人说话 = 感知层 `talkers()`、走近 = `recent_approaches()`、挥手鞠躬、站着的好友）按
+  基础兴趣 ×（1 − 看腻）挑一个，`Camera.nudge` 小步把他拉向画面中间（中间带 40% 内不动，同 track 的方向和转不动判断）；看腻了 / 转不动就看别的，没什么可看就隔 8~20 s（× 心情精力 `Effects.wander` × 模式）随意往一边看一眼。**不回位**。
+  冒气泡 / 有人走近时**先看一眼再开面板**（`PanelManager.hold_off`，最多 `look_first` 2 s）。不借面板、不走 `clear_view`、不重置反射的闲着计时、不套 `env.held()`；按键后 settle 内冒出的 approach 当成自己转出来的丢掉。
+  输入框开着、技能在跑、有互动请求、在回聊天、黑屏、牵手、别的面板开着、刚做完动作、dry-run 时不按（dry-run 照样算，status 有"在看：…"）。
+  大脑工具 `attention(mode, focus)`：随意 / 好奇（随意看更勤、陌生人说话更有意思）/ 专心（只看好友说话、冲团子来的、关注的人）/ 别动；focus = 更想看谁；**不算"做了事"**（不进 `ACTIONS`）
 - `move(direction, steps)`：W/A/S/D 小步走（`brain/locomotion.py`，每步按住 `[brain] move_step` 秒，**步长没在真机标定**）；一次 1~3 步、两次隔 `move_min_interval` 秒，
   牵着手要 `force=true`，走出去没有复位
 - **主人命令窗口**：卡洛（`[brain] owner_name`，精确匹配）发 `#` 开头的消息后 `owner_window` 秒内放宽：`move` 一次最多 6 步、不用等间隔；

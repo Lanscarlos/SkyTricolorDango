@@ -43,6 +43,7 @@ from ..inner.ledger import ago
 from ..inner.log import ENERGY_EVERY, diff as diff_inner
 from ..inner.mind import sounds_upset
 from ..inner.reflect import materials as reflect_materials_text
+from .attention import Attention, Target as AttnTarget
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
 from .skills import SkillRunner
 from .track import TrackSkill
@@ -153,7 +154,17 @@ class Body:
         self.brain_turn: Callable[[], tuple[float, float]] = lambda: (float("-inf"), float("-inf"))  # 大脑最近一轮的 (开始, 结束)，cli 设
         self.on_blocked: Callable[[str, str], None] | None = None  # say 被过滤 / 主动护栏拦下时调 (原话, 原因)；沙盒记进聊天记录
         self._bubble_at: float | None = None  # 身体替大脑开输入框（冒“正在输入”）的时间；None = 没开（spec 2026-09-30-body-reflex §2）
-        self.reflexes = Reflexes(cfg.reflex, rng or random.Random(), clock())
+        self.rng = rng or random.Random()
+        self.reflexes = Reflexes(cfg.reflex, self.rng, clock())
+        # 空闲注意力（东张西望，spec 2026-09-30-idle-attention）
+        self.attention = Attention(cfg.attention, cfg.track, self.rng, clock())
+        self._attention_pressed_at = float("-inf")  # 注意力上次按键：之后 settle 秒内冒出的"走近"是自己转出来的
+        self._attention_why = ""  # 这一圈为什么不动（status / 网页）
+        self._gestures_seen: deque[tuple[str, str, float]] = deque(maxlen=20)  # (谁, 动作, 时间)：回礼反射取走了也留一份
+        self._held_pending: str | None = None  # 先看一眼：推迟了哪个面板等待
+        self._hold_until = float("-inf")
+        self._camera_moved_at = float("-inf")  # 别人（大脑工具、技能、换角度、环顾）最近一次动镜头
+        self._attn_seen_move = float("-inf")  # 注意力已经知道的那次
         self._said_at = float("-inf")  # 团子上次说话（clock）：“刚说完好友就接话”算在跟团子说
         self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在回聊天（取走了聊天的那一轮还没结束）：聊天面板别因为安静关掉
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
@@ -234,6 +245,7 @@ class Body:
         self._run_commands()
         self._watch_bubble(self.clock())
         self._watch_idle(self.clock())
+        self._watch_attention(self.clock())
         self._fallback(now)
         self._inner_tick()
         self._ledger_call("save", self.wall())
@@ -251,6 +263,8 @@ class Body:
         info["刚说过"] = self.said[-3:][::-1] or "还没说话"
         if self.cfg.reflex.enabled:
             info["反射"] = self._recent_reflex(now) or "还没有"
+        if self._attention_on():
+            info["注意力"] = self.attention.describe() + (f"（先不动：{self._attention_why}）" if self._attention_why else "")
         if self.cfg.proactive.enabled:
             try:
                 o = self.occasion()
@@ -542,6 +556,139 @@ class Body:
                 log.warning("关输入框失败", exc_info=True)
             log.debug("关掉替大脑开的输入框：%s", why)
 
+    # ---- 空闲注意力（东张西望，spec 2026-09-30-idle-attention） ----
+    def set_attention(self, mode: str, focus: str | None = None) -> str:
+        """大脑的 attention 工具：定东张西望的模式和关注谁（本次运行有效）。"""
+        try:
+            self.attention.set_mode(mode, focus)
+        except ValueError:
+            raise ToolError("模式只能是：随意 / 好奇 / 专心 / 别动") from None
+        log.info("注意力模式：%s%s", mode, f"，关注{self.attention.focus}" if self.attention.focus else "")
+        line = self.attention.describe()
+        return line if line.startswith("注意力：") else f"注意力：{mode}（{line}）"
+
+    def _self_motion_window(self) -> float:
+        """注意力按键后多久内冒出的"走近"算自己转出来的：走近判断看 approach_window 内的框高变化。"""
+        return max(self.cfg.track.settle, self.cfg.perception.approach_window)
+
+    def _attention_on(self) -> bool:
+        """注意力有没有在算：开着、聊天面板是 auto 模式（always 模式下它从不动，也不占随机数）。"""
+        return self.cfg.attention.enabled and self.panel.auto
+
+    def _attention_targets(self, now: float) -> list[AttnTarget]:
+        """画面里值得看的：说话的、走近的、对团子做动作的、站着的好友。好友按名字认（几个来源是同一个人），陌生人按轨迹 / 位置。"""
+        env, out = self.env, []
+        if env is None:
+            return out
+        if hasattr(env, "talkers"):
+            for t in env.talkers(now):
+                key = f"n:{t.name}" if t.name else f"t:{t.track_id}"
+                out.append(AttnTarget(key, "talk_friend" if t.friend else "talk_stranger", t.x, t.name, t.start))
+        if hasattr(env, "recent_approaches"):
+            for who, cx, t in env.recent_approaches(now):
+                if 0 <= t - self._attention_pressed_at < self._self_motion_window():
+                    continue  # 自己转镜头转出来的
+                stranger = who == "陌生人"
+                key = f"a:{round(cx / 50) * 50}" if stranger else f"n:{who}"
+                out.append(AttnTarget(key, "approach", cx, None if stranger else who, t))
+        for who, _label, t in list(self._gestures_seen):
+            found = self.target_x(who, now) if now - t <= 5.0 else None
+            if found is not None:
+                out.append(AttnTarget(f"n:{who}", "act_on_me", found[0], who, t))
+        if hasattr(env, "people"):
+            for p in env.people(now):
+                if p.kind == "friend" and p.name:
+                    out.append(AttnTarget(f"n:{p.name}", "friend_present", p.box.x + p.box.w / 2, p.name))
+        return out
+
+    def _attention_blocked(self, now: float, ignore_quiet: bool = False, check_ime: bool = True) -> str:
+        """注意力这一圈为什么不能按键（空串 = 能按），顺序同 spec §1。"""
+        if not self.cfg.attention.enabled:
+            return "没开"
+        if self.attention.mode == "别动":
+            return "别动"
+        if self.camera is None or not hasattr(self.env, "people"):
+            return "没有镜头 / 感知层"
+        if not self.panel.auto:
+            return "聊天面板不是 auto 模式"
+        if self.reader.panel_closed_since is None:
+            return "聊天面板开着"
+        if now - self._camera_moved_at < self.cfg.track.settle:
+            return "镜头刚被转过"
+        start, end = self.brain_turn()
+        if end < start and self._camera_moved_at >= start:  # 大脑这一轮动过镜头（先 camera 再 look）：这一轮别转回去
+            return "大脑在用镜头"
+        closed = self.reader.panel_closed_since
+        if closed is not None and 0 <= now - closed < self.cfg.track.settle:  # 刚关面板：画面整体横移过
+            return "聊天面板刚关上"
+        holding_window = self._held_pending is not None and now < self._hold_until
+        if not ignore_quiet and not holding_window and not self.panel.quiet(now, self.cfg.track.settle + 1):
+            return "聊天面板马上要开"
+        if self._bubble_at is not None or self.sender.opened:
+            return "输入框开着"
+        if self.skills.active is not None:
+            return "在做事"
+        if getattr(self.env, "requests", None):
+            return "有互动请求"
+        if self.events.has("chat") or self.events.has("owner_command") or self.brain_busy():
+            return "在聊天"
+        if self.blackout:
+            return "画面黑着"
+        if self.holding:
+            return "牵着手"
+        if self.panels is not None and self.panels.state.others():
+            return "有面板挡着"
+        if self.emotes is not None and now - self.emotes.last_any < self.cfg.reflex.min_gap:
+            return "刚做完动作"
+        if self._dry(False):
+            return "dry-run"
+        if check_ime and self.device.ime_shown():  # 最后才问（一次 adb）
+            return "输入框开着"
+        return ""
+
+    def _attention_look_first(self, th, now: float) -> None:
+        """冒气泡 / 有人走近时先看一眼再让聊天面板开：推迟面板，转到中间 / 到时间 / 目标没了就放手。"""
+        panel = self.panel
+        if self._held_pending is not None:
+            if th.centered or th.current is None or now >= self._hold_until or panel.pending != self._held_pending:
+                panel.hold_off(None, now)
+                log.debug("先看一眼结束（%s），聊天面板照常开", "转到了" if th.centered else "没转到")
+                self._held_pending = None
+            return
+        if not th.look_first or panel.pending not in ("bubble", "approach"):
+            return
+        if self._attention_blocked(now, ignore_quiet=True, check_ime=False):
+            return
+        until = now + self.cfg.attention.look_first
+        if panel.hold_off(until, now):
+            self._held_pending, self._hold_until = panel.pending, until
+
+    def _watch_attention(self, now: float) -> None:
+        """每圈最后：想看什么（dry-run 也算，进 status）；闲着就小步转过去 / 随意看一眼。不借面板、不算"有动静"。"""
+        if not self._attention_on():
+            return
+        a = self.attention
+        a.width = self.frame_width
+        if self.skills.active is not None:  # 技能（track）在动镜头
+            self._camera_moved_at = now
+        if self._camera_moved_at > self._attn_seen_move:
+            self._attn_seen_move = self._camera_moved_at
+            a.external_move(self._camera_moved_at)
+        th = a.think(self._attention_targets(now), now, self.effects().wander)
+        self._attention_look_first(th, now)
+        self._attention_why = self._attention_blocked(now, check_ime=th.action is not None)
+        if th.action is None or self._attention_why:
+            return
+        try:
+            self.camera.nudge(th.action.direction, th.action.seconds, record=False)  # 原位挪到这里：不进复位账
+        except Exception:
+            log.exception("注意力转镜头出错")
+            return
+        a.pressed(th.action, now)
+        self._attention_pressed_at = now
+        self._ref_thumb = None  # 自己转的，不算画面大变
+        log.debug("注意力按%s %.2f s（%s）", "右" if th.action.direction == "right" else "左", th.action.seconds, a.describe())
+
     def _watch_bubble(self, now: float) -> None:
         if self._bubble_at is None:
             return
@@ -725,6 +872,8 @@ class Body:
             self.panel.bubble_seen(now)  # 好友头顶冒出"正在输入"：开着面板等他发出来
         if hasattr(self.env, "pop_approaches"):  # 有人朝团子走过来（眼睛不因此自动看，省额度）
             for who in self.env.pop_approaches():
+                if now - self._attention_pressed_at < self._self_motion_window():
+                    continue  # 注意力刚转过镜头：框变大是自己转出来的，不算走近（也别把面板叫开）
                 self.panel.trigger("approach", now)
                 if who == self.holding:
                     continue
@@ -732,6 +881,7 @@ class Body:
         if hasattr(self.env, "pop_gestures"):  # 好友对团子做了动作（三期 §3）：大脑决定回不回礼
             names = self.cfg.gesture.names
             for who, label in self.env.pop_gestures():
+                self._gestures_seen.append((who, label, now))  # 空闲注意力也想看他（回礼反射会取走原队列）
                 if who == self.holding:
                     continue
                 text = f"{who}对你{names.get(label, label)}"
@@ -1046,6 +1196,7 @@ class Body:
         finally:
             if pressed:
                 self._ref_thumb = None  # 自己转的，不算画面大变
+                self._camera_moved_at = self.clock()
                 self._forget_self()
         if reason in ("budget", "lost") and planner.enlarging:  # 已经露出来过（调大小时用完预算 / 拉近把人推没了）：用露出来那一帧
             reason = "revealed"
@@ -1084,6 +1235,7 @@ class Body:
                 frames = self.camera.around(self.device.screenshot)
         finally:
             self._ref_thumb = None  # 自己转的镜头，不算画面大变
+            self._camera_moved_at = self.clock()
         self.last_frame = frames[0]
         return frames
 
@@ -1103,6 +1255,7 @@ class Body:
                 result = self.env.sweep([(0.0, shot.before), *shot.frames], spin)
         finally:
             self._ref_thumb = None  # 自己转的镜头，不算画面大变
+            self._camera_moved_at = self.clock()
         self.last_frame = shot.after
         if not shot.panel_reopened:
             self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
@@ -1147,6 +1300,8 @@ class Body:
         reflex = self._recent_reflex(now)
         if reflex:
             parts.append("刚才下意识：" + reflex)
+        if self._attention_on():
+            parts.append(self.attention.describe())
         if self.camera is not None:
             parts.append("镜头：" + self.camera.describe())
         parts.append("上次看图：" + (f"{now - self.last_look:.0f} 秒前" if self.last_look > float("-inf") else "还没看过"))
@@ -1196,6 +1351,9 @@ class Body:
 
     def _peek_now(self) -> None:
         """聊天面板关着（闲着）时大脑要看聊天：马上打开看一眼，读到的照常变成事件。冷却中 / 黑屏打不开就算了。"""
+        if self._held_pending is not None:  # 空闲注意力在"先看一眼"：大脑要看聊天，别推迟了
+            self.panel.hold_off(None, self.clock())
+            self._held_pending = None
         self.panel.trigger("chat_log", self.clock())
         wait = self.panel.cfg.open_timeout + 1.0
         for _ in range(math.ceil(wait / max(self.cfg.vision.poll_interval, 0.05)) + 1):
@@ -1517,6 +1675,7 @@ class Body:
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
+        self._camera_moved_at = self.clock()
         self._forget_self()
         return "镜头现在：" + result + (OWNER_NOTE if owner and steps > CAMERA_MAX_STEPS else "") + stopped
 
@@ -1594,6 +1753,7 @@ class Body:
         with self._held("camera"):
             result = self.camera.reset()
         self._ref_thumb = None
+        self._camera_moved_at = self.clock()
         self._forget_self()
         return result + stopped
 

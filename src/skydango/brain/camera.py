@@ -133,13 +133,19 @@ class Camera:
                 self._step(action)
         return self.describe()
 
-    def nudge(self, direction: str, seconds: float) -> float:
+    def nudge(self, direction: str, seconds: float, record: bool = True) -> float:
         """短按左 / 右 seconds 秒（夹到 0.02~0.1），返回实际按了多久。
 
         不借面板、不按 BACK：调用方是技能，开始时已经借好面板；按键在模拟器里 sleep，身体线程只等一次 adb。"""
         if direction not in ("left", "right"):
             raise ValueError(f"nudge 只能左右转：{direction}")
         seconds = round(min(max(float(seconds), NUDGE_MIN), NUDGE_MAX), 3)
+        if not record:  # 空闲注意力：不回位，转完"原位"（转向）就挪到这里，不进复位账
+            self.device.hw_key_hold(KEYS[direction], seconds)
+            self.turns.clear()
+            self.offset["turn"] = 0
+            self.ref, self._away = None, False
+            return seconds
         self.remember()
         self.device.hw_key_hold(KEYS[direction], seconds)
         self.turns[seconds] += 1 if direction == "right" else -1

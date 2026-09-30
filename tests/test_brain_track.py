@@ -74,7 +74,7 @@ def test_waits_settle_before_first_nudge(clock):
     assert b.camera.nudges == []  # 刚开始：借面板的动画、画面横移还没停
     assert at(skill, b, clock, t0, 0.7).state == "running"
     ((direction, seconds),) = b.camera.nudges
-    assert direction == "right" and seconds == pytest.approx(0.1 * (1700 - 960) / 960, abs=0.001)
+    assert direction == "right" and seconds == pytest.approx(0.15 * (1700 - 960) / 960, abs=0.001)
     assert b.asked and b.asked[-1] == NAME
 
 
@@ -82,7 +82,7 @@ def test_left_of_center_turns_left_and_clamps(clock):
     t0 = clock()
     skill, b = begin(clock, x=0)
     at(skill, b, clock, t0, 0.7)
-    assert b.camera.nudges == [("left", pytest.approx(0.1))]  # 偏差 1 × 0.1 = 0.1，最长 0.1
+    assert b.camera.nudges == [("left", pytest.approx(0.15))]  # 偏差 1 × 0.15 = 0.15，盯人最长 chase_max 0.15
     skill2, b2 = begin(clock, x=900)  # e ≈ -0.06，死区内
     t1 = clock()
     step = at(skill2, b2, clock, t1, 0.7)
@@ -92,6 +92,7 @@ def test_left_of_center_turns_left_and_clamps(clock):
 def test_small_error_uses_minimum_press(clock):
     t0 = clock()
     skill, b = begin(clock, x=960 + 0.16 * 960)  # 刚出死区：0.1 × 0.16 = 0.016 → 最短 0.02
+    b.cfg.track.gain = 0.1
     at(skill, b, clock, t0, 0.7)
     assert b.camera.nudges == [("right", pytest.approx(0.02))]
 
@@ -163,6 +164,46 @@ def test_progress_is_not_a_stall(clock):
         at(skill, b, clock, t0, t)
         t += 0.7
     assert len(b.camera.nudges) == 4
+
+
+def test_error_growing_is_not_a_stall(clock):
+    """实测（2026-09-30 盯人）：好友往右跑得比镜头快，连按 3 下偏差 216 → 471 → 878 越来越大，
+    被当成"离太近转不动"停了手，好友站在画面边上 20 秒镜头都不动。越按越远是追不上，接着追。"""
+    t0 = clock()
+    skill, b = begin(clock, x=1176)
+    t = 0.7
+    for x in (1176, 1431, 1838, 1838, 1838):
+        b.x = x
+        step = at(skill, b, clock, t0, t)
+        assert "转不动" not in step.note
+        t += 0.7
+    assert [d for d, _ in b.camera.nudges] == ["right"] * 5
+
+
+def test_searches_toward_last_side_after_target_leaves_frame(clock):
+    """实测：好友从画面边上跑出去之后原地等 3 秒 → 跟丢。玩家会接着往那边转去找。"""
+    t0 = clock()
+    skill, b = begin(clock, x=1800)
+    at(skill, b, clock, t0, 0.7)
+    b.x = None
+    at(skill, b, clock, t0, 1.0)  # 刚按完，画面还在动：不按
+    assert len(b.camera.nudges) == 1
+    step = at(skill, b, clock, t0, 1.3)
+    assert step.state == "running" and "找" in step.note
+    assert b.camera.nudges[-1] == ("right", pytest.approx(0.15 * (1800 - 960) / 960, abs=0.001))
+    at(skill, b, clock, t0, 1.9)
+    assert [d for d, _ in b.camera.nudges] == ["right"] * 3
+    step = at(skill, b, clock, t0, 0.7 + 3.1)  # 找了 3 秒还没找到：照样算跟丢
+    assert step.state == "failed" and "右边" in step.note
+    b2_skill, b2 = begin(clock, x=1800)
+    t1 = clock()
+    at(b2_skill, b2, clock, t1, 0.7)
+    b2.x = 1000  # 回到中间了
+    at(b2_skill, b2, clock, t1, 1.3)
+    b2.x = None  # 在中间被挡住：不转（同 test_short_occlusion_is_not_lost）
+    for t in (1.9, 2.5, 3.1):
+        at(b2_skill, b2, clock, t1, t)
+    assert len(b2.camera.nudges) == 1
 
 
 def test_done_after_seconds(clock):

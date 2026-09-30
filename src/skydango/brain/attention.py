@@ -1,0 +1,243 @@
+"""空闲注意力（东张西望）：团子闲着时"现在最想看什么"，纯决策（spec 2026-09-30-idle-attention §2 / §3）。
+
+每圈给一组候选目标（说话的人、走近的人、对团子做动作的人、站着的好友），按基础兴趣 ×（1 − 看腻）挑一个看；
+目标在画面中间带里就不动、慢慢看腻，不在就小步转过去（同 track：目标在右边按右，把它拉向中间）；
+换目标要高出一截、刚换过的一会儿内不换（防抖）。不回位：看腻了就看下一个。
+这里不碰设备：Body 判断闲不闲、真按了键再调 pressed()。
+"""
+
+from __future__ import annotations
+
+import logging
+import random
+from dataclasses import dataclass
+
+from ..chat.tracker import similar
+from ..config import AttentionConfig, TrackConfig
+from .peek import Turn
+
+log = logging.getLogger(__name__)
+
+KINDS = ("talk_friend", "act_on_me", "approach", "talk_stranger", "friend_present")
+KIND_NOTES = {"talk_friend": "在说话", "act_on_me": "在对你做动作", "approach": "朝你走过来",
+              "talk_stranger": "在说话", "friend_present": "站在那"}
+FRESH_KINDS = ("talk_friend", "talk_stranger", "approach", "act_on_me")  # 刚出现时值得"先看一眼再开面板"
+MODES = ("随意", "好奇", "专心", "别动")
+WANDER_MODE = {"随意": 1.0, "好奇": 0.5}  # 随意看的间隔倍数；专心 / 别动不随意看
+
+
+@dataclass(frozen=True)
+class Target:
+    key: str  # "t:<轨迹 id>" 或 "n:<名字>"：同一个人
+    kind: str  # KINDS 之一
+    x: float  # 框中心 x（整图像素）
+    who: str | None  # 名字；陌生人 None
+    fresh: float | None = None  # 这次刺激开始的时间（气泡 start / 走近 / 动作）；变了就把看腻清零
+
+
+@dataclass(frozen=True)
+class Thought:
+    current: Target | None  # 现在在看的
+    action: Turn | None  # 这一圈想按的（门槛不开时 Body 不按）
+    centered: bool  # current 已经在中间带里
+    wandering: bool  # 在随意看
+    look_first: bool  # current 是刚出现的说话 / 走近 / 做动作：值得先看再开面板
+
+
+class Attention:
+    def __init__(self, cfg: AttentionConfig, track: TrackConfig, rng: random.Random, now: float) -> None:
+        self.cfg, self.track, self.rng = cfg, track, rng
+        self.width = 1920
+        self.mode = "随意"
+        self.focus: str | None = None
+        self._last_now = now
+        self._bored: dict[str, float] = {}
+        self._fresh: dict[str, float | None] = {}
+        self._current: Target | None = None
+        self._switched_at = float("-inf")
+        self._last_press = float("-inf")
+        self._err = 0.0  # 这一圈 current 离中线多远（给 pressed 记转不动用）
+        self._streak_dir: str | None = None  # 转不动（同 track）：同方向连按几下、开始时离中线多远
+        self._streak_n = 0
+        self._streak_err = 0.0
+        self._stuck: dict[str, float] = {}  # 转不动的人卡在哪（x）：他挪开之前不再朝他按，留在原地看着
+        self._thought = Thought(None, None, False, False, False)
+        self._wander_due: float | None = None  # 下一次随意看的时间（None = 这一圈再排）
+        self._wander_left = 0  # 这次随意看还剩几下
+        self._wander_dir = "left"
+        self._side, self._side_run = "", 0  # 上次随意看往哪边、连着几次
+
+    def set_mode(self, mode: str, focus: str | None) -> None:
+        """大脑定注意力模式（MODES 之一）和关注谁（空 = 不特别关注）。"""
+        if mode not in MODES:
+            raise ValueError(f"不认识的模式：{mode}")
+        self.mode = mode
+        self.focus = (focus or "").strip() or None
+
+    def _focused(self, t: Target) -> bool:
+        return bool(self.focus and t.who and (t.who == self.focus or similar(self.focus, t.who, 0.75)))
+
+    # ---- 兴趣 ----
+    def base(self, t: Target) -> float:
+        b = float(getattr(self.cfg, t.kind))
+        if self.mode == "好奇" and t.kind == "talk_stranger":
+            b = max(b, 0.7)
+        if self._focused(t):
+            b = max(b, self.cfg.focus_interest)
+        return b
+
+    def _centered(self, t: Target) -> bool:
+        return abs(t.x - self.width / 2) <= self.cfg.center_band * self.width / 2
+
+    def interest(self, t: Target) -> float:
+        return self.base(t) * (1.0 - self._bored.get(t.key, 0.0))
+
+    def _merge(self, targets: list[Target]) -> dict[str, Target]:
+        """同一个人几种目标：只留基础兴趣最高的那种。"""
+        out: dict[str, Target] = {}
+        for t in targets:
+            if t.key not in out or self.base(t) > self.base(out[t.key]):
+                out[t.key] = t
+        return out
+
+    def _update_boredom(self, merged: dict[str, Target], dt: float) -> None:
+        for key, t in merged.items():
+            if t.fresh is not None and self._fresh.get(key) != t.fresh:
+                self._fresh[key] = t.fresh
+                self._bored[key] = 0.0  # 新的一句 / 新的一次走近：又有意思了
+        for key in set(self._bored) | set(merged):
+            t = merged.get(key)
+            b = self._bored.get(key, 0.0)
+            if t is not None and self._centered(t):
+                b += self.cfg.bore_rate * dt * (0.5 if self._focused(t) else 1.0)
+            else:
+                b -= self.cfg.recover_rate * dt
+            b = min(max(b, 0.0), 1.0)
+            if b == 0.0 and t is None:
+                self._bored.pop(key, None)
+                self._fresh.pop(key, None)
+            else:
+                self._bored[key] = b
+
+    def _choose(self, merged: dict[str, Target], now: float) -> Target | None:
+        ok = [t for t in merged.values() if self.interest(t) >= self.cfg.min_interest]
+        best = max(ok, key=self.interest, default=None)
+        cur = merged.get(self._current.key) if self._current is not None else None
+        if cur is not None and self.interest(cur) < self.cfg.min_interest:
+            cur = None
+        if cur is None:
+            pick = best
+        elif (best is not None and best.key != cur.key and now - self._switched_at >= self.cfg.switch_hold
+              and self.interest(best) >= self.interest(cur) + self.cfg.switch_margin):
+            pick = best
+        else:
+            pick = cur
+        if (pick is None) != (self._current is None) or (pick is not None and pick.key != self._current.key):
+            self._switched_at = now
+            self._streak_dir, self._streak_n = None, 0
+            if pick is not None:
+                log.debug("注意力换到 %s（%s，兴趣 %.2f）", pick.who or "陌生人", pick.kind, self.interest(pick))
+        return pick
+
+    # ---- 每圈 ----
+    def think(self, targets: list[Target], now: float, wander_scale: float = 1.0) -> Thought:
+        dt = min(max(now - self._last_now, 0.0), self.cfg.max_step)
+        self._last_now = now
+        merged = self._merge(targets)
+        if self.mode == "专心":  # 只看分量重的（好友说话、对团子做事、关注的人）
+            merged = {k: t for k, t in merged.items() if self.base(t) >= self.cfg.act_on_me}
+        self._update_boredom(merged, dt)
+        cur = self._current = self._choose(merged, now)
+        action, centered, look_first = None, False, False
+        if cur is not None:
+            centered = self._centered(cur)
+            look_first = cur.kind in FRESH_KINDS and cur.fresh is not None and now - cur.fresh <= self.cfg.look_first
+            if not centered and now - self._last_press >= self.track.settle:
+                action = self._turn(cur)
+                if action is None:  # 转不动、刚加了看腻：这一圈就重新挑（可能换走）
+                    cur = self._current = self._choose(merged, now)
+                    if cur is not None:
+                        centered = self._centered(cur)
+                        look_first = cur.kind in FRESH_KINDS and cur.fresh is not None and now - cur.fresh <= self.cfg.look_first
+        wandering = False
+        if cur is not None:
+            self._wander_left, self._wander_due = 0, None  # 有东西看：打断随意看，看完再重新排
+        elif self.mode in WANDER_MODE:
+            action, wandering = self._wander(now, wander_scale)
+        if self.mode == "别动":
+            action, look_first = None, False
+        self._thought = Thought(cur, action, centered, wandering, look_first)
+        return self._thought
+
+    def _wander(self, now: float, scale: float) -> tuple[Turn | None, bool]:
+        """没什么可看：隔一段随机时间往一边连按几下（像拖视角），看完停在那，不回来。"""
+        if self._wander_left <= 0:
+            if self._wander_due is None:
+                span = self.cfg.wander_min + self.rng.random() * (self.cfg.wander_max - self.cfg.wander_min)
+                self._wander_due = now + span * scale * WANDER_MODE[self.mode]
+                return None, False
+            if now < self._wander_due:
+                return None, False
+            d = self.rng.choice(("left", "right"))
+            self._side_run = self._side_run + 1 if d == self._side else 1
+            if self._side_run > self.cfg.wander_same_side:  # 别一直往一个方向转圈
+                d = "right" if d == "left" else "left"
+                self._side_run = 1
+            self._side, self._wander_dir = d, d
+            lo, hi = self.cfg.wander_presses
+            self._wander_left = self.rng.randint(lo, hi)
+            log.debug("注意力随意往%s看看（%d 下）", "左" if d == "left" else "右", self._wander_left)
+        if now - self._last_press < self.track.settle:
+            return None, True
+        return Turn(self._wander_dir, self.track.nudge_max), True
+
+    def external_move(self, now: float) -> None:
+        """别人（大脑、track、look_person 换角度、面板开关）刚动过镜头：位置都变了，等画面停稳再按，转不动重新算。"""
+        self._streak_dir, self._streak_n = None, 0
+        self._stuck.clear()
+        self._last_press = max(self._last_press, now)
+
+    def _turn(self, cur: Target) -> Turn | None:
+        half = self.width / 2
+        err = abs(cur.x - half)
+        direction = "right" if cur.x > half else "left"  # 按右键画面里的东西往左移：目标在右边就按右
+        stuck = self._stuck.get(cur.key)
+        if stuck is not None:
+            if abs(cur.x - stuck) < 2 * self.track.stall_px:
+                return None  # 还卡在那：看着他就好，别一直往一边按
+            del self._stuck[cur.key]  # 他挪开了，再试试
+        if (direction == self._streak_dir and self._streak_n >= self.track.stall_nudges
+                and self._streak_err - err < self.track.stall_px):
+            self._bored[cur.key] = min(1.0, self._bored.get(cur.key, 0.0) + self.cfg.stuck_bored)
+            self._stuck[cur.key] = cur.x
+            self._streak_dir, self._streak_n = None, 0
+            log.debug("注意力转不动 %s，看腻一截", cur.who or "陌生人")
+            return None
+        self._err = err
+        seconds = min(max(self.cfg.gain * err / half, self.track.nudge_min), self.track.nudge_max)
+        return Turn(direction, round(seconds, 3))
+
+    def pressed(self, turn: Turn, now: float) -> None:
+        """Body 真按了这一下：记按键时间、转不动计数（隔太久说明别人可能动过镜头，重新计数）。"""
+        if self._thought.wandering:
+            self._wander_left -= 1
+            if self._wander_left <= 0:
+                self._wander_due = None  # 看完这一眼，下一圈重新排
+            self._last_press = now
+            return
+        if (turn.direction != self._streak_dir or now - self._last_press > 3 * self.track.settle
+                or self._streak_err - self._err >= self.track.stall_px):  # 换方向 / 隔太久 / 有进展：重新计数（同 track）
+            self._streak_dir, self._streak_n, self._streak_err = turn.direction, 0, self._err
+        self._streak_n += 1
+        self._last_press = now
+
+    def describe(self) -> str:
+        cur = self._thought.current
+        if cur is not None:
+            line = f"在看：{cur.who or '陌生人'}（{KIND_NOTES[cur.kind]}）"
+        else:
+            line = "闲着随意看" if self._thought.wandering else "没在看什么"
+        if self.mode != "随意" or self.focus:
+            head = f"注意力：{self.mode}" + (f"，关注{self.focus}" if self.focus else "")
+            line = f"{head}；{line}"
+        return line

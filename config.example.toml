@@ -110,6 +110,7 @@ approach_grow = 0.25            # 走过来：1.5 秒内框高增大这么多、
 approach_cooldown = 60.0        # 同一个人这么久内只报一次
 approach_strangers = true       # 陌生人走过来也报；陌生人多的地方嫌吵就关掉
 typing_window = 8.0             # 陌生人发消息前这么久内头顶冒过气泡的人，才算可能的说话人（待真机确认）
+bubble_gap = 1.0                # 同一个人的气泡消失超过这么久再出现算新的一句（空闲注意力用）
 far_height = 0.08               # 远处的人（框高 < 屏高 × 这个）没挂上名字标签时，头顶裁一块再检测一次
 far_crops = 3                   # 每帧最多裁几块；0 = 关（perception compare --far-crops 0 对比开关效果）
 object_min_hits = 3             # 物品（座位 / 篝火 / 乐器 / 先祖）连续看到几帧才算
@@ -165,14 +166,15 @@ self_motion = 0.03              # 转一圈时几乎不动（移动 < 画面宽 
 [track]
 # 大脑的 track(名字, 秒)：小步转镜头把好友保持在画面中间（要打开 [perception]）；实测见 docs/game-ops.md §2「转视角实测（D0）」
 deadband = 0.15                 # 目标离画面中线不到半屏宽的这么多就不转（≈ 144 px，要大于最小修正量 35~40 px）
-gain = 0.1                      # 按键秒数 = gain × 偏差（半屏宽算 1）；估的，真机验收后调
+gain = 0.15                     # 按键秒数 = gain × 偏差（半屏宽算 1）；2026-09-30 真机：0.1 追不上近处横着走的人
 nudge_min = 0.02                # 最短按键（秒）：2026-09-29 D0 实测一下就移 35~40 px
-nudge_max = 0.1                 # 最长按键（秒）：2026-09-29 D0 实测 0.1 s ≈ 66 px，近处的人 0.2 s 以后就饱和
+nudge_max = 0.1                 # 最长按键（秒）：2026-09-29 D0 实测 0.1 s ≈ 66 px，近处的人 0.2 s 以后就饱和（换角度、注意力用）
+chase_max = 0.15                # 盯人自己的最长按键（秒）：2026-09-30 真机 0.1 追不上
 settle = 0.6                    # 按完等画面停稳再看（秒）：2026-09-29 D0 实测松手 0.3~0.6 s 后位置才稳定
 lost_after = 3.0                # 这么多秒看不到目标算跟丢
 max_age = 0.5                   # 名字标签超过这么多秒没更新就不用（人物框本来就只给 1 秒内的）
 stall_nudges = 3                # 同方向连续按这么多次……
-stall_px = 20.0                 # ……误差缩小不到这么多像素 = 离得太近转不动了，停手（D0：近处的人横移有上限）
+stall_px = 20.0                 # ……误差缩小不到这么多像素 = 离得太近转不动了，停手（D0：近处的人横移有上限）；变大了这么多是追不上，接着追
 max_seconds = 60                # 一次最多盯多久
 
 [peek]
@@ -232,6 +234,31 @@ quota_quiet = 2                # 安静时窗口内最多主动说几句
 min_gap = 60.0                 # 两句主动的话之间至少隔几秒
 cold_after = 3                 # 连续几句主动的话没人接就暂停主动，等有好友说话
 self_names = ["团子", "三彩"]   # 聊天里出现这些字算“叫了你”
+
+[attention]
+# 空闲注意力（东张西望，spec docs/superpowers/specs/2026-09-30-idle-attention-design.md）：闲着时按兴趣小步转镜头
+# 看说话 / 走近 / 对团子做动作的人，没什么可看就随意看看；只在 [panel] mode = "auto"、聊天面板关着时动。数字都是估的
+enabled = true
+talk_friend = 1.0               # 基础兴趣：好友在说话
+act_on_me = 0.9                 # 有人对团子做动作
+approach = 0.7                  # 有人朝团子走过来
+talk_stranger = 0.4             # 陌生人在说话
+friend_present = 0.2            # 画面里站着的好友
+focus_interest = 1.0            # 大脑 attention(focus=…) 关注的人
+min_interest = 0.15             # 低于它不算目标
+bore_rate = 0.2                 # 在画面中间时每秒涨的看腻（0~1）
+recover_rate = 0.05             # 不在中间时每秒消的看腻
+stuck_bored = 0.5               # 转不动时加的看腻
+center_band = 0.4               # 画面中间多宽算"已经在看"
+gain = 0.1                      # 按键秒数 = gain × 偏差（半屏宽算 1），夹到 [track] nudge_min~nudge_max
+switch_margin = 0.2             # 新目标要高出这么多才换
+switch_hold = 2.0               # 刚换过目标这么多秒内不换
+look_first = 2.0                # 冒气泡 / 有人走近时先看这么久再让聊天面板开
+wander_min = 8.0                # 没什么可看时，隔 wander_min~wander_max 秒随意看一眼（再乘心情精力 / 模式的倍数）
+wander_max = 20.0
+wander_presses = [2, 4]         # 随意看一次连按几下
+wander_same_side = 2            # 往同一边连着随意看最多几次
+max_step = 1.0                  # 每圈时间差上限（沙盒模拟时钟会跳时间）
 
 [reflex]
 # 身体反射（大脑模式）：有人跟团子说话马上冒“正在输入”气泡、别人挥手回礼、闲着做小动作；只用轮盘上已有的动作。数字都是估的，没在真机验证
