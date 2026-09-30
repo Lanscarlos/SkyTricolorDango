@@ -314,7 +314,9 @@ class PanelManager:
             self._set("chatting", "输入框开着")
             return
         self._press(False)
-        self._closed_at = now
+        # 记真按键的时刻，不是这一圈开始的 now：这一圈读聊天、跑识别可能已经花了快 1 秒，
+        # 读聊天确认面板关了又要晚零点几秒，用 now 会超过 open_timeout，被当成"别人打开的"（2026-09-30 实测）
+        self._closed_at = self._pressed_at
         self._set("idle", why)
 
     def _settling(self) -> bool:

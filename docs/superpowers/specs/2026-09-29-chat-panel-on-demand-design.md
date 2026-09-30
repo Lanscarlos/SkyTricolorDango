@@ -1,6 +1,6 @@
 # 聊天记录面板按需打开 — 设计
 
-日期：2026-09-29　状态：**代码已完成**（方案：`docs/superpowers/plans/2026-09-29-chat-panel-on-demand.md`），默认仍是 `always`；待真机验收（§9）
+日期：2026-09-29　状态：**代码已完成**（方案：`docs/superpowers/plans/2026-09-29-chat-panel-on-demand.md`）；**2026-09-30 真机验收后默认改成 `auto`**（用户确认，结果见 game-ops §3「按需打开聊天面板」）
 
 现在聊天记录面板（光遇里按 C）一直开着：`chat/panel.py` 的 `PanelKeeper` 发现它关了 5 秒就重开；
 转镜头、换轮盘、接互动、好友树四处各自"先关面板 → 做事 → 再开"。

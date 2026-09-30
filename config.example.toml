@@ -22,8 +22,8 @@ min_fill = 0.7
 # 聊天记录面板什么时候开（设计见 docs/superpowers/specs/2026-09-29-chat-panel-on-demand-design.md）。
 # "always" = 一直开着（现在的做法）；"auto" = 平时关着，把镜头和整个画面让给技能 / YOLO：
 #   每 idle_peek 秒按 C 看一眼，身边来了好友 / 有人走近 / 好友头顶冒出"正在输入"时提前看，读到新消息就一直开着，
-#   安静 quiet_close 秒再关。还没在真机验收，先别改成 "auto"
-mode = "always"
+#   安静 quiet_close 秒再关。2026-09-30 真机验收后默认 "auto"（见 docs/game-ops.md §3）
+mode = "auto"
 idle_peek = 30.0          # 闲着时多久看一眼（秒）
 quiet_close = 45.0        # 聊天中安静多久关面板
 peek_cooldown = 5.0       # 两次看一眼至少隔多久

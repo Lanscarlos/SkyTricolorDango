@@ -291,6 +291,7 @@ def _agent(frames, shown=False, clock=None):
 
     cfg = Config()
     cfg.vision.mode = "log"
+    cfg.panel.mode = "always"  # 面板常开时的重开逻辑（2026-09-30 起默认 auto）
     device = FakeDevice(frames)
     device.shown = shown
     reader = ChatReader(SeqOcr([[]]), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))

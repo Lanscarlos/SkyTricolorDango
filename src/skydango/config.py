@@ -78,8 +78,8 @@ class VisionConfig:
 class PanelConfig:
     """聊天记录面板什么时候开（chat/panel.py，设计见 docs/superpowers/specs/2026-09-29-chat-panel-on-demand-design.md）。"""
 
-    # "always" = 一直开着（关久了重开）；"auto" = 平时关着，定时 / 有人来 / 冒气泡时看一眼，聊天中保持打开（真机验收前别改默认）
-    mode: str = "always"
+    # "always" = 一直开着（关久了重开）；"auto" = 平时关着，定时 / 有人来 / 冒气泡时看一眼，聊天中保持打开（2026-09-30 真机验收后默认）
+    mode: str = "auto"
     idle_peek: float = 30.0  # 闲着时多久看一眼（秒）
     quiet_close: float = 45.0  # 聊天中安静多久关面板
     peek_cooldown: float = 5.0  # 两次看一眼至少隔多久

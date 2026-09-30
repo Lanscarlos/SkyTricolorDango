@@ -17,7 +17,7 @@ class Reader:
 
 def manager(visible, mode="log"):
     device = FakeDevice([scene()])
-    return PanelManager(VisionConfig(mode=mode), PanelConfig(), device, Reader(visible), sleep=lambda s: None), device
+    return PanelManager(VisionConfig(mode=mode), PanelConfig(mode="always"), device, Reader(visible), sleep=lambda s: None), device
 
 
 def test_opens_panel_with_key_when_closed():
@@ -156,6 +156,25 @@ def test_idle_peeks_after_idle_peek_and_closes_without_new():
     m.tick(30.2, [], visible=True)
     m.tick(30.4, [], visible=True)
     assert presses(dev) == 2 and m.state == "idle"
+
+
+def test_just_closed_panel_is_not_taken_as_opened_by_someone_else():
+    """实测（2026-09-30 live）：看一眼刚关上 0.7 秒，被判成"面板开着（不是自己开的）"进了聊天中、又把面板打开。
+    关的时间记的是这一圈开始的时刻，真按键晚了近 1 秒，读聊天确认面板关了又晚零点几秒，加起来超过 open_timeout。"""
+    m, dev, _ = auto()
+    t = [0.0]
+    m.clock = lambda: t[0]
+    m.tick(30.0, [], visible=False)
+    m.tick(30.2, [], visible=True)
+    t[0] = 31.3  # 这一圈读聊天、跑识别花了快 1 秒，按关的键时已经 31.3
+    m.tick(30.4, [], visible=True)
+    assert m.state == "idle" and presses(dev) == 2
+    t[0] = 32.0
+    m.tick(32.0, [], visible=True)  # 读聊天的还没确认面板关了
+    assert m.state == "idle" and presses(dev) == 2
+    t[0] = 34.0
+    m.tick(34.0, [], visible=True)  # 过了 open_timeout 还开着：真是别人开的
+    assert m.state == "chatting"
 
 
 def test_peek_waits_two_visible_frames():
