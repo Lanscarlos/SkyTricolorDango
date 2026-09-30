@@ -57,6 +57,8 @@ class PanelManager:
         self._expect_open = True  # 上次按键后面板应该是开还是关
         self._returned_was_open = True  # 最近一次归还的借出：借之前面板开没开
         self._last_bubble = 0.0  # 等气泡：上次看到气泡
+        self._hold_until: float | None = None  # 空闲注意力"先看一眼"：闲着时推迟到这个时间再开面板
+        self._held_once = False  # 这个 _pending 已经推迟过一次
 
     @property
     def auto(self) -> bool:
@@ -105,6 +107,31 @@ class PanelManager:
         if self.auto and self.state == "idle" and self._pending is None:
             self._pending = reason
 
+    @property
+    def pending(self) -> str | None:
+        """闲着时等着看一眼的原因（"bubble" / "approach" / "arrive"…）；没有是 None。"""
+        return self._pending
+
+    def _until_peek(self, now: float) -> float:
+        return self.cfg.idle_peek - (now - self._last_read)
+
+    def quiet(self, now: float, margin: float) -> bool:
+        """auto 模式闲着、没借出、没有等着看的、离定时看一眼还有 margin 秒以上：这段时间面板不会开（空闲注意力用）。"""
+        return (self.auto and self.state == "idle" and self.lent is None and self._pending is None
+                and self._until_peek(now) >= margin)
+
+    def hold_off(self, until: float | None, now: float) -> bool:
+        """空闲注意力"先看一眼再开面板"：闲着时推迟到 until 再开（None = 放手）。同一个 _pending 只推迟一次，
+        拒绝时返回 False；只管 idle 状态，读到新消息 / 要说话照常马上进聊天。"""
+        if until is None:
+            self._hold_until = None
+            return True
+        if self._held_once:
+            return False
+        self._hold_until, self._held_once = until, True
+        log.debug("聊天面板推迟到 %.1f 秒后再开（先看一眼）", until - now)
+        return True
+
     def bubble_seen(self, now: float) -> None:
         """这一圈看到了该触发的"正在输入"气泡（好友的；bubble_strangers 时陌生人的也算）。"""
         if not self.auto:
@@ -152,7 +179,7 @@ class PanelManager:
         if not self.auto:
             return "常开"
         if self.state == "idle":
-            return f"闲着（{max(0, math.ceil(self.cfg.idle_peek - (now - self._last_read)))} 秒后看一眼）"
+            return f"闲着（{max(0, math.ceil(self._until_peek(now)))} 秒后看一眼）"
         if self.state == "bubble":
             return f"等气泡（还剩 {max(0, math.ceil(self.cfg.bubble_wait - (now - self._bubble_start)))} 秒）"
         return {"peek": "看一眼", "chatting": "聊天中"}.get(self.state, self.state)
@@ -208,6 +235,8 @@ class PanelManager:
                 self._last_activity = now
                 self._set("chatting", "面板开着（不是自己开的）")
             return
+        if self._hold_until is not None and now < self._hold_until:  # 空闲注意力在先看一眼
+            return
         due = now - self._last_read >= self.cfg.idle_peek
         wanted = self._pending is not None and now - self._last_peek >= self.cfg.peek_cooldown
         if blackout or not (due or wanted):
@@ -216,6 +245,7 @@ class PanelManager:
 
     def _open_peek(self, now: float, reason: str) -> None:
         self._pending = None
+        self._hold_until, self._held_once = None, False
         if self.device.ime_shown():  # 按键会打出字母；输入框开着说明在说话，本来就该是聊天中
             self._last_activity = now
             self._set("chatting", "输入框开着")

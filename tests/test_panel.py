@@ -536,3 +536,61 @@ def test_peek_close_does_not_press_while_typing():  # M4
     m.tick(30.2, [], visible=True)
     m.tick(30.4, [], visible=True)
     assert presses(dev) == 1 and m.state == "chatting"
+
+
+# ---- 空闲注意力用：安静 / 先看一眼推迟开面板（plan 2026-09-30-idle-attention Task 1） ----
+
+def test_quiet_only_when_idle_nothing_pending_and_peek_not_due():
+    m, _, _ = auto()
+    assert m.quiet(1.0, margin=1.6)
+    assert not m.quiet(m.cfg.idle_peek - 1.0, margin=1.6)  # 快到定时看一眼
+    m.trigger("approach", 2.0)
+    assert m.pending == "approach" and not m.quiet(2.0, 1.6)
+
+
+def test_quiet_false_when_lent_or_not_idle_or_always():
+    m, _, state = auto()
+    with m.borrow("camera"):
+        assert not m.quiet(1.0, 1.6)
+    chatting(m, state, 2.0)
+    assert m.state == "chatting" and not m.quiet(2.1, 1.6)
+    always, _ = fake_panel(FakeDevice([scene()]), open_=True, mode="always")
+    assert not always.quiet(1.0, 1.6)
+
+
+def test_hold_off_delays_pending_peek_until_released():
+    m, device, _ = auto()
+    m.bubble_seen(5.0)
+    assert m.pending == "bubble"
+    assert m.hold_off(7.0, 5.0) is True
+    m.tick(5.5, [], visible=False)
+    assert presses(device) == 0  # 推迟中：不开
+    m.hold_off(None, 5.6)
+    m.tick(5.7, [], visible=False)
+    assert presses(device) == 1 and m.state == "bubble"  # 放手后照常开
+
+
+def test_hold_off_expires_on_its_own():
+    m, device, _ = auto()
+    m.trigger("approach", 5.0)
+    m.hold_off(7.0, 5.0)
+    m.tick(6.9, [], visible=False)
+    assert presses(device) == 0
+    m.tick(7.0, [], visible=False)
+    assert presses(device) == 1
+
+
+def test_hold_off_only_once_per_pending():
+    m, _, _ = auto()
+    m.bubble_seen(5.0)
+    assert m.hold_off(7.0, 5.0) is True
+    m.hold_off(None, 6.0)
+    assert m.hold_off(9.0, 6.0) is False  # 同一个 pending 不再推迟
+
+
+def test_hold_off_does_not_block_chatting():
+    m, _, state = auto()
+    m.bubble_seen(5.0)
+    m.hold_off(7.0, 5.0)
+    chatting(m, state, 5.5)  # 推迟中读到新消息
+    assert m.state == "chatting"
