@@ -75,7 +75,7 @@
 ### `current.json`：这一次上线（运行中）
 
 和 `days.jsonl` 一行同样的字段，外加 `saved`（最后保存的时间）。live 时每 `save_every`（60 秒）连同 `people.json` 一起写；正常退出时追加进 `days.jsonl` 后删掉。
-启动时发现它还在 → 上次是意外结束：`end = saved`、`ended = "crash"` 追加进 `days.jsonl`，再删掉。
+启动时发现它还在 → 上次是意外结束：`end = saved`、`ended = "crash"` 追加进 `days.jsonl`，再删掉（dry-run 只读出来放进内存，不删）。`memory show` 只读，坏文件也不改名。
 
 ### 写盘
 
@@ -85,7 +85,7 @@
 
 ## §2 怎么记（`inner/ledger.py`）
 
-`Ledger(cfg: InnerConfig, directory, friends: Callable[[], list[str]], persist: bool, now: float)`。时间参数一律传墙上时间（身体用 `self.wall()`）。
+`Ledger(cfg, friends, now, cards, history, store, persist, backfilled)`：只管账和拼文字；读写文件在 `inner/store.py` 的 `InnerStore`，启动时的补意外结束 / 回填 / 建账本在 `inner/__init__.py` 的 `open_ledger`。时间参数一律传墙上时间（身体用 `self.wall()`）。
 
 **名字匹配**：新函数 `match_friend(name, friends) -> str | None`：和每个好友算 `similar()`（`chat/tracker.py`），取分数最高且 ≥ 0.75 的那个。
 身边好友（`env.nearby()` 已经是 friends.md 的标题）和聊天说话人（OCR 出来的，可能错字）都过它，同一个人不会被拆成两张卡。空名字、`"我"` 返回 `None`。
@@ -113,7 +113,7 @@
 
 - 逐轮读 `history.jsonl`：每轮的 `user` 按行拆出"名字：内容"（`recall._heard` 用的同一种格式），说话人过 `match_friend`
   - 好友：`first_met` = 最早一轮的时间；`lines` 按句数加；`last_line` = 最后一句；`days` = 说过话的日期；`last_seen` = 最后一次说话的时间（近似）
-  - `visits`、`minutes`、`to_me` 推不出来，从 0 开始
+  - `visits` = 这个好友出现过的回填上线段数（近似"见过几次"，不然回填过的老朋友第一次来会写成"第 1 次见"）；`minutes`、`to_me` 推不出来，从 0 开始
 - 按相邻两轮间隔 > `session_gap`（7200 秒）分段，每段一行 `ended = "backfill"`、`start` / `end` 是段里第一 / 最后一轮的时间、`friends` / `heard` / `said` 按段里的数、`summary` 空，写进 `days.jsonl`（`days.jsonl` 已经有内容时不回填上线记录，只回填卡）
 - `people.json` 里记 `backfilled` 时间；日志写"回填了 N 个好友、M 次上线"
 
