@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -106,12 +107,14 @@ def _seconds(value, where: str, what: str) -> float:
     if isinstance(value, bool):
         raise ScenarioError(f"{where}：{what}写法不对：{value!r}")
     if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            raise ScenarioError(f"{where}：{what}要是有限的数，写的是 {value!r}")
         if value < 0:
             raise ScenarioError(f"{where}：{what}不能是负数")
         return float(value)
     try:
         return parse_duration(value)
-    except ValueError:
+    except (ValueError, TypeError):
         raise ScenarioError(f"{where}：{what}的时长写法不对：{value!r}（30s / 10m / 2h）") from None
 
 
@@ -147,7 +150,8 @@ def _parse_step(i: int, data) -> Step:
     elif action == "notice":
         value = _text(value, where, "新鲜事", allow_empty=False)
     elif action == "skip":
-        _seconds(value, where, "skip")
+        if _seconds(value, where, "skip") <= 0:
+            raise ScenarioError(f"{where}：skip 要快进一段正的时长，写的是 {value!r}")
         if isinstance(value, (int, float)):
             value = float(value)
     elif action == "time":
