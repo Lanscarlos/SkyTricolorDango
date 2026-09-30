@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import tempfile
 import threading
 from collections.abc import Callable, Sequence
@@ -34,7 +36,7 @@ ASSIST_SYSTEM = "你是游戏截图的目标检测标注核对员。按用户给
 
 # 规则来自 2026-09-28 两轮试标（tmp/assist、tmp/assist2）踩过的坑；{self_hint} 换成配置里团子的长相
 RULES = """下面是游戏《光·遇》(Sky) 的截图，每帧一张，要给目标检测做标注。每张图上画了：
-- 白色细网格：每 100 像素一条，边上的数字是原图像素坐标（原图 1920×1080）
+- 白色细网格：每 100 像素一条，边上的数字是原图像素坐标（原图 {width}×{height}）
 - 检测器给的候选"人物"框：彩色框，编号写在框外；每个框的精确坐标在图前面的文字里
 
 对每个候选框判一个类别：
@@ -103,8 +105,9 @@ def _xyxy(b: Rect) -> str:
 
 
 def build_message(frames: list[tuple[str, np.ndarray, list[Rect]]], self_hint: str) -> list[dict]:
-    """一批帧的内容块：规则 + 每帧（候选框坐标文字 + 画了网格和编号的图）。"""
-    content: list[dict] = [{"type": "text", "text": RULES.format(self_hint=self_hint)}]
+    """一批帧的内容块：规则 + 每帧（候选框坐标文字 + 画了网格和编号的图）。规则里的原图尺寸按这批第一帧填。"""
+    height, width = frames[0][1].shape[:2] if frames else (1080, 1920)
+    content: list[dict] = [{"type": "text", "text": RULES.format(self_hint=self_hint, width=width, height=height)}]
     for stem, frame, boxes in frames:
         listed = "；".join(f"{i}={_xyxy(b)}" for i, b in enumerate(boxes, 1)) or "没有候选框，只看有没有漏掉的人"
         content.append({"type": "text", "text": f"帧 {stem}：候选框 {listed}"})
@@ -131,12 +134,21 @@ class FrameReview:
     problems: list[str] = field(default_factory=list)  # 回答里缺编号、类别写错之类，列进待核对清单
 
 
-def _box(value, width: int, height: int) -> Rect | None:
-    """[x1,y1,x2,y2] → 裁到画面内的 Rect；反了就排序，格式不对 / 裁完太小返回 None。"""
+def _coords(value) -> list[float] | None:
+    """[x1,y1,x2,y2] → 4 个有限的数；格式不对、有 NaN / inf（JSON 里的 NaN、Infinity 也能解析出来）返回 None。"""
     try:
-        x1, y1, x2, y2 = (float(v) for v in value)
+        coords = [float(v) for v in value]
     except (TypeError, ValueError):
         return None
+    return coords if len(coords) == 4 and all(math.isfinite(v) for v in coords) else None
+
+
+def _box(value, width: int, height: int) -> Rect | None:
+    """[x1,y1,x2,y2] → 裁到画面内的 Rect；反了就排序，格式不对 / 不是有限数 / 裁完太小返回 None。"""
+    coords = _coords(value)
+    if coords is None:
+        return None
+    x1, y1, x2, y2 = coords
     x1, x2 = sorted((x1, x2))
     y1, y2 = sorted((y1, y2))
     x1, y1 = max(0, round(x1)), max(0, round(y1))
@@ -144,8 +156,42 @@ def _box(value, width: int, height: int) -> Rect | None:
     return Rect(x1, y1, x2 - x1, y2 - y1) if x2 - x1 >= 2 and y2 - y1 >= 2 else None
 
 
+def _claimed_box(value, width: int, height: int, what: str, problems: list[str]) -> Rect | None:
+    """Claude 给的框：坐标不对（格式错、NaN / inf）丢掉并记进 problems（列进待核对清单）；裁到画面外太小的照旧静默丢掉。"""
+    if _coords(value) is None:
+        problems.append(f"{what} 坐标不对，丢掉了：{value!r}")
+        return None
+    return _box(value, width, height)
+
+
+def _boxes_by_id(raw, count: int) -> dict | None:
+    """回答里的 boxes → 编号（"1"、"2"…）→ 判断。Claude 偶尔回成列表 [{...}, {...}]：按顺序当 1 号、2 号……
+    没有候选时可以不写；有候选却不是对象 / 列表（看不懂）返回 None：这帧当没核对，不写缓存。"""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        return {str(i): v for i, v in enumerate(raw, 1)}
+    return {} if raw is None and count == 0 else None
+
+
+_STEM_PREFIX = re.compile(r"^帧\s*[:：]?\s*")
+_IMAGE_SUFFIX = re.compile(r"\.(jpe?g|png)$", re.IGNORECASE)
+
+
+def _by_stem(data: dict, stems) -> dict:
+    """回答里的帧名 → 本批的帧名：原样对得上的优先；对不上的去掉"帧 "前缀、.jpg / .png 后缀再对。对不上的键丢掉。"""
+    out = {k: v for k, v in data.items() if k in stems}
+    for k, v in data.items():
+        if isinstance(k, str) and k not in stems:
+            stem = _IMAGE_SUFFIX.sub("", _STEM_PREFIX.sub("", k.strip())).strip()
+            if stem in stems:
+                out.setdefault(stem, v)
+    return out
+
+
 def extract_json(text: str, stems) -> dict | None:
-    """回答里第一个含本批帧名的 JSON 对象。前后有说明文字、代码块、多余的 { } 都不影响；找不到返回 None。"""
+    """回答里第一个含本批帧名的 JSON 对象，键换成本批的帧名（"帧 xxx.jpg" → "xxx"），只留本批的帧。
+    前后有说明文字、代码块、多余的 { } 都不影响；找不到返回 None。"""
     decoder = json.JSONDecoder()
     i = text.find("{")
     while i >= 0:
@@ -153,8 +199,8 @@ def extract_json(text: str, stems) -> dict | None:
             data, _ = decoder.raw_decode(text, i)
         except json.JSONDecodeError:
             data = None
-        if isinstance(data, dict) and any(s in data for s in stems):
-            return data
+        if isinstance(data, dict) and (hit := _by_stem(data, stems)):
+            return hit
         i = text.find("{", i + 1)
     return None
 
@@ -169,7 +215,9 @@ def parse_review(text: str, frames: dict[str, int], width: int, height: int) -> 
         item = data.get(stem)
         if not isinstance(item, dict):
             continue
-        boxes = item.get("boxes") if isinstance(item.get("boxes"), dict) else {}
+        boxes = _boxes_by_id(item.get("boxes"), count)
+        if boxes is None:  # 看不懂：当没核对（不能当"全不是人"写进缓存）
+            continue
         verdicts: dict[int, Verdict] = {}
         problems: list[str] = []
         for i in range(1, count + 1):
@@ -179,11 +227,12 @@ def parse_review(text: str, frames: dict[str, int], width: int, height: int) -> 
                 problems.append(f"{i} 号没判" if cls is None else f"{i} 号类别 {cls!r} 不认识")
                 verdicts[i] = Verdict("not_person", None, "")
                 continue
-            fixed = _box(v.get("fixed_box"), width, height) if v.get("fixed_box") else None
+            fixed = _claimed_box(v.get("fixed_box"), width, height, f"{i} 号的 fixed_box", problems) if v.get("fixed_box") else None
             verdicts[i] = Verdict(cls, fixed, str(v.get("note") or ""))
         missing = []
         for m in item.get("missing") or []:
-            if isinstance(m, dict) and m.get("cls") in PEOPLE and (box := _box(m.get("box"), width, height)):
+            if (isinstance(m, dict) and m.get("cls") in PEOPLE
+                    and (box := _claimed_box(m.get("box"), width, height, f"补的 {m['cls']}", problems))):
                 missing.append((m["cls"], box, str(m.get("note") or "")))
         out[stem] = FrameReview(verdicts, missing, str(item.get("unsure") or ""), problems)
     return out
@@ -257,9 +306,10 @@ def review_report(results: list[tuple[str, FrameReview | None]]) -> str:
 
 
 def assist_command(base: list[str], cfg: AssistConfig, system: str = ASSIST_SYSTEM) -> list[str]:
-    """一次性 claude -p：图片直接放在消息里，不需要任何内置工具。system：标人 / 物品模式各自的系统提示词。"""
+    """一次性 claude -p：图片直接放在消息里，不需要任何内置工具。system：标人 / 物品模式各自的系统提示词。
+    --no-session-persistence（只配 -p）：不在配置目录的 projects/ 下留会话记录 —— 每批一个，跑一次上百个、从来不 --resume。"""
     return [
-        *base, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+        *base, "-p", "--no-session-persistence", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
         "--model", cfg.model, "--tools", "", "--strict-mcp-config",
         "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", system,
     ]
@@ -322,6 +372,7 @@ class Reviewer:
         self.source = source
         self.usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
         self._lock = threading.Lock()
+        self._limited = threading.Event()  # 有批次撞上额度用完：排队还没开始的批次不再起进程
 
     def _key(self, f: FrameInput) -> dict:
         key: dict = {"prompt_version": self.protocol.version, "source": self.source,
@@ -346,11 +397,14 @@ class Reviewer:
     def _batch(self, frames: list[FrameInput]) -> dict[str, FrameReview | None]:
         content = self.protocol.build(frames, self.cfg)
         for attempt in (1, 2):
+            if self._limited.is_set():  # 别的批次已经撞上额度用完：这批不起进程（review 最后照样抛 AssistLimit）
+                return {}
             try:
                 m = self.run(content)
                 break
             except ClaudeError as e:
                 if e.limit:
+                    self._limited.set()
                     raise AssistLimit(str(e)) from e
                 log.warning("核对 %s 失败（第 %d 次）：%s", ",".join(f.stem for f in frames), attempt, e)
         else:
@@ -370,6 +424,7 @@ class Reviewer:
 
     def review(self, frames: list[FrameInput]) -> dict[str, FrameReview | None]:
         out: dict[str, FrameReview | None] = {}
+        self._limited.clear()
         todo = []
         for f in frames:
             hit = self._cached(f)

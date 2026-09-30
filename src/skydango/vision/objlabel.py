@@ -17,7 +17,7 @@ import numpy as np
 
 from ..brain.images import image_block
 from ..config import AssistConfig
-from .assist import FrameInput, Protocol, _box, _dashed, _xyxy, draw_candidates, extract_json
+from .assist import FrameInput, Protocol, _boxes_by_id, _claimed_box, _dashed, _xyxy, draw_candidates, extract_json
 from .bubbles import Rect
 from .people import OBJECT_NAMES
 from .weaklabel import yolo_line
@@ -55,6 +55,13 @@ OBJECT_RULES = """下面是游戏《光·遇》(Sky) 的截图，每帧一张，
 只输出一个 JSON 对象，每帧一项：
 {"帧名": {"boxes": {"1": {"cls": "bench", "fixed_box": [x1,y1,x2,y2], "note": "…"}}, "missing": [{"cls": "spirit", "box": [x1,y1,x2,y2], "note": "…"}], "spirits": ["P2"], "unsure": ""}}
 fixed_box、note 没有就不写；没有候选框时 boxes 写 {}。"""
+
+
+
+def object_rules(width: int, height: int) -> str:
+    """规则里的原图尺寸按实际帧填；1920×1080 时和 OBJECT_RULES 一字不差（提示词版本不用变）。"""
+    return OBJECT_RULES.replace("原图 1920×1080", f"原图 {width}×{height}", 1)
+
 
 OBJECT_COLORS = {"bench": (216, 78, 29), "bonfire": (12, 88, 234), "instrument": (175, 164, 253), "spirit": (255, 255, 255),
                  "typing": (255, 0, 255)}  # BGR：蓝、橙、粉、白、品红
@@ -95,8 +102,9 @@ def _hint(hints: list[str], i: int) -> str:
 
 
 def build_object_message(frames: list[FrameInput], cfg: AssistConfig) -> list[dict]:
-    """一批帧的内容块：规则 + 每帧（人物框、候选框坐标文字 + 画了网格 / P 框 / 编号候选框的图）。"""
-    content: list[dict] = [{"type": "text", "text": OBJECT_RULES}]
+    """一批帧的内容块：规则 + 每帧（人物框、候选框坐标文字 + 画了网格 / P 框 / 编号候选框的图）。规则里的原图尺寸按这批第一帧填。"""
+    height, width = frames[0].image.shape[:2] if frames else (1080, 1920)
+    content: list[dict] = [{"type": "text", "text": object_rules(width, height)}]
     for f in frames:
         people = "；".join(f"P{i}={_xyxy(b)}" for i, b in enumerate(f.people, 1)) or "无"
         cands = "；".join(f"{i}={_xyxy(b)}" + _hint(f.hints, i) for i, b in enumerate(f.candidates, 1)) or "无，只看有没有漏掉的物品"
@@ -117,7 +125,9 @@ def parse_object_review(text: str, frames: list[FrameInput]) -> dict[str, Object
         if not isinstance(item, dict):
             continue
         height, width = f.image.shape[:2]
-        boxes = item.get("boxes") if isinstance(item.get("boxes"), dict) else {}
+        boxes = _boxes_by_id(item.get("boxes"), len(f.candidates))
+        if boxes is None:  # 看不懂：当没核对（标注不动、不写缓存）
+            continue
         verdicts: dict[int, ObjectVerdict] = {}
         problems: list[str] = []
         for i in range(1, len(f.candidates) + 1):
@@ -127,7 +137,7 @@ def parse_object_review(text: str, frames: list[FrameInput]) -> dict[str, Object
                 problems.append(f"{i} 号没判" if cls is None else f"{i} 号类别 {cls!r} 不认识")
                 verdicts[i] = ObjectVerdict("unjudged", None, "")
                 continue
-            fixed = _box(v.get("fixed_box"), width, height) if v.get("fixed_box") else None
+            fixed = _claimed_box(v.get("fixed_box"), width, height, f"{i} 号的 fixed_box", problems) if v.get("fixed_box") else None
             verdicts[i] = ObjectVerdict(cls, fixed, str(v.get("note") or ""))
         missing = []
         raw_missing, raw_spirits = item.get("missing") or [], item.get("spirits") or []
@@ -138,7 +148,8 @@ def parse_object_review(text: str, frames: list[FrameInput]) -> dict[str, Object
             problems.append(f"spirits 应该是列表：{raw_spirits!r}")
             raw_spirits = []
         for m in raw_missing:
-            if isinstance(m, dict) and m.get("cls") in LABEL_CLASSES and (box := _box(m.get("box"), width, height)):
+            if (isinstance(m, dict) and m.get("cls") in LABEL_CLASSES
+                    and (box := _claimed_box(m.get("box"), width, height, f"补的 {m['cls']}", problems))):
                 missing.append((m["cls"], box, str(m.get("note") or "")))
         spirits: list[int] = []
         for s in raw_spirits:

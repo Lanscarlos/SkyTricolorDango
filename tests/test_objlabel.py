@@ -453,3 +453,41 @@ def test_only_needs_objects_mode(tmp_path, monkeypatch):
     root, _ = _dataset(tmp_path, monkeypatch)
     with pytest.raises(SystemExit, match="--objects"):
         cli.main(["perception", "label", str(root), "--only", "0001"])
+
+
+# ---- 辅助标注审查留下的小问题（进度文档「没做完 / 待办」第 6 条），物品模式同样的毛病 ----
+def test_parse_object_boxes_as_list_uses_order_as_ids():
+    f = frame_input(cands=[Rect(600, 700, 200, 100), Rect(0, 0, 50, 50)])
+    r = parse_object_review(reply(boxes=[{"cls": "bench"}, {"cls": "typing"}]), [f])["f0"]
+    assert r.verdicts[1].cls == "bench" and r.verdicts[2].cls == "typing" and r.problems == []
+
+
+def test_parse_object_unreadable_boxes_means_not_reviewed():
+    f = frame_input(cands=[Rect(600, 700, 200, 100)])
+    assert parse_object_review(reply(boxes="1 号是座位"), [f]) == {}
+
+
+def test_parse_object_nonfinite_coordinates_are_problems():
+    f = frame_input(cands=[Rect(600, 700, 200, 100)])
+    text = ('{"f0": {"boxes": {"1": {"cls": "bench", "fixed_box": [NaN, 0, 10, 10]}}, '
+            '"missing": [{"cls": "spirit", "box": [0, 0, Infinity, 10]}, {"cls": "spirit", "box": [900, 300, 980, 500]}], '
+            '"spirits": [], "unsure": ""}}')
+    r = parse_object_review(text, [f])["f0"]
+    assert r.verdicts[1].cls == "bench" and r.verdicts[1].fixed is None
+    assert [(c, b) for c, b, _ in r.missing] == [("spirit", Rect(900, 300, 80, 200))]
+    assert len(r.problems) == 2 and all("坐标" in p for p in r.problems)
+
+
+def test_parse_object_normalizes_frame_names():
+    f = frame_input(cands=[Rect(600, 700, 200, 100)])
+    text = json.dumps({"帧 f0.jpg": {"boxes": {"1": {"cls": "bonfire"}}, "missing": [], "spirits": [], "unsure": ""}},
+                      ensure_ascii=False)
+    assert parse_object_review(text, [f])["f0"].verdicts[1].cls == "bonfire"
+
+
+def test_object_prompt_uses_actual_frame_size():
+    small = FrameInput("f0", np.zeros((720, 1280, 3), np.uint8), [])
+    rules = build_object_message([small], AssistConfig())[0]["text"]
+    assert "原图 1280×720" in rules and "1920×1080" not in rules
+    assert build_object_message([frame_input()], AssistConfig())[0]["text"] == OBJECT_RULES  # 1920×1080 的提示词一字不变
+    assert "原图 1920×1080" in OBJECT_RULES and OBJECT_PROMPT_VERSION == 3
