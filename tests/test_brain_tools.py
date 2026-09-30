@@ -295,3 +295,16 @@ def test_text_only_look_always_gives_eyes_text():
 def test_not_text_only_is_unchanged():
     tb = ToolBox(FakeBody(), FakeEyes())
     assert tb.run("look", {"image": True}) == ([{"type": "image"}], False)
+
+
+def test_sandbox_says_missing_parts():  # 沙盒计划 Task 5：镜头、好友树、面板、互动请求 → "沙盒里没有这个"
+    body = FakeBody()
+    tb = ToolBox(body, FakeEyes(), max_steps=50, sandbox=True)
+    for name, args in (("camera", {"action": "left"}), ("camera_reset", {}), ("track", {"name": "小明"}), ("look_around", {}),
+                       ("check_friend", {"x": 1, "y": 2}), ("panel_read", {}), ("panel_close", {}),
+                       ("set_request_policy", {"who": "*", "kind": "hand", "accept": True})):
+        out, err = tb.run(name, args)
+        assert err and out.startswith("沙盒里没有这个"), (name, out)
+    assert body.calls == []
+    assert tb.run("emote", {"name": "鞠躬"}) == ("ok", False)  # 别的照旧
+    assert ToolBox(FakeBody()).run("camera", {"action": "left"}) == ("ok", False)

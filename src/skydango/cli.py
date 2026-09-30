@@ -1330,6 +1330,71 @@ def cmd_run(cfg: Config, args) -> None:
         run.close()
 
 
+def cmd_sandbox(cfg: Config, args) -> None:
+    """大脑沙盒（spec 2026-09-30-brain-sandbox）：不开 MuMu，真的大脑 + 身体 + 内心层接一个假世界，只给 JSON 接口（页面在管理面板里）。
+
+    总是 live，但记忆只写 [sandbox] dir 下的 memory/（真的 memory/ 永远不碰）；模拟时钟从 --start 算出来。"""
+    import _thread
+
+    from .brain.trace import BrainTrace
+    from .console import watchdog
+    from .sandbox import clock as sandbox_clock
+    from .sandbox.control import SandboxControl
+    from .sandbox.server import SandboxServer
+    from .sandbox.transcript import Transcript
+    from .sandbox.world import Scene, sandbox_world
+
+    sb = cfg.sandbox
+    if isinstance(sb.wake_hour, bool) or not isinstance(sb.wake_hour, int) or not 0 <= sb.wake_hour <= 23:
+        raise SystemExit(f"[sandbox] wake_hour 要是 0~23 的整数，现在是 {sb.wake_hour!r}")
+    root = Path(sb.dir)
+    memory = root / "memory"
+    memory.mkdir(parents=True, exist_ok=True)  # 第一次：空记忆（管理面板「重置记忆」才从 memory/ 复制）
+    cfg.reply.dry_run = False  # 沙盒总是 live：记忆、内心层都真的写，但只写 sandbox/memory/
+    cfg.reply.memory_dir = str(memory)
+    cfg.run.save_frames = False  # 灰图不用存
+    cfg.brain.enabled = True
+    floor, now = sandbox_clock.floor_time(root), time.time()
+    try:
+        start = sandbox_clock.resolve_start(args.start, floor, now, sb.wake_hour)
+    except ValueError as exc:
+        raise SystemExit(f"沙盒起始时间不对：{exc}") from None
+    sim = sandbox_clock.SimClock(offset=start - now)
+    request_exit = watchdog.once(_thread.interrupt_main)  # 看门狗和 /shutdown 共用：只中断一次，不打断收尾（写日记）
+    if args.parent_pid is not None:
+        watchdog.watch_parent(args.parent_pid, request_exit)
+    port = args.port if args.port is not None else sb.port
+    server = SandboxServer(port, request_exit)
+    server.trace = BrainTrace()
+    try:
+        url = server.start()  # 先起接口：/status 立刻可用，管理面板据此判断子进程起来了
+    except OSError as exc:
+        raise SystemExit(f"沙盒接口起不来（127.0.0.1:{port}）：{exc}；端口可能被上次留下的沙盒占着") from exc
+    run = RunDir.create(cfg, "sandbox")
+    run.attach_log()
+    log.info("本次运行的日志和截图: %s", run.path.resolve())
+    log.info("沙盒接口：%s；沙盒时间从 %s 开始（记忆在 %s）", url, sandbox_clock._fmt(sim.wall()), memory.resolve())
+    transcript = Transcript(sim)
+    scene = Scene()
+    world = sandbox_world(cfg, sim, transcript, scene)
+
+    def ready(parts) -> None:
+        body = parts.body
+        server.inner = lambda: body.call(body.inner_snapshot, timeout=3)
+        server.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
+        server.control = SandboxControl(parts, world, sim, transcript, scene)
+
+    try:
+        _run_brain(cfg, run, world, getattr(args, "duration", 0.0) or 0.0, None, on_ready=ready, trace=server.trace)
+    finally:
+        try:
+            sandbox_clock.save(root / "clock.json", sim.wall())
+        except OSError:
+            log.exception("沙盒时钟没存上")
+        server.stop()
+        run.close()
+
+
 def _build_emotes(cfg: Config, dev, panel, no_emotes: bool):
     """准备聊天时做动作：读一次轮盘。做不了（关掉了 / 图标库空 / 读轮盘失败）返回 None，聊天照常。"""
     if no_emotes or not cfg.emotes.enabled:
@@ -1595,7 +1660,8 @@ def _run_brain(
             body.memory_notes = lambda: f"{store.notes()}\n{store.inbox()}"
         events.subscribe(eyes.notice)
         # recall 只读，dry-run 也给
-        toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only)
+        toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
+                          sandbox=world.name == "sandbox")
         server = SkyServer(toolbox)
         server.start()
     except BaseException:
@@ -2104,6 +2170,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--port", type=int, help="面板端口（默认 [console] port = 19390）")
     p.add_argument("--no-browser", action="store_true", help="不打开浏览器")
     p.set_defaults(func=cmd_console)
+
+    p = sub.add_parser("sandbox", help="大脑沙盒：不开模拟器，真的大脑 + 内心层接假世界，只给 JSON 接口（管理面板「沙盒」页用）")
+    p.add_argument("--port", type=int, help="接口端口（默认 [sandbox] port = 19392）")
+    p.add_argument("--no-browser", action="store_true", help="（沙盒没有自己的页面，只为和 run 一致）")
+    p.add_argument("--parent-pid", type=int, help="这个进程没了就自己退出（管理面板用）")
+    p.add_argument("--start", default="resume", help="沙盒时间从哪开始：resume 接着上次 / sleep 睡一晚 / HH:MM / \"YYYY-MM-DD HH:MM\"")
+    p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动下线（默认一直跑，调试用）")
+    p.set_defaults(func=lambda cfg, args: cmd_sandbox(cfg, args))
 
     p = sub.add_parser("run", help="启动团子（默认接统管大脑、dry-run；--no-brain 是调试用的普通模式）")
     live = p.add_mutually_exclusive_group()

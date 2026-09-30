@@ -22,6 +22,29 @@ def record(entry):
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def say_over_mcp(config_path, text):
+    """FAKE_CLAUDE_MODE=say：连 mcp.json 里的 sky 服务调一次 say，返回工具的结果文字。"""
+    import asyncio
+
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    with open(config_path, encoding="utf-8") as fh:
+        url = json.load(fh)["mcpServers"]["sky"]["url"]
+
+    async def go():
+        async with streamable_http_client(url) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                await session.initialize()
+                result = await session.call_tool("say", {"text": text})
+                return " ".join(getattr(c, "text", "") for c in result.content)
+
+    try:
+        return asyncio.run(go())
+    except Exception as exc:  # noqa: BLE001
+        return f"出错：{exc!r}"
+
+
 args = sys.argv[1:]
 resumed = "--resume" in args
 session = args[args.index("--resume") + 1] if resumed else "fake-session-1"
@@ -49,6 +72,8 @@ for line in sys.stdin:
         emit({"type": "result", "subtype": "success", "is_error": True, "result": "You've hit your limit · resets 5pm",
               "session_id": session, "num_turns": 1, "total_cost_usd": 0, "usage": {}})
         continue
+    if MODE == "say" and "在吗" in text and "--mcp-config" in args:  # 沙盒端到端：像大脑一样经 MCP 调一次 say
+        record({"say": say_over_mcp(args[args.index("--mcp-config") + 1], "在呢在呢")})
     emit({"type": "assistant", "message": {"content": [{"type": "text", "text": "想：" + text[:20]}]}})
     emit({"type": "result", "subtype": "success", "is_error": False, "result": "收到：" + text, "session_id": session,
           "num_turns": 1, "total_cost_usd": 0.01, "usage": {"input_tokens": 10, "output_tokens": 2}})

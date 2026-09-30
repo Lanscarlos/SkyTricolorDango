@@ -82,6 +82,78 @@ def static_asset(name: str) -> tuple[str, bytes] | None:
     return _STATIC_TYPES[name[name.rindex("."):]], data
 
 
+# ---- viewer 和大脑沙盒（sandbox/server.py）共用的接口处理 ----
+def brain_body(trace, after: int, wait: float = WAIT) -> bytes:
+    """/brain：大脑时间线长轮询的响应体。errors="replace"：截断在 emoji 中间的半个代理字符不能让整条时间线卡在"连不上"。"""
+    return json.dumps(trace.since(after, wait), ensure_ascii=False).encode(errors="replace")
+
+
+def inner_response(inner: Callable[[], dict]) -> tuple[int, dict]:
+    """/inner：取内心快照（经身体线程）；身体超时 / 已经停了 → 503。"""
+    try:
+        return 200, inner()
+    except Exception as exc:
+        log.debug("取内心快照失败：%s", exc)
+        return 503, {"ok": False, "error": "团子正忙，稍后再试"}
+
+
+def forget_response(forget: Callable[[str, str, str, str], str], raw: bytes) -> tuple[int, dict]:
+    """/inner/forget：删一条性格条目：解析 → 交给身体线程 → {"ok": true} 或原因。"""
+    from ..inner.api import forget_result, parse_forget
+
+    try:
+        kind, text, who, topic = parse_forget(json.loads(raw.decode("utf-8")))
+    except ValueError as exc:  # 坏 JSON、类别不认识：不交给身体
+        return 400, {"ok": False, "error": str(exc)}
+    try:
+        reason = forget(kind, text, who, topic)
+    except Exception as exc:  # 身体超时 / 已经停了
+        log.debug("删性格条目失败：%s", exc)
+        return 503, {"ok": False, "error": "团子正忙，稍后再试"}
+    return 200, forget_result(reason)
+
+
+class JsonHandler(BaseHTTPRequestHandler):
+    """viewer 和沙盒共用的请求处理小工具：回 JSON、读 after、读掉没读的请求体、校验 Host。"""
+
+    def _local_host(self) -> bool:
+        return is_local_host(self.headers.get("Host") or "", self.server.server_address[1])
+
+    def _drain(self) -> None:
+        """没读的请求体读掉（最多 64 KB），否则直接关连接浏览器那边会报连接被重置、看不到状态码。"""
+        try:
+            left = min(int(self.headers.get("Content-Length") or 0), 65536)
+            if left > 0:
+                self.rfile.read(left)
+        except (ValueError, OSError):
+            pass
+
+    def _json(self, code: int, data) -> None:
+        self._send(code, "application/json; charset=utf-8", json.dumps(data, ensure_ascii=False).encode(errors="replace"))
+
+    def _after(self, url) -> int:
+        try:
+            return int(parse_qs(url.query).get("after", ["0"])[0] or 0)
+        except ValueError:
+            return 0
+
+    def _send(self, code: int, ctype: str, body: bytes) -> None:
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            if code != 204:
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if code != 204:
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def log_message(self, *args) -> None:  # 别刷屏
+        pass
+
+
 def _box(r: Rect, kind: str, label: str) -> dict:
     return {"x": int(r.x), "y": int(r.y), "w": int(r.w), "h": int(r.h), "kind": kind, "label": label}
 
@@ -222,7 +294,7 @@ class Viewer:
         """起网页服务（后台线程），返回地址。端口被占用时抛 OSError。"""
         viewer = self
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(JsonHandler):
             def do_GET(self) -> None:  # noqa: N802
                 url = urlparse(self.path)
                 if url.path == "/":
@@ -249,15 +321,9 @@ class Viewer:
                     if not self._local_host():
                         self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
                         return
-                    try:
-                        self._json(200, viewer.inner())
-                    except Exception as exc:  # 身体超时 / 已经停了
-                        log.debug("取内心快照失败：%s", exc)
-                        self._json(503, {"ok": False, "error": "团子正忙，稍后再试"})
+                    self._json(*inner_response(viewer.inner))
                 elif url.path == "/brain" and viewer.brain is not None:
-                    # errors="replace"：截断在 emoji 中间的半个代理字符不能让整条时间线卡在"连不上"
-                    body = json.dumps(viewer.brain.since(self._after(url), WAIT), ensure_ascii=False).encode(errors="replace")
-                    self._send(200, "application/json; charset=utf-8", body)
+                    self._send(200, "application/json; charset=utf-8", brain_body(viewer.brain, self._after(url)))
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
 
@@ -281,7 +347,7 @@ class Viewer:
                     self._json(200, {"ok": True, "text": "正在退出"})
                     return
                 if path == "/inner/forget":
-                    self._forget(length)
+                    self._json(*forget_response(viewer.forget, self.rfile.read(length)))
                     return
                 try:
                     req = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -292,60 +358,6 @@ class Viewer:
                     self._json(400, {"ok": False, "text": str(exc)})
                     return
                 self._json(200, result)
-
-            def _forget(self, length: int) -> None:
-                """删一条性格条目：解析 → 交给身体线程（body.call）→ {"ok": true} 或原因。"""
-                from ..inner.api import forget_result, parse_forget
-
-                try:
-                    kind, text, who, topic = parse_forget(json.loads(self.rfile.read(length).decode("utf-8")))
-                except ValueError as exc:  # 坏 JSON、类别不认识：不交给身体
-                    self._json(400, {"ok": False, "error": str(exc)})
-                    return
-                try:
-                    reason = viewer.forget(kind, text, who, topic)
-                except Exception as exc:  # 身体超时 / 已经停了
-                    log.debug("删性格条目失败：%s", exc)
-                    self._json(503, {"ok": False, "error": "团子正忙，稍后再试"})
-                    return
-                self._json(200, forget_result(reason))
-
-            def _local_host(self) -> bool:
-                return is_local_host(self.headers.get("Host") or "", self.server.server_address[1])
-
-            def _drain(self) -> None:
-                """没读的请求体读掉（最多 64 KB），否则直接关连接浏览器那边会报连接被重置、看不到状态码。"""
-                try:
-                    left = min(int(self.headers.get("Content-Length") or 0), 65536)
-                    if left > 0:
-                        self.rfile.read(left)
-                except (ValueError, OSError):
-                    pass
-
-            def _json(self, code: int, data) -> None:
-                self._send(code, "application/json; charset=utf-8", json.dumps(data, ensure_ascii=False).encode(errors="replace"))
-
-            def _after(self, url) -> int:
-                try:
-                    return int(parse_qs(url.query).get("after", ["0"])[0] or 0)
-                except ValueError:
-                    return 0
-
-            def _send(self, code: int, ctype: str, body: bytes) -> None:
-                try:
-                    self.send_response(code)
-                    self.send_header("Content-Type", ctype)
-                    self.send_header("Cache-Control", "no-store")
-                    if code != 204:
-                        self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    if code != 204:
-                        self.wfile.write(body)
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                    pass
-
-            def log_message(self, *args) -> None:  # 别刷屏
-                pass
 
         self._server = _Server((self.cfg.host, self.cfg.port), Handler)
         self._server.daemon_threads = True
