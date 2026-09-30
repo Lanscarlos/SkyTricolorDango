@@ -7,7 +7,8 @@
 - 比例控制：按键秒数 = gain × 偏差，夹到 nudge_min ~ chase_max；偏差在死区里不动
 - 按完等 settle 秒画面停稳再看（不 sleep：记下按键时间，之后几圈不动）；刚开始也先等 settle（借面板的动画、画面横移）
 - 离团子太近的人转镜头时横移有上限，可能永远进不了死区：同方向连续按 stall_nudges 次误差没缩小 stall_px，就停手，
-  直到目标相对停手时挪出死区宽度再重新开始。误差越按越大（多了 stall_px 以上）是目标跑得比镜头快，不算转不动，接着追
+  直到目标相对停手时挪出死区宽度再重新开始。误差越按越大（多了 stall_px 以上）是目标跑得比镜头快，不算转不动，接着追；
+  在画面最边上（EDGE）也不算：好友跑到画面外时光遇把名字贴在屏幕边上，x 卡在 1822~1830 / 92~94 怎么按都不变
 - 目标从画面边上（死区外）出去了：看不到的这几秒里接着往那边按（像玩家追着转过去找）；在中间被挡住不转
 - lost_after 秒看不到 → 跟丢；到时间 → 做完。结束时不复原镜头（交给 camera_reset）
 """
@@ -23,6 +24,7 @@ from ..vision.people import side_of
 from .skills import SkillStep
 
 EPS = 1e-6  # 时间比较留一点余量（浮点）
+EDGE = 0.8  # 偏差超过半屏宽的这么多 = 在画面最边上：好友在画面外时名字标签贴在屏幕边（x 卡住不动），不算转不动
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +108,7 @@ class TrackSkill:
         if direction != self._run_dir:
             self._run_dir, self._run_len, self._run_err = direction, 0, abs(err)
         elif self._run_len >= cfg.stall_nudges:
-            if abs(err) - self._run_err > cfg.stall_px:  # 越按越远：目标跑得比镜头快，接着追
+            if abs(err) - self._run_err > cfg.stall_px or abs(err) >= EDGE * half:  # 越按越远 / 在画面外：接着追
                 self._run_len, self._run_err = 0, abs(err)
             elif self._run_err - abs(err) < cfg.stall_px:  # 按了几下误差几乎没变：转不动
                 self._stalled_cx, self._run_dir, self._run_len = cx, None, 0

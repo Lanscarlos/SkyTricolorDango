@@ -180,6 +180,24 @@ def test_error_growing_is_not_a_stall(clock):
     assert [d for d, _ in b.camera.nudges] == ["right"] * 5
 
 
+def test_name_pinned_at_screen_edge_is_never_a_stall(clock):
+    """实测（2026-09-30 盯人）：好友跑到画面外时，光遇把名字标签贴在屏幕边上（x 卡在 1822~1830 / 92~94），
+    偏差怎么按都不变，被判成转不动，停了 13 秒。贴在边上 = 人在画面外，一直追。"""
+    t0 = clock()
+    skill, b = begin(clock, x=1823)
+    t = 0.7
+    for _ in range(6):
+        step = at(skill, b, clock, t0, t)
+        assert "转不动" not in step.note
+        t += 0.7
+    assert [d for d, _ in b.camera.nudges] == ["right"] * 6
+    skill2, b2 = begin(clock, x=93)
+    t1 = clock()
+    for i in range(6):
+        at(skill2, b2, clock, t1, 0.7 + 0.7 * i)
+    assert [d for d, _ in b2.camera.nudges] == ["left"] * 6
+
+
 def test_searches_toward_last_side_after_target_leaves_frame(clock):
     """实测：好友从画面边上跑出去之后原地等 3 秒 → 跟丢。玩家会接着往那边转去找。"""
     t0 = clock()
