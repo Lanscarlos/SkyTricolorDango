@@ -44,7 +44,8 @@ class EmotePlayer:
         if len(self.swap_slots) < len(cfg.swap_slots):
             log.warning("emotes.swap_slots 里有锁定的格子（wheel.locked_slots），不会换它们")
         self.original: dict[int, str] = {}  # 可换格子原来的动作，退出时换回去
-        self.last_emote = float("-inf")
+        self.last_emote = float("-inf")  # 大脑的动作冷却（min_interval）从这里算；反射做的不算
+        self.last_any = float("-inf")  # 任何动作（反射或大脑）最近一次：反射的 min_gap 用
         self.last_swap = float("-inf")
 
     def start(self) -> None:
@@ -74,7 +75,8 @@ class EmotePlayer:
             names += [n for n in self.extra if n not in names]
         return names
 
-    def perform(self, name: str) -> int:
+    def perform(self, name: str, reflex: bool = False) -> int:
+        """reflex = 身体反射做的：不占大脑的动作冷却（spec 2026-09-30-body-reflex §3）。"""
         self._close_input()
         now = self.clock()
         if name not in self.on_wheel():
@@ -84,15 +86,20 @@ class EmotePlayer:
                 self.wheel.ensure(name, candidates=self.swap_slots)
             self.last_swap = now
         slot = self.wheel.perform(name)
-        self.last_emote = now
+        self._mark(now, reflex)
         return slot
 
-    def pretend(self, name: str) -> None:
+    def pretend(self, name: str, reflex: bool = False) -> None:
         """dry-run：不按键，只记下时间，让限速和真跑时一样。"""
         now = self.clock()
         if name not in self.on_wheel():
             self.last_swap = now
-        self.last_emote = now
+        self._mark(now, reflex)
+
+    def _mark(self, now: float, reflex: bool) -> None:
+        self.last_any = now
+        if not reflex:
+            self.last_emote = now
 
     def restore(self) -> None:
         """把换过的格子换回启动时的动作，再读一遍核对。"""
