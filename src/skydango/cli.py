@@ -253,6 +253,10 @@ def cmd_memory(cfg: Config, args) -> None:
             from .inner import show_lines
 
             print("\n" + "\n".join(show_lines(cfg.inner, store.dir / "inner", _friend_names(cfg)(), time.time())))
+            if cfg.inner.persona:
+                from .inner.store import InnerStore
+
+                print("\n" + "\n".join(InnerStore(store.dir / "inner").load_persona(quarantine=False).show_lines()))
     elif args.action == "update":
         from .brain.claude import ClaudeLlm
 
@@ -1508,6 +1512,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     live_store = None if cfg.reply.dry_run else store
     ledger = _inner_ledger(cfg, store)
     mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run)
+    persona = _inner_persona(cfg, ledger)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
     env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
     social = None
@@ -1526,7 +1531,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         cfg, dev, reader, ChatSender(dev, cfg.sender, _screen_size_fn(dev)), self_filter, events,
         env=env, social=social, emotes=emotes, camera=camera, locomotion=Locomotion(dev, cfg.brain.move_step), friend_checker=friend_checker,
         fallback=fallback, store=live_store, notes=notes, run=run, viewer=viewer, panel=panel, panels=panels, panel_ops=panel_ops,
-        ledger=ledger, mind=mind, reflector=reflector,
+        ledger=ledger, mind=mind, reflector=reflector, persona=persona,
     )
     work = run.path / "brain"
     eyes = Eyes(
@@ -1555,6 +1560,7 @@ def _run_brain(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns,
             proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
             days=_days_prompt(ledger, cfg), inner=ledger is not None, mind=reflector is not None,
+            persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
@@ -1633,17 +1639,42 @@ def _inner_mind(cfg: Config, ledger, base, claude_vars, run):
     if ledger is None or not cfg.inner.reflect:
         return None, None
     from .brain.claude import ClaudeLlm
-    from .inner.reflect import Reflector
+    from .inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM, Reflector
 
     try:
         mind = ledger.store.load_mind(quarantine=ledger.persist)
         if mind.wake(time.time(), cfg.inner.rest_gap):
             log.info("睡过一觉：心情回到平常")
         llm = ClaudeLlm(base, claude_vars, cfg.inner.reflect_model, run.path / "brain" / "reflect", cfg.inner.reflect_timeout)
-        return mind, Reflector(cfg.inner, llm)
+        system = REFLECT_SYSTEM + "\n\n" + PERSONA_SYSTEM if cfg.inner.persona else REFLECT_SYSTEM
+        return mind, Reflector(cfg.inner, llm, system=system)
     except Exception:
         log.exception("反思打不开，这次不反思")
         return None, None
+
+
+def _inner_persona(cfg: Config, ledger):
+    """内心层第 3 期：性格档案；没有账本或 [inner] persona = false 时 None。读不了：live 改名放一边、都从空的开始。"""
+    if ledger is None or not cfg.inner.persona:
+        return None
+    try:
+        persona = ledger.store.load_persona(quarantine=ledger.persist)
+        persona.fade(time.time(), cfg.inner)
+        return persona
+    except Exception:
+        log.exception("性格档案打不开，这次不用")
+        return None
+
+
+def _persona_prompt(persona) -> str:
+    """系统提示词「你攒下的性格」；拼出错就不写这一节。"""
+    if persona is None:
+        return ""
+    try:
+        return persona.section()
+    except Exception:
+        log.exception("拼「你攒下的性格」一节出错")
+        return ""
 
 
 def _final_timeout(cfg: Config) -> float:
@@ -1660,6 +1691,7 @@ def _final_reflection(cfg: Config, body, reflector, ledger, live_store) -> str:
         result = reflector.final(body.reflect_materials(True))
         return finish_reflection(
             result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist, time.time(), cfg.inner,
+            persona=body.persona, soft=body.soft_names(time.time()),
         )
     except Exception:
         log.exception("下线前的反思出错")
