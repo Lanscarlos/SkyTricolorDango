@@ -71,7 +71,7 @@ skydango chat                     # 不开游戏，在终端里和人设对话�
 skydango run                      # 启动 Agent，dry-run：只打印“将会发送”
 skydango run --live               # 真的发送
 skydango run --no-emotes          # 不做表情动作
-skydango run --view               # 跑的同时开可视化网页（http://127.0.0.1:8765/）
+skydango run --view               # 跑的同时开可视化网页（http://127.0.0.1:19399/）
 
 skydango look                     # 截一张图让眼睛（Claude Haiku）描述（要先 claude setup-token、设 SKYDANGO_CLAUDE_TOKEN）
 skydango run --brain              # 统管大脑，dry-run：只打印它想说想做的
