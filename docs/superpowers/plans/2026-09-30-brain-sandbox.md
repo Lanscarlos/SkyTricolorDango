@@ -4,7 +4,7 @@
 
 **前置和并行：** 本计划用内心页计划（`docs/superpowers/plans/2026-09-30-inner-viewer.md`）的 `MindLog`、`Body.inner_snapshot` / `forget`、`inner/api.py`、`console/inner_view.py`、页面的 `renderInnerNow` / `loadInner`。
 分两段执行：
-- **线 2（和内心页计划并行，不碰 `cli.py`、不依赖内心页）：Task 1 → 3 → 9 → 7**
+- **线 2（和内心页计划并行，不碰 `cli.py`、不依赖内心页）：Task 1 → 3 → 9 → 7** —— 已完成并合进 main（f9fe3fc）；实现时和计划的出入：`.gitignore` 写 `/sandbox/`、剧本 `[start] time` 可空 / `resume` / `sleep`、`brain_trace.js` 只暴露 `mountBrainTrace`、起始时间下限也看 `current.json`
 - **顺序段（内心页计划和线 2 都合进 main 之后）：Task 2 → 4 → 5 → 6 → 8 → 10 → 11**
 
 **Goal:** 不开 MuMu，在管理面板上跑真的大脑 + 身体 + 内心层：冒充好友说话、造来去、快进时间、看团子的反应和心里；能把一段操作录成剧本回放、出报告。
@@ -20,7 +20,7 @@
 - 目录：`[sandbox] dir = "sandbox"` → `sandbox/memory/`、`sandbox/scenarios/`、`sandbox/reports/`、`sandbox/clock.json`；`.gitignore` 加 `sandbox/`；**沙盒永远不写 `memory/`**
 - `[sandbox]`：`dir = "sandbox"`、`port = 19392`、`step_timeout = 180.0`、`wake_hour = 9`、`emotes = []`（管理面板设置清单不加）
 - 沙盒总是 live（`reply.dry_run = False`，`reply.memory_dir = <dir>/memory`）；运行目录 `runs/<时间>-sandbox/`
-- 模拟时钟：`wall() = time.time() + offset`、`clock() = time.monotonic() + offset`；只往前拨；身体、账本、反思器、眼睛、`MindLog` 用它；**大脑循环（`Brain`）的 `clock` 仍是 `time.monotonic`，只有 `wall` 用模拟的**
+- 模拟时钟：`wall() = time.time() + offset`、`clock() = time.monotonic() + offset`；只往前拨；身体、事件队列、账本、反思器、眼睛、`MindLog`、**大脑循环（`Brain` 的 `clock` 和 `wall`）都用它**——大脑拿自己的时钟和事件队列的时间比（`now - events.last_put >= debounce`），两边必须是同一个钟。一轮的超时在 `brain/claude.py` 里直接用 `time.monotonic`，不受快进影响（线 2 终审核实）
 - 起始时间下限 = max(`clock.json` 里上次停下的时间, 沙盒 `days.jsonl` 最后一行的 `end`)；早于下限拒绝
 - 假设备的截图：1920×1080 三通道中灰（`128`），不是黑屏
 - 场景文字空着时眼睛返回 `"看不清，眼前什么也看不出来"`
@@ -33,7 +33,7 @@
 
 ## Review Focus
 
-1. **快进时大脑正在想一轮**：不能被判超时、不能重启 Claude Code（`Brain` 的计时是真实时间）——Task 2 测
+1. **快进之后来一条聊天**：大脑照样在 `chat.debounce` 内醒来（大脑和事件队列同一个钟）；快进时正在想的一轮不被判超时（超时在 `claude.py` 用真实时间）——Task 2 测
 2. **重置后沙盒时间早于真记忆里最后一次上线**（比如剧本写 `time = "20:00"`，真实最后一次上线是今晚 22:00）：拨到下一个 20:00，不让账本倒着走——Task 1 测
 3. **团子在跑时点"启动沙盒"，或沙盒在跑时从总览叫醒团子**：都拒绝，提示先停另一个——Task 6 测
 4. **剧本回放中间点了"停止回放"又手动发言**：当前这步做完就停，之后的手动操作照常，报告只写到停下为止——Task 10 测
@@ -114,14 +114,16 @@ def test_parse_duration():
   - `@dataclass BrainParts`：`body`、`eyes`、`events`、`brain`、`trace`、`reflector`、`ledger`、`store`、`mind_log`
   - `cli._game_world(cfg, run, no_emotes: bool) -> World`：把现有的 `_device` / `_build_reader` / `_panel` / `_scene_watcher` / `SocialHandler` / `_build_emotes` / `_camera` / `_friend_checker` / `_panels` / `ChatSender` / `Locomotion` 原样搬进来（**仍按模块名调 `_device`、`_build_reader`**，现有测试的 monkeypatch 继续生效）
   - `cli._run_brain(cfg, run, world: World, duration=0.0, viewer=None, on_ready: Callable[[BrainParts], None] | None = None) -> None`；`cmd_run` 改成 `_run_brain(cfg, run, _game_world(cfg, run, args.no_emotes), args.duration, viewer)`
-  - `_run_brain` 里所有 `time.time()` 换成 `world.wall()`；`Body(clock=world.clock, wall=world.wall)`、`Reflector(clock=world.clock)`、`Eyes(clock=world.clock)`、`EventQueue(clock=world.clock)`、`MindLog` 的时间来自身体；`Brain(..., wall=world.wall)`（`clock` 不传，保持真实时间）
+  - `_run_brain` 里所有 `time.time()` 换成 `world.wall()`；`Body(clock=world.clock, wall=world.wall)`、`Reflector(clock=world.clock)`、`Eyes(clock=world.clock)`、`EventQueue(clock=world.clock)`、`MindLog` 的时间来自身体；`Brain(..., clock=world.clock, wall=world.wall)`
+  - `World` 加 `text_only: bool = False`（沙盒为真）：`ToolBox(text_only=True)` 时 `look` 不管 `image` 参数都走眼睛的文字（`eyes.describe_frame`，不附图、不附"画面里没认出人"这类位置说明），`look_person` 返回 `"沙盒里看不到人，只能靠聊天和场景"`；眼睛的 `note` 在 `text_only` 时返回空字符串
   - `_inner_ledger(cfg, store, now)`、`_inner_mind(cfg, ledger, base, claude_vars, run, now, clock)`、`_inner_persona(cfg, ledger, now)`、`_final_reflection(cfg, body, reflector, ledger, live_store, now)`、`_days_prompt(ledger, cfg, now)`：多一个时间参数
   - `Brain.in_turn: bool`：`wake` 开始时置真，结束（成功 / 失败 / 超时）置假
   - 身体建好后、线程启动前调 `on_ready(parts)`
 
 - [ ] **Step 1: 写失败的测试**
   - `test_cli_brain.py` 追加：`fake_brain_run` 之后用 `cli._game_world(cfg, run, True)` 替换原来的参数，`world.wall = lambda: FIXED`，开 `inner`（`cfg.reply.memory_dir = tmp_path / "mem"`、live）跑 3 秒后，`days.jsonl` 那一行的 `start == FIXED`（证明账本用的是 world 的时间）；`on_ready` 被调一次，拿到的 `parts.body` 是 `Body`
-  - `test_brain_loop.py` 追加：假 session 的一轮里读 `brain.in_turn` 为真，结束后为假；抛异常的一轮之后也为假
+  - `test_brain_loop.py` 追加：假 session 的一轮里读 `brain.in_turn` 为真，结束后为假；抛异常的一轮之后也为假；**`SimClock` 当 `Brain` 和 `EventQueue` 的钟，`skip(3600)` 之后放一条 `chat`，真实时间过了 `chat.debounce` 秒内 `Brain` 醒来**（Review Focus 1）
+  - `test_brain_tools.py` 追加：`ToolBox(text_only=True)` 的 `look(image=True)` 返回里没有图片块、是眼睛的文字；`look_person` 返回沙盒那句话
 - [ ] **Step 2: 跑测试确认失败**：`python -m pytest tests/test_cli_brain.py tests/test_brain_loop.py -q`
 - [ ] **Step 3: 实现**：纯搬移为主；`_run_brain` 的 `finally` 里原来的 `_stop_scene(env)` / `panels.close()` 换成 `world.close()`；眼睛 `describe = world.describe or (lambda content: one_shot(...))`
 - [ ] **Step 4: 跑测试确认通过**：先跑上面两个文件，再全量 `python -m pytest -q`（**现有测试一个都不能改**，只能追加）
@@ -205,7 +207,7 @@ def test_gray_frame_is_not_blackout(sb):
     - `come {who}` / `leave {who}` → 改 `env.friends`，记 `event`："── 小明来了 ──" / "── 小明走了 ──"
     - `strangers {n}`（0~20）、`place {name}`、`scene {text}` → 改状态，记 `event`
     - `notice {text}` → `body.news(text)`；下一圈没变成 `notice` 事件时，记 `blocked` 并附原因（直接复用 `Body._watch_news` 的拦截原因：给 `_watch_news` 加一个返回值 `list[str]`，被拦的原因；不另写一套判断）
-    - `skip {seconds}` / `time {at}` → 先记一条 `energy`（`mind_log.energy(sim.wall(), body.energy_now())`），`sim.skip` / `sim.set_time`，再记一条；记 `event`："── 快进 1 小时 ──" / "── 拨到 23:30 ──"；拨不回去 → `{"ok": False, "text": "不能往回拨：…"}`
+    - `skip {seconds}`（不是有限正数 → `ValueError`，挡 `nan` / `inf`）/ `time {at}` → 先记一条 `energy`（`mind_log.energy(sim.wall(), body.energy_now())`），`sim.skip` / `sim.set_time`，再记一条；记 `event`："── 快进 1 小时 ──" / "── 拨到 23:30 ──"；拨不回去 → `{"ok": False, "text": "不能往回拨：…"}`
     - `reflect` → `reflector.running` 为真时 `{"ok": False, "text": "正在反思"}`；否则强制开始一次（`reflector.start(body.reflect_materials(False), sim.clock())`）
     - 未知 op / 缺参数 → `ValueError`（HTTP 层转 400）
   - `idle() -> bool`（Global Constraints 的定义；"持续 ≥ 2 秒"用真实 `time.monotonic`）
@@ -241,14 +243,14 @@ def test_gray_frame_is_not_blackout(sb):
   - `class SandboxServer(port: int, on_shutdown: Callable[[], None])`：`control: SandboxControl | None`、`trace: BrainTrace | None`、`inner` / `forget`（同 viewer 的两个可调用属性）；`start() -> str`、`stop()`
   - 路由：`GET /status`（`{"ok": True, "kind": "sandbox"}`，身体没建好时也回）、`GET /state?after=`、`GET /brain?after=`、`GET /inner`、`POST /op`、`POST /inner/forget`、`POST /shutdown`；`control` 还是 `None` 时 `/state`、`/op` 回 503 `{"ok": false, "text": "沙盒还在启动"}`
   - `python -m skydango [-c 配置] sandbox --port 19392 [--no-browser] [--parent-pid PID] [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]`：
-    `cfg.reply.dry_run = False`、`cfg.reply.memory_dir = <dir>/memory`（目录不存在就建空的）、`floor_time` + `resolve_start` 算出 offset 建 `SimClock`；`RunDir.create(cfg, "sandbox")`；先起 `SandboxServer`（`/status` 立刻可用，管理面板据此判断起来了），`_run_brain(cfg, run, sandbox_world(…), viewer=None, on_ready=挂 control / trace / inner / forget)`；`finally` 里 `save(clock.json, sim.wall())`、`server.stop()`；看门狗和 `/shutdown` 共用 `watchdog.once(_thread.interrupt_main)`（同 `cmd_run`）
+    `cfg.reply.dry_run = False`、`cfg.reply.memory_dir = <dir>/memory`（目录不存在就建空的）、`cfg.run.save_frames = False`（灰图不用存）；`[sandbox] wake_hour` 不在 0~23 → 启动报错、`floor_time` + `resolve_start` 算出 offset 建 `SimClock`；`RunDir.create(cfg, "sandbox")`；先起 `SandboxServer`（`/status` 立刻可用，管理面板据此判断起来了），`_run_brain(cfg, run, sandbox_world(…), viewer=None, on_ready=挂 control / trace / inner / forget)`；`finally` 里 `save(clock.json, sim.wall())`、`server.stop()`；看门狗和 `/shutdown` 共用 `watchdog.once(_thread.interrupt_main)`（同 `cmd_run`）
   - `BrainTrace`：`_run_brain` 在 `viewer is None` 时不建 trace——`cmd_sandbox` 通过 `on_ready` 之前传一个 `trace=` 参数进去（给 `_run_brain` 加 `trace: BrainTrace | None = None`，有就用它）
 
 - [ ] **Step 1: 写失败的测试**
   - `test_sandbox_server.py`：`/status` 在 `control is None` 时 200；`/op` 在 `control is None` 时 503；非本机 Host 的 GET `/state` → 403；缺头 / 非 JSON / 超 64 KB 的 POST → 403 / 403 / 413；`/op` 未知 op → 400；`/shutdown` 调 `on_shutdown`
   - `test_cli_sandbox.py`（端到端，照 `tests/test_cli_brain.py` 的 `fake_brain_run` 用 `fake_claude.py`）：准备 `memory/`（有 `friends.md`、`history.jsonl`、`inner/days.jsonl`）并算出所有文件的 sha256；`cfg.sandbox.dir = tmp_path / "sandbox"`；在后台线程跑 `cli.cmd_sandbox(cfg, args)`，等 `/status` 通，POST `/op` `say 小明 在吗`，轮询 `/state` 直到出现 `said` 行（fake claude 会调 `say`；超时 30 秒），POST `/shutdown`，等线程结束；断言：`sandbox/memory/inner/days.jsonl` 多了一行、`sandbox/clock.json` 存在、**`memory/` 下所有文件的 sha256 不变**（Review Focus 5）
 - [ ] **Step 2: 跑测试确认失败**：`python -m pytest tests/test_sandbox_server.py tests/test_cli_sandbox.py -q`
-- [ ] **Step 3: 实现**（`fake_claude.py` 如果还不会调 `say`，给它加一个 `FAKE_CLAUDE_MODE=say` 模式：收到带"在吗"的消息就调一次 `say` 工具）
+- [ ] **Step 3: 实现**（工具因为部件是 `None` 被拒时——互动请求、好友树、面板、镜头——沙盒下文案换成"沙盒里没有这个"：`ToolBox` / `Body` 按 `World.name == "sandbox"` 换一句，别处照旧；`fake_claude.py` 如果还不会调 `say`，给它加一个 `FAKE_CLAUDE_MODE=say` 模式：收到带"在吗"的消息就调一次 `say` 工具）
 - [ ] **Step 4: 跑测试确认通过**，再全量
 - [ ] **Step 5: 提交**：`git commit -m "feat(sandbox): sandbox 子进程命令和 JSON 接口"`
 
@@ -380,7 +382,7 @@ def test_gray_frame_is_not_blackout(sb):
   - 录制：`begin` + 三次 `record` + `offline` + `online("sleep")` → `snapshot` 出来的 `dumps` 能被 `load`，`memory = "keep"` 时报告 / 返回里带"依赖沙盒当时的记忆"提示
   - 回放中手动 `/sandbox/op` → 409
 - [ ] **Step 2: 跑测试确认失败**：`python -m pytest tests/test_replay.py -q`
-- [ ] **Step 3: 实现**
+- [ ] **Step 3: 实现**（顺带补 `scenario.py` 的校验：`skip` / `wait` 不是有限数、`wait` 为负 → `ScenarioError`，线 2 终审留下的）
 - [ ] **Step 4: 跑测试确认通过**，再全量
 - [ ] **Step 5: 提交**：`git commit -m "feat(console): 沙盒剧本录制、回放和报告"`
 

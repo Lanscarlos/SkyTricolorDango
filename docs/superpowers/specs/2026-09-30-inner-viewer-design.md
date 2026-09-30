@@ -21,7 +21,7 @@
 |---|---|---|
 | `reflect` | 每次反思（含下线那次） | `t`、`final`、`mood {level, text}`、`energy {level, score}`、`grudge {who, why, until} \| null`、`wants [text…]`、`changes [str…]`、`dropped [str…]` |
 | `energy` | 每 `ENERGY_EVERY`（300 秒） | `t`、`level`、`score` |
-| `forget` | 网页上删了性格条目 | `t`、`kind`（`catchphrase` / `joke` / `opinion`）、`text`、`who` / `topic` |
+| `forget` | 网页上删了性格条目 | `t`、`what`（`catchphrase` / `joke` / `opinion`；`kind` 固定是 `forget`）、`text`、`who` / `topic` |
 
 **`changes`**：`diff(before, after) -> list[str]`（纯函数，对比反思前后的 `Mind` + `Persona` 快照，不靠模型）：
 - `心情 平常→开心（有人来聊天）`（档位变了；只换了那句话写 `心情：…`）
@@ -63,7 +63,7 @@
 - `Body`：`apply_reflection` 前后各拍 `Mind` / `Persona` 快照（`copy.deepcopy`）→ `MindLog.reflect(...)`；`_inner_tick` 每 `ENERGY_EVERY` 记一条 `energy`；`forget(kind, text, who, topic) -> str`（空字符串 = 删成功，否则是原因）；`inner_snapshot() -> dict`；都走 `_inner_call`
 - `finish_reflection`：也记一条 `reflect`（`final=True`）
 - cli：`reflector` 不为空时建 `MindLog`（`persist = not dry_run`，启动时 `trim`），交给 Body；`run --view` 时把 `body.inner_snapshot` / `body.forget`（经 `body.call`）挂到 viewer
-- 没开反思（`reflect = false`）：`/inner` 里 `mood` / `energy` / `grudge` / `wants` / `persona` 都是 `null`、`log` 为空；页面这几块显示"（没开反思）"，关系卡 / 日子 / 日记照常（来自文件）
+- 没开反思（`reflect = false`）：`/inner` 里 `mood` / `energy` / `grudge` / `wants` 都是 `null`（`persona` 只看 `persona` 开关，开着照常给）、`log` 为空；页面这几块显示"（没开反思）"，关系卡 / 日子 / 日记照常（来自文件）
 
 ## §5 出错怎么办
 

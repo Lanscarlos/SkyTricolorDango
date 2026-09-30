@@ -45,11 +45,11 @@
 
 | 部件 | 沙盒版 |
 |---|---|
-| 时钟 `SimClock`（`sandbox/clock.py`） | `wall() = time.time() + offset`，`clock() = time.monotonic() + offset`；`skip(秒)` 加偏移；`set_time("23:30" 或 "2026-10-01 09:00")` = 往前跳到下一个这个时刻，**早于当前沙盒时间就拒绝**；`save()` / `load()` 存 `sandbox/clock.json`（上次停下时的沙盒墙上时间）。身体、账本、反思器、流水账用它；**大脑循环的超时 / 连续失败计时仍用真实时间**（`Brain(clock=time.monotonic, wall=sim.wall)`），免得快进把正在想的一轮判超时 |
+| 时钟 `SimClock`（`sandbox/clock.py`） | `wall() = time.time() + offset`，`clock() = time.monotonic() + offset`；`skip(秒)` 加偏移；`set_time("23:30" 或 "2026-10-01 09:00")` = 往前跳到下一个这个时刻，**早于当前沙盒时间就拒绝**；`save()` / `load()` 存 `sandbox/clock.json`（上次停下时的沙盒墙上时间）。身体、事件队列、账本、反思器、流水账、大脑循环都用它（大脑拿自己的钟和事件队列的时间比，必须同一个钟）；一轮的超时在 `brain/claude.py` 里直接用真实时间，快进不会把正在想的一轮判超时 |
 | 设备 | `SandboxDevice`：截图永远是一张 1920×1080 中灰图（不黑，免得 `is_black` 判黑屏），按键 / 点屏幕 / 输入法都什么也不做，`ime_shown()` 为假 |
 | 聊天读取 | `SandboxReader`：线程安全队列；页面"冒充 X 说 Y"入队，身体下一圈 `read()` 取出成 `Message(text, speaker=X)`。团子自己的话不进队列（直接进聊天记录，见"说话"） |
 | 身边 | `SandboxEnv`：接口同 `EnvWatcher`（`observe` 空转、`nearby(now)`、`requests` / `circles` 空、`held()` 空实现），好友名单、陌生人数、地名由页面设置；身体照常 diff 出 `arrive` / `leave` / `return` / `stranger` |
-| 眼睛 | `SandboxEyes`：`describe_frame` 返回场景文字（空 = "看不清，眼前什么也看不出来"），不自动看（`tick` 空转）、不调 Haiku；`look(image=true)` 同样只给文字 |
+| 眼睛 | 真的 `Eyes`，`describe` 换成返回场景文字（空 = "看不清，眼前什么也看不出来"），不调 Haiku；自动看照常（不花钱，只刷新场景描述）；`look(image=true)`、`look_person` 只给文字（`World.text_only`） |
 | 新鲜事 | 页面手动放：身体线程里走和眼睛发现新鲜事同一个入口（照样受 `notice_min`、没熟人、主动额度的限制；被拦下时页面显示原因） |
 | 说话 | `SandboxSender`：`send` 把团子的话写进沙盒聊天记录（`clean_reply`、限速、主动护栏都在 `body.say` 里照常过）；`open()` 记一笔"（团子头顶冒出输入气泡）" |
 | 动作 | `EmotePlayer` 照常建，但轮盘是假的：可用动作 = `emotes/` 图标库里的名字（没有图标库就用 `[sandbox] emotes` 列表）；做动作记"（团子做了 鞠躬）"；反射动作同样记 |

@@ -46,6 +46,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   （`127.0.0.1:16384` 在这台机器上是 offline）
 - Python 3.13；OCR 用 `rapidocr` 3.x（`rapidocr_onnxruntime` 不支持 3.13）
 - 包装在用户目录，`skydango` 不在 PATH 上，用 `python -m skydango ...`
+- **有的机器上系统 Python 没装 pytest / skydango**（2026-09-30 实测）：用仓库的 `.venv`（gitignore，skydango 开发模式安装 + pytest / pillow / mcp / uvicorn / openai），
+  测试跑 `.venv\Scripts\python.exe -m pytest -q`；git worktree 里也用主目录的这个 `.venv`（`tests/conftest.py` 会把 worktree 的 `src` 放在最前面）
 - **YOLO 训练环境不占 C 盘**：显卡 RTX 5070 Ti Laptop（12 GB）。torch 2.11+cu128、ultralytics 等装在仓库的 `.pydeps/`（gitignore），
   用户 site-packages 里的 `skydango-pydeps.pth` 把它加进 sys.path；**当前目录在仓库里时**，pip / ultralytics / torch / matplotlib / CUDA 的缓存都指到 `.cache/`
   （`src/skydango/cachedirs.py`，`python -m skydango.cachedirs` 重写 .pth）。所以训练、`pip install` 都要在仓库目录下跑；
