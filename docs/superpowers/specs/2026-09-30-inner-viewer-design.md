@@ -1,6 +1,6 @@
 # 内心层可视化（管理面板「内心」页）— 设计
 
-日期：2026-09-30　状态：**设计已和用户确认，实施计划 `docs/superpowers/plans/2026-09-30-inner-viewer.md`**（依赖内心层第 3 期 `2026-09-30-inner-phase3-design.md` 合进 main 之后再实现）
+日期：2026-09-30　状态：**代码已完成，待真机验证**（实施计划 `docs/superpowers/plans/2026-09-30-inner-viewer.md`；见文末「真机验证」三步）
 
 ## 背景
 

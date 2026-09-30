@@ -84,8 +84,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
-| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法） |
-| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、页面 `static/console.html`（见「管理面板」） |
+| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析 |
+| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、页面 `static/console.html`（见「管理面板」） |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
 
@@ -98,7 +98,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `inbox.md` | 随手记：每轮回复后后台单独调一次模型，只挑值得记的新信息，下一句就能用上 | 自动 |
 | `notes.md` | 长期记忆：每 `notes_every` 轮把聊天记录 + inbox 整理进来（合并去重、删过期） | 自动，用户可改 |
 | `history.jsonl` | 逐轮聊天记录，重启读回最近 `history_turns` 轮 | 自动 |
-| `inner/` | 内心账本（见「内心层」）：`people.json` 好友关系卡、`days.jsonl` 每次上线一行、`current.json` 这一次（运行中）、`mind.json` 心情 / 别扭 / 心愿、`diary.md` 日记（一天一节）、`persona.json` 性格档案（口头禅 / 老梗 / 看法，可以直接删条目） | 自动，不用手改 |
+| `inner/` | 内心账本（见「内心层」）：`people.json` 好友关系卡、`days.jsonl` 每次上线一行、`current.json` 这一次（运行中）、`mind.json` 心情 / 别扭 / 心愿、`diary.md` 日记（一天一节）、`persona.json` 性格档案（口头禅 / 老梗 / 看法，可以直接删条目，管理面板「内心」页也能删）、`mind_log.jsonl` 流水账（每次反思改了什么、每 5 分钟一条精力、网页上删的条目；启动时删 30 天前的） | 自动，不用手改 |
 
 每次回复前都重新读这些文件，改了不用重启。只有 `run --live` 读写记忆（dry-run 的回复没真的发出去）。
 
@@ -212,7 +212,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 ## 管理面板（`[console]`，`console`）
 
 设计见 `docs/superpowers/specs/2026-09-29-console-design.md`，计划 `docs/superpowers/plans/2026-09-29-console.md`。`python -m skydango console` → 浏览器开 `http://127.0.0.1:19390/`：
-总览（启动选项 + 叫醒 / 停止 + 状态卡片 + 日志尾巴）、实时画面（iframe 嵌子进程的 viewer）、设置、设备检测。**还没在真机上用过**（spec §8 真机验证 1~6）。
+总览（启动选项 + 叫醒 / 停止 + 状态卡片 + 日志尾巴）、实时画面（iframe 嵌子进程的 viewer）、内心（见下）、设置、设备检测。**还没在真机上用过**（spec §8 真机验证 1~6）。
 - **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
   加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
   `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程
@@ -227,6 +227,11 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   浏览器拿不到完整密钥（只显示「已设置（sk-…abcd）」）
 - 团子运行时不能做设备检测（设备归身体线程独占）；运行中改设置照样保存，提示重启后生效
 - viewer 为此多了 `/status`（只有状态、不带图）和 `/shutdown`，页面里的请求改成相对路径（放在 `/` 和 `/live/` 下都能用）；大脑模式的状态多了「正在做」「刚说过」
+- **「内心」页**（设计见 `docs/superpowers/specs/2026-09-30-inner-viewer-design.md`；**代码已完成，还没在真机上用过**）：现在（心情 / 精力 / 别扭 / 收着点 / 心愿）、精力曲线 + 心情色带（24 小时 / 7 天，圆点 = 一次反思，点了跳到记录）、
+  反思记录（`changes` 逐行、没收下的折叠、下线那次标出）、性格档案（每条能「删」）、关系卡、最近 10 次上线和日记。
+  `GET /api/inner` 读 `memory/inner/`（团子不在跑也能复盘），团子 `running` 时再取子进程 viewer 的 `/inner`（`Body.inner_snapshot`，经身体线程、3 秒超时），现在 / 性格以实时为准，取不到标"实时取不到"；
+  `POST /api/inner/forget`：在跑转发 `/inner/forget`（`Body.forget`，live 才写 `persona.json`，dry-run 只删内存里的），没在跑直接改 `persona.json`，启动 / 停止中拒绝。
+  团子醒着时每 5 秒刷新，别的时候打开时读一次 + 「刷新」。流水账只在开了反思时记（`[inner] reflect`），live 写盘、dry-run 只在内存里
 
 ## 统管大脑（`[brain]`，`run` 默认）
 
