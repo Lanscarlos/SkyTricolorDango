@@ -292,3 +292,18 @@ def test_background_wake_does_not_reset_idle_heartbeat(clock):
     events.put("stranger", "陌生人都走开了")
     brain.wake(clock() + 20.0, "background")
     assert brain._idle == 3  # 只是周围在变、大脑也没做事：心跳照样往后退
+
+
+def test_last_turn_records_start_and_end(clock):
+    class Slow(FakeSession):  # send 时时间走 5 秒
+        def send(self, text):
+            clock.advance(5.0)
+            return super().send(text)
+
+    brain, _, _, _ = make(clock, Slow(ok(), ClaudeError("挂了")))
+    assert brain.last_turn == (float("-inf"), float("-inf"))
+    start = clock()
+    brain.wake(start, "heartbeat")
+    assert brain.last_turn == (start, start + 5.0)
+    brain.wake(clock(), "heartbeat")  # 失败的一轮也记
+    assert brain.last_turn == (start + 5.0, start + 10.0)

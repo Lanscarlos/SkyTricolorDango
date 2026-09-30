@@ -66,6 +66,7 @@ class Brain:
         self.failures = 0
         self.failing_since: float | None = None
         self.backoff_until = float("-inf")
+        self.last_turn = (float("-inf"), float("-inf"))  # 最近一轮（成功或失败）的 (开始, 结束)：身体据此关掉替大脑开的输入框
         self.chat_turn = False  # 正在回聊天（这一轮取走了聊天 / 主人命令，还没结束）：身体据此别把聊天面板当成安静关掉
 
     # ---- 什么时候醒 ----
@@ -138,6 +139,7 @@ class Brain:
             raise
         finally:
             self.chat_turn = False
+            self.last_turn = (start, self.clock())
         self._trace("finish", result, self.clock() - start)
         self._ok()
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1
