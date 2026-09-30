@@ -95,3 +95,30 @@ def show_lines(cfg: InnerConfig, directory: str | Path, friends: list[str], now:
     lines.append("===== 最近 10 次上线 =====")
     lines += recent_days(store.days(), 10) or ["（空）"]
     return lines
+
+
+def finish_reflection(result: dict | None, mind, store, memory, cards: dict, friends: list[str], persist: bool, now: float, cfg: InnerConfig) -> str:
+    """下线前的最终反思（第 2 期 §7）：套进心情、写日记和 mind.json、要点记进 inbox.md。返回存进 days.jsonl 的经过。
+    persist = False（dry-run）时只套进内存里的 Mind，什么都不写。"""
+    from ..chat.memory import format_date
+
+    if not result:
+        return ""
+    try:
+        mind.apply(result, cards, friends, now, cfg)
+    except Exception:
+        log.exception("最终反思的结果套不进心情")
+    diary = result.get("diary") if isinstance(result.get("diary"), str) else ""
+    raw_memos = result.get("memos") if isinstance(result.get("memos"), list) else []
+    memos = [str(m).strip() for m in raw_memos if str(m).strip()]
+    if persist:
+        for write in (
+            lambda: store.write_mind(mind) if store is not None else None,
+            lambda: store.append_diary(diary, now) if store is not None and diary.strip() else None,
+            lambda: memory.add_memos([f"{format_date(now)} 的要点：{m}" for m in memos]) if memory is not None and memos else None,
+        ):
+            try:
+                write()
+            except Exception:
+                log.exception("最终反思写盘出错")
+    return "；".join(memos) if memos else diary.strip()[:100]

@@ -84,7 +84,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
-| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines` |
+| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection` |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、页面 `static/console.html`（见「管理面板」） |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
@@ -98,7 +98,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `inbox.md` | 随手记：每轮回复后后台单独调一次模型，只挑值得记的新信息，下一句就能用上 | 自动 |
 | `notes.md` | 长期记忆：每 `notes_every` 轮把聊天记录 + inbox 整理进来（合并去重、删过期） | 自动，用户可改 |
 | `history.jsonl` | 逐轮聊天记录，重启读回最近 `history_turns` 轮 | 自动 |
-| `inner/` | 内心账本（见「内心层」）：`people.json` 好友关系卡、`days.jsonl` 每次上线一行、`current.json` 这一次（运行中） | 自动，不用手改 |
+| `inner/` | 内心账本（见「内心层」）：`people.json` 好友关系卡、`days.jsonl` 每次上线一行、`current.json` 这一次（运行中）、`mind.json` 心情 / 别扭 / 心愿、`diary.md` 日记（一天一节） | 自动，不用手改 |
 
 每次回复前都重新读这些文件，改了不用重启。只有 `run --live` 读写记忆（dry-run 的回复没真的发出去）。
 
@@ -322,7 +322,18 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **第一次启用**（没有 `people.json`）从 `history.jsonl` 回填：第一次 / 最后一次说话、说过几句、最后一句、哪几天、见过几次（≈ 出现过的回填上线段数）；上线按相邻两轮隔 `session_gap` 分段。
   `people.json` 坏了就改名 `.bad-<时间>`、空卡开始、**不回填**
 - **只在 `--live` 写盘**；dry-run 内存里照记（status 是真的），回填、补意外结束都只在内存里。`memory show` 多打印关系卡和最近 10 次上线（只读）
-- `enabled = false` 完全照旧；管理面板有 `inner.enabled` 开关。网页 / 管理面板的卡片这一期没加
+- `enabled = false` 完全照旧；管理面板有 `inner.enabled` 开关
+
+**第 2 期：反思**（设计见 `docs/superpowers/specs/2026-09-30-inner-phase2-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase2.md`；**还没在真机上跑过，数字都是估的**，spec「真机验证」四步）
+- **精力**（`energy.py`，身体每圈现算，不存盘）：几点（白天满、深夜低）− 连着挂了多久（离上次下线不到 `rest_gap` 算没睡、接着累）+ 最近 10 分钟有好友跟团子说话 − 最近一小时热闹太久；四档 精神 / 还行 / 有点累 / 困
+- **反思**（`reflect.py`，一次性 `claude -p`，`[inner] reflect_model` 默认 sonnet，后台线程，结果回身体线程套进 `Mind`）：有动静时每 `reflect_every`（20 分钟）、好友说够 6 句后安静 3 分钟、下线时各一次；
+  材料是上次以来的聊天原话、来去、相关好友的关系卡和笔记、人设、精力。回 JSON：心情（开心 / 平常 / 低落 / 烦 + 一句带原因的话）、别扭、心愿增删；下线那次再加日记和要点。额度用完 10 分钟内不反思，失败沿用上一份
+- **代码守的规矩**（`mind.py`）：别扭只冲一起玩过 ≥ `grudge_min_days`（3）天的好友、最长 `grudge_max`（2 小时）、同时 1 条；心愿最多 3 条、7 天过期，kind 只有 惦记（挂在好友名下）/ 想做 / 小心思；不认识的一律丢
+- **后果**（`effects.py`，倍数相乘）：主动开口额度 开心 ×1.5、低落 / 烦 ×0.5、有点累 ×0.75、困 ×0.5（下限 ×0.25、至少 1 句）；烦时被叫到不做小动作、开心概率 ×1.5；困时闲着的小动作更勤、大脑心跳慢一档。
+  **接话永远照常**；在跟谁闹别扭时，整批都是他说的话不冒输入气泡（故意晚点接），牵手等互动照接
+- **大脑看到**：status "心里：有点闷（…）· 有点困（…）· 跟小明闹别扭（…，还有 40 分钟消气）· 惦记：…"；arrive 后面接"你惦记着：…"；「日子」带上一篇日记（代替"上次的经过"）；提示词多一段心情 / 别扭（认真问、说难过时立刻作废）/ 惦记 / 小心思的规矩；网页和管理面板卡片有"心情""精力"
+- **下线**：`checkpoint` → 最终反思写日记（`diary.md`）和要点（inbox.md、`days.jsonl` 的经过）→ `close`，**不再让大脑写经过**；`reflect = false` 照第 1 期
+- 只在 live 写 `mind.json` / `diary.md` / inbox；dry-run 照样反思（`--view` 里看得到），不写盘；管理面板有 `inner.reflect` 开关
 
 ## 常用命令
 
