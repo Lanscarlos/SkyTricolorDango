@@ -1576,3 +1576,120 @@ def test_recent_approaches_follow_current_position():  # 整分支评审 2：走
     for i in range(30):  # 人走没了（轨迹过期）
         w.process(frame(), 1.9 + i * 0.1, panel_visible=False)
     assert w.recent_approaches(4.9) == []
+
+
+# ---- 点亮陌生人（spec 2026-10-01-light-unlit-stranger §3） ----
+from skydango.config import SocialConfig
+from skydango.vision import perception as perception_mod
+from skydango.vision.candle import Disk
+from skydango.game.social import LIGHT_KEY
+
+
+def unlit(x, y=400, w=90, h=220):
+    return Detection("player_unlit", Rect(x, y, w, h), 0.9)
+
+
+def light_watcher(monkeypatch, disks):
+    """disks：每次 find_disk 依次返回什么（用完了一直返回最后一个）。"""
+    seq = list(disks)
+    monkeypatch.setattr(perception_mod, "find_disk", lambda frame, box, flame, s, d: seq.pop(0) if len(seq) > 1 else seq[0])
+    det, clock = FakeDetector(), Clock()
+    w = watcher(det, clock=clock)
+    w.light_cfg, w.flame = SocialConfig(), np.ones((4, 4), np.uint8)
+    return w, det, clock
+
+
+DISK = Disk(1045, 480, 20.0, 0.9)
+
+
+def run(w, t, clock):
+    clock.t = t
+    w.process(frame(), t, panel_visible=False)
+
+
+def test_light_request_after_disk_seen_long_enough(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    for t in (0.0, 1.0, 2.0, 2.5):  # 帧间隔别超过 track_buffer（1 s），否则轨迹断了重新计时
+        run(w, t, clock)
+        assert LIGHT_KEY not in w.requests
+    run(w, 3.1, clock)
+    req = w.requests[LIGHT_KEY]
+    assert req.kind == "light" and req.pos == (1045, 480) and req.track is not None
+
+
+def test_short_gap_keeps_timer_long_gap_resets(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK, DISK, None, DISK, DISK])
+    det.frames = [[unlit(1000)]]
+    for t in (0.0, 1.0, 1.5, 2.0, 2.5, 3.1):  # 1.5 s 那次没看到，但离上次 0.5 s
+        run(w, t, clock)
+    assert LIGHT_KEY in w.requests
+    w2, det2, clock2 = light_watcher(monkeypatch, [DISK, None, None, DISK, DISK])
+    det2.frames = [[unlit(1000)]]
+    for t in (0.0, 0.5, 1.2, 2.5, 3.1):  # 0 s 之后 2.5 s 才又看到：重新计时
+        run(w2, t, clock2)
+    assert LIGHT_KEY not in w2.requests
+
+
+def test_mark_tried_stops_requests(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    for t in (0.0, 1.0, 2.0, 2.5, 3.1):
+        run(w, t, clock)
+    w.mark_tried(w.requests[LIGHT_KEY].track)
+    assert LIGHT_KEY not in w.requests
+    run(w, 4.0, clock)
+    assert LIGHT_KEY not in w.requests
+
+
+def test_far_or_lit_people_get_no_disk_check(monkeypatch):
+    calls = []
+    monkeypatch.setattr(perception_mod, "find_disk", lambda *a: calls.append(a) or DISK)
+    det, clock = FakeDetector(), Clock()
+    w = watcher(det, clock=clock)
+    w.light_cfg, w.flame = SocialConfig(), np.ones((4, 4), np.uint8)
+    det.frames = [[unlit(1000, h=40), player(300)]]  # 远处的小黑影（< stranger_min_height）、亮着的人
+    run(w, 0.0, clock)
+    assert calls == []
+
+
+def test_lit_when_same_track_turns_player(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    run(w, 0.0, clock)
+    tid = w.last_tracks[0].id
+    assert w.lit(tid, (1045, 480), 0.0) is False
+    det.frames = [[player(1000)]]  # 同一个位置翻成 player：cross 组保证 id 不变
+    run(w, 0.5, clock)
+    run(w, 0.6, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 才 2 帧
+    run(w, 0.7, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is True
+
+
+def test_lit_fallback_when_track_breaks(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    run(w, 0.0, clock)
+    tid = w.last_tracks[0].id
+    det.frames = [[]]
+    run(w, 1.5, clock)  # 闪光：一帧都没认出来，轨迹过了 track_buffer 被删
+    assert w.lit(tid, (1045, 480), 0.0) is None
+    det.frames = [[player(1010)]]  # 原地冒出一个亮着的人，没有名字标签
+    for t in (1.6, 1.7, 1.8):
+        run(w, t, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is True
+
+
+def test_lit_fallback_ignores_friend(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    run(w, 0.0, clock)
+    tid = w.last_tracks[0].id
+    det.frames = [[]]
+    run(w, 1.5, clock)
+    w.ocr = FakeOcr({110: "懒洋洋大王"})
+    det.frames = [[player(1010), tag(1000, 110)]]  # 冒出来的是挂着好友名字的
+    for t in (1.6, 1.7, 1.8):
+        run(w, t, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is None

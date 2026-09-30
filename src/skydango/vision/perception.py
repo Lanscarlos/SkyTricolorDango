@@ -35,8 +35,9 @@ import numpy as np
 
 from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
-from ..config import EnvConfig, GestureConfig, PerceptionConfig, SpinConfig
-from ..game.social import IDLE, KIND_NAMES, Request, is_request
+from ..config import EnvConfig, GestureConfig, PerceptionConfig, SocialConfig, SpinConfig
+from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_request
+from .candle import dark_ring, find_disk
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
 from .gesture import ClipBuffer, eligible, person_crop
@@ -49,6 +50,8 @@ log = logging.getLogger(__name__)
 
 UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
+DISK_EVERY = 0.3  # 同一个黑影最多隔这么久找一次火焰圆盘
+DISK_GAP = 1.0  # 圆盘断开不超过这么久不重新计时（火焰会晃）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
 PLACE_GAP = 3.0  # 画面大变后认地图：离上次至少隔这么久（转镜头时画面一直在变）
 FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹最多隔这么久裁一次（还要比 track_buffer 短）；挂上名字标签后这么久内也不裁
@@ -163,6 +166,8 @@ class PerceptionWatcher:
         place_interval: float = 30.0,  # 每隔这么久认一次地图（画面大变后也认一次）
         gestures=None,  # vision.gesture.GestureClassifier：别人对团子做的动作（三期 §3，研究性质）
         gesture_cfg: GestureConfig | None = None,
+        social_cfg: SocialConfig | None = None,  # 点亮陌生人（spec 2026-10-01）：和 flame 都有才找火焰圆盘
+        flame: np.ndarray | None = None,
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -184,6 +189,9 @@ class PerceptionWatcher:
         self._place_misses = 0  # 连着几次认不出
         self.gestures = gestures
         self.gesture_cfg = gesture_cfg or GestureConfig()
+        self.light_cfg = social_cfg
+        self.flame = flame
+        self._tried: set[int] = set()  # 身体举过蜡烛的黑影轨迹（不管成没成都不再出请求）
         self._gestures: deque[tuple[str, str]] = deque(maxlen=50)  # (好友名, 动作)，身体取走；没人取（普通 Agent）时只留最近的
         self._gesture_at: dict[tuple[str, str], float] = {}
         self.keep = cfg.keep  # 身体说"走开了"时用
@@ -434,6 +442,8 @@ class PerceptionWatcher:
         stranger_req = None
         for ring in orphans:
             kind = ring.data["kind"] = self._classify(frame, ring)
+            if kind == "candle" and self._disk_like(frame, ring):
+                kind = ring.data["kind"] = None  # 深色圆盘里的火焰：团子能去点亮他，不是他要给团子点火
             if is_request(kind):
                 stranger_req = Request(STRANGER, kind, self._ring_center(ring), now)
                 break
@@ -478,6 +488,7 @@ class PerceptionWatcher:
             )
             player.data["stranger"] = is_stranger
             strangers += is_stranger
+        self._watch_disks(frame, players, now, height)
         self._watch_typing(bubbles, players, selfs, now, width, height)
         if not self.paused:
             self._watch_approach(players, now, width)
@@ -931,6 +942,70 @@ class PerceptionWatcher:
         far = distance(h, self._ref_height(height), self.cfg.near, self.cfg.far) == "远"
         who = "没点火的陌生人" if dark else "陌生人"
         return f"（说话的可能是{side}{'远处' if far else '近处'}那个{who}）"
+
+    # ---- 点亮陌生人（spec 2026-10-01-light-unlit-stranger §3） ----
+    def _disk_like(self, frame: np.ndarray, ring: Track) -> bool:
+        if self.light_cfg is None:
+            return False
+        cx, cy = self._ring_center(ring)
+        r = ring.box.w / 2
+        return dark_ring(frame, cx, cy, 0.8 * r, 1.0 * r, self.light_cfg.disk_dark)
+
+    def _watch_disks(self, frame: np.ndarray, players: list[Track], now: float, height: int) -> None:
+        """每条黑影轨迹记火焰圆盘出现了多久；够 light_after 秒出一个 light 请求（一次一个，挑看到最久的）。
+        顺带给每条轨迹记"连续几帧是 player"，lit() 用。"""
+        for p in players:
+            p.data["player_run"] = p.data.get("player_run", 0) + 1 if p.cls == "player" else 0
+        live = set(self.tracker.tracks)
+        with self._lock:
+            self._tried &= live
+            tried = set(self._tried)
+        cfg = self.light_cfg
+        if cfg is None or self.flame is None:
+            return
+        best: Track | None = None
+        for p in players:
+            if p.cls != UNLIT or p.id in tried or p.box.h < self.cfg.stranger_min_height * height:
+                continue
+            d = p.data
+            if now - d.get("disk_check", float("-inf")) >= DISK_EVERY:
+                d["disk_check"] = now
+                disk = find_disk(frame, p.box, self.flame, cfg.disk_min_score, cfg.disk_dark)
+                if disk is not None:
+                    if now - d.get("disk_last", float("-inf")) > DISK_GAP:
+                        d["disk_first"] = now
+                    d["disk_last"], d["disk_pos"] = now, (disk.x, disk.y)
+            if now - d.get("disk_last", float("-inf")) <= DISK_GAP and now - d["disk_first"] >= cfg.light_after:
+                if best is None or d["disk_first"] < best.data["disk_first"]:
+                    best = p
+        if best is None:
+            self.requests.pop(LIGHT_KEY, None)
+            return
+        if LIGHT_KEY not in self.requests:
+            log.info("没点火的陌生人在身边站了 %.0f 秒（轨迹 %d）", now - best.data["disk_first"], best.id)
+        self.requests[LIGHT_KEY] = Request(STRANGER, LIGHT, best.data["disk_pos"], now, track=best.id)
+
+    def mark_tried(self, track_id: int) -> None:
+        """身体给这个黑影举过蜡烛了（不管成没成）：不再出请求。"""
+        with self._lock:
+            self._tried.add(track_id)
+        self.requests.pop(LIGHT_KEY, None)
+
+    def lit(self, track_id: int, pos: tuple[int, int], since: float) -> bool | None:
+        """举蜡烛之后他亮起来没有（全靠 YOLO：player_unlit → player）。
+
+        True：同一条轨迹连续 lit_frames 帧是 player；或者轨迹断了（闪光时认不出），since 之后在 pos 附近冒出一条
+        没挂名字标签的 player、也连续够帧。False：还是黑的。None：人没了，原地也没冒出亮人。"""
+        need = self.light_cfg.lit_frames if self.light_cfg is not None else 3
+        tracks = list(self.tracker.tracks.values())
+        for t in tracks:
+            if t.id == track_id:
+                return t.cls == "player" and t.data.get("player_run", 0) >= need
+        for t in tracks:
+            if (t.cls == "player" and t.first >= since and not t.data.get("name") and not t.data.get("tagged")
+                    and abs(t.box.x + t.box.w / 2 - pos[0]) < t.box.w and t.data.get("player_run", 0) >= need):
+                return True
+        return None
 
     @staticmethod
     def _ring_center(ring: Track) -> tuple[int, int]:

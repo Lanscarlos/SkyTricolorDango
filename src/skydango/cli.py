@@ -326,12 +326,18 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         from .vision.unknownnames import UnknownNames
 
         unknown = UnknownNames(run.path / "unknown_names", _friend_names(cfg))
+    flame = None
+    if cfg.social.enabled and "light" in cfg.social.accept_strangers:
+        from .vision.candle import load_flame
+
+        flame = load_flame(cfg.social.flame)
     return PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
         scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
         places=places, place_interval=cfg.places.place_interval,
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
+        social_cfg=cfg.social, flame=flame,
     )
 
 
