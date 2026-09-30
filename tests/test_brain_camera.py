@@ -385,3 +385,42 @@ def test_thumb_similarity_ignores_chat_panel_area():
     b[int(1080 * 0.46) :, :] = 0  # 下半部分（人、按钮）不一样也不管
     assert thumb_similarity(a, b) > 0.99
     assert thumb_similarity(a, texture(seed=9)) < 0.5
+
+
+# ---- look_person 换角度用：单步缩放、describe 说出小步转过 ----
+
+def test_zoom_once_presses_one_step_and_counts():
+    c, dev, state = cam(panel=True)
+    dev.shown = True  # 不借面板、不按 BACK（调用方已经借好面板）
+    assert "拉远了 1 步" in c.zoom_once("out")
+    assert ("hw_key", 13) in dev.calls
+    assert c.offset["zoom"] == -1
+    c.zoom_once("in")
+    assert c.offset["zoom"] == 0 and ("hw_key", 12) in dev.calls
+    assert state["panel"] is True and ("key", 4) not in dev.calls
+    with pytest.raises(ValueError):
+        c.zoom_once("left")
+
+
+def test_zoom_once_remembers_reference_before_leaving_home():
+    c, _, _ = cam(panel=False)
+    c.zoom_once("out")
+    assert c.ref is not None
+
+
+def test_describe_mentions_nudges():
+    c, _, _ = cam(panel=False)
+    c.nudge("right", 0.05)
+    assert "右转了一点" in c.describe()
+    c.nudge("left", 0.05)
+    c.nudge("left", 0.05)
+    assert "左转了一点" in c.describe()
+    c.nudge("right", 0.05)
+    assert c.describe() == "原位"
+
+
+def test_describe_mixed_nudges_that_cancel_in_count_are_not_home():  # 右 0.05 + 左 0.1：净次数 0，但不在原位
+    c, _, _ = cam(panel=False)
+    c.nudge("right", 0.05)
+    c.nudge("left", 0.1)
+    assert "左转了一点" in c.describe()

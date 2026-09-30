@@ -18,7 +18,8 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
             "只在文字不够用、要自己看细节时才要原图。",
     "look_at": "放大看局部原图：坐标按 look(image=true) 那张 1280×720 的图给（左上角 x、y，宽 w，高 h），裁的就是那一张。",
     "look_person": "看清某个人：身体按名字在画面里找到这个人，裁出来给你看原图。有人问你他的衣服、发型、装扮好不好看时先看再答，别编。"
-                   "和 look 共用频率限制；画面里没有这个人时会告诉你，可以先 look_around 找找。",
+                   "和 look 共用频率限制；画面里没有这个人时会告诉你，可以先 look_around 找找。"
+                   "他被你挡住时会自己转一下镜头 / 拉近拉远换个角度看（几秒），看完镜头不复位，要转回去用 camera_reset。",
     "look_around": "环顾四周：原地转一圈（每 90° 看一次），眼睛描述前 / 右 / 后 / 左各有什么，最后转回原来的朝向。要十几秒，别常用。",
     "status": "看身体现在的状态：面板和输入框开没开、身边有谁、是不是牵着手、镜头、能做的动作、互动规则、刚说过的话。",
     "chat_log": "看最近 n 条聊天记录（含你自己说的，标成“我”），n 1~50，默认 20。",
@@ -71,6 +72,7 @@ ACTIONS = {
     "panel_close",
 }  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
+PEEK_TIMEOUT = 30.0  # look_person 被挡住时边转边看：最多 [peek] max_seconds（8 s）+ 最后一下等画面停稳、截图裁图
 RESET_TIMEOUT = 60.0  # 镜头闭环复位：粗转 + 细调最多 60 下、每下等 0.4 s 画面停稳，最坏三十多秒（一般几秒）
 
 _MISSING = object()
@@ -175,6 +177,8 @@ class ToolBox:
             return self.eyes.describe_around(frames, b.clock())
         if name == "camera_reset":
             return b.call(b.camera_reset, timeout=RESET_TIMEOUT)
+        if name == "look_person":
+            return b.call(self._bind(name, a), timeout=PEEK_TIMEOUT)
         return b.call(self._bind(name, a))
 
     def _bind(self, name: str, a: dict) -> Callable[[], object]:

@@ -449,6 +449,25 @@ class TrackConfig:
 
 
 @dataclass
+class PeekConfig:
+    """look_person 发现好友被团子挡住：边转边看（每一步只看 YOLO）让人露出来，太小就拉近。镜头不复位。
+    按键、等画面稳定、转不动的判断沿用 [track]。数字都是估的，没在真机标定。"""
+
+    enabled: bool = True
+    self_center: float = 0.15  # YOLO 的团子框中心离屏幕中线不超过屏宽的这么多才采信（团子是镜头支点，总在中间）
+    too_close: float = 0.5  # 团子框高超过屏高的这么多 = 镜头贴太近，先拉远再转
+    too_small: float = 0.25  # 露出来的好友框高不到屏高的这么多 = 看不清，拉近
+    clear_overlap: float = 0.3  # 好友框和团子框水平重叠不到好友框宽的这么多 = 露出来了
+    gain: float = 0.3  # 按键秒数 = gain × 还差多少（半屏宽算 1），夹到 [track] nudge_min~nudge_max
+    max_zoom_out: int = 2
+    max_zoom_in: int = 3
+    max_presses: int = 10  # 转 + 缩放一共最多按几次
+    max_seconds: float = 8.0  # 最多花多久
+    tag_age: float = 1.0  # 名字标签超过这么多秒没更新就不算（判断挡住、每一步测量）
+    poll: float = 0.15  # 等画面稳定后，每隔这么久看一次感知结果
+
+
+@dataclass
 class BrainConfig:
     """统管大脑（brain/）：常驻的 Claude Code（订阅）收事件、调身体的工具；眼睛（Haiku）把画面写成文字。`run --brain` 打开。
 
@@ -548,6 +567,7 @@ class Config:
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     spin: SpinConfig = field(default_factory=SpinConfig)
     track: TrackConfig = field(default_factory=TrackConfig)
+    peek: PeekConfig = field(default_factory=PeekConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)

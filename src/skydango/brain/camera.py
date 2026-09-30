@@ -145,6 +145,14 @@ class Camera:
         self.turns[seconds] += 1 if direction == "right" else -1
         return seconds
 
+    def zoom_once(self, direction: str) -> str:
+        """拉近 / 拉远一步（"in" / "out"），返回 describe()。和 nudge 一样不借面板：调用方已经借好。"""
+        if direction not in ("in", "out"):
+            raise ValueError(f"zoom_once 只能 in / out：{direction}")
+        self.remember()
+        self._step(f"zoom_{direction}")
+        return self.describe()
+
     def forget_reference(self) -> None:
         """参照图不作数了（身体走动过、黑屏切过场景）：记账保留，复位时只粗转；这次离开原位也不再补拍。"""
         self.ref = None
@@ -299,6 +307,9 @@ class Camera:
         parts = []
         if turn:
             parts.append(f"{'右' if turn > 0 else '左'}转了 {abs(turn)} 步")
+        if any(self.turns.values()):  # 小步转（track、look_person 换角度）说不出角度，只说方向
+            net = self.turn_seconds
+            parts.append("右转了一点" if net > 1e-9 else "左转了一点" if net < -1e-9 else "来回转过一点")
         if pitch:
             parts.append(f"往{'上' if pitch > 0 else '下'}看了 {abs(pitch)} 步")
         if zoom:
