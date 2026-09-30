@@ -425,7 +425,15 @@ class PerceptionWatcher:
 
         strangers = unlit = 0
         tagged = self._assign_tags([p for p in players if p.cls != UNLIT], tags)
+        shown = {t.data["name"] for t in tags if t.data.get("name")}
         for player in players:
+            name = player.data.get("name")
+            if name in shown and player.id not in tagged:
+                # 这个名字的标签此刻清清楚楚在别处：之前是挂错了（好友从他身后走过），摘掉。
+                # 标签只是被挡住（这一帧没看到）时不摘
+                log.debug("轨迹 %d 不是 %s（标签在别处），摘掉名字", player.id, name)
+                for key in ("name", "tagged", "tag_at"):
+                    player.data.pop(key, None)
             if player.cls == UNLIT:  # 没点火的黑影：一定是陌生人，远近都算
                 player.data["stranger"] = True
                 strangers += 1

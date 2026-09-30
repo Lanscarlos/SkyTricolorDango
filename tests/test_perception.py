@@ -1260,6 +1260,23 @@ def test_one_name_tag_names_only_one_player():
     assert w.strangers(2.0) == 1  # 另一个没挂上名字，过了 stranger_after 算陌生人
 
 
+def test_name_leaves_a_player_when_its_tag_shows_up_elsewhere():
+    """实测（2026-09-30 盯人）：好友走到镜头前的大个陌生人身后，名字标签挂到了陌生人身上；
+    好友走远后标签清清楚楚在别处，陌生人还顶着好友的名字，track 就去盯陌生人、把好友转出画面。"""
+    det = FakeDetector()
+    big = player(0, y=350, w=760, h=720)  # 离镜头很近的陌生人
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), stranger_after=1.0)
+    det.frames = [[big, tag(300, 110, y=300)]]  # 好友在他身后：标签落在他头顶的范围里
+    w.process(frame(), 0.0, panel_visible=False)
+    assert [t.data.get("name") for t in w.last_tracks if t.cls == "player"] == ["懒洋洋大王"]
+    det.frames = [[big, tag(1400, 110, y=250)]]  # 好友走远了（远处的小人 YOLO 没框出来）
+    for t in (0.5, 1.0, 1.5, 2.0):
+        w.process(frame(), t, panel_visible=False)
+    assert [t.data.get("name") for t in w.last_tracks if t.cls == "player"] == [None]
+    assert [p.kind for p in w.people(2.0)] == ["stranger"]  # 没了标签，过了 stranger_after 照常算陌生人
+    assert w.labels["懒洋洋大王"][0] == 1400
+
+
 def test_people_lists_side_and_distance_left_to_right():
     from skydango.vision.people import describe_people
 

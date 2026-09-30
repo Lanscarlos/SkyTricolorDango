@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -21,6 +22,8 @@ from ..vision.people import side_of
 from .skills import SkillStep
 
 EPS = 1e-6  # 时间比较留一点余量（浮点）
+
+log = logging.getLogger(__name__)
 
 
 class TrackSkill:
@@ -69,6 +72,7 @@ class TrackSkill:
             return SkillStep("running", "等聊天面板关上")
         if found is None:
             if now - self._seen_at > cfg.lost_after:
+                log.debug("盯%s：%.1f 秒没看到（人物框和 %.1f 秒内的名字标签都没有）", self.target, now - self._seen_at, cfg.max_age)
                 return SkillStep("failed", f"跟丢了（最后在{self._side}）")
             return SkillStep("running", f"看不到{self.target}，等一下")
         if body.camera is None:
@@ -94,6 +98,8 @@ class TrackSkill:
                 return SkillStep("running", f"{self.target}就在旁边，转不动了")
             self._run_len, self._run_err = 0, abs(err)  # 在变近：重新数下一串
         seconds = min(max(cfg.gain * abs(err) / half, cfg.nudge_min), cfg.nudge_max)
+        log.debug("盯%s：%s x=%.0f 偏差 %+.0f，往%s按 %.2f 秒", self.target, found[1], cx, err,
+                  "右" if direction == "right" else "左", seconds)
         body.camera.nudge(direction, seconds)
         self._last_nudge = now
         self._run_len += 1
