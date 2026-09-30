@@ -156,7 +156,7 @@
 
 ```toml
 [console]
-port = 19390        # 面板端口；和 view 的 8765 错开，可以同时开
+port = 19390        # 面板端口；和 view 的 19399 错开，可以同时开
 child_port = 19391  # 团子子进程的 viewer 端口
 stop_timeout = 60.0  # 停止时最多等几秒，超了强杀
 log_lines = 500      # 日志尾巴保留几行
