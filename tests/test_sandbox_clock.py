@@ -127,6 +127,26 @@ def test_floor_time(tmp_path):
     assert floor_time(tmp_path) == T + 7200
 
 
+def test_floor_time_counts_crashed_session(tmp_path):
+    # 沙盒被强杀：clock.json 没写、days.jsonl 里也没有这一次；current.json 里存着快进后的时间，下次不能早于它
+    inner = tmp_path / "memory" / "inner"
+    inner.mkdir(parents=True)
+    (inner / "days.jsonl").write_text(json.dumps({"start": T, "end": T + 60}) + "\n", encoding="utf-8")
+    save(tmp_path / "clock.json", T + 100)
+    (inner / "current.json").write_text(json.dumps({"start": T + 200, "saved": T + 5000}), encoding="utf-8")
+    assert floor_time(tmp_path) == T + 5000
+    (inner / "current.json").write_text(json.dumps({"start": T + 7000, "saved": None}), encoding="utf-8")
+    assert floor_time(tmp_path) == T + 7000
+    (inner / "current.json").write_text("坏的", encoding="utf-8")
+    assert floor_time(tmp_path) == T + 100
+
+
+def test_resolve_start_empty_means_resume():  # 剧本 [start] 不写 time = 接着上次
+    floor = T + 3600
+    assert resolve_start("", floor, T, 9) == floor
+    assert resolve_start("", 0.0, T, 9) == T
+
+
 def test_floor_time_ignores_bad_last_line(tmp_path):
     inner = tmp_path / "memory" / "inner"
     inner.mkdir(parents=True)

@@ -126,13 +126,13 @@ def _fmt(t: float) -> str:
 def resolve_start(choice: str, floor: float, now: float, wake_hour: int) -> float:
     """启动时的沙盒墙上时间。
 
-    - `resume`：接着上次 = max(floor, now)
+    - `resume` 或空：接着上次 = max(floor, now)（剧本 [start] 不写 time 就是空）
     - `sleep`：睡一晚 = floor 之后最近的 wake_hour:00（没有 floor 时从现在算）
     - `HH:MM`：floor 与 now 取大之后最近的这个时刻
     - `YYYY-MM-DD HH:MM`：原样，早于 floor 就 `ValueError`
     """
     choice = str(choice).strip()
-    if choice == "resume":
+    if choice in ("resume", ""):
         return max(floor, now)
     if choice == "sleep":
         base = floor if floor > 0 else now
@@ -192,8 +192,25 @@ def _last_end(days: Path) -> float:
     return 0.0
 
 
+def _crashed_at(current: Path) -> float:
+    """current.json（上次被强杀、还没补进 days.jsonl 的那一次）最后保存的时间，没有就用开始时间；读不了 → 0。
+    下次启动时账本会拿它补一行"意外断了"，沙盒时间不能早于它。"""
+    if not current.is_file():
+        return 0.0
+    try:
+        data = json.loads(current.read_text(encoding="utf-8"))
+        values = [data.get("saved"), data.get("start")]
+    except (OSError, ValueError, AttributeError):
+        return 0.0
+    for v in values:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+    return 0.0
+
+
 def floor_time(sandbox_dir: Path) -> float:
-    """起始时间下限：clock.json 与 memory/inner/days.jsonl 最后一行的 end 取大；都没有 → 0.0。"""
+    """起始时间下限：clock.json、memory/inner/days.jsonl 最后一行的 end、current.json（被强杀的那次）取大；都没有 → 0.0。"""
     sandbox_dir = Path(sandbox_dir)
+    inner = sandbox_dir / "memory" / "inner"
     saved = load_saved(sandbox_dir / "clock.json") or 0.0
-    return max(saved, _last_end(sandbox_dir / "memory" / "inner" / "days.jsonl"))
+    return max(saved, _last_end(inner / "days.jsonl"), _crashed_at(inner / "current.json"))
