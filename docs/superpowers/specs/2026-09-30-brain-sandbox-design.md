@@ -1,6 +1,6 @@
 # 大脑沙盒（管理面板「沙盒」页）— 设计
 
-日期：2026-09-30　状态：**设计已和用户确认，待写实施计划**（依赖内心层可视化 `2026-09-30-inner-viewer-design.md` 合进 main 之后再实现）
+日期：2026-09-30　状态：**设计已和用户确认，实施计划 `docs/superpowers/plans/2026-09-30-brain-sandbox.md`**（依赖内心层可视化 `2026-09-30-inner-viewer-design.md` 合进 main 之后再实现）
 
 ## 背景
 
@@ -53,7 +53,8 @@
 | 新鲜事 | 页面手动放：身体线程里走和眼睛发现新鲜事同一个入口（照样受 `notice_min`、没熟人、主动额度的限制；被拦下时页面显示原因） |
 | 说话 | `SandboxSender`：`send` 把团子的话写进沙盒聊天记录（`clean_reply`、限速、主动护栏都在 `body.say` 里照常过）；`open()` 记一笔"（团子头顶冒出输入气泡）" |
 | 动作 | `EmotePlayer` 照常建，但轮盘是假的：可用动作 = `emotes/` 图标库里的名字（没有图标库就用 `[sandbox] emotes` 列表）；做动作记"（团子做了 鞠躬）"；反射动作同样记 |
-| 走路 / 镜头 | 成功、记一笔"（团子往前走了 2 步）""（团子转了转镜头）"；`track` / `look_around` 返回"沙盒里没有画面" |
+| 走路 | 成功、记一笔"（团子往前走了 2 步）" |
+| 镜头 | 没有（`camera = None`）：`camera` / `camera_reset` / `track` / `look_around` 按身体原有的"没有镜头"处理 |
 | 好友树 / 面板识别 / 互动请求 | 这一版不做：`friend_checker = None`、`panels = None`、`social` 空；工具返回"沙盒里没有" |
 
 **模式**：沙盒总是 live（`reply.dry_run = False`）—— 记忆、内心层、随手记、notes 整理、反思、日记都真的写盘，但只写 `sandbox/memory/`（`cfg.reply.memory_dir` 在子进程里改成它）。
@@ -92,7 +93,7 @@
 | `POST /api/sandbox/start` | `{"start": "resume" \| "sleep" \| "2026-10-01 09:00"}`，起子进程（`--start` 透传） |
 | `POST /api/sandbox/stop` | 同团子的停止（下线写日记） |
 | `POST /api/sandbox/reset` | 只能在沙盒停着时：删掉 `sandbox/memory/`、`sandbox/clock.json`，把 `memory/` 复制过去（`memory/archive/` 不复制）；`memory/` 不存在就建空目录 |
-| `GET /api/sandbox/friends` | 沙盒记忆里 `friends.md` 的 `## 标题`（给说话人下拉框、身边名单用）+ `[brain] owner_name` |
+| `GET /api/sandbox/info` | 沙盒记忆里 `friends.md` 的 `## 标题`（给说话人下拉框、身边名单用）+ `[brain] owner_name` + 起始时间下限（`floor_text`） |
 | `GET /api/sandbox/scenarios`、`POST /api/sandbox/save`、`POST /api/sandbox/replay`、`POST /api/sandbox/replay/stop`、`GET /api/sandbox/replay` | 剧本列表 / 另存为 / 回放 / 停止回放 / 回放进度（§6） |
 
 **「内心」页**（按内心可视化 spec 实现）加 **团子 / 沙盒** 切换：`GET /api/inner?source=sandbox` 读 `sandbox/memory/inner/`，沙盒在跑时实时部分取 `/sandbox/inner`；删性格条目同理转发或直接改 `sandbox/memory/inner/persona.json`。
