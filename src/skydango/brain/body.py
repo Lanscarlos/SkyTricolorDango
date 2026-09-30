@@ -33,6 +33,7 @@ from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
+from .reflex import addressed
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
 from .skills import SkillRunner
 from .track import TrackSkill
@@ -112,6 +113,9 @@ class Body:
         self.wall = wall
         self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
         self.brain_offline: Callable[[float], bool] = lambda now: False
+        self.brain_turn: Callable[[], tuple[float, float]] = lambda: (float("-inf"), float("-inf"))  # 大脑最近一轮的 (开始, 结束)，cli 设
+        self._bubble_at: float | None = None  # 身体替大脑开输入框（冒“正在输入”）的时间；None = 没开（spec 2026-09-30-body-reflex §2）
+        self._said_at = float("-inf")  # 团子上次说话（clock）：“刚说完好友就接话”算在跟团子说
         self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在回聊天（取走了聊天的那一轮还没结束）：聊天面板别因为安静关掉
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
@@ -189,6 +193,7 @@ class Body:
             if self.viewer is not None:
                 self._show(frame, now, fresh)
         self._run_commands()
+        self._watch_bubble(self.clock())
         self._fallback(now)
 
     def _show(self, frame, now: float, fresh: list[Message]) -> None:
@@ -333,6 +338,68 @@ class Body:
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
             else:
                 self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」")
+        if self.cfg.reflex.enabled:
+            self._on_heard(fresh, now)
+
+    # ---- 身体反射（spec 2026-09-30-body-reflex）----
+    def _addressed(self, m: Message, now: float) -> bool:
+        """这句是不是在跟团子说（叫名字 / 团子刚说完 / 身边只有他一个好友）。"""
+        nearby = self.env.nearby(now) if self.env is not None else []
+        since = now - self._said_at if self._said_at > float("-inf") else None
+        return addressed(
+            m.speaker, m.text, is_friend=is_friend_fn(self.friend_names()), self_names=self.cfg.proactive.self_names,
+            nearby=nearby, since_said=since, followup_window=self.cfg.reflex.followup_window, owner=self.cfg.brain.owner_name,
+        )
+
+    def _on_heard(self, fresh: list[Message], now: float) -> None:
+        """有人在跟团子说话：马上冒输入气泡，大脑想好了用这个框发。"""
+        if not self.cfg.reflex.bubble or not any(self._addressed(m, now) for m in fresh):
+            return
+        if self.skills.active is not None:  # 技能在按方向键：框开着按键会变成打字
+            log.debug("正在%s，不冒输入气泡", self.skills.active.goal)
+            return
+        if self._dry(False):
+            log.info("[dry-run] 会冒输入气泡（有人在跟团子说话）")
+            return
+        self._open_bubble(now)
+
+    def _open_bubble(self, now: float) -> bool:
+        if self.sender.opened:  # 上一句还没想完，框还开着
+            return True
+        try:
+            self.panel.before_speak(now)  # 先开面板再按 Enter：说完对方的回复马上读得到
+            opened = self.sender.open()
+        except Exception:
+            log.warning("冒输入气泡失败", exc_info=True)
+            return False
+        if opened:
+            self._bubble_at = now
+            log.info("有人在跟团子说话：先冒输入气泡")
+        return opened
+
+    def _close_bubble(self, why: str) -> None:
+        """关掉身体替大脑开的框（只关自己开的；say 用掉了就什么都不做）。"""
+        if self._bubble_at is None:
+            return
+        self._bubble_at = None
+        if self.sender.opened:
+            try:
+                self.sender.cancel()
+            except Exception:
+                log.warning("关输入框失败", exc_info=True)
+            log.debug("关掉替大脑开的输入框：%s", why)
+
+    def _watch_bubble(self, now: float) -> None:
+        if self._bubble_at is None:
+            return
+        if not self.sender.opened:  # say 用这个框发出去了
+            self._bubble_at = None
+            return
+        start, end = self.brain_turn()
+        if start >= self._bubble_at and end >= start:  # 开框之后才开始的那一轮结束了，没说话
+            self._close_bubble("大脑这一轮没说话")
+        elif now - self._bubble_at >= self.cfg.reflex.bubble_max:
+            self._close_bubble("开太久了")
 
     def news(self, text: str) -> None:
         """眼睛自动看时挑出的新鲜事（眼睛线程调，只入队）。"""
@@ -395,6 +462,8 @@ class Body:
     def clear_view(self, action: str, live: bool = False) -> str:
         """操作前确认画面没被面板挡着：已核对、卡片允许自动关的顺手关掉；别的拒绝（ToolError），交给大脑。
         返回 dry-run 时要附加的说明（"真执行时会先关掉……"）。"""
+        if action != "say":  # 框开着时按键会变成打字、点屏幕会先收起键盘：身体替大脑开的框先关掉
+            self._close_bubble(action)
         if self.panels is None:
             return ""
         notes = []
@@ -866,10 +935,13 @@ class Body:
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
-        try:
-            parts.append("输入框" + ("开" if self.device.ime_shown() else "关"))
-        except Exception:
-            parts.append("输入框状态读不到")
+        if self._bubble_at is not None:
+            parts.append("输入框：开着（身体替你开的，想好就 say）")
+        else:
+            try:
+                parts.append("输入框" + ("开" if self.device.ime_shown() else "关"))
+            except Exception:
+                parts.append("输入框状态读不到")
         others = self.panels.state.others() if self.panels is not None else ()
         if others:
             parts.append("开着的面板：" + "、".join(p.describe() for p in others))
@@ -963,6 +1035,7 @@ class Body:
         note = self.clear_view("say", live)
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
+        self._said_at = now
         self.said.append(full)
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
@@ -1149,6 +1222,7 @@ class Body:
     def panel_press(self, button: str, live: bool = False) -> str:
         """按 panel_read 列出的按钮（编号或文字）；过安全规则：never 不按，其他（非撤退类）要主人 #允许。"""
         self._need_panels()
+        self._close_bubble("panel_press")
         now = self.clock()
         ttl = self.cfg.panels.read_ttl
         if now - self._read_at > ttl:
@@ -1190,6 +1264,7 @@ class Body:
     def panel_close(self, live: bool = False) -> str:
         """关最上面的面板（卡片关法 → 撤退类按钮 → ×）。"""
         self._need_panels()
+        self._close_bubble("panel_close")
         top = self.panels.state.top()
         if top is None:
             return "没有开着的面板"
