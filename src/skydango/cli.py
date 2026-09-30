@@ -1659,6 +1659,8 @@ def _inner_persona(cfg: Config, ledger):
         return None
     try:
         persona = ledger.store.load_persona(quarantine=ledger.persist)
+        for why in persona.prepare(time.time(), _friend_names(cfg)()):
+            log.info("性格档案：%s", why)
         persona.fade(time.time(), cfg.inner)
         return persona
     except Exception:
@@ -1691,7 +1693,7 @@ def _final_reflection(cfg: Config, body, reflector, ledger, live_store) -> str:
         result = reflector.final(body.reflect_materials(True))
         return finish_reflection(
             result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist, time.time(), cfg.inner,
-            persona=body.persona, soft=body.soft_names(time.time()),
+            persona=body.persona, soft=body.soft_names_this_session(),
         )
     except Exception:
         log.exception("下线前的反思出错")

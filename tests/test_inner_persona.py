@@ -26,7 +26,7 @@ def test_config_defaults():
     c = InnerConfig()
     assert (c.persona, c.fade_days, c.catchphrases_max, c.jokes_per_friend, c.jokes_max, c.opinions_max, c.soft_minutes) == (
         True, 14, 5, 3, 20, 10, 30)
-    assert "妈" in SENSITIVE and "班" in SENSITIVE and len(SENSITIVE) == 17
+    assert "妈" in SENSITIVE and "班" in SENSITIVE and "年龄" in SENSITIVE and "哭" in SENSITIVE and len(SENSITIVE) == 30
 
 
 def test_add_three_kinds_and_rules():
@@ -54,7 +54,8 @@ def test_soft_friend_gets_no_new_jokes():
 
 def test_same_topic_replaces_and_duplicates_skip():  # Review Focus 3
     p = Persona()
-    p.apply(add(opinions=[{"topic": "雨林", "stance": "丑"}], catchphrases=["害，懒得动"]), CARDS, FRIENDS, T0, CFG)
+    p.apply(add(opinions=[{"topic": "雨林", "stance": "太湿了"}], catchphrases=["害，懒得动"]), CARDS, FRIENDS, T0, CFG)
+    assert [(t.topic, t.text) for t in p.opinions] == [("雨林", "太湿了")]  # 先确实记上了，下面才测得到“换立场”
     p.apply(add(opinions=[{"topic": "雨林", "stance": "其实还行"}], catchphrases=["害，懒得动啊"]), CARDS, FRIENDS, T0 + 9, CFG)
     assert [(t.topic, t.text, t.since) for t in p.opinions] == [("雨林", "其实还行", T0 + 9)]
     assert len(p.catchphrases) == 1
@@ -136,3 +137,48 @@ def test_roundtrip_and_bad_file(tmp_path):  # Review Focus 4
 def test_missing_file_is_empty(tmp_path):
     assert InnerStore(tmp_path / "nope").load_persona() == Persona()
     assert not (tmp_path / "nope").exists()
+
+
+def test_people_not_in_opinions_or_catchphrases():  # 终审 I1
+    p = Persona()
+    dropped = p.apply(add(opinions=[{"topic": "阿花", "stance": "笨手笨脚的，别跟她走"},
+                                    {"topic": "暮土", "stance": "阿花最怕这里"}],
+                          catchphrases=["阿花又迷路了哈哈", "害，懒得动"]), CARDS, FRIENDS, T0, CFG)
+    assert p.opinions == [] and [t.text for t in p.catchphrases] == ["害，懒得动"] and len(dropped) == 3
+
+
+def test_filters_age_crying_identity():  # 终审 I2
+    p = Persona()
+    p.apply(add(jokes=[{"who": "小明", "text": "小学生小明"}, {"who": "小明", "text": "小明今年才十二"},
+                       {"who": "小明", "text": "小明上次哭鼻子"}, {"who": "小明", "text": "小明上次好难过"},
+                       {"who": "小明", "text": "路痴带路"}],
+                catchphrases=["我才不是机器人", "我是真人好吧"]), CARDS, FRIENDS, T0, CFG)
+    assert [t.text for t in p.jokes] == ["路痴带路"] and p.catchphrases == []
+    for w in ("年龄", "小学生", "初中", "高中", "作业", "老师", "岁", "本名", "QQ", "微信", "哭"):
+        assert w in SENSITIVE
+
+
+def test_prepare_refilters_and_adopts_hand_written():  # 终审 I2 + 手写的 since=0
+    p = Persona(catchphrases=[Trait("我才不是机器人", since=T0), Trait("手写的一句")],
+                jokes=[Trait("小学生小明", who="小明", since=T0)],
+                opinions=[Trait("笨手笨脚的", topic="阿花", since=T0)])
+    dropped = p.prepare(T0 + 5, FRIENDS)
+    assert [(t.text, t.since) for t in p.catchphrases] == [("手写的一句", T0 + 5)]
+    assert p.jokes == [] and p.opinions == [] and len(dropped) == 3
+    p.fade(T0 + 5, CFG)
+    assert len(p.catchphrases) == 1  # 手写的不会一启动就淡出
+
+
+def test_new_entry_not_evicted_when_full():  # 终审 I4
+    p = Persona(catchphrases=[Trait(f"说法{i}号", since=T0 + i, hits=3) for i in range(5)])
+    p.apply(add(catchphrases=["全新的一句"]), CARDS, FRIENDS, T0 + 99, CFG)
+    assert "全新的一句" in [t.text for t in p.catchphrases] and len(p.catchphrases) == 5
+    assert "说法0号" not in [t.text for t in p.catchphrases]  # 挤掉旧的里最没用、最旧的
+
+
+def test_changed_stance_counts_as_used_now():  # 终审：换了立场不该一两天就淡出
+    p = Persona(opinions=[Trait("丑丑的", topic="雨林", since=T0, last_used=T0 + 86400)])
+    p.opinions[0].text = "太湿了"
+    p.apply(add(opinions=[{"topic": "雨林", "stance": "其实还行"}]), CARDS, FRIENDS, T0 + 13 * 86400, CFG)
+    p.fade(T0 + 15 * 86400, CFG)
+    assert [(t.text, t.last_used) for t in p.opinions] == [("其实还行", T0 + 13 * 86400)]

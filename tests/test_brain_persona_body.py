@@ -123,3 +123,23 @@ def test_no_persona_unchanged(clock):
     b, *_ = body(clock, env=FakeEnv())
     b.step()
     assert b.persona is None and b.soft_names(0) == set()
+
+
+def test_arrive_skips_jokes_for_soft_friend(clock, tmp_path):  # 终审 I3b
+    b, env, reader, events = make(clock, tmp_path)
+    b.persona.jokes = [Trait("路痴带路", who="懒洋洋大王")]
+    reader.batches = [[msg("今天好难过")]]
+    b.step()
+    events.drain()
+    env.near = ["懒洋洋大王"]
+    b.step()
+    arrive = [e.text for e in events.drain() if e.kind == "arrive"]
+    assert arrive and "老梗" not in arrive[0]
+
+
+def test_soft_names_this_session_keeps_expired(clock, tmp_path):  # 终审 I3a
+    b, env, reader, _ = make(clock, tmp_path)
+    reader.batches = [[msg("今天好难过")]]
+    b.step()
+    assert b.soft_names_this_session() == {"懒洋洋大王"}
+    assert b.soft_names(WALL + 3600) == set() and b.soft_names_this_session() == {"懒洋洋大王"}

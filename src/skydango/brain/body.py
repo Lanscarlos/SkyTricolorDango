@@ -677,7 +677,9 @@ class Body:
                 self.events.put("return", f"{name} 回来了", who=name)
             else:
                 want = self._inner_call(lambda: self.mind.want_note(name), default="") if self.mind is not None else ""
-                joke = self._inner_call(lambda: self.persona.joke_note(name), default="") if self.persona is not None else ""
+                joke = ""
+                if self.persona is not None and name not in self.soft_names(self.wall()):  # 收着点的人：不提老梗
+                    joke = self._inner_call(lambda: self.persona.joke_note(name), default="")
                 text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}{joke or ''}"
                 self.events.put("arrive", text, who=name)
                 self._reflect_note(f"{name} 来到身边")
@@ -1701,6 +1703,10 @@ class Body:
             if who is not None and sounds_upset(m.text):
                 self._soft_until[who] = (wall + self.cfg.inner.soft_minutes * 60, m.text[:20])
                 log.info("%s 说「%s」：接下来对他收着点", who, m.text)
+
+    def soft_names_this_session(self) -> set[str]:
+        """这次上线里说过难过的好友（下线反思看的是整次上线：这些人都不记新老梗）。"""
+        return set(self._soft_until)
 
     def soft_names(self, wall: float) -> set[str]:
         """现在要收着点的好友。"""

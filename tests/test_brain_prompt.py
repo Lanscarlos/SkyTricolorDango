@@ -245,3 +245,11 @@ def test_persona_section_before_days(tmp_path):
     (tmp_path / "profile.md").write_text("我是团子", encoding="utf-8")
     text = memory_prompt(ReplyConfig(), store, days="## 日子\n今天……", persona_text="## 你攒下的性格（…）\n口头禅：害")
     assert text.index("我是团子") < text.index("## 你攒下的性格") < text.index("## 日子")
+
+
+def test_go_on_line_does_not_contradict_proactive():  # 终审：别和“别硬转话题”打架
+    from skydango.brain.prompt import GO_ON_NEW
+
+    assert "换个话头" not in GO_ON_NEW
+    text = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True, proactive=True)
+    assert GO_ON_NEW in text

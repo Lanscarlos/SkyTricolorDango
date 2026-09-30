@@ -8,21 +8,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..chat.responder import claims_human
 from ..chat.tracker import similar
 from ..config import InnerConfig
 from .ledger import Card, match_friend
+from .mind import sounds_upset
 
 TEXT_CHARS = 30  # 口头禅 / 老梗 / 立场最多几个字
 TOPIC_CHARS = 10  # 话题最多几个字
 SIMILAR = 0.75
 # 这些词出现在条目里就不记（光遇未成年玩家多：外貌、家里、成绩、年龄都不拿来开玩笑）
-SENSITIVE = ("胖", "瘦", "丑", "矮", "长相", "身材", "脸", "爸", "妈", "家里", "成绩", "考试", "分数", "几岁", "年纪", "学校", "班")
+SENSITIVE = ("胖", "瘦", "丑", "矮", "长相", "身材", "脸", "爸", "妈", "家里", "成绩", "考试", "分数", "几岁", "年纪", "学校", "班",
+             "年龄", "今年", "岁", "小学生", "初中", "高中", "作业", "老师", "本名", "QQ", "qq", "微信", "哭")
 HEADING = "## 你攒下的性格（慢慢和大家玩出来的；人设里写的优先）"
 TAIL = "用得自然，别每句都用；同一个梗一次上线最多用一两回。"
 
 
 def touchy(*texts: str) -> bool:
     return any(w in (t or "") for t in texts for w in SENSITIVE)
+
+
+def unsafe(*texts: str) -> bool:
+    """不能沉淀的：敏感词、难过的话（拿别人难过开玩笑）、声称自己是真人的话。"""
+    return touchy(*texts) or any(sounds_upset(t) or claims_human(t) for t in texts)
+
+
+def mentions(friends, *texts: str) -> bool:
+    """条目里提到了好友：人只能进老梗（有熟人门槛、收着点），不能借口头禅 / 看法绕过去。"""
+    return any(f and f in (t or "") for f in friends for t in texts)
 
 
 @dataclass
@@ -74,11 +87,12 @@ class Persona:
               soft: set[str] = frozenset()) -> list[str]:
         """只看 persona_add / persona_used；返回丢掉了哪些（记日志用）。"""
         dropped: list[str] = []
+        before = {id(t) for t in self.catchphrases + self.jokes + self.opinions}
         add = result.get("persona_add", {})
         if isinstance(add, dict):
-            self._add_list(add, "catchphrases", dropped, lambda item: self._add_catchphrase(item, now, dropped))
+            self._add_list(add, "catchphrases", dropped, lambda item: self._add_catchphrase(item, friends, now, dropped))
             self._add_list(add, "jokes", dropped, lambda item: self._add_joke(item, cards, friends, now, cfg, soft, dropped))
-            self._add_list(add, "opinions", dropped, lambda item: self._add_opinion(item, now, dropped))
+            self._add_list(add, "opinions", dropped, lambda item: self._add_opinion(item, friends, now, dropped))
         else:
             dropped.append("persona_add 不是对象")
         used = result.get("persona_used", [])
@@ -88,8 +102,25 @@ class Persona:
                     self._bump(item.strip(), now)
         else:
             dropped.append("persona_used 不是列表")
-        self._cap(cfg, dropped)
+        fresh = {id(t) for t in self.catchphrases + self.jokes + self.opinions} - before
+        self._cap(cfg, dropped, fresh)  # 新记的不在这次被挤掉：挤旧的里最没用的（不然满了就再也长不出新的）
         self.fade(now, cfg)
+        return dropped
+
+    def prepare(self, now: float, friends: list[str]) -> list[str]:
+        """启动时：按现在的规矩再筛一遍（规矩变严了旧条目也清掉）；手写的 since = 0 当作现在记的（不然一启动就淡出）。"""
+        dropped: list[str] = []
+        def keep(t: Trait, person_ok: bool) -> bool:
+            bad = unsafe(t.text, t.topic) or (not person_ok and mentions(friends, t.text, t.topic))
+            if bad:
+                dropped.append(f"不合规矩，清掉：{t.topic + '——' if t.topic else ''}{t.text}")
+            return not bad
+        self.catchphrases = [t for t in self.catchphrases if keep(t, False)]
+        self.jokes = [t for t in self.jokes if keep(t, True)]
+        self.opinions = [t for t in self.opinions if keep(t, False)]
+        for t in self.catchphrases + self.jokes + self.opinions:
+            if not t.since:
+                t.since = now
         return dropped
 
     @staticmethod
@@ -101,15 +132,18 @@ class Persona:
         for item in items:
             fn(item)
 
-    def _add_catchphrase(self, item, now: float, dropped: list[str]) -> None:
+    def _add_catchphrase(self, item, friends, now: float, dropped: list[str]) -> None:
         if not isinstance(item, str):
             dropped.append(f"口头禅格式不对：{item!r}")
             return
         text = item.strip()
         if not text:
             return
-        if touchy(text):
-            dropped.append(f"口头禅带敏感词：{text}")
+        if unsafe(text):
+            dropped.append(f"口头禅不能记：{text}")
+            return
+        if mentions(friends, text):
+            dropped.append(f"口头禅里有人（人只进老梗）：{text}")
             return
         text = text[:TEXT_CHARS]
         if any(similar(text, t.text, SIMILAR) for t in self.catchphrases):
@@ -131,14 +165,14 @@ class Persona:
             dropped.append(f"和 {who} 还不够熟，不记老梗")
         elif who in soft:
             dropped.append(f"对 {who} 收着点，不记老梗")
-        elif touchy(text):
-            dropped.append(f"老梗带敏感词：{text}")
+        elif unsafe(text):
+            dropped.append(f"老梗不能记：{text}")
         else:
             text = text[:TEXT_CHARS]
             if not any(t.who == who and similar(text, t.text, SIMILAR) for t in self.jokes):
                 self.jokes.append(Trait(text, who=who, since=now))
 
-    def _add_opinion(self, item, now: float, dropped: list[str]) -> None:
+    def _add_opinion(self, item, friends, now: float, dropped: list[str]) -> None:
         if not isinstance(item, dict):
             dropped.append(f"看法格式不对：{item!r}")
             return
@@ -146,14 +180,17 @@ class Persona:
         stance = str(item.get("stance") or "").strip()
         if not topic or not stance:
             return
-        if touchy(topic, stance):
-            dropped.append(f"看法带敏感词：{topic}——{stance}")
+        if unsafe(topic, stance):
+            dropped.append(f"看法不能记：{topic}——{stance}")
+            return
+        if mentions(friends, topic, stance):
+            dropped.append(f"看法里有人（人只进老梗）：{topic}——{stance}")
             return
         topic, stance = topic[:TOPIC_CHARS], stance[:TEXT_CHARS]
         for t in self.opinions:
             if similar(topic, t.topic, SIMILAR):
                 if t.text != stance:  # 同一个话题：换成新的立场
-                    t.text, t.since = stance, now
+                    t.text, t.since, t.last_used = stance, now, now  # 刚表过态：算刚用过，别一两天就淡出
                 return
         self.opinions.append(Trait(stance, topic=topic, since=now))
 
@@ -165,14 +202,14 @@ class Persona:
             if similar(item, t.topic, SIMILAR):
                 t.hits, t.last_used = t.hits + 1, now
 
-    def _cap(self, cfg: InnerConfig, dropped: list[str]) -> None:
-        _evict(self.catchphrases, cfg.catchphrases_max, dropped)
+    def _cap(self, cfg: InnerConfig, dropped: list[str], fresh: set[int] = frozenset()) -> None:
+        _evict(self.catchphrases, cfg.catchphrases_max, dropped, fresh)
         for who in dict.fromkeys(t.who for t in self.jokes):
             mine = [t for t in self.jokes if t.who == who]
-            gone = _evict(mine, cfg.jokes_per_friend, dropped)
+            gone = _evict(mine, cfg.jokes_per_friend, dropped, fresh)
             self.jokes = [t for t in self.jokes if not any(t is g for g in gone)]
-        _evict(self.jokes, cfg.jokes_max, dropped)
-        _evict(self.opinions, cfg.opinions_max, dropped)
+        _evict(self.jokes, cfg.jokes_max, dropped, fresh)
+        _evict(self.opinions, cfg.opinions_max, dropped, fresh)
 
     def fade(self, now: float, cfg: InnerConfig) -> None:
         """久不用的淡出：离上次用（没用过就是记下的时候）超过 fade_days 天。"""
@@ -210,11 +247,12 @@ class Persona:
         return out
 
 
-def _evict(items: list[Trait], cap: int, dropped: list[str]) -> list[Trait]:
-    """就地删到 cap 条：hits 最少的先删，一样多删最久没用的（再一样删排在前面的）。返回删掉的。"""
+def _evict(items: list[Trait], cap: int, dropped: list[str], fresh: set[int] = frozenset()) -> list[Trait]:
+    """就地删到 cap 条：先在旧条目里挑（这次新记的不挤），hits 最少的先删，一样多删最久没用的（再一样删排在前面的）。返回删掉的。"""
     gone = []
     while len(items) > max(cap, 0):
-        victim = min(items, key=lambda t: (t.hits, t.stamp()))
+        pool = [t for t in items if id(t) not in fresh] or items
+        victim = min(pool, key=lambda t: (t.hits, t.stamp()))
         items.remove(victim)
         gone.append(victim)
         dropped.append(f"太多了，挤掉：{victim.topic + '——' if victim.topic else ''}{victim.text}")
