@@ -93,6 +93,10 @@ class SandboxReader:
     def say(self, who: str, text: str) -> None:
         self._queue.put((who, text))
 
+    def pending(self) -> int:
+        """还没被身体读走的冒充发言有几句（沙盒判断安静了没有）。"""
+        return self._queue.qsize()
+
     def read(self, frame, now: float) -> list[Message]:
         out = []
         while True:

@@ -11,6 +11,7 @@ import json
 import logging
 from collections import deque
 from pathlib import Path
+from typing import Callable
 
 from .mind import Mind
 from .persona import Persona
@@ -75,6 +76,7 @@ class MindLog:
         self.path = Path(path) if path is not None else None
         self.persist = persist and self.path is not None
         self._rows: deque[dict] = deque(maxlen=MEMORY_MAX)
+        self.on_add: Callable[[dict], None] | None = None  # 每记一条就调（沙盒把反思改了什么写进聊天记录）；出错只记日志
         self._tail_ok = False  # 第一次追加前看一眼文件末尾：上次写到一半的半行后面先换行，别把新的一行也粘坏
 
     # ---- 记 ----
@@ -129,6 +131,11 @@ class MindLog:
                 self._tail_ok = True
             except OSError as exc:
                 log.warning("内心流水账写不了：%s", exc)
+        if self.on_add is not None:
+            try:
+                self.on_add(dict(row))
+            except Exception:
+                log.exception("内心流水账的 on_add 出错")
         return row
 
 

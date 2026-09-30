@@ -380,3 +380,18 @@ def test_sim_clock_skip_then_chat_wakes_within_debounce():  # Review Focus 1：�
     finally:
         stop.set()
         t.join(3)
+
+
+def test_limit_left_only_after_quota_failure(clock):  # 沙盒计划 Task 4：状态里"额度用完，约 N 分钟后再试"
+    brain, *_ = make(clock, FakeSession(ClaudeError("额度用完", limit=True), ClaudeError("坏了"), ok()))
+    assert brain.limit_left(clock()) == 0
+    brain.wake(clock(), "heartbeat")
+    assert brain.limit_left(clock()) == brain.cfg.limit_retry
+    clock.advance(100)
+    assert brain.limit_left(clock()) == brain.cfg.limit_retry - 100
+    clock.advance(brain.cfg.limit_retry)
+    brain.wake(clock(), "heartbeat")  # 普通失败：不算额度
+    assert brain.limit_left(clock()) == 0
+    clock.advance(100)
+    brain.wake(clock(), "heartbeat")
+    assert brain.limit_left(clock()) == 0 and brain.limited is False

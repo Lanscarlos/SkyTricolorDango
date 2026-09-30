@@ -151,6 +151,7 @@ class Body:
         self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
         self.brain_offline: Callable[[float], bool] = lambda now: False
         self.brain_turn: Callable[[], tuple[float, float]] = lambda: (float("-inf"), float("-inf"))  # 大脑最近一轮的 (开始, 结束)，cli 设
+        self.on_blocked: Callable[[str, str], None] | None = None  # say 被过滤 / 主动护栏拦下时调 (原话, 原因)；沙盒记进聊天记录
         self._bubble_at: float | None = None  # 身体替大脑开输入框（冒“正在输入”）的时间；None = 没开（spec 2026-09-30-body-reflex §2）
         self.reflexes = Reflexes(cfg.reflex, rng or random.Random(), clock())
         self._said_at = float("-inf")  # 团子上次说话（clock）：“刚说完好友就接话”算在跟团子说
@@ -556,8 +557,10 @@ class Body:
         """眼睛自动看时挑出的新鲜事（眼睛线程调，只入队）。"""
         self._news.put(text)
 
-    def _watch_news(self, now: float) -> None:
-        """新鲜事 / 换了地图 → notice 事件；没熟人、主动额度用完、太勤、和上一条一样都不发（省得为此叫醒大脑）。"""
+    def _watch_news(self, now: float) -> list[tuple[str, str]]:
+        """新鲜事 / 换了地图 → notice 事件；没熟人、主动额度用完、太勤、和上一条一样都不发（省得为此叫醒大脑）。
+
+        返回这次被拦下的 [(新鲜事, 原因)]（沙盒页上显示）。"""
         found = []
         while True:
             try:
@@ -570,16 +573,23 @@ class Body:
                 found.append(f"看起来到了{place}")
             self._place_seen = place
         if not found:
-            return
+            return []
         o = self.occasion()
+        blocked: list[tuple[str, str]] = []
         for text in found:
             if o.level == "alone" or o.left == 0:
-                log.debug("新鲜事没发（%s）：%s", o.blocked or "主动额度用完了", text)
-            elif now - self._notice_at < self.cfg.proactive.notice_min or similar(text, self._notice_last, 0.9):
-                log.debug("新鲜事没发（太勤或重复）：%s", text)
+                why = o.blocked or "主动额度用完了"
+            elif now - self._notice_at < self.cfg.proactive.notice_min:
+                why = f"{self.cfg.proactive.notice_min:.0f} 秒内刚有过一条新鲜事"
+            elif similar(text, self._notice_last, 0.9):
+                why = "和上一条新鲜事差不多"
             else:
                 self.events.put("notice", text)
                 self._notice_at, self._notice_last = now, text
+                continue
+            log.debug("新鲜事没发（%s）：%s", why, text)
+            blocked.append((text, why))
+        return blocked
 
     def _watch_panel(self, now: float) -> None:
         """只在面板该开着（常开模式 / 聊天中）却没开时告诉大脑；按需模式闲着时关着是正常的。"""
@@ -1202,13 +1212,16 @@ class Body:
         now = self.clock()
         body = clean_reply(text, self.cfg.reply.max_chars)  # 含“不能声称自己是真人”的硬过滤
         if body is None:
+            self._blocked(text, "过滤掉了（空的、<skip>，或者说了自己是真人）")
             raise ToolError("这句没发：是空的、<skip>，或者说了自己是真人（不能这么说）。换个说法")
         if not self.limiter.allow(now):
+            self._blocked(text, "说得太快了")
             raise ToolError("说得太快了，等几秒再说")
         proactive = self.cfg.proactive.enabled and not live and not reply and not self.brain_busy()
         if proactive:
             blocked = self.occasion().blocked
             if blocked:
+                self._blocked(text, blocked)
                 raise ToolError(blocked)
         note = self.clear_view("say", live)
         full = self.cfg.reply.disclosure_prefix + body
@@ -1235,6 +1248,14 @@ class Body:
         self.self_filter.remember(full, self.clock())
         self._remember(body, full, sent=True, manual=live)
         return f"已发送：{full}"
+
+    def _blocked(self, text: str, why: str) -> None:
+        if self.on_blocked is None:
+            return
+        try:
+            self.on_blocked(text, why)
+        except Exception:
+            log.exception("on_blocked 出错")
 
     def _remember(self, body: str, full: str, sent: bool, manual: bool = False) -> None:
         if manual:  # 主人手动让团子说的：不是 AI 的回复——运行记录里标出来，不写聊天历史 / 记忆（模型会模仿 history），不拿走待回复的消息
