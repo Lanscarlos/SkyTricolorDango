@@ -100,3 +100,10 @@ def test_idle_scale():
     r = Reflexes(cfg, Rng(0.5), 0.0)
     r.stir(0.0, scale=0.5)
     assert r.pick_idle(49.0, ["坐下"]) is None and r.pick_idle(50.0, ["坐下"]) == "坐下"
+
+
+def test_done_keeps_idle_scale():  # 终审 I6
+    cfg = ReflexConfig(idle=["坐下"], idle_min=100, idle_max=100)
+    r = Reflexes(cfg, Rng(0.5), 0.0)
+    r.done(0.0, "闲着，坐下", scale=0.5)
+    assert r.pick_idle(49.0, ["坐下"]) is None and r.pick_idle(50.0, ["坐下"]) == "坐下"

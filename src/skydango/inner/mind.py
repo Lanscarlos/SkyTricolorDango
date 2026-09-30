@@ -18,6 +18,12 @@ MOODS = ("开心", "平常", "低落", "烦")
 KINDS = ("惦记", "想做", "小心思")
 TEXT_CHARS = 40
 _KIND_LABEL = {"惦记": "惦记", "想做": "想", "小心思": "小心思"}
+# 别扭对象说了这些就立刻消气（提示词之外的代码兜底：光遇未成年玩家多）
+DISTRESS = ("难过", "伤心", "不舒服", "难受", "想哭", "哭了", "委屈", "不开心", "心情不好", "认真的", "别闹了", "生气了")
+
+
+def sounds_upset(text: str) -> bool:
+    return any(w in (text or "") for w in DISTRESS)
 
 
 @dataclass
@@ -50,6 +56,7 @@ class Mind:
     grudge: Grudge | None = None
     wants: list[Want] = field(default_factory=list)
     updated: float | None = None
+    calm: dict[str, float] = field(default_factory=dict)  # 刚消气的人 → 到什么时候之前不再对他闹别扭
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -62,6 +69,7 @@ class Mind:
             grudge=Grudge(**g) if g else None,
             wants=[Want(**w) for w in d.get("wants") or []],
             updated=d.get("updated"),
+            calm={str(k): float(v) for k, v in (d.get("calm") or {}).items()},
         )
 
     # ---- 套进反思结果 ----
@@ -120,7 +128,12 @@ class Mind:
             dropped.append(f"和 {who} 还不够熟，不闹别扭")
         else:
             why = str(grudge.get("why") or "").strip()[:TEXT_CHARS]
-            self.grudge = Grudge(who, why, now, now + cfg.grudge_max)
+            if self.grudge is not None and self.grudge.who == who:  # 还是这个人：不续期，只换原因
+                self.grudge.why = why or self.grudge.why
+            elif self.calm.get(who, 0.0) > now:
+                dropped.append(f"刚跟 {who} 消气，先不闹")
+            else:
+                self.grudge = Grudge(who, why, now, now + cfg.grudge_max)
 
     def _add_want(self, item, friends, now, cfg, dropped) -> None:
         if not isinstance(item, dict) or item.get("kind") not in KINDS:
@@ -141,9 +154,28 @@ class Mind:
 
     # ---- 身体每圈 ----
     def expire(self, now: float) -> None:
-        if self.grudge is not None and now >= self.grudge.until:
+        g = self.grudge
+        if g is not None and now >= g.until:
+            self.calm[g.who] = g.until + (g.until - g.since)  # 消气后冷却同样长的时间
             self.grudge = None
+        self.calm = {k: v for k, v in self.calm.items() if v > now}
         self.wants = [w for w in self.wants if not (w.until and now >= w.until)]
+
+    def forgive(self, name: str, now: float) -> bool:
+        """别扭对象难过了 / 认真了：立刻消气，并冷却一阵。返回有没有撤。"""
+        g = self.grudge
+        if g is None or g.who != name:
+            return False
+        self.calm[name] = now + (g.until - g.since)
+        self.grudge = None
+        return True
+
+    def wake(self, now: float, rest_gap: float) -> bool:
+        """睡过一觉（离上次反思超过 rest_gap）：心情回到平常（别扭、心愿按各自的时限）。返回有没有回落。"""
+        if self.updated is None or now - self.updated < rest_gap or self.mood.level == "平常":
+            return False
+        self.mood = Mood(since=now)
+        return True
 
     def grudge_on(self, name: str, now: float) -> bool:
         return self.grudge is not None and self.grudge.who == name and now < self.grudge.until

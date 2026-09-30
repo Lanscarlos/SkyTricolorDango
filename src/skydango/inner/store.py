@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import logging
 import time
 from pathlib import Path
@@ -132,7 +133,7 @@ class InnerStore:
     # ---- diary.md（第 2 期）----
     def append_diary(self, text: str, now: float) -> None:
         """一天一节（## 日期），同一天再写就在这一节末尾空一行接着写。"""
-        text = text.strip()
+        text = re.sub(r"\n\s*\n+", "\n", text.strip())  # 一次写一段：段内不留空行（空行用来分开每次下线）
         if not text:
             return
         heading = f"## {format_date(now)}"
@@ -147,16 +148,28 @@ class InnerStore:
             fh.write(chunk)
 
     def last_diaries(self, n: int) -> list[str]:
-        """最后 n 天的日记正文（旧到新，段落之间空一行）。"""
+        """最后 n 篇日记（每次下线一篇，旧到新），带日期、换行压成空格：“9月30日：今天……”。"""
         if n <= 0 or not self.diary_path.is_file():
             return []
-        days: list[list[str]] = []
+        entries: list[str] = []
+        label, para = "", []
+
+        def flush():
+            if para:
+                entries.append(f"{label}：" + " ".join(para) if label else " ".join(para))
+                para.clear()
+
         for line in self.diary_path.read_text(encoding="utf-8").splitlines():
             if line.startswith("## "):
-                days.append([])
-            elif days:
-                days[-1].append(line)
-        return ["\n".join(lines).strip() for lines in days if "\n".join(lines).strip()][-n:]
+                flush()
+                m = re.search(r"(\d+)年(\d+)月(\d+)日", line)
+                label = f"{int(m.group(2))}月{int(m.group(3))}日" if m else ""
+            elif line.strip():
+                para.append(line.strip())
+            else:
+                flush()
+        flush()
+        return entries[-n:]
 
     # ---- 内部 ----
     def _write(self, path: Path, text: str) -> None:

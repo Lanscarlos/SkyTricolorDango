@@ -14,7 +14,7 @@ def test_finish_writes_diary_memos_and_mind(tmp_path):
     m = Mind()
     s = finish_reflection({"mood": {"level": "开心", "text": "好"}, "diary": "今天不错。", "memos": ["小明考试过了", "约了周六"]},
                           m, st, mem, {}, [], True, T0, InnerConfig())
-    assert s == "小明考试过了；约了周六" and st.last_diaries(1) == ["今天不错。"]
+    assert s == "小明考试过了；约了周六" and st.last_diaries(1) == ["9月30日：今天不错。"]
     assert "2026年9月30日（周三） 的要点：小明考试过了" in mem.inbox() and st.load_mind().mood.level == "开心"
 
 

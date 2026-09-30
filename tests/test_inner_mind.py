@@ -1,4 +1,6 @@
+import tempfile
 import time
+from pathlib import Path
 
 from skydango.config import InnerConfig
 from skydango.inner.energy import Energy
@@ -110,7 +112,43 @@ def test_diary(tmp_path):
     st.append_diary("今天和小明看了日落。", T0)
     st.append_diary("晚上又上来挂了会儿。", T0 + 3600)
     st.append_diary("第二天。", T0 + 86400)
-    assert st.last_diaries(1) == ["第二天。"]
-    assert st.last_diaries(2) == ["今天和小明看了日落。\n\n晚上又上来挂了会儿。", "第二天。"]
+    assert st.last_diaries(1) == ["10月1日：第二天。"]
+    assert st.last_diaries(2) == ["9月30日：晚上又上来挂了会儿。", "10月1日：第二天。"]
     assert (tmp_path / "diary.md").read_text(encoding="utf-8").count("## ") == 2
     assert InnerStore(tmp_path / "none").last_diaries(1) == [] and st.last_diaries(0) == []
+
+
+def test_grudge_not_renewed_and_cooldown():  # 终审 I1
+    m = Mind()
+    m.apply({"grudge": {"who": "小明", "why": "放鸽子"}}, CARDS, FRIENDS, T0, CFG)
+    m.apply({"grudge": {"who": "小明", "why": "还是放鸽子"}}, CARDS, FRIENDS, T0 + 1200, CFG)
+    assert (m.grudge.since, m.grudge.until, m.grudge.why) == (T0, T0 + 7200, "还是放鸽子")  # 同一个人：不续期
+    m.expire(T0 + 7200)
+    assert m.grudge is None
+    m.apply({"grudge": {"who": "小明", "why": "又来"}}, CARDS, FRIENDS, T0 + 7300, CFG)
+    assert m.grudge is None  # 刚消气：冷却一个 grudge_max
+    m.apply({"grudge": {"who": "小明", "why": "又来"}}, CARDS, FRIENDS, T0 + 14500, CFG)
+    assert m.grudge is not None
+    assert Mind.from_dict(m.to_dict()) == m
+
+
+def test_forgive_sets_cooldown():  # 终审 I2
+    m = Mind(grudge=Grudge("小明", "x", T0, T0 + 7200))
+    assert m.forgive("小明", T0 + 100) and m.grudge is None and not m.forgive("小明", T0 + 101)
+    m.apply({"grudge": {"who": "小明", "why": "y"}}, CARDS, FRIENDS, T0 + 200, CFG)
+    assert m.grudge is None
+
+
+def test_wake_resets_mood_after_rest():  # 终审 I4
+    m = Mind(Mood("烦", "被放鸽子", T0), updated=T0)
+    assert not m.wake(T0 + 600, 3600) and m.mood.level == "烦"
+    assert m.wake(T0 + 3700, 3600) and m.mood == Mood(since=T0 + 3700)
+    assert not Mind().wake(T0, 3600)
+
+
+def test_diary_entries_with_date():  # 终审 I3
+    st = InnerStore(Path(tempfile.mkdtemp()))
+    st.append_diary("今天和小明看了日落。", T0)
+    st.append_diary("晚上又上来\n挂了会儿。", T0 + 600)
+    assert st.last_diaries(1) == ["9月30日：晚上又上来 挂了会儿。"]
+    assert st.last_diaries(2) == ["9月30日：今天和小明看了日落。", "9月30日：晚上又上来 挂了会儿。"]

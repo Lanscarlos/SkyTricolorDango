@@ -138,3 +138,48 @@ def test_no_mind_unchanged(clock):
     b, *_ = body(clock, env=FakeEnv())
     b.step()
     assert "心里" not in b.status() and b.effects() == Effects()
+
+
+def test_distress_drops_grudge(clock, tmp_path):  # 终审 I2
+    b, env, reader, _ = make(clock, tmp_path, live=True)
+    b.mind.grudge = Grudge("懒洋洋大王", "放鸽子", 0, 9e12)
+    env.near = ["懒洋洋大王"]
+    reader.batches = [[msg("团子 我今天真的很难过")]]
+    b.step()
+    assert b.mind.grudge is None and b._bubble_at is not None
+    assert (tmp_path / "mind.json").exists()
+    assert "闹别扭" not in b.status()
+
+
+def test_materials_say_how_long_ago(clock, tmp_path):  # 终审 I4
+    b, *_ = make(clock, tmp_path)
+    b.mind.updated = WALL - 3 * 3600
+    b.step()
+    assert "3 小时前想的" in b.reflect_materials(False)
+
+
+def test_final_materials_cover_whole_session(clock, tmp_path):  # 终审 I5
+    b, env, reader, _ = make(clock, tmp_path, reflect_reply='{"mood": {"level": "开心"}}')
+    reader.batches = [[msg("早上的话")]]
+    b.step()
+    clock.advance(1300)
+    b.step()  # 后台反思开始：这一段的材料清空
+    b.step()
+    assert "早上的话" not in b.reflect_materials(False)
+    assert "早上的话" in b.reflect_materials(True)
+
+
+def test_idle_scale_survives_reflex_done(clock):  # 终审 I6：困了闲着的小动作一直更勤，不只第一次
+    from test_brain_reflex_body import rx
+
+    b, *_ = rx(clock, idle=["伸懒腰"], idle_min=100, idle_max=100)
+    b.effects = lambda: Effects(idle=0.5)
+    b.reflexes.stir(clock(), scale=0.5)
+    done = b.emotes.done
+    clock.advance(51)
+    b.step()
+    assert done[-1] == ("伸懒腰", True)
+    n = len(done)
+    clock.advance(51)
+    b.step()
+    assert len(done) == n + 1  # 下一个也按 ×0.5 的间隔

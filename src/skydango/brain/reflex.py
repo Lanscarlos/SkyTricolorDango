@@ -60,11 +60,11 @@ class Reflexes:
             self.used.popleft()
         return max(0, self.cfg.quota - len(self.used))
 
-    def done(self, now: float, text: str) -> None:
+    def done(self, now: float, text: str, scale: float = 1.0) -> None:
         self.left(now)
         self.used.append(now)
         self.recent.append((now, text))
-        self.stir(now)
+        self.stir(now, scale)
 
     @staticmethod
     def usable(names: Sequence[str], on_wheel: Sequence[str]) -> list[str]:

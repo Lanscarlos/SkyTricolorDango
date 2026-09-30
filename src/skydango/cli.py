@@ -1632,6 +1632,8 @@ def _inner_mind(cfg: Config, ledger, base, claude_vars, run):
 
     try:
         mind = ledger.store.load_mind(quarantine=ledger.persist)
+        if mind.wake(time.time(), cfg.inner.rest_gap):
+            log.info("睡过一觉：心情回到平常")
         llm = ClaudeLlm(base, claude_vars, cfg.inner.reflect_model, run.path / "brain" / "reflect", cfg.inner.reflect_timeout)
         return mind, Reflector(cfg.inner, llm)
     except Exception:
@@ -1639,10 +1641,17 @@ def _inner_mind(cfg: Config, ledger, base, claude_vars, run):
         return None, None
 
 
+def _final_timeout(cfg: Config) -> float:
+    """下线反思最多等多久：管理面板 stop_timeout 到了会强杀，留 25 秒给身体收尾和等大脑线程。"""
+    return min(cfg.inner.reflect_timeout, max(10.0, cfg.console.stop_timeout - 25))
+
+
 def _final_reflection(cfg: Config, body, reflector, ledger, live_store) -> str:
     from .inner import finish_reflection
 
     try:
+        if hasattr(reflector.llm, "timeout"):
+            reflector.llm.timeout = _final_timeout(cfg)
         result = reflector.final(body.reflect_materials(True))
         return finish_reflection(
             result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist, time.time(), cfg.inner,

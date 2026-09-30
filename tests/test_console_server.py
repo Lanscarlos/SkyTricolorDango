@@ -343,3 +343,8 @@ def test_live_proxy_timeout_is_503(srv):
     srv.fake_runner.state = "running"
     srv.proxy_timeout = 0.3
     assert request(srv.url + "live/hang") == (503, {"ok": False, "text": "团子没在运行"})
+
+
+def test_cards_show_mood_and_energy():  # 终审 I8
+    line = next(l for l in _console_page().splitlines() if l.startswith("const CARDS="))
+    assert '"心情"' in line and '"精力"' in line

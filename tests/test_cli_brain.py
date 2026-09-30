@@ -431,3 +431,12 @@ def test_run_brain_dry_run_reflect_writes_nothing(tmp_path, monkeypatch):
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
     assert not (tmp_path / "memory" / "inner").exists()
     assert MIND_RULES in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
+
+
+def test_final_reflection_timeout_fits_console_stop():  # 终审 I7
+    cfg = Config()
+    assert cli._final_timeout(cfg) == 35.0  # stop_timeout 60 − 25（身体收尾、等大脑线程）
+    cfg.console.stop_timeout = 20
+    assert cli._final_timeout(cfg) == 10.0
+    cfg.console.stop_timeout = 600
+    assert cli._final_timeout(cfg) == cfg.inner.reflect_timeout

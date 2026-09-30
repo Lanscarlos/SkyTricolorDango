@@ -38,6 +38,8 @@ from .reflex import Reflexes, addressed
 from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
 from ..inner.energy import Energy, awake_minutes, energy as inner_energy
 from ..inner.ledger import card_line, match_friend
+from ..inner.ledger import ago
+from ..inner.mind import sounds_upset
 from ..inner.reflect import materials as reflect_materials_text
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
 from .skills import SkillRunner
@@ -129,6 +131,8 @@ class Body:
         self._last_tick_wall: float | None = None
         self._reflect_chat: list[tuple[float, str, str]] = []  # 上次反思以来听到的 / 说出的
         self._reflect_comings: list[str] = []
+        self._session_chat: deque[tuple[float, str, str]] = deque(maxlen=80)  # 这次上线的聊天（下线写日记用）
+        self._session_comings: deque[str] = deque(maxlen=40)
         self._arrive_notes: dict[str, str] = {}  # 算作新见面、还没发 arrive 的好友 → 交情说明（跟踪中攒着，发 arrive / leave 时取走）
         self.clock = clock
         self.sleep = sleep
@@ -366,8 +370,13 @@ class Body:
             friends = self._safe_friends()
             for m in fresh:
                 self._reflect_chat.append((self.wall(), m.speaker, m.text))
+                self._session_chat.append((self.wall(), m.speaker, m.text))
+                who = match_friend(m.speaker, friends)
+                if who is not None and sounds_upset(m.text) and self.mind.forgive(who, self.wall()):
+                    log.info("%s 说「%s」：别扭立刻作废", who, m.text)  # 代码兜底，不等反思
+                    self._inner_call(self._save_mind)
                 if self.reflector is not None:
-                    self.reflector.heard(match_friend(m.speaker, friends) is not None, now)
+                    self.reflector.heard(who is not None, now)
         self.heard = (self.heard + fresh)[-20:]
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
@@ -460,7 +469,7 @@ class Body:
             return False
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]
-        self.reflexes.done(now, why)
+        self.reflexes.done(now, why, scale=self.effects().idle)
         self.events.put("reflex", why)
         return True
 
@@ -1191,6 +1200,7 @@ class Body:
         self._ledger_call("said", self.wall())
         if self.mind is not None:
             self._reflect_chat.append((self.wall(), "我", full))
+            self._session_chat.append((self.wall(), "我", full))
             if self.reflector is not None:
                 self.reflector.stirred(now)
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
@@ -1592,6 +1602,7 @@ class Body:
         if self.mind is None:
             return
         self._reflect_comings.append(text)
+        self._session_comings.append(text)
         if self.reflector is not None:
             self.reflector.stirred(self.clock())
 
@@ -1637,9 +1648,12 @@ class Body:
         notes = [line.strip() for line in (self.memory_notes() or "").splitlines()
                  if line.strip() and not line.startswith("#") and any(n in line for n in names)][:10]
         mind_line = self.mind.line(wall, self._energy) if self.mind is not None else ""
+        if self.mind is not None and self.mind.updated is not None:
+            mind_line += f"（{ago(wall - self.mind.updated)}前想的）"
+        chat, comings = (self._session_chat, self._session_comings) if final else (self._reflect_chat, self._reflect_comings)
         return reflect_materials_text(
-            wall, self._energy.note if self._energy is not None else "", mind_line, list(self._reflect_chat),
-            list(self._reflect_comings), cards, notes, self.persona() or "", final,
+            wall, self._energy.note if self._energy is not None else "", mind_line, list(chat), list(comings), cards, notes,
+            self.persona() or "", final,
         )
 
     def apply_reflection(self, result: dict) -> None:
@@ -1651,7 +1665,11 @@ class Body:
         for why in dropped:
             log.info("反思：%s", why)
         log.info("反思完了，心里：%s", self.mind.line(self.wall(), self._energy))
-        if self.ledger is not None and self.ledger.persist and self.ledger.store is not None:
+        self._save_mind()
+
+    def _save_mind(self) -> None:
+        """live 时写 mind.json。"""
+        if self.mind is not None and self.ledger is not None and self.ledger.persist and self.ledger.store is not None:
             self.ledger.store.write_mind(self.mind)
 
     def _ledger_call(self, method: str, *args, default=None):
