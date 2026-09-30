@@ -440,3 +440,9 @@ def test_final_reflection_timeout_fits_console_stop():  # 终审 I7
     assert cli._final_timeout(cfg) == 10.0
     cfg.console.stop_timeout = 600
     assert cli._final_timeout(cfg) == cfg.inner.reflect_timeout
+
+
+def test_profile_template_has_temper():
+    for s in ("## 脾气", "毛病", "执念", "雷点"):
+        assert s in cli.PROFILE_TEMPLATE
+    assert cli.PROFILE_TEMPLATE.index("## 喜好和看法") < cli.PROFILE_TEMPLATE.index("## 脾气")
