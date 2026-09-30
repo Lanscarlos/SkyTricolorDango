@@ -30,7 +30,7 @@ class Field:
 FIELDS: tuple[Field, ...] = (
     Field("console.brain", "统管大脑", "关掉就是普通 Agent（DeepSeek 回复，调试用）", "bool", "launch"),
     Field("console.live", "真的发送", "打开后团子会在游戏里真的说话、做动作；关着只打印（dry-run）", "bool", "launch"),
-    Field("console.emotes", "聊天时做动作", "做动作会松开牵手：牵着手时关掉", "bool", "launch"),
+    Field("console.emotes", "聊天时做动作", "关掉就只聊天、不做动作", "bool", "launch"),
     Field("console.duration", "运行时长（秒）", "0 = 一直跑，到点自己退出", "float", "launch"),
     Field("device.adb_path", "adb 路径", "MuMu 安装目录下的 shell\\adb.exe 最稳", "exe", "connect"),
     Field("device.serial", "设备名", "比如 emulator-5554；设备页能列出实际看到的设备", "str", "connect"),

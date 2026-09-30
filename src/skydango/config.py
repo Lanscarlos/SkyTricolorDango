@@ -193,7 +193,7 @@ class WheelConfig:
 
 @dataclass
 class EmoteConfig:
-    """聊天时做表情动作（game/emotes.py）。做动作会松开牵手：牵着手时用 `run --no-emotes`。"""
+    """聊天时做表情动作（game/emotes.py）。做动作不会松开牵手（用户实测）。"""
 
     enabled: bool = True  # 图标库是空的时候自动不做
     # 白名单：不在轮盘上时可以换上去的动作（图标库里的名字）

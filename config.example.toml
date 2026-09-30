@@ -79,7 +79,7 @@ api_key_env = "ANTHROPIC_API_KEY"   # 从这个环境变量读 Key，不要把 K
 # api_key_env = "DEEPSEEK_API_KEY"
 
 [emotes]
-# 聊天时让模型挑时机做动作。做动作会松开牵手：牵着手时用 `run --no-emotes`
+# 聊天时让模型挑时机做动作。牵着手也能做，不会松手（走动才会）
 enabled = true
 # 可以换上轮盘的动作（图标库 emotes/ 里的名字），不在轮盘上时会换到 swap_slots 里再做
 extra = []

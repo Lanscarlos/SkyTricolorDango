@@ -262,14 +262,14 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - `move(direction, steps)`：W/A/S/D 小步走（`brain/locomotion.py`，每步按住 `[brain] move_step` 秒，**步长没在真机标定**）；一次 1~3 步、两次隔 `move_min_interval` 秒，
   牵着手要 `force=true`，走出去没有复位
 - **主人命令窗口**：卡洛（`[brain] owner_name`，精确匹配）发 `#` 开头的消息后 `owner_window` 秒内放宽：`move` 一次最多 6 步、不用等间隔；
-  `emote` 不管动作冷却（`emotes.min_interval`，换轮盘的冷却照旧）；`camera` 一次最多 8 步；牵着手 `move` / `emote` 不用 `force`。
+  `emote` 不管动作冷却（`emotes.min_interval`，换轮盘的冷却照旧）；`camera` 一次最多 8 步；牵着手 `move` 不用 `force`。
   真用到放宽时工具结果标"（主人命令模式）"。底线、身份规则不受影响
   聊天记录面板开着也能走（卡片 `allows` 里有 `move`），别的面板挡着照 `clear_view` 处理；dry-run 不按键
 - **什么时候叫醒大脑**（`brain/events.py` 的 `BACKGROUND`）：聊天、主人命令、好友第一次来、有人走近、任务结束等攒 `chat.debounce` 秒就叫醒；
   背景事件（陌生人来去、好友走开 / `return` 回来、互动请求和已接受、牵手 / 松手、画面变化）不单独叫醒，攒够 `brain.background_wait`（20 秒）才兜底叫醒一次。
   同一个人攒着的"走开"和"回来"互相抵消，陌生人事件只留最新的。好友走开后 `brain.rejoin`（60 秒）内又出现发 `return`，不再打招呼。
   2026-09-29 真机 v4 感知层 dry-run：改之前 5 分钟醒 42 次，41 次是背景事件
-- 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；牵着手时 `emote` 要 `force=true`；陌生人只能接点火
+- 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒或额度用完：聊天交给 `[llm]`（DeepSeek）备用回复，额度用完 10 分钟后再试
 - 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；额度用完时这一笔跳过，notes 下次再整理
 - 退出：身体先恢复轮盘、再复原镜头（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code
@@ -300,7 +300,7 @@ python -m skydango detect                 # 读一次聊天记录面板（先在
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
 python -m skydango chat --emotes 鞠躬,害羞  # 终端里和人设聊天，假装轮盘上有这些动作
 python -m skydango console [--port 端口] [--no-browser]  # 管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面
-python -m skydango run [--live | --dry-run] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；先 claude setup-token、设 SKYDANGO_CLAUDE_TOKEN；--duration 到点自己退出，牵着手时 --no-emotes
+python -m skydango run [--live | --dry-run] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；先 claude setup-token、设 SKYDANGO_CLAUDE_TOKEN；--duration 到点自己退出
 python -m skydango run --no-brain [--echo] [--live]  # 调试用的普通 Agent（DeepSeek 回复）；--echo 不调模型
 python -m skydango panels scan [图片或目录]    # 面板识别：每张卡开没开、每个特征的分数 + 通用兜底，标注图 tmp/panels/（不发输入）
 python -m skydango panels read [图片]          # 细读开着的面板：标题、正文、按钮和类别
@@ -350,4 +350,4 @@ python -m pytest -q                       # 单元测试（合成画面 + 假设
   光遇未成年玩家多，不要删掉这两处。
 - 光遇用户协议禁止自动化工具，有封号风险 —— 这是用户知情的前提，不要在游戏里做破坏性 / 刷屏类操作。
 - 新增游戏交互时，先在真实游戏里手动验证（截图确认），再写进代码和 game-ops 文档。
-- 聊天时做动作会松开牵手；Agent 退出时会把 `emotes.swap_slots` 换回原样，改换轮盘的逻辑要保证这一点。
+- 做动作**不会**松开牵手（用户实测；以前记的"会松手"是对方自己断开的），走动才会。Agent 退出时会把 `emotes.swap_slots` 换回原样，改换轮盘的逻辑要保证这一点。

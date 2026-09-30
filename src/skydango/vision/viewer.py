@@ -398,7 +398,7 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 <span id="status">连接中…</span></div><canvas id="c"></canvas>
 <section id="control" hidden><div class="bhead"><b>手动控制</b><span id="ctl-warn" hidden>手动操作会真的在游戏里执行（大脑是 dry-run 也一样）</span><span id="ctl-busy"></span></div>
 <div class="row" id="ctl-say"><b>说话</b><input type="text" id="ctl-say-text" placeholder="让团子说一句…"><span id="ctl-count"></span><button id="ctl-say-go">说</button></div>
-<div class="row" id="ctl-emote"><b>动作</b><select id="ctl-emote-name"></select><label><input type="checkbox" id="ctl-force">牵着手也做（会松手）</label><button id="ctl-emote-go">做</button></div>
+<div class="row" id="ctl-emote"><b>动作</b><select id="ctl-emote-name"></select><button id="ctl-emote-go">做</button></div>
 <div class="row" id="ctl-camera"><b>视角</b><button data-cam="left">左转</button><button data-cam="right">右转</button><button data-cam="up">抬头</button><button data-cam="down">低头</button><button data-cam="zoom_in">拉近</button><button data-cam="zoom_out">拉远</button>
 步数<input type="number" id="ctl-steps" value="1" min="1"><button id="ctl-reset">复位</button><button id="ctl-around">环视一圈</button></div>
 <div class="row"><b>看人</b><button id="ctl-pick">在画面上选人</button><span id="ctl-pick-tip" class="n"></span></div>
@@ -460,7 +460,7 @@ const K={opts:null,busy:false,picking:false,trackPick:false,mark:null};
 function nameAt(boxes,x,y){let best=null,area=Infinity;for(const b of boxes){if(!b.label||(b.kind!=="friend"&&b.kind!=="name"))continue;const tag=b.kind==="name",x1=tag?b.x-b.w:b.x,w=tag?b.w*3:b.w,h=tag?b.h*7:b.h;/* 名字标签：人在它正下方（宽 3 倍、连标签 7 倍高，同身体 _below_tag） */if(x<x1||x>=x1+w||y<b.y||y>=b.y+h)continue;if(w*h<area){best=b.label;area=w*h}}return best}
 function toFrame(clientX,clientY,rect,width,height){return [Math.round((clientX-rect.left)*width/rect.width),Math.round((clientY-rect.top)*height/rect.height)]}
 function controlLine(action,args,res){const a=args||{};let what;
-  if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」${a.force?"（松手也做）":""}`;
+  if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」`;
   else if(action==="camera")what=`${CAM[a.action]||a.action} ×${a.steps}`;else if(action==="camera_reset")what="复位";
   else if(action==="look_around")what="环视一圈";else if(action==="panel_read")what="读面板";else if(action==="panel_close")what="关面板";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;
   else if(action==="track")what=`盯着${a.name}（${a.seconds} 秒）`;else if(action==="stop_task")what="停下";else what=action;
@@ -476,7 +476,7 @@ function ctlApply(){const o=K.opts;if(!o)return;
   $("ctl-steps").max=o.max_steps;ctlCount();ctlLock()}
 function ctlLock(){const o=K.opts||{emotes:[],camera:[]},b=K.busy;
   $("ctl-say-text").disabled=b;$("ctl-say-go").disabled=b||!$("ctl-say-text").value.trim();
-  $("ctl-emote-name").disabled=$("ctl-emote-go").disabled=$("ctl-force").disabled=b||!o.emotes.length;
+  $("ctl-emote-name").disabled=$("ctl-emote-go").disabled=b||!o.emotes.length;
   for(const x of document.querySelectorAll("#ctl-camera button,#ctl-steps"))x.disabled=b||!o.camera.length;
   const pick=$("ctl-pick");pick.disabled=b||!o.friend_check;pick.title=o.friend_check?"":"[friend_check] enabled = false";
   $("ctl-pick-tip").textContent=o.friend_check?(K.picking?"点一下画面上的人":""):"没开（[friend_check] enabled = false）";
@@ -507,7 +507,7 @@ setInterval(()=>{if(K.opts&&!K.busy)ctlOptions(false)},5000);
 $("ctl-say-text").oninput=ctlCount;
 $("ctl-say-text").onkeydown=e=>{if(e.key==="Enter"&&!e.isComposing)$("ctl-say-go").click()};
 $("ctl-say-go").onclick=async()=>{const t=$("ctl-say-text").value.trim();if(!t)return;const res=await ctlSend("say",{text:t});if(res&&res.ok){$("ctl-say-text").value="";ctlCount()}};
-$("ctl-emote-go").onclick=()=>ctlSend("emote",{name:$("ctl-emote-name").value,force:$("ctl-force").checked});
+$("ctl-emote-go").onclick=()=>ctlSend("emote",{name:$("ctl-emote-name").value});
 for(const x of document.querySelectorAll("#ctl-camera button[data-cam]"))
   x.onclick=()=>{const max=K.opts?K.opts.max_steps:4,n=Math.min(max,Math.max(1,parseInt($("ctl-steps").value,10)||1));$("ctl-steps").value=n;ctlSend("camera",{action:x.dataset.cam,steps:n})};
 $("ctl-reset").onclick=()=>ctlSend("camera_reset",{});
