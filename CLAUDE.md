@@ -154,6 +154,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 扫描时顺带看好友名字下方的圆圈（`[social]`）：图标变成牵手 / 拥抱 / 击掌就记为请求，主循环里去点圆圈接受
 （原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受点火（图标还没录到）；
 输入框开着时不点；dry-run 只打印。`python -m skydango record` 连续截图，用来观察新的界面变化。
+没点火的黑影站到团子身边 `light_after` 秒（他身上出现深色圆盘 + 火焰，`vision/candle.py` 认），大脑模式下身体按 3 号键举蜡烛（**绝不点那个圆盘**：会跟着人走），
+YOLO 看到他从 `player_unlit` 变成 `player` 就算点亮、过 `bow_delay` 鞠躬（顺带放下蜡烛）；`light_timeout` 秒没亮就按 3 放下、这个人不再点；鞠躬没做完不再举第二次、举之前先查 `reflex.min_gap`。接受别人点火后也鞠躬。
+大脑能用 `set_request_policy("stranger", "light", false)` 关掉；**未在真机验证**（spec `docs/superpowers/specs/2026-10-01-light-unlit-stranger-design.md` §9；录像 c 上近处黑影常被 YOLO 直接认成 `player`，`lit()` 可能偏早，见 game-ops §6）
 
 ## YOLO 感知层（`[perception]`，开发中）
 

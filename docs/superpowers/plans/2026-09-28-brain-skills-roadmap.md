@@ -441,6 +441,9 @@ def test_describe(clock): ...                          # "正在做：盯着小�
 - 点完要不要鞠躬（用户 09-30 早先提的"点火后鞠躬"）；动画多长先用录像 c / d 量
 - 离线材料：录像 b / c / d 里有深色圆盘、用户手动点火的全过程
 
+**2026-10-01 做了第一步**（spec `docs/superpowers/specs/2026-10-01-light-unlit-stranger-design.md`，计划 `docs/superpowers/plans/2026-10-01-light-unlit-stranger.md`）：
+身体反射版，不走技能、不走过去——黑影自己站到身边才点；按 3 举蜡烛、YOLO 核实、鞠躬。下面的 `LightCandleSkill`（走过去点远处的人）还没做，要等 F 期。
+
 **接口：**
 - `LightCandleSkill(target: str)`：`target` 是 `"nearest"`、`"左边"` / `"前面"` / `"右边"`，或 `people()` 给的 `track_id`。
   开始时在 `people()` 里挑 `kind == "unlit"` 的人：一个都没有 → failed"画面里没有没点火的陌生人"；按 target 过滤后剩多于一个 → failed"有 N 个没点火的陌生人，问问是哪个"（让主脑去问，不自己猜）。
