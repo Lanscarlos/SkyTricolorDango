@@ -195,3 +195,103 @@ def test_wait_result_polls_and_gives_up(clock):
 
     frozen = wait_result(b, CallResult(9.0, "brain"), sleep=lambda s: None)  # 时钟不走也不会死等
     assert frozen.seen is None
+
+
+# ---- 自动兜底（spec §2.3） ----
+def left(b, clock, name="小明", ago=5.0, unnamed=1):
+    b._left_at[name] = clock() - ago
+    b._nearby = set()
+    b.env.unnamed_n = unnamed
+
+
+def pressed(device):
+    return sum(c == ("hw_key", LINUX_KEY_Q) for c in device.calls)
+
+
+def test_auto_call_after_friend_leaves_with_unnamed_people(clock):
+    b, device, env, events = call_body(clock)
+    left(b, clock)
+    b._watch_call(clock())
+    assert pressed(device) == 1 and b.last_call.reason == "auto"
+    b._watch_call(clock())
+    assert not [e for e in events.drain() if e.kind == "call"]  # 窗口还没结束
+    env.results[b.last_call.at] = CallSeen(b.last_call.at, {"小明": Seen("右边", "远")}, unnamed=0, ended=True)
+    b._watch_call(clock())
+    calls = [e for e in events.drain() if e.kind == "call"]
+    assert [e.text for e in calls] == ["你下意识喊了一声：认出 小明（右边·远）。"]
+    assert b.last_call.seen is not None
+
+
+def test_auto_call_once_per_leave_and_quota(clock):
+    b, device, env, _ = call_body(clock)
+    left(b, clock)
+    b._watch_call(clock())
+    env.results[b.last_call.at] = CallSeen(b.last_call.at, {}, ended=True)
+    clock.advance(25)
+    left(b, clock, ago=10.0)  # 又走开了一次（新的走开时间）：可以再喊
+    b._left_at["小明"] = b._auto_called["小明"]  # ……但还是同一次走开：不喊
+    b._watch_call(clock())
+    b._watch_call(clock())
+    assert pressed(device) == 1
+    for i in range(3):  # 每次都是新的走开
+        clock.advance(25)
+        left(b, clock, name=f"好友{i}")
+        b._watch_call(clock())
+        if b.last_call is not None:
+            env.results[b.last_call.at] = CallSeen(b.last_call.at, {}, ended=True)
+        b._watch_call(clock())
+    assert pressed(device) == 3  # 10 分钟最多 3 次
+
+
+def test_auto_call_skipped_when_busy(clock):
+    for busy in ("skill", "bubble", "request", "brain", "ime", "candle"):
+        b, device, env, _ = call_body(clock)
+        left(b, clock)
+        if busy == "skill":
+            b.skills.active = object()
+        elif busy == "bubble":
+            b._bubble_at = clock()
+        elif busy == "request":
+            env.requests = {"小红": object()}
+        elif busy == "brain":
+            b.brain_busy = lambda: True
+        elif busy == "ime":
+            device.shown = True
+        elif busy == "candle":
+            b._raised = (1, (0, 0), clock())
+        b._watch_call(clock())
+        assert pressed(device) == 0, busy
+
+
+def test_auto_call_not_when_friend_back_or_nobody_unnamed(clock):
+    b, device, env, _ = call_body(clock)
+    left(b, clock, unnamed=0)
+    b._watch_call(clock())
+    left(b, clock)
+    b._nearby = {"小明"}  # 已经回来了
+    b._watch_call(clock())
+    left(b, clock, ago=40.0)  # 走开太久（auto_after_leave 30 秒）
+    b._watch_call(clock())
+    b.cfg.call.auto = False
+    left(b, clock)
+    b._watch_call(clock())
+    assert pressed(device) == 0
+
+
+def test_auto_call_dry_run_logs_only(clock, caplog):
+    b, device, env, _ = call_body(clock, live=False)
+    left(b, clock)
+    with caplog.at_level("INFO"):
+        b._watch_call(clock())
+    assert pressed(device) == 0 and "会喊一声" in caplog.text
+    b._watch_call(clock())
+    assert caplog.text.count("会喊一声") == 1  # 同一次走开只判一次
+
+
+def test_auto_call_gives_up_waiting(clock):
+    b, device, env, events = call_body(clock)
+    left(b, clock)
+    b._watch_call(clock())
+    clock.advance(b.cfg.call.window + 11)
+    b._watch_call(clock())
+    assert b._pending_auto is None and not [e for e in events.drain() if e.kind == "call"]

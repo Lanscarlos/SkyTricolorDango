@@ -140,3 +140,7 @@ def test_flipping_stranger_count_keeps_first_time_and_no_count(clock):
     assert q.oldest_background() == 100.0
     (e,) = q.drain()
     assert e.line() == "陌生人都走开了"
+
+
+def test_call_is_background():
+    assert "call" in BACKGROUND  # 身体自动喊完：攒着等大脑下次醒来（spec 2026-10-01-q-call §2.3）

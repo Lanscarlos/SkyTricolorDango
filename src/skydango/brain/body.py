@@ -34,7 +34,7 @@ from ..vision.bubbles import Rect, roi_rect
 from ..vision.halo import HaloWatch
 from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people, describe_things
-from .calling import CallResult, status_text as call_status_text
+from .calling import CallResult, event_text as call_event_text, status_text as call_status_text
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
@@ -272,6 +272,7 @@ class Body:
         self._watch_bow(self.clock())
         self._watch_attention(self.clock())
         self._watch_lulls(self.clock())
+        self._watch_call(self.clock())
         self._fallback(now)
         self._inner_tick()
         self._ledger_call("save", self.wall())
@@ -2059,6 +2060,60 @@ class Body:
         self.last_call = result
         log.info("喊了一声（%s），光圈：%s", reason, result.halo)
         return result
+
+    def _watch_call(self, now: float) -> None:
+        """身体自动兜底（spec §2.3）：好友刚"走开"、画面里还有没挂名字的人 → 多半只是走远了标签淡掉，喊一声确认。
+        喊完不等：窗口结束后放背景事件 call；认回来的好友照常 return（抵消那条 leave）。"""
+        cfg = self.cfg.call
+        if not (cfg.enabled and cfg.auto) or self.env is None or not hasattr(self.env, "unnamed"):
+            return
+        try:
+            self._collect_auto_call(now)
+            if self._pending_auto is not None:
+                return
+            who = [n for n, t in self._left_at.items()
+                   if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t]
+            if not who or now - self._call_at < cfg.min_gap:
+                return
+            while self._call_times and now - self._call_times[0] > cfg.auto_window:
+                self._call_times.popleft()
+            if len(self._call_times) >= cfg.auto_quota or self.env.unnamed(now) <= 0 or self._auto_call_blocked(now):
+                return
+            for n in who:
+                self._auto_called[n] = self._left_at[n]
+            self._call_times.append(now)
+            log.info("%s 刚走开、画面里还有没挂名字的人：自动喊一声找找", "、".join(who))
+            r = self.call_out("auto")
+            if r.refused:
+                log.info("自动喊一声没喊成：%s", r.refused)
+            elif not r.dry:
+                self._pending_auto = r
+        except Exception:
+            log.exception("自动喊一声出错")
+
+    def _auto_call_blocked(self, now: float) -> bool:
+        if self._bubble_at is not None or self.sender.opened or self.skills.active is not None:
+            return True
+        if getattr(self.env, "requests", None) or self._raised is not None or self.brain_busy() or self.blackout:
+            return True
+        if self.panels is not None and self.panels.state.others():
+            return True
+        if self.emotes is not None and now - self.emotes.last_any < self.cfg.reflex.min_gap:
+            return True
+        return bool(self.device.ime_shown())  # 最后才问（一次 adb）
+
+    def _collect_auto_call(self, now: float) -> None:
+        r = self._pending_auto
+        if r is None:
+            return
+        seen = self.env.call_result(r.at)
+        if seen is not None:
+            r.seen = seen
+            self.events.put("call", call_event_text(seen))
+            self._pending_auto = None
+        elif now - r.at > self.cfg.call.window + 10:
+            log.info("自动喊一声的结果一直没等到（感知层暂停了？），不等了")
+            self._pending_auto = None
 
     def stop_task(self) -> str:
         return self.skills.cancel(self, "大脑叫停")
