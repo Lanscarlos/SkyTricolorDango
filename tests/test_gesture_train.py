@@ -1,5 +1,10 @@
+import datetime as dt
 from pathlib import Path
 
+import numpy as np
+import pytest
+
+from skydango.imageio import imwrite
 from skydango.vision.gesture_train import (
     Sample, check_counts, list_samples, load_split, save_split, split,
 )
@@ -139,3 +144,188 @@ def test_two_labels_pinning_same_recording_use_smallest_cut():
     # wave 切点 40，cheer 切点 16：取 16
     assert min(_starts(s["val"])) == 16.0
     assert max(_starts(s["train"])) < 15.0
+
+
+# ---- 第二部分：训练、导出、报告（假特征提取器：每帧的平均颜色，不下载 DINOv2）----
+def fake_extractor():
+    torch = pytest.importorskip("torch")
+
+    class FakeExtractor(torch.nn.Module):
+        key = "fake"
+
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, frames):  # T×3×S×S → T×3
+            self.calls += 1
+            return frames.mean(dim=(2, 3))
+
+    return FakeExtractor()
+
+
+COLORS = {"none": (40, 60, 80), "wave": (200, 160, 110), "bow": (90, 200, 60)}
+
+
+def write_dataset(root: Path, labels=("none", "wave"), per=25, recs=5, size=112, seed=0):
+    rng = np.random.default_rng(seed)
+    n = 0
+    for label in labels:
+        for i in range(per):
+            d = root / label / f"rec{i % recs}__{n:04d}_track1_t{i * 3:.2f}s"
+            d.mkdir(parents=True)
+            base = np.array(COLORS[label], np.int16)
+            for f in range(16):
+                img = np.clip(base + rng.integers(-20, 21, (size, size, 3)), 0, 255).astype(np.uint8)
+                imwrite(d / f"{f:02d}.jpg", img)
+            n += 1
+
+
+def _trained(tmp_path, labels=("none", "wave"), epochs=30):
+    from skydango.vision.gesture_train import train
+
+    root = tmp_path / "data"
+    write_dataset(root, labels)
+    samples, _ = list_samples(root, list(labels))
+    s = split(samples, list(labels))
+    head, info = train(samples, s, list(labels), fake_extractor(), root / "_features", epochs=epochs, device="cpu")
+    return root, samples, s, head, info
+
+
+def test_train_learns_separable_fake_data(tmp_path):
+    _, _, s, head, info = _trained(tmp_path)
+    assert s["val"] and s["train"]
+    assert info["best_f1"] > 0.9
+    assert 1 <= info["best_epoch"] <= len(info["loss"]) <= 30
+    assert len(info["val_f1"]) == len(info["loss"])
+
+
+def test_features_cached(tmp_path):
+    from skydango.vision.gesture_train import features_for
+
+    root = tmp_path / "data"
+    write_dataset(root, per=1, recs=1)
+    samples, _ = list_samples(root, ["none", "wave"])
+    ext = fake_extractor()
+    cache = tmp_path / "_features"
+    a = features_for(samples[0], ext, cache, flip=False)
+    assert a.shape == (16, 3) and ext.calls == 1
+    assert (cache / "fake" / f"{samples[0].clip}.npy").exists()
+    b = features_for(samples[0], ext, cache, flip=False)
+    assert ext.calls == 1 and (a == b).all()
+    features_for(samples[0], ext, cache, flip=True)
+    assert ext.calls == 2 and (cache / "fake" / f"{samples[0].clip}_flip.npy").exists()
+
+
+def test_temporal_head_shape():
+    torch = pytest.importorskip("torch")
+    from skydango.vision.gesture_train import TemporalHead
+
+    assert tuple(TemporalHead(768, 5)(torch.zeros(2, 16, 768)).shape) == (2, 5)
+
+
+def test_export_onnx_matches_torch(tmp_path):
+    torch = pytest.importorskip("torch")
+    ort = pytest.importorskip("onnxruntime")
+    from skydango.vision.gesture_train import Exported, export_onnx
+
+    _, _, _, head, _ = _trained(tmp_path, epochs=3)
+    ext = fake_extractor()
+    path = tmp_path / "g.onnx"
+    export_onnx(ext, head, path, frames=16, size=112)
+    x = np.random.default_rng(1).random((1, 16, 3, 112, 112), dtype=np.float32)
+    sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    got = sess.run(None, {sess.get_inputs()[0].name: x})[0]
+    with torch.no_grad():
+        want = Exported(ext, head).eval()(torch.from_numpy(x)).numpy()
+    assert got.shape == (1, 2)
+    assert float(np.abs(got - want).max()) < 1e-4
+
+
+def test_export_follows_config_label_order(tmp_path):
+    pytest.importorskip("onnxruntime")
+    from skydango.vision.gesture import OnnxGestureClassifier, load_clip
+    from skydango.vision.gesture_train import export_onnx, report_md
+
+    labels = ["wave", "none"]  # 和默认反过来
+    root, samples, s, head, info = _trained(tmp_path, labels=labels)
+    path = tmp_path / "g.onnx"
+    export_onnx(fake_extractor(), head, path, frames=16, size=112)
+    clf = OnnxGestureClassifier(str(path), labels)
+    for label in labels:
+        clip = next(x for x in samples if x.label == label)
+        assert clf.classify(load_clip(clip.path))[0] == label
+    text = report_md(data=root, model=path, labels=labels, names={"wave": "挥手"}, samples=samples, split=s,
+                     info=info, evaluation=None, min_prob=0.9)
+    assert "类别顺序" in text and "wave, none" in text
+
+
+def test_evaluate_only_val(tmp_path):
+    from skydango.config import GestureConfig
+    from skydango.vision.gesture import evaluate
+
+    class Always:
+        def classify(self, clip):
+            return "wave", 0.99
+
+    root = tmp_path / "data"
+    write_dataset(root, per=3, recs=3)
+    clips = sorted(p.name for p in (root / "wave").iterdir())
+    r = evaluate(root, Always(), GestureConfig(), only={clips[0]})
+    assert r["clips"] == 1 and r["wave"]["tp"] == 1 and r["all"]["fp"] == 0
+    r = evaluate(root, Always(), GestureConfig())
+    assert r["clips"] == 6 and r["all"]["fp"] == 3
+    assert {w["clip"] for w in r["wrong"]} == {p.name for p in (root / "none").iterdir()}
+
+
+def test_cli_refuses_when_class_too_small(tmp_path, monkeypatch):
+    from skydango import cli
+
+    root = tmp_path / "data"
+    write_dataset(root, labels=("none", "wave"), per=25)
+    write_dataset(root, labels=("bow",), per=5, seed=1)
+    (tmp_path / "config.toml").write_text('[gesture]\nlabels = ["none", "wave", "bow"]\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["-c", "config.toml", "perception", "gesture-train", str(root), "--device", "cpu"])
+    assert "鞠躬只有 5 段，还差 15 段" in str(e.value)
+    assert not (root / "_split.json").exists()
+
+
+def test_cli_gesture_train_end_to_end(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("onnxruntime")
+    from skydango import cli
+    from skydango.vision import gesture_train as gt
+
+    root = tmp_path / "data"
+    write_dataset(root)
+    (tmp_path / "config.toml").write_text('[gesture]\nlabels = ["none", "wave"]\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gt, "DinoExtractor", lambda device: fake_extractor())
+    cli.main(["-c", "config.toml", "perception", "gesture-train", str(root), "--device", "cpu", "--epochs", "20",
+              "--out", "models/g.onnx"])
+    assert (tmp_path / "models" / "g.onnx").exists()
+    assert not (tmp_path / "models" / "gesture.onnx").exists()
+    assert gt.load_split(root)["val"]
+    reports = list((tmp_path / "tmp" / "gesture-train").glob("*/report.md"))
+    assert len(reports) == 1
+    text = reports[0].read_text(encoding="utf-8")
+    assert "类别顺序" in text and "none, wave" in text and "验证集" in text
+    assert "报告" in capsys.readouterr().out
+
+    # gesture-eval：有 _split.json 默认只评验证集，--all 评全部
+    cli.main(["-c", "config.toml", "perception", "gesture-eval", str(root), "--model", "models/g.onnx"])
+    val_out = capsys.readouterr().out
+    assert f"{len(gt.load_split(root)['val'])} 段" in val_out and "只评验证集" in val_out
+    cli.main(["-c", "config.toml", "perception", "gesture-eval", str(root), "--model", "models/g.onnx", "--all"])
+    assert "50 段" in capsys.readouterr().out
+
+
+def test_default_out_does_not_touch_gesture_onnx(tmp_path):
+    from skydango.vision import gesture_train as gt
+
+    when = dt.datetime(2026, 10, 1, 21, 5, 7)
+    assert gt.default_out(tmp_path / "models", when) == tmp_path / "models" / "gesture-20261001.onnx"
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "gesture-20261001.onnx").write_bytes(b"x")
+    assert gt.default_out(tmp_path / "models", when).name == "gesture-20261001-210507.onnx"

@@ -681,6 +681,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_clips(cfg, args)
     elif args.action == "gesture-eval":
         _perception_gesture_eval(cfg, args)
+    elif args.action == "gesture-train":
+        _perception_gesture_train(cfg, args)
     elif args.action == "gesture-label":
         _perception_gesture_label(cfg, args)
     elif args.action == "appearance-eval":
@@ -774,19 +776,83 @@ def _perception_gesture_label(cfg: Config, args) -> None:
     print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")
 
 
-def _perception_gesture_eval(cfg: Config, args) -> None:
-    """在分好类的片段上评估动作模型：精确率 ≥ 90%、召回率 ≥ 60% 才打开 [gesture]。"""
-    from .vision import gesture
+def _perception_gesture_train(cfg: Config, args) -> None:
+    """训练动作模型（vision/gesture_train.py）：确认过的片段 → 切分（_split.json）→ DINOv2-small 特征 + 时序头
+    → 导出 ONNX（不覆盖 models/gesture.onnx）→ 和 PyTorch 比输出 → 验证集评估 → 报告 tmp/gesture-train/<时间>/report.md。"""
+    import datetime as dt
+
+    from .vision import gesture, gesture_train as gt
 
     g = cfg.gesture
-    if args.model:
-        g.model = args.model
-    clf = gesture.OnnxGestureClassifier(g.model, g.labels, cfg.perception.device)
-    r = gesture.evaluate(Path(args.data), clf, g)
+    data = Path(args.data) if args.data else Path(g.dataset)
+    if not data.is_dir():
+        raise SystemExit(f"{data} 不是目录：先 perception clips 切片段，再在管理面板「标注」页确认")
+    samples, skipped = gt.list_samples(data, g.labels, g.frames)
+    if skipped:
+        print(f"跳过 {len(skipped)} 段（不是正好 {g.frames} 张图）：" + "、".join(skipped))
+    missing = gt.check_counts(samples, g.labels, g.names)
+    if missing:
+        raise SystemExit(f"确认过的片段不够（每类至少 {gt.MIN_PER_CLASS} 段），先在管理面板「标注」页多标一些：\n  "
+                         + "\n  ".join(missing))
+    sp = gt.split(samples, g.labels)
+    gt.save_split(data, sp)
+    print(f"切分：训练 {len(sp['train'])} 段、验证 {len(sp['val'])} 段 → {data / gt.SPLIT_FILE}")
+    for w in sp["warnings"]:
+        print(f"  注意：{w}")
+    notes: list[str] = []
+    device = args.device
+    if device == "cuda":
+        import torch
+
+        if not torch.cuda.is_available():
+            print("没有 CUDA：退回 CPU 训练（提特征会慢很多）")
+            notes.append("没有 CUDA，在 CPU 上训练")
+            device = "cpu"
+    print(f"加载 DINOv2-small（{device}）…")
+    extractor = gt.DinoExtractor(device)
+
+    def progress(epoch: int, loss: float, f1: float) -> None:
+        print(f"  第 {epoch} 轮：训练损失 {loss:.4f}、宏平均 F1 {f1:.3f}")
+
+    print(f"提特征（缓存在 {data / '_features'}）、训练时序头，最多 {args.epochs} 轮：")
+    head, info = gt.train(samples, sp, g.labels, extractor, data / "_features", epochs=args.epochs, device=device,
+                          size=g.size, progress=progress)
+    print(f"最好第 {info['best_epoch']} 轮：宏平均 F1 {info['best_f1']:.3f}")
+    now = dt.datetime.now()
+    out = Path(args.out) if args.out else gt.default_out(Path("models"), now)
+    gt.export_onnx(extractor, head, out, frames=g.frames, size=g.size)
+    print(f"导出 → {out}")
+    by_name = {s.clip: s for s in samples}
+    first = [by_name[c] for c in sp["val"][:3] if c in by_name]
+    parity = None
+    if first:
+        parity = gt.onnx_diff(extractor, head, out, [gt.clip_array(gesture.load_clip(s.path), g.size) for s in first])
+        if parity > 1e-3:
+            notes.append(f"ONNX 和 PyTorch 的输出最大差 {parity:.2e}（> 1e-3），导出可能有问题")
+            print(f"注意：{notes[-1]}")
+    evaluation = None
+    if sp["val"]:
+        clf = gesture.OnnxGestureClassifier(str(out), g.labels, "cpu")
+        evaluation = gesture.evaluate(data, clf, g, only=set(sp["val"]))
+        print("验证集：")
+        _print_gesture_eval(evaluation, g)
+    folder = Path("tmp") / "gesture-train" / f"{now:%Y%m%d-%H%M%S}"
+    folder.mkdir(parents=True, exist_ok=True)
+    report = folder / "report.md"
+    report.write_text(gt.report_md(
+        data=data, model=out, labels=g.labels, names=g.names, samples=samples, split=sp, info=info,
+        evaluation=evaluation, min_prob=g.min_prob, skipped=skipped, parity=parity, notes=notes, when=now,
+    ), encoding="utf-8")
+    print(f"报告 → {report}")
+    print(f"类别顺序（= 模型输出顺序）：{', '.join(g.labels)}；达标后再复制成 {g.model}、打开 [gesture] enabled")
+
+
+def _print_gesture_eval(r: dict, g) -> bool:
+    """打印 gesture.evaluate 的结果，返回达没达标。"""
     pct = lambda v: "—" if v is None else f"{v:.0%}"  # noqa: E731
     print(f"{r['clips']} 段，概率 ≥ {g.min_prob} 才算报了：")
     for label, v in r.items():
-        if label in ("all", "clips"):
+        if label in ("all", "clips", "wrong"):
             continue
         print(f"  {label}（{g.names.get(label, label)}）：精确率 {pct(v['precision'])}、召回率 {pct(v['recall'])}"
               f"（对 {v['tp']}、错报 {v['fp']}、漏 {v['fn']}）")
@@ -794,6 +860,26 @@ def _perception_gesture_eval(cfg: Config, args) -> None:
     ok = (a["precision"] or 0) >= 0.9 and (a["recall"] or 0) >= 0.6
     print(f"总的：精确率 {pct(a['precision'])}、召回率 {pct(a['recall'])} → "
           + ("达标（精确率 ≥ 90%、召回率 ≥ 60%），可以真机试 10 分钟" if ok else "没达标，先别打开 [gesture]"))
+    return ok
+
+
+def _perception_gesture_eval(cfg: Config, args) -> None:
+    """在分好类的片段上评估动作模型：精确率 ≥ 90%、召回率 ≥ 60% 才打开 [gesture]。
+    数据目录里有 _split.json（gesture-train 写的）时默认只评验证集，--all 评全部。"""
+    from .vision import gesture
+    from .vision.gesture_train import SPLIT_FILE, load_split
+
+    g = cfg.gesture
+    if args.model:
+        g.model = args.model
+    data = Path(args.data)
+    only = None
+    split = None if args.all else load_split(data)
+    if split is not None and split.get("val"):
+        only = set(split["val"])
+        print(f"只评验证集（{len(only)} 段，按 {data / SPLIT_FILE}；--all 评全部）")
+    clf = gesture.OnnxGestureClassifier(g.model, g.labels, cfg.perception.device)
+    _print_gesture_eval(gesture.evaluate(data, clf, g, only=only), g)
 
 
 def _perception_unknown_names(cfg: Config, args) -> None:
@@ -2337,9 +2423,15 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
     q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的片段也重新初分")
+    q = psub.add_parser("gesture-train", help="训练动作模型：DINOv2-small 冻住 + 时序头，导出 ONNX（不覆盖 gesture.onnx）、验证集评估、写报告")
+    q.add_argument("data", nargs="?", help="数据目录（默认 [gesture] dataset）")
+    q.add_argument("--epochs", type=int, default=60, help="最多训练几轮（验证集 F1 10 轮不涨就停）")
+    q.add_argument("--out", help="ONNX 输出路径（默认 models/gesture-<日期>.onnx）")
+    q.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="训练用的设备（没 CUDA 自动退回 CPU）")
     q = psub.add_parser("gesture-eval", help="在分好类的片段（<数据目录>/<动作>/<片段>/）上评估动作模型的精确率 / 召回率")
     q.add_argument("data", help="数据目录，比如 datasets/gesture")
     q.add_argument("--model", help="动作模型（默认 gesture.model）")
+    q.add_argument("--all", action="store_true", help="评全部片段（默认有 _split.json 时只评验证集）")
     q = psub.add_parser("augment", help="训练集加运动模糊（转视角）/ 压暗（暗场景）的样本，标注原样复制")
     q.add_argument("dataset", help="数据集目录（perception label 的输出，比如 datasets/sky）")
     q.add_argument("--seed", type=int, default=0)

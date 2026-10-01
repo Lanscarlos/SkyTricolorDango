@@ -179,13 +179,18 @@ def _pr(tp: int, fp: int, fn: int) -> dict:
     }
 
 
-def evaluate(root: Path, classifier: GestureClassifier, cfg: GestureConfig) -> dict:
-    """root/<标签>/<片段>/*.jpg 上逐段判：概率不到 min_prob 或判成 none 算没报。返回每个动作和总的 tp / fp / fn / 精确率 / 召回率。"""
+def evaluate(root: Path, classifier: GestureClassifier, cfg: GestureConfig, only: set[str] | None = None) -> dict:
+    """root/<标签>/<片段>/*.jpg 上逐段判：概率不到 min_prob 或判成 none 算没报。返回每个动作和总的 tp / fp / fn / 精确率 / 召回率，
+    `clips` 段数，`wrong` 认错的片段（[{clip, truth, said, prob}]，said 是模型给的类别，没到 min_prob 也照写）。
+    only：只数这些片段名（比如 `_split.json` 的验证集）。"""
     counts: dict[str, list[int]] = {}
+    wrong: list[dict] = []
     clips = 0
     for label_dir in sorted(p for p in Path(root).iterdir() if p.is_dir() and not p.name.startswith("_")):
         truth = label_dir.name
         for clip_dir in sorted(p for p in label_dir.iterdir() if p.is_dir()):
+            if only is not None and clip_dir.name not in only:
+                continue
             clip = load_clip(clip_dir)
             if not clip:
                 continue
@@ -203,8 +208,11 @@ def evaluate(root: Path, classifier: GestureClassifier, cfg: GestureConfig) -> d
                     counts[said][1] += 1  # 报错了
                 if truth != "none":
                     counts[truth][2] += 1  # 漏了
+                if said is not None or truth != "none":
+                    wrong.append({"clip": clip_dir.name, "truth": truth, "said": label, "prob": round(prob, 3)})
     out: dict = {label: _pr(*c) for label, c in sorted(counts.items())}
     total = [sum(c[i] for c in counts.values()) for i in range(3)]
     out["all"] = _pr(*total)
     out["clips"] = clips
+    out["wrong"] = wrong
     return out
