@@ -18,6 +18,10 @@
 - 远近：人物框高 ÷ 团子框高；框持续变大、往画面中间走 → 朝团子走过来（`pop_approaches`，身体发 approach 事件）
 - `typing`（头顶"正在输入"气泡）：挂到正下方的人身上；陌生人的消息靠它猜是画面上哪个人说的（`speaker_hint`）
 
+认装扮（docs/superpowers/specs/2026-10-01-appearance-design.md，挂了 AppearanceBook 才有）：
+- 人物框裁图算外观特征，挂着名字标签时学进记忆簿；名字标签看不到的人按外观认成好友（`maybe`，"像小明"），不算陌生人
+- 点过火的陌生人按外观编号（"陌生人A"），走开又回来时认得出（`pop_stranger_backs`）
+
 以上规则和阈值都还**没在真机验证**（模型还没训练），见 docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md。
 """
 
@@ -35,10 +39,12 @@ import numpy as np
 
 from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
-from ..config import EnvConfig, GestureConfig, PerceptionConfig, SpinConfig
+from ..config import AppearanceConfig, EnvConfig, GestureConfig, PerceptionConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, Request, is_request
+from .appearance import describe_crop, good_crop
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
+from .embed import unit
 from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, Person, Thing, object_distance, side_of
@@ -163,6 +169,10 @@ class PerceptionWatcher:
         place_interval: float = 30.0,  # 每隔这么久认一次地图（画面大变后也认一次）
         gestures=None,  # vision.gesture.GestureClassifier：别人对团子做的动作（三期 §3，研究性质）
         gesture_cfg: GestureConfig | None = None,
+        appearance=None,  # vision.appearance.AppearanceBook：认装扮（None = 不认，行为照旧）
+        embedder=None,  # 外观特征模型（appearance.make_embedder）
+        appearance_cfg: AppearanceConfig | None = None,
+        saver=None,  # 攒训练数据（Task 5 接上）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -186,6 +196,11 @@ class PerceptionWatcher:
         self.gesture_cfg = gesture_cfg or GestureConfig()
         self._gestures: deque[tuple[str, str]] = deque(maxlen=50)  # (好友名, 动作)，身体取走；没人取（普通 Agent）时只留最近的
         self._gesture_at: dict[tuple[str, str], float] = {}
+        self.appearance = appearance
+        self.embedder = embedder
+        self.appearance_cfg = appearance_cfg or AppearanceConfig()
+        self.saver = saver
+        self._stranger_backs: list[str] = []  # 走开又回来的陌生人编号，身体取走
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
         self.requests: dict = {}  # 名字 → game.social.Request
@@ -460,24 +475,37 @@ class PerceptionWatcher:
                 log.debug("轨迹 %d 不是 %s（标签在别处），摘掉名字", player.id, name)
                 for key in ("name", "tagged", "tag_at"):
                     player.data.pop(key, None)
+            tag = tagged.get(player.id)
+            if player.cls != UNLIT and tag is not None:
+                player.data["tag_at"] = now
+                if tag.data.get("name"):
+                    player.data["name"] = tag.data["name"]
+                player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
+        fresh = {}
+        if self.appearance is not None:
+            fresh = self._appearance_features(frame, players, selfs, now, width, height, panel_visible)
+            self._appearance_identify(frame, players, selfs, tagged, shown, fresh, now, tracks)
+        for player in players:
             if player.cls == UNLIT:  # 没点火的黑影：一定是陌生人，远近都算
                 player.data["stranger"] = True
                 strangers += 1
                 unlit += 1
                 continue
-            tag = tagged.get(player.id)
-            if tag is not None:
-                player.data["tag_at"] = now
-                if tag.data.get("name"):
-                    player.data["name"] = tag.data["name"]
-                player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
+            maybe = player.data.get("maybe")
             is_stranger = (
                 not player.data.get("tagged")
+                and not maybe
                 and now - player.first >= self.cfg.stranger_after
                 and player.box.h >= self.cfg.stranger_min_height * height
             )
             player.data["stranger"] = is_stranger
             strangers += is_stranger
+            if maybe and now - self.last_seen.get(maybe, float("-inf")) <= self.cfg.keep:
+                self.last_seen[maybe] = now  # 好友还在身边、只是名字标签被挡住：别冒出"走开了"（已经走开的不靠外观接回来）
+            if is_stranger and self.appearance is not None:
+                self._appearance_stranger(frame, player, fresh.get(player.id), now)
+        if self.appearance is not None:
+            self.appearance.forget(now)
         self._watch_typing(bubbles, players, selfs, now, width, height)
         if not self.paused:
             self._watch_approach(players, now, width)
@@ -555,6 +583,119 @@ class PerceptionWatcher:
                 continue
             fresh.append(d)
         return self.tracker.update(fresh, now) if fresh else []
+
+    # ---- 认装扮（设计 §3.2、§4） ----
+    def _appearance_features(self, frame: np.ndarray, players: list[Track], selfs: list[Track], now: float,
+                             width: int, height: int, panel_visible: bool) -> dict[int, tuple[np.ndarray, Rect]]:
+        """点过火的人和团子：每 every 帧裁一次好样本、算特征，平滑进 data["feat"]、好样本数进 data["samples"]。
+        一帧最多算 max_per_frame 个（最久没算的先算）。返回这一帧新算的 {轨迹 id: (这次的特征, 框)}，学进记忆簿时用。"""
+        acfg = self.appearance_cfg
+        every = max(1, acfg.every)
+        due = [t for t in [p for p in players if p.cls == "player"] + selfs if t.hits % every == 0]
+        due.sort(key=lambda t: t.data.get("feat_at", float("-inf")))
+        blocked = [roi_rect(self.log_roi, width, height)] if panel_visible else []
+        out: dict[int, tuple[np.ndarray, Rect]] = {}
+        for t in due:
+            if len(out) >= acfg.max_per_frame:
+                break
+            t.data["feat_at"] = now
+            others = [o.box for o in players + selfs if o.id != t.id]
+            crop = good_crop(frame, t.box, others, blocked, acfg.min_height, acfg.max_overlap)
+            if crop is None:
+                continue
+            try:
+                feat = unit(self.embedder.embed(crop))
+            except Exception:
+                log.exception("算外观特征出错")
+                continue
+            old = t.data.get("feat")
+            t.data["feat"] = feat if old is None else unit((1 - acfg.ema) * old + acfg.ema * feat)
+            t.data["samples"] = t.data.get("samples", 0) + 1
+            out[t.id] = (feat, t.box)
+        return out
+
+    def _learn(self, kind: str, who: str, sample: tuple[np.ndarray, Rect], frame: np.ndarray, now: float) -> None:
+        feat, box = sample
+        self.appearance.learn(kind, who, feat, now, crop=(box.h, describe_crop(frame, box).copy()))
+
+    def _appearance_identify(self, frame: np.ndarray, players: list[Track], selfs: list[Track],
+                             tagged: dict[int, Track], shown: set[str], fresh: dict, now: float,
+                             tracks: list[Track]) -> None:
+        """学（挂着名字标签的好友、团子）→ 名字标签说了算（摘掉 maybe / 编号）→ 没标签的按外观认好友（maybe）。"""
+        book, acfg = self.appearance, self.appearance_cfg
+        for me in selfs:
+            if me.id in fresh:
+                self._learn("me", "", fresh[me.id], frame, now)
+        cands: dict[int, np.ndarray] = {}
+        for p in players:
+            d = p.data
+            if p.cls != "player":  # 变成黑影了：没有外观可比
+                d.pop("maybe", None)
+                d.pop("miss", None)
+                continue
+            tag = tagged.get(p.id)
+            if tag is not None:  # 名字标签永远说了算
+                name = tag.data.get("name")
+                maybe = d.pop("maybe", None)
+                d.pop("miss", None)
+                d.pop("sid", None)
+                if maybe and name and maybe != name:
+                    log.info("轨迹 %d 按外观认成 %s，名字标签是 %s", p.id, maybe, name)
+                    self._report(frame, now, f"按外观认成 {maybe}，名字标签是 {name}", tracks)
+                if name and p.id in fresh:
+                    self._learn("friend", name, fresh[p.id], frame, now)
+                continue
+            if d.get("tagged") or d.get("name"):
+                continue  # 之前挂过标签、这一帧被挡住：身份照旧
+            maybe = d.get("maybe")
+            if maybe:
+                if maybe in shown:  # 他的名字标签此刻清清楚楚挂在别处：不是他
+                    log.debug("轨迹 %d 不像 %s 了（标签在别处）", p.id, maybe)
+                    d.pop("maybe", None)
+                    d.pop("miss", None)
+                elif p.id in fresh:
+                    d["miss"] = 0 if book.still_like(d["feat"], maybe) else d.get("miss", 0) + 1
+                    if d["miss"] >= acfg.recheck:
+                        log.debug("轨迹 %d 连着 %d 次不像 %s，摘掉", p.id, d["miss"], maybe)
+                        d.pop("maybe", None)
+                        d.pop("miss", None)
+                continue
+            if d.get("samples", 0) >= acfg.min_samples:
+                cands[p.id] = d["feat"]
+        if not cands:
+            return
+        taken = shown | {v for p in players for k in ("name", "maybe") if (v := p.data.get(k))}
+        byid = {p.id: p for p in players}
+        for tid, name in book.assign_friends(cands, taken).items():
+            d = byid[tid].data
+            d["maybe"], d["miss"] = name, 0
+            d.pop("sid", None)
+            log.info("轨迹 %d 没看到名字，按外观像 %s", tid, name)
+
+    def _appearance_stranger(self, frame: np.ndarray, player: Track, sample, now: float) -> None:
+        """判成陌生人的轨迹：好样本够了就编号（认回以前的、或新编号），之后接着学他的外观。"""
+        d = player.data
+        sid = d.get("sid")
+        if sid is None:
+            if d.get("samples", 0) < self.appearance_cfg.min_samples:
+                return
+            sid, back = self.appearance.stranger_id(d["feat"], now)
+            d["sid"] = sid
+            log.debug("轨迹 %d 是 %s", player.id, sid)
+            if back:
+                log.info("%s 又回来了", sid)
+                with self._lock:
+                    self._stranger_backs.append(sid)
+        elif sample is not None:
+            self._learn("stranger", sid, sample, frame, now)
+
+    def _report(self, frame: np.ndarray, now: float, detail: str, tracks: list[Track]) -> None:
+        if self.hardcases is None or self.paused:
+            return
+        try:
+            self.hardcases.report(frame, now, "appearance", detail, tracks)
+        except Exception:
+            log.exception("收集难例出错")
 
     def _watch_place(self, frame: np.ndarray, dets: list[Detection], now: float) -> None:
         """三期 §2：每 place_interval 秒、或画面比上次认地图时大变（隔 ≥ PLACE_GAP 秒）认一次。
@@ -790,7 +931,7 @@ class PerceptionWatcher:
             if now - owner.data.get("typing_at", float("-inf")) > self.cfg.bubble_gap:
                 owner.data["bubble_start"] = now  # 新的一句
             owner.data["typing_at"] = now
-            friend = bool(owner.data.get("name") or owner.data.get("tagged"))
+            friend = bool(owner.data.get("name") or owner.data.get("tagged") or owner.data.get("maybe"))
             self._typing.append((now, owner.id, friend, owner.cls == UNLIT, owner.box.x + owner.box.w / 2, owner.box.h,
                                  width, height))
         while self._typing and now - self._typing[0][0] > self.cfg.typing_window:
@@ -802,7 +943,12 @@ class PerceptionWatcher:
             hist.append((now, float(p.box.h), p.box.x + p.box.w / 2))
             while hist and now - hist[0][0] > self.cfg.approach_window:
                 hist.popleft()
-            who = p.data.get("name") or (STRANGER if p.data.get("stranger") else None)
+            maybe = p.data.get("maybe")
+            who = (
+                p.data.get("name")
+                or (maybe if maybe and maybe in self.nearby(now) else None)  # 按外观认的：他还在身边才算（同 last_seen 的规矩）
+                or (STRANGER if p.data.get("stranger") else None)
+            )
             if who is None or (who == STRANGER and not self.cfg.approach_strangers):
                 continue
             if now - self._approach_at.get(who, float("-inf")) < self.cfg.approach_cooldown:
@@ -853,7 +999,7 @@ class PerceptionWatcher:
             at = t.data.get("typing_at")
             if at is None or now - at > 1.0:
                 continue
-            name = t.data.get("name")
+            name = t.data.get("name") or t.data.get("maybe")
             friend = bool(name or t.data.get("tagged"))
             out.append(Talker(t.id, name, friend, t.box.x + t.box.w / 2, at, t.data.get("bubble_start", at)))
         return out
@@ -879,12 +1025,28 @@ class PerceptionWatcher:
             out, self._approaches = self._approaches, []
         return out
 
+    def pop_stranger_backs(self) -> list[str]:
+        """取走"走开又回来了"的陌生人编号（"陌生人A"），身体变成 stranger_back 事件。"""
+        with self._lock:
+            out, self._stranger_backs = self._stranger_backs, []
+        return out
+
+    def my_look(self) -> str:
+        """团子自己现在的装扮描述（没有就空）。"""
+        return self.appearance.look("me", "") if self.appearance is not None else ""
+
+    def looks(self, names: list[str]) -> dict[str, str]:
+        """好友现在的装扮描述：{名字: 描述}，没描述的不给。"""
+        if self.appearance is None:
+            return {}
+        return {n: desc for n in names if (desc := self.appearance.look("friend", n))}
+
     def nearest(self, now: float) -> tuple[str, str] | None:
         """最近一帧里离团子最近（框最高）、认得出是谁的人：(好友名 / "陌生人", 近 / 中 / 远)。"""
         known = [
-            (t.box.h, t.data.get("name") or STRANGER)
+            (t.box.h, t.data.get("name") or t.data.get("maybe") or STRANGER)
             for t in list(self.last_tracks)
-            if t.cls in ("player", UNLIT) and (t.data.get("name") or t.data.get("stranger"))
+            if t.cls in ("player", UNLIT) and (t.data.get("name") or t.data.get("maybe") or t.data.get("stranger"))
         ]
         if not known:
             return None
@@ -903,17 +1065,23 @@ class PerceptionWatcher:
         for t in list(self.last_tracks):
             if now - t.last > PEOPLE_STALE:
                 continue
-            if t.cls == UNLIT and t.data.get("stranger"):  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
+            d = t.data
+            name, sure, sid, look = d.get("name"), True, None, ""
+            if t.cls == UNLIT and d.get("stranger"):  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
                 kind = "unlit"
-            elif t.cls == "player" and t.data.get("name"):
+            elif t.cls == "player" and name:
                 kind = "friend"
-            elif t.cls == "player" and t.data.get("stranger"):
-                kind = "stranger"
+            elif t.cls == "player" and d.get("maybe"):  # 没看到名字、按外观认的好友
+                kind, name, sure = "friend", d["maybe"], False
+            elif t.cls == "player" and d.get("stranger"):
+                kind, sid = "stranger", d.get("sid")
+                if sid and self.appearance is not None:
+                    look = self.appearance.look("stranger", sid)
             else:
                 continue
             side = side_of(t.box.x + t.box.w / 2, self._frame_w)
-            out.append(Person(t.id, kind, t.data.get("name") if kind == "friend" else None, t.box, side,
-                              distance(t.box.h, ref, self.cfg.near, self.cfg.far)))
+            out.append(Person(t.id, kind, name if kind == "friend" else None, t.box, side,
+                              distance(t.box.h, ref, self.cfg.near, self.cfg.far), sure=sure, sid=sid, look=look))
         order = {"左边": 0, "前面": 1, "右边": 2}
         return sorted(out, key=lambda p: (order[p.side], -p.box.h))
 
@@ -951,9 +1119,11 @@ class PerceptionWatcher:
         out = []
         for t in list(self.last_tracks):
             d = t.data
-            if t.cls == "player":
+            if t.cls == "player" and d.get("maybe") and not d.get("name"):
+                kind, label = "maybe", f"像{d['maybe']}?"
+            elif t.cls == "player":
                 kind = "stranger" if d.get("stranger") else ("friend" if d.get("name") else "player")
-                label = d.get("name") or ("陌生人" if d.get("stranger") else "")
+                label = d.get("name") or ((d.get("sid") or "陌生人") if d.get("stranger") else "")
             elif t.cls == UNLIT:
                 kind, label = "unlit", "陌生人（没点火）"
             elif t.cls == "self":
@@ -972,8 +1142,23 @@ class PerceptionWatcher:
             else:
                 kind, label = t.cls, t.cls
             b = t.box
-            out.append({"x": b.x, "y": b.y, "w": b.w, "h": b.h, "kind": kind, "label": label, "score": round(t.score, 2)})
+            entry = {"x": b.x, "y": b.y, "w": b.w, "h": b.h, "kind": kind, "label": label, "score": round(t.score, 2)}
+            if self.appearance is not None and (desc := self._desc(kind, d)):
+                entry["desc"] = desc
+            out.append(entry)
         return out
+
+    def _desc(self, kind: str, d: dict) -> str:
+        """框对应的人的装扮描述（没有就空）。"""
+        if kind == "friend":
+            return self.appearance.look("friend", d["name"])
+        if kind == "maybe":
+            return self.appearance.look("friend", d["maybe"])
+        if kind == "stranger" and d.get("sid"):
+            return self.appearance.look("stranger", d["sid"])
+        if kind == "self":
+            return self.appearance.look("me", "")
+        return ""
 
     def objects(self, now: float) -> list[Thing]:
         """最近一帧里的物品（座位 / 篝火 / 乐器 / 先祖），左到右、同一边近的在前。

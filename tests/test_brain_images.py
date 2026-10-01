@@ -75,6 +75,18 @@ def test_scene_note_lists_people_by_kind_and_scales():
         "- 陌生人：(300, 390) 附近", "- 团子（就是“你”自己）：(640, 470) 附近", "没列出的人都叫“陌生人”。"]
 
 
+def test_scene_note_lists_maybe_after_friends():
+    from skydango.brain.images import scene_note
+
+    env = OverlayEnv([
+        {"x": 400, "y": 520, "w": 100, "h": 130, "kind": "stranger", "label": "陌生人A"},
+        {"x": 1500, "y": 440, "w": 100, "h": 140, "kind": "maybe", "label": "像懒洋洋大王?"},
+        {"x": 1100, "y": 440, "w": 100, "h": 140, "kind": "friend", "label": "番茄炒蛋盖饭"},
+    ])
+    assert scene_note(env, 0.0, 1.0).splitlines()[1:4] == [
+        "- 番茄炒蛋盖饭：(1150, 510) 附近", "- 像懒洋洋大王（没看到名字）：(1550, 510) 附近", "- 陌生人：(450, 585) 附近"]
+
+
 def test_scene_note_name_only_and_empty():
     from skydango.brain.images import scene_note
 

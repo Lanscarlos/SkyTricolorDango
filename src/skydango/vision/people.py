@@ -21,15 +21,27 @@ class Person:
     box: Rect  # 整张截图坐标
     side: str  # "左边" / "前面" / "右边"（框中心在画面三等分的哪一份）
     distance: str  # "近" / "中" / "远"
+    sure: bool = True  # False = 没看到名字标签、按外观认的好友（"像小明"）
+    sid: str | None = None  # 点过火的陌生人按外观给的编号（"陌生人A"）
+    look: str = ""  # 陌生人的装扮描述（有才有）
 
 
 def side_of(cx: float, width: int) -> str:
     return "左边" if cx < width / 3 else ("右边" if cx > width * 2 / 3 else "前面")
 
 
+def _describe_person(p: Person) -> str:
+    where = f"{p.side}·{p.distance}"
+    if p.kind == "friend" and not p.sure:
+        return f"像{p.name}（没看到名字，{where}）"
+    if p.sid:
+        return f"{p.sid}（{p.look}，{where}）" if p.look else f"{p.sid}（{where}）"
+    return f"{p.name or WHO.get(p.kind, '陌生人')}（{where}）"
+
+
 def describe_people(people: list[Person]) -> str:
-    """"小明（左边·近）、陌生人（右边·远）"；没人返回空串。"""
-    return "、".join(f"{p.name or WHO.get(p.kind, '陌生人')}（{p.side}·{p.distance}）" for p in people)
+    """"小明（左边·近）、像小红（没看到名字，右边·远）、陌生人A（白斗篷，前面·中）"；没人返回空串。"""
+    return "、".join(_describe_person(p) for p in people)
 
 
 @dataclass(frozen=True)

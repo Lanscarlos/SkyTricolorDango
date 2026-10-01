@@ -98,6 +98,15 @@ def test_limits_interval_dedupe_and_max(tmp_path):
     assert c.saved == 2
 
 
+def test_report_saves_with_reason_and_limits(tmp_path):
+    c = collector(tmp_path)
+    assert c.report(img(100), 0.0, "appearance", "按外观认成 懒洋洋大王，名字标签是 番茄炒蛋盖饭", [track(1)]) is True
+    assert c.report(img(50), 1.0, "appearance", "又一次", [track(1)]) is False  # 5 s 内
+    (entry,) = saved(tmp_path)
+    assert entry["reason"] == "appearance" and entry["detail"].startswith("按外观认成")
+    assert entry["file"].endswith("_appearance.jpg") and entry["boxes"][0]["cls"] == "player"
+
+
 class CountingCollector:
     def __init__(self):
         self.calls = 0

@@ -74,8 +74,14 @@ def label_note(labels: dict, scale: float) -> str:
     return "图里认出的好友名字（名字在人头顶）：\n" + "\n".join(rows)
 
 
-_SCENE_KINDS = {"friend": 0, "unlit": 1, "stranger": 2, "self": 3}
+_SCENE_KINDS = {"friend": 0, "maybe": 1, "unlit": 2, "stranger": 3, "self": 4}
 _SCENE_WHO = {"unlit": "陌生人（没点火，黑影）", "stranger": "陌生人", "self": "团子（就是“你”自己）"}
+
+
+def _scene_who(b: dict) -> str:
+    if b["kind"] == "maybe":  # 按外观认的好友：label 是"像小明?"
+        return f"{b['label'].rstrip('?')}（没看到名字）"
+    return _SCENE_WHO.get(b["kind"], b["label"])
 
 
 def scene_note(env, now: float, scale: float) -> str:
@@ -83,7 +89,7 @@ def scene_note(env, now: float, scale: float) -> str:
     boxes = env.overlay(now)
     people = sorted((b for b in boxes if b["kind"] in _SCENE_KINDS), key=lambda b: (_SCENE_KINDS[b["kind"]], b["x"]))
     rows = [
-        f"- {_SCENE_WHO.get(b['kind'], b['label'])}：({round((b['x'] + b['w'] / 2) * scale)}, {round((b['y'] + b['h'] / 2) * scale)}) 附近"
+        f"- {_scene_who(b)}：({round((b['x'] + b['w'] / 2) * scale)}, {round((b['y'] + b['h'] / 2) * scale)}) 附近"
         for b in people
     ]
     friends = {b["label"] for b in people if b["kind"] == "friend"}

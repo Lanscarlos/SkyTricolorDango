@@ -9,6 +9,7 @@
 - low_conf        一条轨迹连续 0.5 s 都是低置信度（low_conf ~ conf 之间）
 - flicker         同一位置 3 s 内人物框出现又消失 3 次以上
 - unlit_vs_player 同一个人在 player 和 player_unlit 之间来回变
+- appearance      按外观认成的好友（maybe）和后来挂上的名字标签对不上（感知层调 report）
 """
 
 from __future__ import annotations
@@ -105,6 +106,10 @@ class HardCaseCollector:
             reason = reasons[0][0]
             self._save(frame, now, reason, "；".join(d for _, d in reasons), _boxes(tracks, low))
         self._maybe_audit(frame, now, tracks, low, seen, panel_visible)
+
+    def report(self, frame: np.ndarray, now: float, reason: str, detail: str, tracks: list[Track]) -> bool:
+        """别处发现的难例（比如按外观认错了人）：照常限量、去重后存下。存了返回 True。"""
+        return self._save(frame, now, reason, detail, _boxes(tracks, []))
 
     # ---- 旁路核对：隔一阵整图 OCR 一次，和 YOLO 认出的好友比 ----
     def _maybe_audit(self, frame, now, tracks, low, seen, panel_visible) -> None:
