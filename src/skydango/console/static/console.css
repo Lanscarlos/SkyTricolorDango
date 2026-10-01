@@ -429,20 +429,64 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 #sc-reader pre code{background:none;padding:0}
 
 /* ---- 真机 ---- */
-#idle-cols{grid-template-columns:minmax(0,560px) minmax(0,1fr);align-items:start}
-#idle-cols[hidden]{display:none}
-.launch-body{display:flex;flex-direction:column;gap:10px}
-#launch fieldset{border:1px solid var(--line);border-radius:8px;margin:0;padding:6px 12px 8px}
-#launch legend{padding:0 6px;color:var(--muted);font-size:12.5px}
-#launch .choice{display:flex;align-items:center;gap:8px;padding:2px 0}
-#launch small{color:var(--muted)}
+/* 和沙盒一样：页面不滚、占满视口；顶栏固定，三栏各自滚（spec 2026-10-01-console-live-page） */
+#page-live{height:100vh;display:flex;flex-direction:column;padding:0}
+.lv-start{display:flex;flex-direction:column;gap:6px;min-width:0}
+.lv-opts{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap}
+.lv-opts label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
+.lv-opts small{color:var(--muted)}
+.lv-group{display:inline-flex;gap:4px 14px;flex-wrap:wrap}
+.lv-sep{width:1px;height:18px;background:var(--line)}
+#opt-duration{width:84px}
+.lv-head .live-warn{margin:0}
+.lv-run{display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap;min-width:0}
+.lv-dir{font-family:var(--mono);font-size:12px;user-select:all;overflow-wrap:anywhere}
+.lv-banners{flex:none;padding:0 20px}
+.lv-banners:empty{display:none}
+.lv-banners .banner{margin:10px 0 0}
+.sb-cols.lv-cols{grid-template-columns:minmax(250px,.8fr) minmax(0,1.6fr) minmax(250px,.9fr)}
+
+/* 左：现在 + 身边和状态 + 手动控制 */
+#lv-now>h3{margin:0;padding:10px 14px 6px;font-size:12px;letter-spacing:.12em;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:8px}
+#lv-now .now-rows{grid-template-columns:52px minmax(0,1fr)}
+.lv-facts{margin:0;display:grid;grid-template-columns:5.4em minmax(0,1fr);gap:3px 10px;font-size:13px}
+.lv-facts dt{color:var(--muted);font-size:12px;padding-top:1px}
+.lv-facts dd{margin:0;overflow-wrap:anywhere}
+.lv-tag{display:inline-block;background:var(--matcha-bg);color:var(--matcha-ink);border-radius:999px;padding:0 9px;margin:0 4px 3px 0;font-size:12.5px}
+
+/* 中：画面在上（16:9，最高半屏），大脑控制台占剩下的 */
+.sb-cols>.lv-mid{padding:0}
+.lv-stage{flex:none;padding:10px 12px;border-bottom:1px solid var(--line)}
+.lv-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.lv-fps{margin-left:auto;font-size:12px;color:var(--muted)}
+.lv-fps.bad{color:var(--brick-ink)}
+.lv-screen{position:relative;width:min(100%,calc(50vh*16/9));aspect-ratio:16/9;margin:0 auto;background:var(--bubble);border-radius:8px;overflow:hidden}
+#lv-canvas{display:block;width:100%;height:100%}
+#lv-canvas.picking{cursor:crosshair}
+.lv-screen>.none{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:0 16px}
+.lv-legend{position:absolute;right:8px;top:8px;max-width:72%;display:flex;flex-wrap:wrap;gap:3px 10px;padding:7px 10px;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:var(--lift);font-size:12px;color:var(--muted)}
+.lv-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.lv-brain{flex:1;min-height:0;display:flex;flex-direction:column;position:relative;background:var(--term-bg)}
+.lv-brain>.none{color:var(--term-dim);padding:12px 14px;font-family:var(--mono);font-size:12.5px}
+
+/* 日志抽屉：从右边滑出，关着也照样拉日志 */
+.lv-drawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,92vw);z-index:30;display:flex;flex-direction:column;background:var(--card);
+  border-left:1px solid var(--line);box-shadow:var(--lift);transform:translateX(100%);visibility:hidden;transition:transform .2s,visibility .2s}
+.lv-drawer.open{transform:none;visibility:visible}
+.lv-drawer>header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12px;letter-spacing:.12em;color:var(--muted)}
+.lv-drawer pre{flex:1;min-height:0;margin:0;padding:8px 14px 14px;overflow:auto;font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.lv-drawer pre .e{color:var(--brick-ink)}
+.lv-drawer pre .w{color:var(--amber-ink)}
+@media (prefers-reduced-motion:reduce){.lv-drawer{transition:none}}
+@media (max-width:999px){
+  #page-live{height:auto}
+  .lv-banners{padding:0 12px}
+  .sb-cols.lv-cols{grid-template-columns:1fr}
+  .lv-cols>.pane{height:70vh}
+  .lv-cols>.lv-mid{height:auto;min-height:70vh;order:0}
+  .lv-screen{width:100%}
+}
 .live-warn{color:var(--brick-ink);background:var(--brick-bg);border-radius:6px;padding:2px 10px;font-size:13px;margin:2px 0}
-.launch-go{display:flex}
-#watch{grid-template-columns:minmax(0,3fr) minmax(0,2fr);align-items:start}
-.live-view{padding:0;overflow:hidden}
-#live-frame{display:block;width:100%;aspect-ratio:16/9;border:0;background:var(--bubble)}
-#live-wait{margin:0;padding:40px 20px;text-align:center}
-.live-side{display:flex;flex-direction:column;gap:14px;min-width:0}
 .cards{margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .cards .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 10px;min-width:0}
 .cards .card.lone{grid-column:1/-1}
@@ -450,10 +494,6 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .cards dd{margin:2px 0 0;font-size:13.5px;overflow-wrap:anywhere}
 .cards dd ul{margin:0;padding-left:16px}
 .cards .count{font-size:18px;font-weight:600;margin-right:2px}
-.logbox summary{cursor:pointer;padding:8px 14px;font-size:12px;letter-spacing:.12em;color:var(--muted)}
-.logbox pre{margin:0;padding:6px 14px 12px;max-height:340px;overflow:auto;font:12px/1.5 "Cascadia Mono",Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
-.logbox pre .e{color:var(--brick-ink)}
-.logbox pre .w{color:var(--amber-ink)}
 
 /* ---- 设置 / 设备 ---- */
 .settings-wrap{display:grid;grid-template-columns:170px minmax(0,1fr);gap:22px;align-items:start;max-width:1040px}

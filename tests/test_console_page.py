@@ -24,6 +24,8 @@ def test_skeleton():
         assert f'src="console/static/{n}"' in page
     assert page.index('src="console/static/common.js"') < page.index('src="console/static/brainlog.js"') < page.index('src="console/static/sandbox.js"')
     assert page.index('src="console/static/chatlog.js"') < page.index('src="console/static/sandbox.js"')
+    assert 'src="static/stage.js"' in page and page.index('src="static/stage.js"') < page.index('src="console/static/live.js"')
+    assert page.index('src="console/static/chatlog.js"') < page.index('src="console/static/live.js"')
     assert "brain_trace" not in page  # 沙盒页换成 brainlog.js 的控制台；brain_trace.* 只给 viewer 用
 
 
@@ -159,15 +161,21 @@ def test_scenarios_page():
     assert "回放时每一步会真的调 Claude，花额度" in b and "renderMarkdown(" in b and "Pages.scenarios" in b
 
 
-def test_live_page():
+def test_live_page():  # spec 2026-10-01-console-live-page：顶栏 + 三栏（团子 / 画面 + 大脑 / 聊天记录）+ 日志抽屉，不再用 iframe
     b = bundle()
-    for id_ in ("launch", "opt-live", "opt-emotes", "opt-duration", "start", "problems", "live-frame", "cards", "log", "banners"):
-        assert f'id="{id_}"' in b, id_
-    for api in ("api/run/start", "api/run/stop", "api/logs", "live/status", "api/orphan/stop"):
-        assert api in b
-    line = next(l for l in b.splitlines() if l.strip().startswith("const CARDS="))
-    assert '"心情"' in line and '"精力"' in line
-    assert "emotes_allowed" in b and "沙盒在跑，先下线" in b and "Pages.live" in b
+    page = (STATIC / "console.html").read_text(encoding="utf-8")
+    live = page.split('id="page-live"', 1)[1].split('id="page-inner"', 1)[0]
+    for id_ in ("launch", "opt-live", "opt-emotes", "opt-duration", "start", "problems", "banners", "lv-run", "live-chip", "rundir",
+                "lv-log-btn", "lv-now", "cards", "lv-ctl", "lv-canvas", "lv-stage-none", "lv-legend", "lv-brain", "lv-brain-none",
+                "lv-chat", "lv-drawer", "log"):
+        assert f'id="{id_}"' in live, id_
+    assert "<iframe" not in live and "live-frame" not in b
+    assert live.index('id="lv-now"') < live.index('id="lv-canvas"') < live.index('id="lv-brain"') < live.index('id="lv-chat"')
+    for api in ("api/run/start", "api/logs", "live/status", "live/snapshot", "live/chat", "live/brain", "api/inner", "api/orphan/stop"):
+        assert api in b, api
+    line = next(l for l in b.splitlines() if re.match(r"\s*const FACTS\s*=", l))
+    assert '"身边的好友"' in line and '"心情"' in line
+    assert "emotes_allowed" in b and "沙盒在跑，先下线" in b and "Pages.live" in b and "globalThis.LiveView" in b
 
 
 def test_settings_and_device_pages():

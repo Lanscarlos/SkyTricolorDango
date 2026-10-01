@@ -1,81 +1,175 @@
-/* 真机团子页（spec 2026-10-01-console-redesign §4.2）：停着 = 启动表单 + 预检问题；跑着 = 左实时画面（iframe live/）、右状态卡片 + 日志；
- * 强杀 / 孤儿团子横幅。「停止」只在左栏卡片上（common.js），这页不放。 */
+/* 真机团子页（spec 2026-10-01-console-live-page）：顶栏（停着 = 启动选项，跑着 = 运行信息）+ 日志抽屉 + 三栏：
+ * 左 现在（Inner.renderNow，api/inner）+ 身边和状态（live/status）+ 手动控制（livectl.js）；
+ * 中 画面（live/snapshot 长轮询，stage.js 画框）+ 大脑控制台（brainlog.js，live/brain）；右 聊天记录（live/chat 长轮询，chatlog.js）。
+ * 画面和聊天只在这一页开着、团子在跑时拉；停下后三栏留着最后的内容，下次叫醒才清空。
+ * 给 livectl.js：globalThis.LiveView（最新快照、在画面上点一下、画十字）。「停止」只在左栏卡片上（common.js）。 */
 (function () {
 "use strict";
 if (typeof document === "undefined") return;
-const L = {launchLoaded: false, framed: false, info: null, logNext: 0, follow: true, timer: 0, logTimer: 0, startProblems: false};
-const CARDS=["身边的好友","陌生人","互动请求","开着的面板","牵着手","正在做","刚说过","场合","心情","精力","聊天面板","画面"];
+const L = {launchLoaded: false, startProblems: false, on: false, gen: 0, shown: false, kind: "", state: "",
+  seq: 0, snap: null, img: null, paused: false, boxes: true, mark: null, hover: null, pick: null, times: [],
+  chatV: 0, brain: true, trace: null, info: null, innerOk: false, logNext: 0, follow: true, drain: false, timers: []};
+const FACTS = ["身边的好友", "陌生人", "互动请求", "开着的面板", "牵着手", "正在做", "刚说过", "场合", "聊天面板", "心情", "精力"];
+const WITH_INNER = ["心情", "精力"];  // 「现在」里已经有了，内心层开着时不重复
 const CHIP = {idle: "没在跑", starting: "正在启动", running: "运行中", stopping: "在收尾", crashed: "出错停下了", exited: "没在跑"};
 
 function liveWarn() { $("live-warn").hidden = !$("opt-live").checked; }
+function sleep(ms) { return new Promise(ok => setTimeout(ok, ms)); }
+function alive(gen) { return gen === L.gen && L.on && L.shown; }
 
+/* ---- 顶栏、横幅（每秒随 /api/state） ---- */
 function render() {
   const st = S.state; if (!st) return;
-  const run = st.run, busy = BUSY.includes(run.state), isSb = run.kind === "sandbox";
-  const mine = busy && !isSb;                       // 真机团子在跑（含启动中 / 收尾中）
-  const chip = $("live-chip");
-  chip.className = "chip" + (mine && run.state === "running" ? " live dot" : run.state === "crashed" && !isSb ? " bad" : "");
-  chip.textContent = isSb ? (busy ? "沙盒在跑" : "没在跑") : (CHIP[run.state] || run.state);
-  // 启动选项：第一次按服务器记住的填，之后用户自己改
-  if (!L.launchLoaded && st.launch) {
+  const run = st.run, busy = BUSY.includes(run.state), isSb = run.kind === "sandbox", mine = busy && !isSb;
+  if (!L.launchLoaded && st.launch) {  // 启动选项：第一次按服务器记住的填，之后用户自己改
     const l = st.launch;
     document.querySelector(`input[name=mode][value=${l.brain ? "brain" : "agent"}]`).checked = true;
     $("opt-live").checked = l.live; $("opt-emotes").checked = l.emotes; $("opt-duration").value = l.duration > 0 ? l.duration : "";
     L.launchLoaded = true; liveWarn();
   }
-  $("idle-cols").hidden = mine;
-  const off = busy && isSb;                         // 沙盒在跑：表单整个置灰
+  $("launch").hidden = mine; $("lv-run").hidden = !mine;
+  const off = busy && isSb;  // 沙盒在跑：表单整个置灰
   for (const x of $("launch").querySelectorAll("input,button")) x.disabled = off;
   if (!st.emotes_allowed) { $("opt-emotes").checked = false; $("opt-emotes").disabled = true; }  // config.toml 关了动作：只能关不能开
   $("emotes-note").textContent = st.emotes_allowed ? "" : "config.toml 里关掉了";
   $("start").textContent = off ? "沙盒在跑，先下线" : "叫醒团子";
   if (mine) L.startProblems = false;
   if (!L.startProblems) problemList($("problems"), mine ? [] : st.problems || []);
-  // 横幅：强杀 / 上次留下的团子
+  const chip = $("live-chip");
+  chip.className = "chip" + (run.state === "running" ? " live dot" : "");
+  chip.textContent = CHIP[run.state] || run.state;
+  const o = run.options || {};
+  $("lv-mode").textContent = [o.brain === false ? "普通 Agent" : "统管大脑", o.live ? "真的发送" : "只打印",
+    run.uptime != null ? `已运行 ${fmtUptime(run.uptime)}` : ""].filter(Boolean).join(" · ");
+  $("rundir").textContent = mine && run.run_dir ? run.run_dir : "";
+  renderBanners(st, run, busy, isSb);
+  if (!isSb && run.state === "crashed" && L.state !== "crashed") openDrawer(true);  // 出错停下：日志自己打开
+  L.state = isSb ? "" : run.state;
+  const on = !isSb && (run.state === "running" || run.state === "stopping");
+  if (on && !L.on) begin(o.brain !== false);
+  else if (!on && L.on) end();
+}
+function renderBanners(st, run, busy, isSb) {
   const banners = $("banners"); banners.textContent = "";
   if (run.forced && !busy && !isSb) {
     const b = el("div", "banner bad");
     b.append(el("span", "", "强制结束了，轮盘可能没换回，请用 python -m skydango emotes wheel 检查。")); banners.append(b);
   }
   if (st.orphan) {
-    const b = el("div", "banner warn");
+    const b = el("div", "banner warn"), btn = el("button", "btn sm", "让它退出");
     b.append(el("span", "", "上次留下的团子还在运行（占着子进程端口），先让它退出再叫醒新的。"));
-    const btn = el("button", "btn sm", "让它退出");
-    btn.type = "button";
-    btn.onclick = async () => { btn.disabled = true; await post("api/orphan/stop"); refresh(); };
+    btn.type = "button"; btn.onclick = async () => { btn.disabled = true; await post("api/orphan/stop"); refresh(); };
     b.append(btn); banners.append(b);
   }
-  $("rundir").textContent = mine && run.run_dir ? "运行目录 " + run.run_dir : "";
-  // 跑着：两栏；iframe 进入运行时才设 src、离开时移除
-  $("watch").hidden = !mine;
-  const framed = mine && (run.state === "running" || run.state === "stopping");
-  if (framed && !L.framed) { $("live-frame").src = "live/"; L.framed = true; }
-  if (!framed && L.framed) { $("live-frame").removeAttribute("src"); L.framed = false; L.info = null; }
-  $("live-frame").hidden = !framed; $("live-wait").hidden = framed;
-  if (mine && !L.info) renderCards();
 }
 
-function renderCards() {
-  const dl = $("cards"); dl.textContent = ""; const info = L.info;
-  if (!info) {
-    const d = el("div", "card lone"); d.append(el("dt", "", "团子的状态"), el("dd", "", "叫醒之后这里显示身边有谁、在做什么。")); dl.append(d); return;
+/* ---- 进入 / 离开运行：清空上一次的内容、挂大脑、开手动控制 ---- */
+function begin(brain) {
+  L.on = true; L.brain = brain; L.gen++; L.seq = 0; L.snap = null; L.chatV = 0; L.info = null; L.mark = null; L.times = [];
+  const chat = $("lv-chat"); chat.textContent = ""; chat.append(el("p", "none", "还没有聊天"));
+  $("lv-stage-none").hidden = false; $("lv-stage-none").textContent = "画面出来之后显示在这里";
+  const ctx = $("lv-canvas").getContext("2d"); ctx.clearRect(0, 0, $("lv-canvas").width, $("lv-canvas").height);
+  renderFacts(); renderNow(null);
+  if (L.trace) { L.trace.stop(); L.trace = null; }
+  const box = $("lv-brain"), none = $("lv-brain-none"); box.textContent = ""; box.hidden = true;
+  if (brain && typeof mountBrainConsole === "function") { none.hidden = true; L.trace = mountBrainConsole(box, "live/brain"); }
+  else { none.hidden = false; none.textContent = "普通 Agent 没有大脑"; }
+  if (globalThis.LiveCtl) LiveCtl.start();
+  if (L.shown) loops();
+}
+function end() {  // 停下：内容留着，只停掉拉取
+  L.on = false; L.gen++;
+  if (L.trace) { L.trace.stop(); L.trace = null; }
+  if (globalThis.LiveCtl) LiveCtl.stop();
+  LiveView.pick(null);
+  $("lv-fps").textContent = "停了"; $("lv-fps").className = "lv-fps";
+}
+function loops() { L.gen++; const g = L.gen; stageLoop(g); chatLoop(g); pullStatus(); pullInner(); }
+
+/* ---- 画面 ---- */
+async function stageLoop(gen) {
+  if (typeof Stage === "undefined") { $("lv-stage-none").textContent = "画面脚本加载不了（static/stage.js）"; return; }
+  while (alive(gen) && !L.paused) {
+    try {
+      const r = await fetch(`live/snapshot?after=${L.seq}`, {cache: "no-store"});
+      if (!alive(gen)) return;
+      if (r.status === 204) continue;
+      if (!r.ok) throw new Error(r.status);
+      const s = await r.json(); if (!alive(gen)) return;
+      const img = new Image();
+      await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = "data:image/jpeg;base64," + s.image; });
+      if (!alive(gen)) return;
+      L.seq = s.seq; L.snap = s; L.img = img; redraw(); $("lv-stage-none").hidden = true;
+      const now = performance.now(); L.times.push(now); L.times = L.times.filter(t => now - t < 2000);
+      $("lv-fps").textContent = `${(L.times.length / 2).toFixed(1)} 帧/秒 · ${s.width}×${s.height}`; $("lv-fps").className = "lv-fps";
+    } catch (e) {
+      if (!alive(gen)) return;
+      $("lv-fps").textContent = "连不上"; $("lv-fps").className = "lv-fps bad"; await sleep(1000);
+    }
   }
-  for (const key of CARDS) {
-    if (!(key in info)) continue;
-    const v = info[key], d = el("div", "card"), dd = el("dd");
+}
+function redraw() { if (L.snap && L.img) Stage.draw($("lv-canvas"), L.img, L.snap, {boxes: L.boxes, mark: L.mark, hover: L.hover}); }
+function canvasPoint(e) { const c = $("lv-canvas"), r = c.getBoundingClientRect(); return [(e.clientX - r.left) * c.width / r.width, (e.clientY - r.top) * c.height / r.height]; }
+
+/* ---- 聊天记录 ---- */
+async function chatLoop(gen) {
+  while (alive(gen)) {
+    try {
+      const r = await fetch(`live/chat?after=${L.chatV}&wait=2`, {cache: "no-store"});
+      if (!alive(gen)) return;
+      if (r.status === 404) {  // 普通 Agent 没有聊天记录；大脑模式是身体还没建好（端口先通、聊天记录后挂），或者可视化开在局域网
+        if (!L.brain) { const box = $("lv-chat"); box.textContent = ""; box.append(el("p", "none", "普通 Agent 没有聊天记录")); return; }
+        await sleep(3000); continue;
+      }
+      if (!r.ok) throw new Error(r.status);
+      const d = await r.json(); if (!alive(gen)) return;
+      if (d.v < L.chatV) { $("lv-chat").textContent = ""; }  // 团子重启过：从头来
+      Chat.append($("lv-chat"), d.lines || []); L.chatV = d.v;
+    } catch (e) { if (!alive(gen)) return; await sleep(1000); }
+  }
+}
+
+/* ---- 左栏：现在 + 身边和状态 ---- */
+function renderNow(d) {
+  const box = $("lv-now");
+  if (d && d.now) Inner.renderNow(box, d.now, d);
+  else {
+    box.textContent = ""; box.append(el("h3", "", "现在"));
+    const b = el("div", "pane-body"); b.append(el("p", "none", L.on ? "（内心层没开，或者还没取到）" : "叫醒之后这里是团子现在的样子")); box.append(b);
+  }
+  const h = box.querySelector("h3"), link = el("button", "linkish sb-inner-link", "完整内心 →");
+  link.type = "button"; link.onclick = () => { Inner.setSource("dango"); go("inner"); };
+  h.append(el("span", "grow"), link);
+}
+async function pullInner() {
+  if (!L.on) return;
+  try { const d = await getJSON("api/inner"); if (!L.on) return; L.innerOk = !!(d && d.now); renderNow(d); }
+  catch (e) { /* 下次再取 */ }
+}
+function renderFacts() {
+  const dl = $("cards"); dl.textContent = ""; const info = L.info;
+  if (!info) { dl.append(el("dt", "", "状态"), el("dd", "none", L.on ? "取状态中…" : "叫醒之后这里是身边有谁、在做什么")); return; }
+  for (const key of FACTS) {
+    if (!(key in info) || (L.innerOk && WITH_INNER.includes(key))) continue;
+    const v = info[key], dd = el("dd");
     if (Array.isArray(v)) {
-      if (key === "身边的好友") dd.append(el("span", "count", String(v.length)), "个");
-      const ul = el("ul"); for (const x of v) ul.append(el("li", "", String(x))); dd.append(ul);
+      if (!v.length) dd.textContent = "没有";
+      else if (key === "身边的好友") for (const x of v) dd.append(el("span", "lv-tag", String(x)));
+      else dd.textContent = v.map(String).join("、");
     } else dd.textContent = String(v);
-    d.append(el("dt", "", key), dd); dl.append(d);
+    dl.append(el("dt", "", key), dd);
   }
 }
 async function pullStatus() {
-  const run = S.state && S.state.run;
-  if (!run || run.state !== "running" || run.kind === "sandbox") return;
-  try { const r = await fetch("live/status", {cache: "no-store"}); if (r.ok) { L.info = (await r.json()).info; renderCards(); } } catch (e) {}
+  if (!L.on) return;
+  try { const r = await fetch("live/status", {cache: "no-store"}); if (r.ok && L.on) { L.info = (await r.json()).info; renderFacts(); } } catch (e) {}
 }
 
+/* ---- 日志抽屉 ---- */
+function openDrawer(open) {
+  $("lv-drawer").classList.toggle("open", open); $("lv-log-btn").setAttribute("aria-expanded", String(open));
+  if (open) { const b = $("log"); b.scrollTop = b.scrollHeight; }
+}
 async function pullLogs() {
   const run = S.state && S.state.run;
   if (!run || run.kind === "sandbox") return;
@@ -83,7 +177,7 @@ async function pullLogs() {
   else L.drain = true;
   try {
     const r = await getJSON(`api/logs?after=${L.logNext}`), box = $("log");
-    if (r.next < L.logNext) { L.logNext = 0; box.textContent = ""; return; }   // 重新启动过：从头来
+    if (r.next < L.logNext) { L.logNext = 0; box.textContent = ""; return; }  // 重新启动过：从头来
     for (const line of r.lines) box.append(el("span", /Traceback|ERROR|错误/.test(line) ? "e" : /WARNING/.test(line) ? "w" : "", line + "\n"));
     while (box.childNodes.length > 1000) box.firstChild.remove();
     L.logNext = r.next; if (r.lines.length && L.follow) box.scrollTop = box.scrollHeight;
@@ -103,18 +197,53 @@ async function start(e) {
   await refresh();
 }
 
+globalThis.LiveView = {
+  snapshot: () => L.snap,
+  pick(fn) { L.pick = fn || null; $("lv-canvas").classList.toggle("picking", !!L.pick); },
+  mark(m) { L.mark = m || null; redraw(); },
+};
+
+function bind() {
+  $("opt-live").onchange = liveWarn;
+  $("launch").onsubmit = start;
+  $("log").addEventListener("scroll", () => { const b = $("log"); L.follow = b.scrollTop + b.clientHeight >= b.scrollHeight - 8; });
+  $("lv-log-btn").onclick = () => openDrawer(!$("lv-drawer").classList.contains("open"));
+  $("lv-log-close").onclick = () => openDrawer(false);
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && $("lv-drawer").classList.contains("open")) openDrawer(false); });
+  $("lv-pause").onclick = () => {
+    L.paused = !L.paused; $("lv-pause").textContent = L.paused ? "继续" : "暂停";
+    if (!L.paused && L.on && L.shown) { L.gen++; const g = L.gen; stageLoop(g); chatLoop(g); }
+  };
+  $("lv-boxes").onclick = () => { L.boxes = !L.boxes; $("lv-boxes").textContent = L.boxes ? "隐藏框" : "显示框"; redraw(); };
+  $("lv-save").onclick = () => {
+    if (!L.snap) return;
+    const a = el("a"); a.download = `dango-${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}.png`;
+    a.href = $("lv-canvas").toDataURL("image/png"); a.click();
+  };
+  $("lv-legend-btn").onclick = () => {
+    const g = $("lv-legend"), open = g.hidden; g.hidden = !open; $("lv-legend-btn").setAttribute("aria-expanded", String(open));
+  };
+  if (typeof Stage !== "undefined") for (const [k, name] of Object.entries(Stage.NAMES)) {
+    const s = el("span"), i = el("i"); i.style.background = Stage.COLORS[k]; s.append(i, name); $("lv-legend").append(s);
+  }
+  const c = $("lv-canvas");
+  c.addEventListener("mousemove", e => { L.hover = canvasPoint(e); redraw(); });
+  c.addEventListener("mouseleave", () => { L.hover = null; redraw(); });
+  c.addEventListener("click", e => {
+    if (!L.pick || !L.snap || typeof Stage === "undefined") return;
+    const [x, y] = Stage.toFrame(e.clientX, e.clientY, c.getBoundingClientRect(), L.snap.width, L.snap.height), fn = L.pick, s = L.snap;
+    LiveView.pick(null); fn(x, y, s);
+  });
+}
+
 Pages.live = {
-  init() {
-    $("opt-live").onchange = liveWarn;
-    $("launch").onsubmit = start;
-    $("log").addEventListener("scroll", () => { const b = $("log"); L.follow = b.scrollTop + b.clientHeight >= b.scrollHeight - 8; });
-    onState(render);
-  },
+  init() { bind(); renderNow(null); renderFacts(); onState(render); },
   show() {
-    L.startProblems = false; render(); pullLogs(); pullStatus();
-    clearInterval(L.timer); clearInterval(L.logTimer);
-    L.timer = setInterval(pullStatus, 2000); L.logTimer = setInterval(pullLogs, 1000);
+    L.shown = true; L.startProblems = false; render(); pullLogs();
+    for (const t of L.timers) clearInterval(t);
+    L.timers = [setInterval(pullStatus, 2000), setInterval(pullInner, 5000), setInterval(pullLogs, 1000)];
+    if (L.on) loops();
   },
-  hide() { clearInterval(L.timer); clearInterval(L.logTimer); },
+  hide() { L.shown = false; L.gen++; for (const t of L.timers) clearInterval(t); L.timers = []; },
 };
 })();
