@@ -453,6 +453,25 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .lv-facts dt{color:var(--muted);font-size:12px;padding-top:1px}
 .lv-facts dd{margin:0;overflow-wrap:anywhere}
 .lv-tag{display:inline-block;background:var(--matcha-bg);color:var(--matcha-ink);border-radius:999px;padding:0 9px;margin:0 4px 3px 0;font-size:12.5px}
+.lc h4{display:flex;align-items:center;gap:8px}
+.lc-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:7px}
+.lc-row>.sb-label{min-width:2.4em}
+.lc-row input[type=text]{flex:1;min-width:0}
+.lc-row select{flex:1;min-width:0}
+.lc-btns{display:flex;flex-wrap:wrap;gap:4px;flex:1}
+.lc-num{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;color:var(--muted)}
+.lc-num input{width:54px}
+.lc-count,.lc-tip{font-size:12px;color:var(--muted)}
+.lc-busy{font-size:12px;color:var(--indigo);letter-spacing:0;font-weight:400}
+.lc-warn{margin:4px 0 0;padding:2px 10px;border-radius:6px;background:var(--amber-bg);color:var(--amber-ink);font-size:12.5px}
+#lc-none{margin:4px 0 0}
+.btn.on{border-color:var(--sakura);color:var(--sakura-ink);background:var(--sakura-bg)}
+.lc-log{list-style:none;margin:8px 0 0;padding:6px 0 0;border-top:1px dashed var(--line);font:12px/1.6 var(--mono)}
+.lc-log:empty{display:none}
+.lc-log li{overflow-wrap:anywhere}
+.lc-log .t{color:var(--muted)}
+.lc-log .ok{color:var(--matcha-ink)}
+.lc-log .bad{color:var(--brick-ink)}
 
 /* 中：画面在上（16:9，最高半屏），大脑控制台占剩下的 */
 .sb-cols>.lv-mid{padding:0}

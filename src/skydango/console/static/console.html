@@ -144,7 +144,22 @@
       <section class="pane sb-right lv-left" aria-label="团子">
         <div id="lv-now"></div>
         <div class="sb-sec"><h4>身边和状态</h4><dl class="lv-facts" id="cards"></dl></div>
-        <div class="sb-sec" id="lv-ctl"><h4>手动控制</h4></div>
+        <div class="sb-sec lc" id="lv-ctl">
+          <h4>手动控制<span class="grow"></span><span class="lc-busy" id="lc-busy"></span></h4>
+          <p class="lc-warn" id="lc-warn" hidden>大脑是 dry-run，手动操作照样会真的在游戏里执行</p>
+          <p class="none" id="lc-none">叫醒之后能在这里手动让团子说话、做动作、转视角</p>
+          <div class="lc-row"><span class="sb-label">说话</span><input type="text" id="lc-say-text" placeholder="让团子说一句…" aria-label="让团子说的话"><span class="lc-count" id="lc-count"></span><button class="btn sm" type="button" id="lc-say-go">说</button></div>
+          <div class="lc-row"><span class="sb-label">动作</span><select id="lc-emote-name" aria-label="动作"></select><button class="btn sm" type="button" id="lc-emote-go">做</button></div>
+          <div class="lc-row" id="lc-camera"><span class="sb-label">视角</span>
+            <span class="lc-btns"><button class="btn sm" type="button" data-cam="left">左转</button><button class="btn sm" type="button" data-cam="right">右转</button><button class="btn sm" type="button" data-cam="up">抬头</button><button class="btn sm" type="button" data-cam="down">低头</button><button class="btn sm" type="button" data-cam="zoom_in">拉近</button><button class="btn sm" type="button" data-cam="zoom_out">拉远</button></span>
+          </div>
+          <div class="lc-row"><span class="sb-label"></span><label class="lc-num">步数 <input type="number" id="lc-steps" value="1" min="1"></label><button class="btn sm" type="button" id="lc-reset">复位</button><button class="btn sm" type="button" id="lc-around">环视一圈</button></div>
+          <div class="lc-row"><span class="sb-label">看人</span><button class="btn sm" type="button" id="lc-pick">在画面上选人</button><span class="lc-tip" id="lc-pick-tip"></span></div>
+          <div class="lc-row"><span class="sb-label">盯人</span><input type="text" id="lc-track-name" placeholder="好友名字" aria-label="盯谁"><button class="btn sm" type="button" id="lc-track-pick">在画面上选</button></div>
+          <div class="lc-row"><span class="sb-label"></span><label class="lc-num"><input type="number" id="lc-track-sec" value="30" min="1"> 秒</label><button class="btn sm" type="button" id="lc-track-go">盯</button><button class="btn sm" type="button" id="lc-stop">停下</button><span class="lc-tip" id="lc-track-tip"></span></div>
+          <div class="lc-row" id="lc-panels" hidden><span class="sb-label">面板</span><button class="btn sm" type="button" id="lc-panel-read">读面板</button><button class="btn sm" type="button" id="lc-panel-close">关面板</button></div>
+          <ul class="lc-log" id="lc-log"></ul>
+        </div>
       </section>
       <section class="pane lv-mid" aria-label="画面和大脑">
         <div class="lv-stage">
@@ -283,6 +298,7 @@
 <script src="console/static/brainlog.js"></script>
 <script src="console/static/chatlog.js"></script>
 <script src="console/static/sandbox.js"></script>
+<script src="console/static/livectl.js"></script>
 <script src="console/static/live.js"></script>
 <script src="console/static/scenarios.js"></script>
 <script src="console/static/labeling.js"></script>
