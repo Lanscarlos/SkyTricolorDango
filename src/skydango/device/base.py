@@ -11,6 +11,7 @@ KEYCODE_BACK = 4
 KEYCODE_ENTER = 66
 # Linux 输入子系统的键码（sendevent 用），和 Android keycode 不是一套
 LINUX_KEY_ENTER = 28
+LINUX_KEY_Q = 16  # 短按喊一声（呼唤）；长按是大喊，不用
 
 
 class Device(Protocol):

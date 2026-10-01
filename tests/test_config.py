@@ -230,3 +230,27 @@ def test_backstage_config(tmp_path):
     path = tmp_path / "c.toml"
     path.write_text("[backstage]\nenabled = true\n", encoding="utf-8")
     assert load_config(path).backstage.enabled is True
+
+
+def test_call_config_defaults():
+    from skydango.config import Config
+
+    c = Config()
+    assert (c.call.enabled, c.call.auto, c.call.min_gap, c.call.window, c.call.burst) == (True, True, 20.0, 6.0, 1.0)
+    assert (c.call.auto_quota, c.call.auto_window, c.call.auto_after_leave) == (3, 600.0, 30.0)
+    assert (c.call.halo, c.call.halo_rise, c.call.halo_center) == (False, 25.0, 0.35)
+    assert c.perception.sticky_names is True and c.perception.edge_band == 0.06
+
+
+def test_call_section_loads(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[call]\nauto = false\nmin_gap = 30\n[perception]\nedge_band = 0\n", encoding="utf-8")
+    c = load_config(p)
+    assert c.call.auto is False and c.call.min_gap == 30 and c.perception.edge_band == 0
+
+
+def test_q_key_and_panel_action():
+    from skydango.device.base import LINUX_KEY_Q
+    from skydango.vision.panels import ACTIONS
+
+    assert LINUX_KEY_Q == 16 and "call" in ACTIONS
