@@ -30,14 +30,7 @@
 
 ### 1.1 轨迹续命（`[perception] sticky_names = true`）
 
-`process()` 里标签挂完、身份摘完之后（`_assign_tags` 那段之后）：
-
-- 轨迹 `data["tagged"]` 为真、`data["name"]` 有值（按外观认的 `maybe` 不算）、这一帧被更新过（`now - last_update <= PEOPLE_STALE`）→ `last_seen[name] = now`
-- 轨迹断了（tracker 丢掉，`track_buffer` 1 秒）才开始算 `keep` 那 5 秒
-- 同名标签清楚地出现在别处时摘掉名字（现有 :519-524）照旧；两人交叉走过、追踪器把身份换错时，名字会跟到另一个人身上，标签再亮时纠正
-- `tagged` 的轨迹本来就不判陌生人；续命只补"在身边"这一半
-- 暂停（`held`）时不续（`_blocked()` 本来就跳过检测）
-- `sticky_names = false`：逐字照旧
+**挪到 `2026-10-01-tracking-relink-motion-design.md` 第 3 节实现**（配置名、语义不变；那份还管追踪器少断、断了在 `keep` 内按位置接回成"像小明"）。这份的计划里不再做这一条。
 
 ### 1.2 呼喊窗口
 
@@ -51,7 +44,7 @@ def call_result(self, at: float) -> CallSeen | None             # 窗口结束�
 - 窗口里 `far_crops`：不退避（忽略 `FAR_RETRY` 的 5 秒退避），每帧最多块数 ×2——窗口里远处小人的标签真的画出来了
 - 窗口里这一帧挂上名字的轨迹记进结果：`{名字: Seen(side, distance, on_screen=True)}`（方位 / 远近同 `people()` 的算法；同一个名字留最后一次）
 - 贴边标签（1.3）记成 `Seen(side, None, on_screen=False)`
-- 窗口结束那一帧再数一次：窗口里还剩几条没挂名字的点过火的人物轨迹（含框高 < 0.08 的远处小人）→ `unnamed`
+- 窗口结束那一帧再数一次：窗口里还剩几条没挂名字的点过火的人物轨迹（含框高 < 0.08 的远处小人）→ `unnamed`（"没挂名字" = 既没 `name` 也没 `maybe`，同追踪 spec §4.4）
 - 暂停期间窗口跟着往后挪（`_resume` 里和 `last_seen` 一起 shift）
 - 结果只留最近一次；`CallSeen` 是纯数据（`friends: dict[str, Seen]`、`unnamed: int`、`at`、`ended`）
 
@@ -124,7 +117,7 @@ YOLO 已经稳稳认出团子时不覆盖。
 
 - `[call] auto`
 - 有好友在 `auto_after_leave`（30 秒）内发过 `leave`，且这次走开还没为他自动喊过（`_left_at` 记的这次）
-- 感知层这一帧有没挂名字的点过火的人物（陌生人，或框高 < 0.08、没归类的远处小人）——说明他可能只是走远了、标签淡了
+- 感知层这一帧有没挂名字的点过火的人物（陌生人，或框高 < 0.08、没归类的远处小人）；按位置接回的"像小明"（`maybe`）不算没挂名字——说明他可能只是走远了、标签淡了
 - 自动喊 `auto_window`（600 秒）里少于 `auto_quota`（3）次；和大脑共用 `min_gap`
 - **不喊**：输入框开着（不管谁开的）、有技能在跑、有互动请求、在举蜡烛点火（light）、聊天记录面板以外的面板开着、`reflex.min_gap` 内刚做过动作、大脑这一轮正在说话（`brain_busy()`）、黑屏、dry-run（dry-run 照样判断、记日志"会喊"，不按）
 
@@ -171,7 +164,7 @@ YOLO 已经稳稳认出团子时不覆盖。
 | `halo_rise` | 25.0（估的，halo-eval 标定） | 头顶区域平均灰度（0~255）比基准高出多少才算冒圈 |
 | `halo_center` | 0.35 | 同 `peek.self_center`，只信画面中间附近 |
 
-`[perception]` 加：`sticky_names = true`、`edge_band = 0.06`。
+`[perception]` 加：`edge_band = 0.06`（`sticky_names` 见追踪 spec）。
 
 ## 5. 离线标定：`perception halo-eval <录像目录>`
 
@@ -183,7 +176,7 @@ YOLO 已经稳稳认出团子时不覆盖。
 单元测试（`python -m pytest -q`，合成画面 + 假设备）：
 
 - `halo.py`：合成"一个人头顶变亮"的序列能认出他；两人同时变亮 → `others`；基准里就亮着的不算；整帧一起变亮被抵消；时间窗外的峰不算；不在画面中间的不算 `self`
-- 感知层：标签消失但轨迹不断 → 一直在 `nearby`；轨迹断了 5 秒后才不在；`sticky_names = false` 照旧；窗口里挂上名字的进 `call_result`；贴边标签不刷新 `nearby`、进结果的 `on_screen=False`；暂停时窗口跟着挪；`unnamed` 计数
+- 感知层（续命的测试在追踪 spec 里）：窗口里挂上名字的进 `call_result`；贴边标签不刷新 `nearby`、进结果的 `on_screen=False`；暂停时窗口跟着挪；`unnamed` 计数
 - 身体：按键前先借面板、`ime_shown()` 为真时拒绝、按的是键码 16；各种"不能喊"；`min_gap`、主人命令窗口；自动喊的触发、额度、同一个好友一次；背景事件文字；dry-run 不按键；`halo` 写回 `self_box` 的条件
 - 工具：`call` 的返回文字（各种光圈状态、拒绝）；`enabled = false` 时工具列表、提示词逐字不变；沙盒里回"没有这个"
 
@@ -203,7 +196,7 @@ YOLO 已经稳稳认出团子时不覆盖。
 | `src/skydango/config.py` | `CallConfig`；`PerceptionConfig.sticky_names` / `edge_band` |
 | `src/skydango/device/base.py` | `LINUX_KEY_Q = 16` |
 | `src/skydango/vision/halo.py`（新） | `head_region`、`HaloWatch` |
-| `src/skydango/vision/perception.py` | 续命、`called` / `call_result`、贴边标签、窗口里的 `far_crops` |
+| `src/skydango/vision/perception.py` | `called` / `call_result`、贴边标签、窗口里的 `far_crops`（续命见追踪 spec） |
 | `src/skydango/vision/env.py` | EnvWatcher 的空实现：`called` 什么都不做、`call_result` 返回 None（感知层没开时本来就不喊，只是让接口一致） |
 | `src/skydango/brain/body.py` | `call_out`、`_watch_call`、status 一行、`CallResult` |
 | `src/skydango/brain/events.py` | `call` 进 `BACKGROUND` |
