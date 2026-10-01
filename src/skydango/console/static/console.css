@@ -14,9 +14,9 @@
   --soft:#fbf8f1;--bubble:#f3ece0;--track:#ece4d5;--hover:#f7f1e6;--white:#fff;
   --refl-line:#d7c7a8;--refl-bg:#fbf6ea;--refl-ink:#7a6847;
   --shadow:0 1px 0 #efe6d6;--lift:0 10px 30px rgba(80,60,30,.14);--shade:rgba(59,51,43,.28);--ball-shade:rgba(0,0,0,.12);
-  /* 沙盒页的大脑控制台：纸感页面里嵌一块暖墨色终端 */
-  --term-bg:#2b2622;--term-head:#332d28;--term-line:#463e37;--term-fg:#ece4d6;--term-dim:#9c907f;
-  --term-sakura:#f2a9c4;--term-matcha:#a9cf9c;--term-amber:#e9b765;--term-red:#ef8f7c;--term-indigo:#a5bbe3;
+  /* 沙盒页的大脑控制台：底色和左右两栏一样，靠等宽字和终端排版区分 */
+  --term-bg:var(--card);--term-head:var(--card);--term-line:var(--line);--term-fg:#2f2822;--term-dim:#6e6352;
+  --term-sakura:#a13c66;--term-matcha:#3b6738;--term-amber:#875812;--term-red:#9c3420;--term-indigo:#32547f;
   --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
   --mono:"Cascadia Mono",Consolas,monospace;
 }
@@ -322,7 +322,7 @@ h4.note{margin:0 0 4px;font-weight:500}
 .sb-say input[name=name]{width:110px}
 .sb-say input[name=text]{flex:1}
 
-/* 中：大脑控制台（brainlog.js）：整栏是一块深色终端，日志在 .bc-log 里自己滚 */
+/* 中：大脑控制台（brainlog.js）：整栏一块终端排版的日志，日志在 .bc-log 里自己滚 */
 .sb-cols>.sb-brainpane{background:var(--term-bg);border-color:var(--term-line);position:relative}
 .sb-brainpane>.none{color:var(--term-dim);padding:12px 14px;font-family:var(--mono);font-size:12.5px}
 .brain-console{flex:1;min-height:0;display:flex;flex-direction:column}
@@ -331,7 +331,7 @@ h4.note{margin:0 0 4px;font-weight:500}
 .bc-head b{color:var(--term-fg);font-size:12px;letter-spacing:.12em;font-weight:600}
 .bc-head label{margin-left:auto;display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
 .bc-state.warn{color:var(--term-amber)}.bc-state.bad{color:var(--term-red)}
-.bc-log{flex:1;min-height:0;overflow:auto;padding:4px 14px 16px;font:12.5px/1.65 var(--mono);color:var(--term-fg);scrollbar-width:thin;scrollbar-color:var(--term-line) transparent}
+.bc-log{flex:1;min-height:0;overflow:auto;padding:4px 14px 16px;font:13px/1.65 var(--mono);color:var(--term-fg);scrollbar-width:thin;scrollbar-color:var(--term-line) transparent}
 .bc-turn{margin-top:10px}
 .bc-turn[hidden]{display:none}
 .bc-th{display:flex;align-items:center;gap:8px;color:var(--term-dim);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -339,7 +339,7 @@ h4.note{margin:0 0 4px;font-weight:500}
 .bc-th::after{content:"";flex:1;min-width:12px;height:1px;background:var(--term-line)}
 .bc-th:hover{color:var(--term-fg)}
 .bc-th.copied::after{content:"已复制";height:auto;background:none;flex:none;color:var(--term-matcha)}
-.bc-turn.idle{margin-top:4px}.bc-turn.idle .bc-th{opacity:.55}
+.bc-turn.idle{margin-top:4px}.bc-turn.idle .bc-th{opacity:.8}
 .bc-turn.err .bc-th{color:var(--term-red)}
 .bc-turn.live .bc-th{color:var(--term-amber)}
 .bc-line{display:flex;gap:8px;padding-left:2px}
