@@ -320,6 +320,8 @@ class PerceptionWatcher:
         with self._lock:
             self._strangers = deque((min(t + d, now), n, u) for t, n, u in self._strangers)
         self.tracker.shift(d)
+        if self.appearance is not None:  # 认装扮的陌生人编号也一样：暂停的时间不算走开，别报"又回来了"
+            self.appearance.shift(d, now)
 
     def _check_hold_max(self) -> None:
         since = self._held_since
@@ -668,9 +670,9 @@ class PerceptionWatcher:
     def _outfit_triggers(self, kind: str, who: str, p, box: Rect, frame_h: int, now: float) -> None:
         book, acfg = self.appearance, self.appearance_cfg
         key = (kind, who)
+        # 判中途换装不看 want（描述关了、没挂描述器、描述器放弃了，want 都清不掉）：一次换装只算一次靠 mark_changed
         if kind == "me":
-            if p.desc and key not in self._describe_want and p.redescribed < acfg.redescribe_max \
-                    and book.drifted("me", ""):
+            if p.desc and p.redescribed < acfg.redescribe_max and book.drifted("me", ""):
                 p.redescribed += 1
                 log.info("团子换了装扮，重新描述（这次上线第 %d 次）", p.redescribed)
                 self._redescribe(key)
@@ -688,9 +690,10 @@ class PerceptionWatcher:
                 if state == "same" and card:
                     book.set_desc("friend", who, card, p.feat)  # 同一套：直接用卡里的描述，不再花额度
                     return
-                with self._lock:
-                    self._describe_want.add(key)
-            elif key not in self._describe_want and p.redescribed < acfg.redescribe_max and book.drifted("friend", who):
+                if self._describing():
+                    with self._lock:
+                        self._describe_want.add(key)
+            elif p.redescribed < acfg.redescribe_max and book.drifted("friend", who):
                 p.redescribed += 1
                 log.info("%s 中途换了装扮，重新描述（这次上线第 %d 次）", who, p.redescribed)
                 self._note(who, p.feat, "changed")
@@ -705,16 +708,22 @@ class PerceptionWatcher:
         with self._lock:
             self._outfits.append(note)
 
+    def _describing(self) -> bool:
+        """挂着描述器、也开着描述：只有这时才记"要描述谁"（want），否则记了也没人清。"""
+        return self.wardrobe is not None and self.appearance_cfg.describe
+
     def _redescribe(self, key: tuple[str, str]) -> None:
+        self.appearance.mark_changed(*key)  # 平均特征挪稳到新那套之前不再判换装
+        if not self._describing():
+            return
         with self._lock:
             self._describe_want.add(key)
             self._describe_asked.pop(key, None)
-        if self.wardrobe is not None:
-            self.wardrobe.reset(*key)
+        self.wardrobe.reset(*key)
 
     def _ask(self, kind: str, who: str, priority: int, p, frame_h: int, now: float) -> None:
         """交给描述器：框够高的样本才送；retry_after 内问过就不再问（描述器自己也去重、限次）。"""
-        if self.wardrobe is None or not self.appearance_cfg.describe:
+        if not self._describing():
             return
         key = (kind, who)
         if now - self._describe_asked.get(key, float("-inf")) < self.appearance_cfg.retry_after:
@@ -1190,11 +1199,12 @@ class PerceptionWatcher:
 
     def nearest(self, now: float) -> tuple[str, str] | None:
         """最近一帧里离团子最近（框最高）、认得出是谁的人：(好友名 / "陌生人", 近 / 中 / 远)。"""
-        known = [
-            (t.box.h, t.data.get("name") or t.data.get("maybe") or STRANGER)
-            for t in list(self.last_tracks)
-            if t.cls in ("player", UNLIT) and (t.data.get("name") or t.data.get("maybe") or t.data.get("stranger"))
-        ]
+        known = []
+        for t in list(self.last_tracks):
+            # 每个键只读一次：感知线程随时可能 pop 掉 maybe / sid（别的线程在读）
+            who = t.data.get("name") or t.data.get("maybe") or (STRANGER if t.data.get("stranger") else None)
+            if t.cls in ("player", UNLIT) and who:
+                known.append((t.box.h, who))
         if not known:
             return None
         h, who = max(known)
@@ -1213,14 +1223,16 @@ class PerceptionWatcher:
             if now - t.last > PEOPLE_STALE:
                 continue
             d = t.data
-            name, sure, sid, look = d.get("name"), True, None, ""
-            if t.cls == UNLIT and d.get("stranger"):  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
+            # 每个键只读一次（不 get 完再 []）：身体线程在读的同时，感知线程可能刚好 pop 掉 maybe / sid
+            name, maybe, stranger = d.get("name"), d.get("maybe"), d.get("stranger")
+            sure, sid, look = True, None, ""
+            if t.cls == UNLIT and stranger:  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
                 kind = "unlit"
             elif t.cls == "player" and name:
                 kind = "friend"
-            elif t.cls == "player" and d.get("maybe"):  # 没看到名字、按外观认的好友
-                kind, name, sure = "friend", d["maybe"], False
-            elif t.cls == "player" and d.get("stranger"):
+            elif t.cls == "player" and maybe:  # 没看到名字、按外观认的好友
+                kind, name, sure = "friend", maybe, False
+            elif t.cls == "player" and stranger:
                 kind, sid = "stranger", d.get("sid")
                 if sid and self.appearance is not None:
                     look = self.appearance.look("stranger", sid)
@@ -1266,11 +1278,14 @@ class PerceptionWatcher:
         out = []
         for t in list(self.last_tracks):
             d = t.data
-            if t.cls == "player" and d.get("maybe") and not d.get("name"):
-                kind, label = "maybe", f"像{d['maybe']}?"
+            # 每个键只读一次（同 people()）；who = 装扮描述按谁查
+            name, maybe, sid, who = d.get("name"), d.get("maybe"), d.get("sid"), None
+            if t.cls == "player" and maybe and not name:
+                kind, label, who = "maybe", f"像{maybe}?", maybe
             elif t.cls == "player":
-                kind = "stranger" if d.get("stranger") else ("friend" if d.get("name") else "player")
-                label = d.get("name") or ((d.get("sid") or "陌生人") if d.get("stranger") else "")
+                kind = "stranger" if d.get("stranger") else ("friend" if name else "player")
+                label = name or ((sid or "陌生人") if kind == "stranger" else "")
+                who = name if kind == "friend" else sid
             elif t.cls == UNLIT:
                 kind, label = "unlit", "陌生人（没点火）"
             elif t.cls == "self":
@@ -1290,19 +1305,17 @@ class PerceptionWatcher:
                 kind, label = t.cls, t.cls
             b = t.box
             entry = {"x": b.x, "y": b.y, "w": b.w, "h": b.h, "kind": kind, "label": label, "score": round(t.score, 2)}
-            if self.appearance is not None and (desc := self._desc(kind, d)):
+            if self.appearance is not None and (desc := self._desc(kind, who)):
                 entry["desc"] = desc
             out.append(entry)
         return out
 
-    def _desc(self, kind: str, d: dict) -> str:
-        """框对应的人的装扮描述（没有就空）。"""
-        if kind == "friend":
-            return self.appearance.look("friend", d["name"])
-        if kind == "maybe":
-            return self.appearance.look("friend", d["maybe"])
-        if kind == "stranger" and d.get("sid"):
-            return self.appearance.look("stranger", d["sid"])
+    def _desc(self, kind: str, who: str | None) -> str:
+        """框对应的人的装扮描述（没有就空）；who = overlay 已经读出来的好友名 / 陌生人编号（不再回去查 data）。"""
+        if kind in ("friend", "maybe") and who:
+            return self.appearance.look("friend", who)
+        if kind == "stranger" and who:
+            return self.appearance.look("stranger", who)
         if kind == "self":
             return self.appearance.look("me", "")
         return ""

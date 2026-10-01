@@ -1808,6 +1808,8 @@ def _run_brain(
         world.close()  # 停 env、关面板识别
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
         brain_thread.join(timeout=5)
+        if wardrobe_thread is not None:
+            _finish_wardrobe(wardrobe_thread, body)
         if ledger is not None:
             try:
                 ledger.checkpoint(wall())  # 写经过可能很慢、被强杀：先落账，别被当成意外断了
@@ -1828,6 +1830,21 @@ def _run_brain(
                 log.exception("内心账本收尾出错")
         session.close()
         server.stop()
+
+
+WARDROBE_JOIN = 5.0  # 下线时等描述器手上那一个描述回来最多几秒（不为它拖住下线）
+
+
+def _finish_wardrobe(thread: threading.Thread, body) -> None:
+    """下线：等描述器线程停下（最多 WARDROBE_JOIN 秒），再把这期间回来的装扮写进关系卡（账本收尾之前）。
+    身体主循环已经停了，这里在主线程替它取一次；出错只记日志。"""
+    thread.join(timeout=WARDROBE_JOIN)
+    if thread.is_alive():
+        log.info("装扮描述还没回来，不等了")
+    try:
+        body._watch_outfits()
+    except Exception:
+        log.exception("下线时记装扮出错")
 
 
 def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock):

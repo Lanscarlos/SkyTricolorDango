@@ -219,6 +219,31 @@ def test_card_state_and_drift():
     assert m.drifted("me", "")
 
 
+def test_shift_moves_stranger_seen_but_not_past_now():
+    b = book(keep=5.0)
+    b.stranger_id(V_WHITE, 2.0)
+    b.stranger_id(V_BLUE, 0.0)
+    b.shift(7.0, 8.0)  # 感知暂停了 7 秒
+    assert b.strangers["陌生人A"].seen == 8.0 and b.strangers["陌生人B"].seen == 7.0
+    assert b.stranger_id(near(V_WHITE), 10.0) == ("陌生人A", False)  # 暂停的时间不算"走开"
+
+
+def test_marked_change_settles_on_new_outfit_before_drifting_again():
+    b = book(ema=0.2, changed=0.70, match=0.85)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    b.set_desc("friend", "小明", "粉斗篷", V_PINK)
+    while not b.drifted("friend", "小明"):
+        b.learn("friend", "小明", V_BLUE, 1.0)
+    b.mark_changed("friend", "小明")
+    assert not b.drifted("friend", "小明")  # 平均特征还在往蓝挪：不再算一次
+    for _ in range(30):
+        b.learn("friend", "小明", V_BLUE, 2.0)
+        assert not b.drifted("friend", "小明")
+    for _ in range(30):  # 稳在蓝上之后又换成白：照样算
+        b.learn("friend", "小明", V_WHITE, 3.0)
+    assert b.drifted("friend", "小明")
+
+
 CROP = person(WHITE, PINK)
 
 
@@ -234,6 +259,28 @@ def test_crop_saver_rate_limits_per_track_and_caps(tmp_path):
 def test_crop_saver_sanitizes_names(tmp_path):
     CropSaver(tmp_path, 2.0, 10).offer(1, 'a:b*?', CROP, 0.0, {})
     assert (tmp_path / "crops" / "a_b__").is_dir()
+
+
+def test_crop_saver_folder_names_safe_on_windows():
+    from skydango.vision.appearance import _folder_name
+    assert [_folder_name(n) for n in ("", ".", "..", "  ", "a. ", "CON", "con", "Nul", "com1", "LPT9", "aux.txt")] \
+        == ["_", "_", "_", "_", "a", "_CON", "_con", "_Nul", "_com1", "_LPT9", "_aux.txt"]
+    assert [_folder_name(n) for n in ("小明", "COM10", "CONSOLE", "a:b*?")] == ["小明", "COM10", "CONSOLE", "a_b__"]
+
+
+def test_crop_saver_failed_write_rate_limits(tmp_path, monkeypatch):
+    import skydango.vision.appearance as appearance
+    calls = []
+
+    def boom(*a, **kw):
+        calls.append(a)
+        raise OSError("写不进去")
+
+    monkeypatch.setattr(appearance, "imwrite", boom)
+    s = CropSaver(tmp_path, save_every=2.0, save_max=10)
+    with pytest.raises(OSError):
+        s.offer(1, "小明", CROP, 0.0, {})
+    assert s.offer(1, "小明", CROP, 1.0, {}) is False and len(calls) == 1  # 失败也隔 save_every 才再试
 
 
 def test_crop_saver_same_millisecond_does_not_overwrite(tmp_path):

@@ -85,6 +85,19 @@ def test_outfit_notes_go_to_ledger_and_change_event(clock):
     assert len(led.all_outfits()["懒洋洋大王"]) == 2
 
 
+def test_new_state_with_old_model_outfit_is_not_a_change(clock):
+    # 关系卡里有一套，但特征是旧模型算的（key 不同）→ 感知层判 new：不是换装，接着用那一套、换上新特征
+    b, env, events, led = make(clock)
+    led.wear("懒洋洋大王", F1, "old", False, WALL0)
+    led.describe_outfit("懒洋洋大王", "白色长斗篷", WALL0)
+    led._appended.clear()  # 当作以前上线时记的
+    env.outfits = [OutfitNote("懒洋洋大王", F2, "k", "new"), OutfitNote("懒洋洋大王", F2, "k", "described", "白色长斗篷")]
+    b.step()
+    assert [e for e in events.drain() if e.kind == "outfit"] == []
+    (o,) = led.all_outfits()["懒洋洋大王"]
+    assert (o["feat"], o["key"], o["desc"]) == (F2, "k", "白色长斗篷")
+
+
 def test_outfits_without_ledger_no_event(clock):
     b, env, events, _ = make(clock, ledger=False)
     env.outfits = [OutfitNote("懒洋洋大王", F1, "k", "changed"), OutfitNote("懒洋洋大王", F1, "k", "described", "粉斗篷")]

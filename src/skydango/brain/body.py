@@ -914,7 +914,8 @@ class Body:
                 if prev:
                     self.events.put("outfit", f"{o.name}换了装扮：上次是「{prev}」，现在「{o.desc}」", who=o.name)
             else:
-                self._ledger_call("wear", o.name, o.feat, o.key, o.state != "same", wall)
+                # 只有 changed 才另起一套；new（卡里没有可比的特征，比如换了特征模型）接着用最后一套、换上新特征
+                self._ledger_call("wear", o.name, o.feat, o.key, o.state == "changed", wall)
 
     def _watch_requests(self, now: float) -> None:
         """互动请求、按规则自动接受、牵手状态（跟踪中也照常）。"""

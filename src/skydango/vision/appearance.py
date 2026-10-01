@@ -105,10 +105,11 @@ class Profile:
     updated: float
     seen: float
     desc: str = ""
-    desc_feat: np.ndarray | None = None
+    desc_feat: np.ndarray | None = None  # 判换装的基准：描述时的特征；中途记过换装后换成新那套稳下来时的平均特征
     crops: deque = field(default_factory=lambda: deque(maxlen=5))  # (框高, 描述用裁图)
     checked: bool = False  # 好友：这次上线和关系卡比过没有
     redescribed: int = 0
+    settling: bool = False  # 刚记过一次换装、平均特征还在往新那套挪：挪稳之前不再判换装
 
 
 def _letters(i: int) -> str:
@@ -163,6 +164,9 @@ class AppearanceBook:
                 p.n += 1
                 p.updated = now
                 p.seen = now
+                if p.settling and cosine(p.feat, feat) >= self.cfg.match:  # 平均特征追上了新那套：以它为新的基准
+                    p.desc_feat = p.feat.copy()
+                    p.settling = False
             if crop is not None:
                 p.crops.append(crop)
             return p
@@ -186,7 +190,21 @@ class AppearanceBook:
             p = self._get(kind, who)
             if p is not None:
                 p.desc = desc
-                p.desc_feat = unit(feat)
+                p.desc_feat = unit(feat)  # 还在挪稳（settling）的话，挪稳时 learn 会再换成稳下来的平均特征
+
+    def mark_changed(self, kind: str, who: str) -> None:
+        """刚记了一次中途换装：等平均特征挪稳到新那套（和新样本像到 match）再拿它当基准，期间 drifted 为假，
+        一次换装只算一次；不靠"描述回来"清掉（没开描述、描述器放弃了也照样能判下一次换装）。"""
+        with self._lock:
+            p = self._get(kind, who)
+            if p is not None:
+                p.settling = True
+
+    def shift(self, d: float, now: float) -> None:
+        """感知暂停了 d 秒：陌生人"最后看到"的时间往后挪（不超过 now），暂停的时间不算他走开。"""
+        with self._lock:
+            for p in self.strangers.values():
+                p.seen = min(p.seen + d, now)
 
     def forget(self, now: float) -> None:
         """删掉太久没见的陌生人。"""
@@ -265,10 +283,11 @@ class AppearanceBook:
             return "same" if cosine(p.feat, cf) >= self.cfg.changed else "changed"
 
     def drifted(self, kind: str, who: str) -> bool:
-        """现在的平均特征和上次描述时差多了（中途换了装）。"""
+        """现在的平均特征和基准（上次描述时 / 上次换装稳下来时）差多了（中途换了装）。刚记过换装、还没稳下来时为假。"""
         with self._lock:
             p = self._get(kind, who)
-            return p is not None and p.desc_feat is not None and cosine(p.feat, p.desc_feat) < self.cfg.changed
+            return (p is not None and not p.settling and p.desc_feat is not None
+                    and cosine(p.feat, p.desc_feat) < self.cfg.changed)
 
     # ---- 读 ----
     def look(self, kind: str, who: str) -> str:
@@ -289,6 +308,18 @@ class AppearanceBook:
 
 
 _BAD_NAME = re.compile(r'[<>:"/\\|?*]')
+_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def _folder_name(who: str) -> str:
+    """名字 → Windows 上能用的文件夹名：换掉非法字符、去掉结尾的点和空格；空 / . / .. → "_"；
+    保留名（CON、NUL、COM1……，带不带扩展名、不分大小写）前面加 "_"。"""
+    name = _BAD_NAME.sub("_", who).rstrip(" .")
+    if not name:
+        return "_"
+    if name.split(".", 1)[0].rstrip(" ").upper() in _RESERVED:
+        return "_" + name
+    return name
 
 
 class CropSaver:
@@ -310,7 +341,8 @@ class CropSaver:
                 return False
             if now - self._last.get(track_id, float("-inf")) < self.save_every:
                 return False
-            folder = self.folder / "crops" / _BAD_NAME.sub("_", who)
+            self._last[track_id] = now  # 先记上：写失败也隔 save_every 才再试，别每个样本都报一次错
+            folder = self.folder / "crops" / _folder_name(who)
             stamp = int(self.wall() * 1000)
             name, i = f"{stamp}.jpg", 0
             while (folder / name).exists():
@@ -320,7 +352,6 @@ class CropSaver:
             rel = f"crops/{folder.name}/{name}"
             with open(self.folder / "appearance.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps({"file": rel, **row}, ensure_ascii=False) + "\n")
-            self._last[track_id] = now
             self.count += 1
             if self.count == self.save_max:
                 log.info("认装扮训练数据攒够 %d 张，不再存了", self.save_max)

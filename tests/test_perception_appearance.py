@@ -10,7 +10,7 @@ from skydango.vision.embed import unit
 from skydango.vision.people import Person, describe_people
 from skydango.vision.perception import PerceptionWatcher
 
-from test_perception import FRIENDS, FakeDetector, FakeOcr, player, tag
+from test_perception import FRIENDS, Clock, FakeDetector, FakeOcr, player, tag
 
 PINK = (150, 80, 220)  # BGR：懒洋洋大王的斗篷
 WHITE = (220, 220, 220)  # 点过火的陌生人
@@ -52,15 +52,15 @@ class FakeSaver:
         return True
 
 
-def make(appearance=True, hardcases=None, acfg_kw=None, saver=None, **cfg):
+def make(appearance=True, hardcases=None, acfg_kw=None, saver=None, clock=None, **cfg):
     cfg.setdefault("stranger_after", 1.0)
     cfg.setdefault("keep", 5.0)
     det = FakeDetector()
     acfg = AppearanceConfig(enabled=True, **(acfg_kw if acfg_kw is not None else {"every": 1, "min_samples": 3}))
-    extra = {}
+    extra = {"clock": clock} if clock is not None else {}
     if appearance:
         emb = ColorEmbedder()
-        extra = dict(appearance=AppearanceBook(acfg, emb.key, keep=cfg["keep"]), embedder=emb, appearance_cfg=acfg)
+        extra |= dict(appearance=AppearanceBook(acfg, emb.key, keep=cfg["keep"]), embedder=emb, appearance_cfg=acfg)
     w = PerceptionWatcher(
         det, FakeOcr(OCR), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
         log_roi=[0.0, 0.0, 0.335, 0.855], background=False, hardcases=hardcases, saver=saver, **extra,
@@ -454,3 +454,93 @@ def test_far_stranger_not_described():
     run(w, det, [(big_me, GREEN), (player(1500), WHITE)], 0.0, 2.0)
     assert players(w)[0].data["sid"] == "陌生人A"
     assert [r for r in fake.requests if r[0] == "stranger"] == []
+
+
+# ---- 终审修正 ----
+class Vanishing(dict):
+    """身体线程读的同时感知线程刚好 pop 掉：get 还拿到了值，再用 [] 取就 KeyError。"""
+
+    def __getitem__(self, k):
+        if k in ("maybe", "sid", "name"):
+            raise KeyError(k)
+        return super().__getitem__(k)
+
+
+def test_people_and_overlay_read_each_key_once():
+    w, det = make()
+    friend_then_gone(w, det)
+    run(w, det, [], 1.1, 2.4)
+    items = [(player(400), PINK), (player(1500), WHITE), (player(1000), GREEN), (tag(990, 120), None)]
+    t = run(w, det, items, 2.5, 4.6)
+    who = {p.data.get("maybe") or p.data.get("name") or p.data.get("sid") for p in players(w)}
+    assert who == {XIAOMING, FANQIE, "陌生人A"}
+    book = w.appearance
+    book.set_desc("friend", XIAOMING, "粉色长斗篷", book.friends[XIAOMING].feat)
+    book.set_desc("friend", FANQIE, "绿斗篷", book.friends[FANQIE].feat)
+    book.set_desc("stranger", "陌生人A", "白斗篷", book.strangers["陌生人A"].feat)
+    for p in players(w):
+        p.data = Vanishing(p.data)
+    got = {(p.kind, p.name, p.sid, p.sure, p.look) for p in w.people(t)}
+    assert got == {("friend", XIAOMING, None, False, ""), ("friend", FANQIE, None, True, ""),
+                   ("stranger", None, "陌生人A", True, "白斗篷")}
+    boxes = {(b["kind"], b["label"], b.get("desc")) for b in w.overlay(t) if b["kind"] in ("maybe", "friend", "stranger")}
+    assert boxes == {("maybe", f"像{XIAOMING}?", "粉色长斗篷"), ("friend", FANQIE, "绿斗篷"),
+                     ("stranger", "陌生人A", "白斗篷")}
+
+
+def test_hold_longer_than_keep_does_not_report_stranger_back():
+    clock = Clock()
+    w, det = make(clock=clock)
+    run(w, det, [(player(1500), WHITE)], 0.0, 2.0)
+    assert players(w)[0].data["sid"] == "陌生人A"
+    clock.t = 2.0
+    w.hold("camera")  # 转了 7 秒圈（> keep），人一直没走
+    clock.t = 9.0
+    w.release("camera")
+    run(w, det, [], 9.1, 11.0)  # 旧轨迹过了 track_buffer 删掉
+    run(w, det, [(player(800), WHITE)], 11.1, 12.5)  # 镜头转回来：换了条轨迹
+    assert players(w)[0].data["sid"] == "陌生人A"
+    assert w.pop_stranger_backs() == []
+
+
+def change_twice(w, det):
+    """卡里是粉的那一套（带描述）：粉 → 绿 → 又换回粉，每段 2 秒挂着标签。返回每段之后的装扮状态。"""
+    w.appearance.load_cards({XIAOMING: card(PINK, "粉色长斗篷")})
+    body, label = player(1000), tag(990, 110)
+    out = []
+    for color, (a, b) in ((PINK, (0.0, 2.0)), (GREEN, (2.1, 4.0)), (PINK, (4.1, 6.0))):
+        run(w, det, [(body, color), (label, None)], a, b)
+        out.append([n.state for n in w.pop_outfits()])
+    return out
+
+
+def test_describe_off_notes_every_mid_session_change():
+    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False})
+    fake = w.wardrobe = FakeWardrobe()
+    assert change_twice(w, det) == [["same"], ["changed"], ["changed"]]
+    assert fake.requests == [] and w._describe_want == set()
+    assert w.appearance.friends[XIAOMING].redescribed == 2
+
+
+def test_no_wardrobe_notes_every_mid_session_change():
+    w, det = make()  # 没挂描述器
+    assert change_twice(w, det) == [["same"], ["changed"], ["changed"]]
+    assert w._describe_want == set()
+
+
+def test_change_again_while_redescription_pending():
+    w, det = make()
+    fake = w.wardrobe = BusyWardrobe()  # 描述器一直没回（或者放弃了）：want 一直挂着
+    assert change_twice(w, det) == [["same"], ["changed"], ["changed"]]
+    assert fake.requests == [("friend", XIAOMING)]  # 第一次换装的请求还排着，后面的被拒
+
+
+def test_one_outfit_change_is_noted_once_while_average_catches_up():
+    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False, "redescribe_max": 3})
+    w.appearance.load_cards({XIAOMING: card(PINK, "粉色长斗篷")})
+    body, label = player(1000), tag(990, 110)
+    run(w, det, [(body, PINK), (label, None)], 0.0, 2.0)
+    w.pop_outfits()
+    run(w, det, [(body, GREEN), (label, None)], 2.1, 8.0)  # 平均特征慢慢从粉挪到绿：只算一次换装
+    assert [n.state for n in w.pop_outfits()] == ["changed"]
+    assert w.appearance.friends[XIAOMING].redescribed == 1

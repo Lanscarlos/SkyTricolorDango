@@ -204,7 +204,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **攒数据**（`save`，默认开）：好样本存进 `runs/<…>/appearance/`（见「运行目录」），以后训认人模型用（spec §8，这一期不做）
 - **识别可视化**：按外观认的好友画浅绿虚线、标"像小明?"，陌生人标编号，鼠标悬停看装扮
 - **已知限制**：颜色直方图不看亮度，白 / 灰 / 黑发色、同色深浅分不开；不同地图、白天晚上光照差得多，跨天靠关系卡认人弱（所以 `card_match` 更严）；撞衫（季节装扮、默认斗篷）会认错；身高没做；没点火的黑影没有外观
-- `enabled = false` 完全照旧（提示词、事件、status 逐字一样）；管理面板有 `appearance.enabled`、`appearance.describe` 两个开关
+- `enabled = false` 照旧：系统提示词的规矩、事件、status、`people()` / 识别框逐字一样；只有 `look_person` 工具说明里总写着能传「陌生人A」（关着时找不到、照常报没找到，无害）；管理面板有 `appearance.enabled`、`appearance.describe` 两个开关
+- 中途换装：好友 / 团子的平均特征离上次描述（或上次换装稳下来时）低于 `changed` 就记一次换装（好友发 `changed`），平均特征挪稳到新那套之前不再判；不看描述有没有回来（描述关了、没挂描述器、描述器放弃了照样判），最多 `redescribe_max` 次
 
 ## 识别可视化（`[viewer]`，`view` / `run --view`）
 

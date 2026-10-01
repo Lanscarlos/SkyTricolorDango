@@ -157,6 +157,22 @@ def test_run_brain_without_appearance_prompt_unchanged(tmp_path, monkeypatch):
     assert APPEARANCE_RULES.splitlines()[0] not in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
 
 
+def test_description_finishing_at_shutdown_still_reaches_ledger(tmp_path, monkeypatch):
+    cfg, run, world, seen = brain_with_perception(tmp_path, monkeypatch)
+
+    def late_run(self, stop):  # 下线时手上那一个描述刚好回来
+        stop.wait()
+        time.sleep(0.3)
+        self.on_done("friend", "小明", "粉色斗篷", [1.0, 0.0])
+
+    monkeypatch.setattr("skydango.vision.wardrobe.Wardrobe.run", late_run)
+    described = []
+    monkeypatch.setattr("skydango.inner.ledger.Ledger.describe_outfit",
+                        lambda self, name, desc, now: described.append((name, desc, self._closed)))
+    cli._run_brain(cfg, run, world, 1.0)
+    assert described == [("小明", "粉色斗篷", False)]  # 账本收尾之前记上了
+
+
 def test_run_brain_bad_cards_only_logged(tmp_path, monkeypatch, caplog):
     cfg, run, world, seen = brain_with_perception(tmp_path, monkeypatch)
 
