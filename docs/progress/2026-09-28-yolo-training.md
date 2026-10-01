@@ -155,7 +155,7 @@ python -m skydango record --seconds 120 --fps 8 -o tmp/record/gesture-wave-1
 - 一段只录一种动作，目录名写动作（`gesture-wave-1`、`gesture-bow-1`……）；每次做完停 2~3 秒再做下一次，一段做 20~30 次
 - 每种动作换 2~3 个站位 / 角度（正面、侧一点、远一点）各录一段
 - **反例**（`none`）也要：好友站着不动、走来走去、坐下、做别的动作（拍手、跳舞……）各录一段，否则模型会把什么都当成挥手
-- 默认认挥手（`wave`）、鞠躬（`bow`）两种（`[gesture] labels`）；想加别的动作今晚一起录
+- 第一版认 **挥手（`wave`）、鞠躬（`bow`）、欢呼（`cheer`）、害羞（`shy`）** 四种（10-01 定的；`[gesture] labels` 到时候改）
 
 ### 明天白天
 
