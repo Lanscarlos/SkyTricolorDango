@@ -31,7 +31,7 @@
 
 - 运行时：冻住的 DINOv2-small（`models/dinov2-small.onnx`，复用 `OnnxEmbedder`）+ 每个属性一个线性头（numpy，`.npz`）。Claude 只当标注老师（初分），不进运行时
 - 第一个头叫**外形**（`form`）：`not_person` 不是人 / `lit` 点过火 / `unlit` 黑影 / `spirit` 先祖 / `shared` 共享空间玩家 / `morph` 变身（雪人、白鹿……）
-- 放行：YOLO 高分框（≥ `[perception] conf`）照旧马上放行、复核稳定判"不是人"再撤；低分框（`person_conf` ~ `conf`）等复核说是人才放行
+- 放行：YOLO 高分框（≥ `[perception] conf`）照旧马上放行、复核稳定判"不是人"再撤；低分框（`[perception] low_conf` ~ `conf`）等复核说是人才放行；追踪器升级（10-02 已合并）里"低分框只续不开"对人物类放开：可以开**待复核**的新轨迹
 - 点没点火**两边都看**：YOLO 类别和外形头投票，带滞回
 - 已标注数据自动进训练集；对不上的框 Claude 初分 + 标注页确认；确认是人的**写回 `datasets/sky`**（先备份）
 - `[attrs] enabled` 默认关，过了上线门槛（§7）再开
@@ -78,9 +78,13 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 | 只有低分检测 | `form` 是人形五类（`lit` / `unlit` / `spirit` / `shared` / `morph` 任一）、概率 ≥ `accept`（0.6）、`form_n` ≥ 2 才放行 |
 | 还没复核过的低分轨迹 | 不放行 |
 
-- 跟踪器要收低分框：`_filter` 之前把 `player` / `player_unlit` 的门槛从 `conf` 降到 `person_conf`（0.2），别的类别照旧 `conf`。`low`（现在给 `promote_weak_self`、`LIT_LOW` 用的那批）的含义不变：仍然是 `< conf` 的检测
+- **接追踪器升级（10-02 已在 main）**：检测器已经按 `low_conf`（0.25）出框，`low_conf ~ conf` 的框作为 `low` 交给 `Tracker.update(…, low=)`，**只续旧轨迹、不开新轨迹**；只靠低分框续着的轨迹，续命（`sticky_names`）最多 `LOW_ONLY_MAX`（5 s）。这一期：
+  - `Tracker` 加参数 `open_low: frozenset[str]`（默认空 = 现在的行为）；`[attrs] enabled` 时传 `{"player", "player_unlit"}`：这两类的低分框配不上任何轨迹时开一条**待复核**的新轨迹（`strong_last` 保持 `-inf`，`data["strong"] = False`），返回值里和被低分框续上的轨迹一样附在后面
+  - 复核放行一次（§3.2 第 3 步结论是人形、概率 ≥ `accept`）就把 `track.strong_last = now`：复核等于一次高分确认，续命和"只靠低分框"的 5 秒上限照这个时间算；被撤下的轨迹不刷新
+  - 门槛不另设：摸底是在 0.2 做的、现在 `low_conf` 是 0.25，`attrs-train` 报告里两档都回放一遍，再决定要不要把 `low_conf` 调到 0.2（它也影响难例收集和续轨迹）
+  - `low`（给 `promote_weak_self`、`LIT_LOW`、难例用的那批）含义不变
 - 被撤下 / 没放行的轨迹照样留在 `tracker` 里（不删，免得下一帧又建一条新的从头复核），只是不进 `players`、不进 `_people_boxes`
-- `enabled = false` 时：门槛不降、`admit` 恒真，和现在逐字一样
+- `enabled = false` 时：`open_low` 为空、`admit` 恒真，和现在逐字一样
 
 ### 3.4 点没点火
 
@@ -113,8 +117,8 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 来源三种（可以一次给几个）：
 
 1. **已标注数据集**（`datasets/sky`）：人物类标注框直接裁，自带类别 —— `player` → `lit`、`player_unlit` → `unlit`、`spirit`（编号 9）→ `spirit`；`self` 不要。增强图（`perception augment` 出的）不要
-2. **同一个数据集上模型跑出来、和标注对不上的框**：`--model` 在 `person_conf` 跑，`player` / `player_unlit` 预测框和任何人物标注 IoU < 0.4 的裁出来，**类别未知**
-3. **难例**（`runs/*/hard/` 或任意录像目录）：模型在 `person_conf` 跑出来的人物框，类别未知；同一张图里两框 IoU ≥ 0.5 只要一个
+2. **同一个数据集上模型跑出来、和标注对不上的框**：`--model` 在 `--conf`（默认 0.2）跑，`player` / `player_unlit` 预测框和任何人物标注 IoU < 0.4 的裁出来，**类别未知**
+3. **难例**（`runs/*/hard/` 或任意录像目录）：模型在 `--conf` 跑出来的人物框，类别未知；同一张图里两框 IoU ≥ 0.5 只要一个
 
 裁图存 `datasets/attrs/_unlabeled/<来源帧名>__<x>_<y>_<w>_<h>.jpg`，旁边一份 `_crops.jsonl`（来源图、框、模型分数、YOLO 类别、从哪来）；
 已知类别的直接进 `datasets/attrs/form/<类别>/`。重跑跳过已经有的（按文件名）。
@@ -144,15 +148,15 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 - **样本不够**：某一类训练样本 < `min_per_class`（20）时，`shared` / `morph` 并进 `lit`（都是点过火的玩家，后果一样）；`spirit` 不够就从头里去掉（训练时丢掉这类样本），运行时先祖照旧只靠 YOLO 的 `spirit` 类。`not_person` / `lit` / `unlit` 任何一类不够就不出模型、报错。报告里写明哪类被并 / 被去掉
 - **输出**：`models/attrs-<日期>.npz`（不覆盖 `[attrs] model` 指的那个，要覆盖加 `--force`）+ `tmp/attrs-train/<时间>/report.md`：
   - 每类精确率 / 召回率 / 混淆矩阵
-  - **整帧回放**：`datasets/sky` 的验证帧上，模拟 §3.3 的放行（单帧版：每个框当成复核了 `reject_n` 次同样的结果），比较"只用 YOLO（门槛 `conf`）"和"YOLO（`person_conf`）+ 复核"的人物精确率 / 召回率，以及点没点火认反几个
+  - **整帧回放**：`datasets/sky` 的验证帧上，模拟 §3.3 的放行（单帧版：每个框当成复核了 `reject_n` 次同样的结果），比较"只用 YOLO（门槛 `conf`）"和"YOLO（0.2 和 `low_conf` 两档）+ 复核"的人物精确率 / 召回率，以及点没点火认反几个
   - 建议的 `accept` / `reject`（在验证集上扫一遍，精确率不低于只用 YOLO 前提下召回最高的那组）
 
 `perception attrs-eval <录像目录或数据集> --model 模型`：只做整帧回放和报告，不训练。
 
 ## 6. 出错和边界
 
-- `[attrs] model` 不存在 / 打不开 / 主干对不上：启动时 WARNING 一次，`PersonAttrs` 不建，等于 `enabled = false`（门槛也不降）
-- 单帧 `predict` 出错：`log.exception`，这一帧不更新任何轨迹（放行状态沿用上一帧）；连续 `max_errors`（10）帧出错就关掉整个第二层、门槛恢复，WARNING
+- `[attrs] model` 不存在 / 打不开 / 主干对不上：启动时 WARNING 一次，`PersonAttrs` 不建，等于 `enabled = false`（也不开低分轨迹）
+- 单帧 `predict` 出错：`log.exception`，这一帧不更新任何轨迹（放行状态沿用上一帧）；连续 `max_errors`（10）帧出错就关掉整个第二层、不再开低分轨迹，WARNING
 - 低分轨迹在复核前一律不放行（宁可晚一点看到）
 - 跟踪器里留着的被撤轨迹（§3.3）跟着跟踪器的 `buffer` 正常过期
 - `[perception] enabled = false` 时 `[attrs]` 不生效
@@ -174,7 +178,7 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 
 ## 9. 实施顺序和验证
 
-**前置**：`feat/light-flame` 合进 main 之后再动 `perception.py`（它正在改同一个文件的点火部分）。追踪器升级（`2026-10-01-tracking-relink-motion-design.md`）和这份互不依赖，谁先做都行；后做的那个在 `process()` 里接上对方：失踪好友接回不接 `rejected` 的轨迹和外形是 `spirit` / `shared` 的轨迹。
+**前置**：`feat/light-flame` 合进 main 之后再动 `perception.py`（它正在改同一个文件的点火部分）。追踪器升级（`2026-10-01-tracking-relink-motion-design.md`）10-02 已合并，这一期在它上面接：`open_low` 和复核刷新 `strong_last`（§3.3）；失踪好友接回（`relink`）、续命（`sticky_names`）、运动方向不接 `rejected` 的轨迹和外形是 `spirit` / `shared` 的轨迹；`track-eval` 加一列"复核撤下 / 放行"。
 
 1. 测速：`dinov2-small.onnx` 在 cuda 上单张 / 批 4 张各多少 ms，导出的有没有 batch 维（没有就重导一份带动态 batch 的，放 `models/dinov2-small-b.onnx`）
 2. 数据：`perception crops datasets/sky --model models/sky-yolo-v7.pt` + 难例 → `attrs-label` → 标注页确认 → `--writeback`
@@ -197,7 +201,6 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 | `model` | `"models/attrs.npz"` | |
 | `backbone` | `"models/dinov2-small.onnx"` | 必须和 npz 里记的一致 |
 | `device` | 跟 `[perception] device` | |
-| `person_conf` | 0.2 | 人物类的 YOLO 门槛（只在 `enabled` 时降） |
 | `every` | 0.5 | 每条轨迹多久裁一次（秒） |
 | `max_crops` | 4 | 每帧最多裁几张 |
 | `votes` | 5 | 每条轨迹留几次结果 |
@@ -212,7 +215,7 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 ## 11. 改哪些文件
 
 - 新：`vision/attrs.py`（`AttrModel`、`crop`、`PersonAttrs`、`is_unlit`）、`vision/attrs_data.py`（`crops`、writeback、`attrs-label` 的提示词和解析）、`vision/attrs_train.py`（切分、特征缓存、逻辑回归、回放报告）
-- 改：`vision/perception.py`（门槛、`update` / `admit`、`is_unlit` 替换、先祖 / 共享空间、`objects()` 去重）、`vision/people.py`（`form`）、`vision/hardcases.py`（两种原因）、`vision/viewer.py` + 静态页（画法）、
+- 改：`vision/track.py`（`open_low`）、`vision/perception.py`（`open_low` / 复核刷新 `strong_last`、`update` / `admit`、`is_unlit` 替换、先祖 / 共享空间、`objects()` 去重）、`vision/people.py`（`form`）、`vision/hardcases.py`（两种原因）、`vision/viewer.py` + 静态页（画法）、
   `console/labeling.py` + 标注页 js（「外形」标签页）、`config.py`（`AttrsConfig`）、`cli.py`（`perception crops / attrs-label / attrs-train / attrs-eval`、`bench --attrs`）、`brain` 里拼 status 的地方（先祖 / 共享空间的说法）
 - 文档：CLAUDE.md 代码结构表和「YOLO 感知层」一节、进度文档
 
