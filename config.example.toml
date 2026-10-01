@@ -147,7 +147,9 @@ match = 0.85                    # 相似度门槛（估的，以离线标定为�
 card_match = 0.92               # 只有关系卡旧特征时的门槛（更严）
 margin = 0.05                   # 最像的要比第二像的高这么多
 recheck = 5                     # maybe 连续这么多个新样本低于门槛就摘掉
-changed = 0.70                  # 低于它算换了装
+outfit_change = false           # 判不判换装：颜色特征下同一身衣服常被误判成换装（10-01 标定），默认不判；
+                                # 关着时好友 / 团子每次上线描述一次、覆盖关系卡最近那一套
+changed = 0.40                  # outfit_change 开着时：低于它算换了装
 stranger_forget = 1800.0        # 陌生人编号这么久没出现就忘掉（秒）
 describe = true                 # 关掉就只认人、不调模型
 describe_model = "haiku"

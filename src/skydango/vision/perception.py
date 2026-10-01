@@ -693,9 +693,10 @@ class PerceptionWatcher:
     def _outfit_triggers(self, kind: str, who: str, p, box: Rect, frame_h: int, now: float) -> None:
         book, acfg = self.appearance, self.appearance_cfg
         key = (kind, who)
+        change = acfg.outfit_change  # 关着（默认）：不判换装，好友 / 团子每次上线描述一次
         # 判中途换装不看 want（描述关了、没挂描述器、描述器放弃了，want 都清不掉）：一次换装只算一次靠 mark_changed
         if kind == "me":
-            if p.desc and p.redescribed < acfg.redescribe_max and book.drifted("me", ""):
+            if change and p.desc and p.redescribed < acfg.redescribe_max and book.drifted("me", ""):
                 p.redescribed += 1
                 log.info("团子换了装扮，重新描述（这次上线第 %d 次）", p.redescribed)
                 self._redescribe(key)
@@ -707,16 +708,18 @@ class PerceptionWatcher:
                     return
                 p.checked = True
                 state = book.card_state(who)
+                if not change and state == "changed":
+                    state = "same"  # 不判换装：只更新关系卡最近那一套，描述回来后覆盖它
                 log.info("%s 的装扮：%s", who, {"new": "第一次记", "same": "和上次一样", "changed": "换了"}[state])
                 self._note(who, p.feat, state)
                 card = book.card_desc.get(who, "")
-                if state == "same" and card:
+                if change and state == "same" and card:
                     book.set_desc("friend", who, card, p.feat)  # 同一套：直接用卡里的描述，不再花额度
                     return
                 if self._describing():
                     with self._lock:
                         self._describe_want.add(key)
-            elif p.redescribed < acfg.redescribe_max and book.drifted("friend", who):
+            elif change and p.redescribed < acfg.redescribe_max and book.drifted("friend", who):
                 p.redescribed += 1
                 log.info("%s 中途换了装扮，重新描述（这次上线第 %d 次）", who, p.redescribed)
                 self._note(who, p.feat, "changed")
@@ -767,7 +770,7 @@ class PerceptionWatcher:
         feat = unit(feat)
         key = (kind, who)
         p = book.me if kind == "me" else (book.friends if kind == "friend" else book.strangers).get(who)
-        if p is not None and cosine(feat, p.feat) < self.appearance_cfg.changed:
+        if self.appearance_cfg.outfit_change and p is not None and cosine(feat, p.feat) < self.appearance_cfg.changed:
             # 送去描述之后换了装（请求在描述器里排着时）：这是上一套的描述，不记、不推，want 留着，
             # 这一套等下一个样本再请求（不算一次重新描述）
             log.info("装扮描述：%s 已经换了装，丢掉上一套的描述「%s」", who or "团子", desc)

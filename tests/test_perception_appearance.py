@@ -56,7 +56,7 @@ def make(appearance=True, hardcases=None, acfg_kw=None, saver=None, clock=None, 
     cfg.setdefault("stranger_after", 1.0)
     cfg.setdefault("keep", 5.0)
     det = FakeDetector()
-    acfg = AppearanceConfig(enabled=True, **(acfg_kw if acfg_kw is not None else {"every": 1, "min_samples": 3}))
+    acfg = AppearanceConfig(enabled=True, **(acfg_kw if acfg_kw is not None else {"every": 1, "min_samples": 3, "outfit_change": True}))
     extra = {"clock": clock} if clock is not None else {}
     if appearance:
         emb = ColorEmbedder()
@@ -303,7 +303,7 @@ ME_BOX = Detection("self", Rect(900, 500, 100, 250), 0.9)
 
 
 def test_me_described_once_then_on_drift():
-    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "redescribe_max": 1})
+    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "redescribe_max": 1, "outfit_change": True})
     fake = w.wardrobe = FakeWardrobe()
     run(w, det, [(ME_BOX, GREEN)], 0.0, 1.0)
     assert fake.requests == [("me", "")] and fake.calls[0][2] == 0  # ME 优先级
@@ -429,7 +429,7 @@ def test_short_friend_box_waits_for_a_taller_sample():
 
 
 def test_describe_off_still_notes_outfits():
-    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False})
+    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False, "outfit_change": True})
     fake = w.wardrobe = FakeWardrobe()
     run(w, det, [(ME_BOX, GREEN), (player(1400), PINK), (tag(1390, 110), None)], 0.0, 2.0)
     assert [n.state for n in w.pop_outfits()] == ["new"] and fake.requests == []
@@ -515,7 +515,7 @@ def change_twice(w, det):
 
 
 def test_describe_off_notes_every_mid_session_change():
-    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False})
+    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False, "outfit_change": True})
     fake = w.wardrobe = FakeWardrobe()
     assert change_twice(w, det) == [["same"], ["changed"], ["changed"]]
     assert fake.requests == [] and w._describe_want == set()
@@ -536,7 +536,7 @@ def test_change_again_while_redescription_pending():
 
 
 def test_one_outfit_change_is_noted_once_while_average_catches_up():
-    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False, "redescribe_max": 3})
+    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False, "redescribe_max": 3, "outfit_change": True})
     w.appearance.load_cards({XIAOMING: card(PINK, "粉色长斗篷")})
     body, label = player(1000), tag(990, 110)
     run(w, det, [(body, PINK), (label, None)], 0.0, 2.0)
@@ -544,3 +544,48 @@ def test_one_outfit_change_is_noted_once_while_average_catches_up():
     run(w, det, [(body, GREEN), (label, None)], 2.1, 8.0)  # 平均特征慢慢从粉挪到绿：只算一次换装
     assert [n.state for n in w.pop_outfits()] == ["changed"]
     assert w.appearance.friends[XIAOMING].redescribed == 1
+
+
+# ---- [appearance] outfit_change = false（默认）：不判换装，每次上线描述一次 ----
+OFF = {"every": 1, "min_samples": 3}  # outfit_change 用默认（关）
+
+
+def test_outfit_change_off_friend_described_each_session_and_never_changed():
+    w, det = make(acfg_kw=OFF)
+    fake = w.wardrobe = FakeWardrobe()
+    w.appearance.load_cards({XIAOMING: card(GREEN, "绿斗篷")})  # 卡里是上次的绿斗篷，今天穿粉的
+    body, label = player(1000), tag(990, 110)
+    run(w, det, [(body, PINK), (label, None)], 0.0, 2.0)
+    assert [n.state for n in w.pop_outfits()] == ["same"]  # 不说"换了"：只更新最近那一套
+    assert fake.requests == [("friend", XIAOMING)]  # 卡里有描述也照样描述一次（今天这身）
+    assert w.looks([XIAOMING]) == {}  # 描述回来之前不拿上次的旧描述说事
+    w.on_described("friend", XIAOMING, "粉色长斗篷", w.appearance.friends[XIAOMING].feat)
+    assert [n.state for n in w.pop_outfits()] == ["described"] and w.looks([XIAOMING]) == {XIAOMING: "粉色长斗篷"}
+    run(w, det, [(body, GREEN), (label, None)], 2.1, 6.0)  # 上线中途颜色变了：不判换装、不重新描述
+    assert w.pop_outfits() == [] and fake.requests == [("friend", XIAOMING)] and fake.resets == []
+    assert w.appearance.friends[XIAOMING].redescribed == 0
+
+
+def test_outfit_change_off_friend_without_card_is_new():
+    w, det = make(acfg_kw=OFF)
+    fake = w.wardrobe = FakeWardrobe()
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
+    assert [n.state for n in w.pop_outfits()] == ["new"] and fake.requests == [("friend", XIAOMING)]
+
+
+def test_outfit_change_off_me_described_once():
+    w, det = make(acfg_kw=OFF)
+    fake = w.wardrobe = FakeWardrobe()
+    run(w, det, [(ME_BOX, GREEN)], 0.0, 1.0)
+    w.on_described("me", "", "绿色斗篷", w.appearance.me.feat)
+    run(w, det, [(ME_BOX, PINK)], 1.1, 4.0)
+    assert fake.requests == [("me", "")] and fake.resets == [] and w.my_look() == "绿色斗篷"
+
+
+def test_outfit_change_off_keeps_description_even_if_features_moved():
+    w, det = make(acfg_kw=OFF)
+    w.wardrobe = FakeWardrobe()
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
+    w.pop_outfits()
+    w.on_described("friend", XIAOMING, "粉色长斗篷", solid_feat(GREEN))  # 颜色特征飘得厉害：不当成上一套的描述丢掉
+    assert [n.state for n in w.pop_outfits()] == ["described"] and w.looks([XIAOMING]) == {XIAOMING: "粉色长斗篷"}
