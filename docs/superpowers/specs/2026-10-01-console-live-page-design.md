@@ -80,7 +80,10 @@
   - **said**：`say` 走到发送那一步之后。dry-run（没真的发）时 text 后面加「（dry-run，没真的发）」。手动控制让团子说的也记
   - **act**：`emote` 做成之后「（团子做了 X）」；反射动作「（团子下意识地 X）」；身体替大脑冒输入气泡「（团子头顶冒出输入气泡）」（同沙盒的文字）
   - **blocked**：`_blocked` 里，who = "团子"，why = 原因（`on_blocked` 本身不动，真机另外走 `on_line`）
-  - **event**：好友来了 / 走了 / 回来了、黑屏切场景、牵手 / 松手，文字用对应事件给大脑的那句话（「── 小明 来到身边 ──」）。心里想的：`mused` 记下时「── 心里：… ──」
+  - **event**：心里想的：`mused` 记下时「── 心里：… ──」
+- **来去这类事件**不在身体里一处处加：`EventQueue` 加 `tap(fn)`，每放一个事件调 `fn(kind, text, who)`（合并没合并都调）；
+  `brain/transcript.py` 的纯函数 `event_line(kind, text, who)` 把好友来了 / 走开 / 回来、牵手 / 松手、整屏黑 / 恢复、陌生人又回来了变成一行
+  （「── 小明 来到身边 ──」），别的事件返回 None 不记。真机组装时 `events.tap(...)` 接上
 - **viewer 加** `viewer.chat`（`Transcript | None`）和 `GET /chat?after=<seq>&wait=<秒>`：有比 `after` 新的行立刻返回，否则最多等 `wait` 秒（上限 `viewer.WAIT` 2 秒：管理面板转发 `/live/*` 的超时只有 5 秒），返回 `{"v": 最新 seq, "lines": [...]}`。
   没挂 `chat` 时 404。Host 校验同别的接口
 - 管理面板经 `live/chat` 拿，不用改转发代码（`/live/*` 的 GET 都转）。普通 Agent 模式不挂 `chat`，右栏写「普通 Agent 没有聊天记录」
@@ -99,6 +102,7 @@
 | `brain/transcript.py` | 从 `sandbox/transcript.py` 挪过来 |
 | `sandbox/*.py`、`console/*.py` | 改 import |
 | `brain/body.py` | `on_line` 和各调用点 |
+| `brain/events.py` | `EventQueue.tap` |
 | `cli.py` | 真机 `_run_brain` 建 `Transcript`、接 `body.on_line`、挂 `viewer.chat` |
 | `console/static/chatlog.js` | 新：聊天行渲染（`lineKind`、`chatLine`、`appendChat`），从 `sandbox.js` 抽出来，沙盒和真机共用 |
 | `console/static/livectl.js` | 新：手动控制 |
