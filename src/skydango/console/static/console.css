@@ -256,6 +256,7 @@ input[type=checkbox],input[type=radio]{accent-color:var(--matcha)}
 .tl>li:last-child::after{bottom:auto;height:14px}
 .tl>li::before{content:"";position:absolute;z-index:1;left:6px;top:10px;width:11px;height:11px;border-radius:50%;background:var(--mc,var(--ash));box-shadow:0 0 0 3px var(--card)}
 .tl>li.flash{animation:flash 1.6s}
+@keyframes flash-sakura{0%,40%{background:var(--sakura-bg)}100%{background:transparent}}
 @keyframes flash{0%,40%{background:var(--flash)}100%{background:transparent}}
 .tl .when{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}
 .tl .final{color:var(--sakura-ink);background:var(--sakura-bg);border-radius:4px;padding:0 6px;font-size:11px}
@@ -302,7 +303,7 @@ h4.note{margin:0 0 4px;font-weight:500}
 .sb-when label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
 #sb-when-at{width:210px}
 .sb-floor{margin:0}
-#sb-problems .problems{margin:0}
+#sb-problems .problems,#problems .problems{margin:0}
 .sb-orphan{margin-top:6px}
 .sb-clock{display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap}
 .sb-time>small{display:block;font-size:11.5px;color:var(--muted);letter-spacing:.1em;line-height:1.3}
@@ -421,7 +422,8 @@ h4.note{margin:0 0 4px;font-weight:500}
 #sc-reader pre code{background:none;padding:0}
 
 /* ---- 真机 ---- */
-#launch{max-width:560px}
+#idle-cols{grid-template-columns:minmax(0,560px) minmax(0,1fr);align-items:start}
+#idle-cols[hidden]{display:none}
 .launch-body{display:flex;flex-direction:column;gap:10px}
 #launch fieldset{border:1px solid var(--line);border-radius:8px;margin:0;padding:6px 12px 8px}
 #launch legend{padding:0 6px;color:var(--muted);font-size:12.5px}
@@ -456,7 +458,7 @@ h4.note{margin:0 0 4px;font-weight:500}
 .group h2{font-size:14px;font-weight:600;letter-spacing:.08em;margin:10px 0 4px}
 .settings-main .row{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,4fr);gap:8px 20px;padding:10px 8px;border-top:1px solid var(--line);border-radius:8px}
 .settings-main .row.dirty{box-shadow:inset 3px 0 0 var(--amber)}
-.settings-main .row.flash{animation:flash 2s;box-shadow:inset 0 0 0 2px var(--sakura)}
+.settings-main .row.flash{animation:flash-sakura 2s;box-shadow:inset 0 0 0 2px var(--sakura)}
 .settings-main label{font-weight:600}
 .settings-main .src{margin-left:8px;font-size:11.5px;color:var(--muted);background:var(--hover);border-radius:999px;padding:0 8px}
 .settings-main .src.secrets,.settings-main .src.console{color:var(--sakura-ink);background:var(--sakura-bg)}

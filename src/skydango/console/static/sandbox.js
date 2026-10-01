@@ -181,6 +181,9 @@ function renderSandbox() {
   }
   if (!running && SB.running) {
     SB.running = false; SB.gen++; unmountBrain(); renderSbNow(); $("sb-quiet").textContent = "";
+    const tg = $("sb-friends"); tg.textContent = ""; tg.append(el("span", "note", "没有好友在身边"));
+    $("sb-strangers").textContent = "0"; $("sb-place").value = ""; $("sb-scene-text").value = ""; SB.sceneDirty = false;
+    $("sb-energy").textContent = ""; $("sb-limit").hidden = true;
   }
   if (sig !== SB.sig) { SB.sig = sig; if (!busy) sbLoadInfo(); }  // 停下了、团子起来了 / 停了：预检问题会变
   $("sb-start").hidden = busy; $("sb-clock").hidden = !running;
@@ -303,7 +306,7 @@ function sandboxSummary() {
   const energy = (SB.state.energy && SB.state.energy.level) || (now && now.energy && now.energy.level);
   return summaryText(sbNow(), mood, energy);
 }
-function sandboxClock() { return SB.state ? sbNow() : 0; }  // 0 = 不知道（内心页退回真实时间）
+function sandboxClock() { return SB.running && SB.state ? sbNow() : Math.max(Date.now() / 1000, (SB.info && SB.info.floor) || 0); }
 
 Object.assign(globalThis, {Sandbox: {lineKind, summaryText}, sandboxSummary, sandboxClock, onReplay, pullReplay});
 Pages.sandbox = {

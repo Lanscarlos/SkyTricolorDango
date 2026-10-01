@@ -332,5 +332,13 @@ def test_sandbox_info_has_problems(srv):  # 没有 Claude 令牌
 def test_serves_console_static(srv):
     with urllib.request.urlopen(srv.url + "console/static/console.css", timeout=5) as r:
         assert r.status == 200 and "text/css" in r.headers["Content-Type"]
-    for bad in ("console/static/console.html", "console/static/../server.py", "console/static/%2e%2e/server.py", "console/static/nope.js"):
+    for bad in ("console/static/console.html", "console/static/../server.py", "console/static/%2e%2e/server.py", "console/static/nope.js", "console/static/con.js", "console/static/nul.js", "console/static/aux.css"):
         assert request(srv.url + bad)[0] == 404
+
+
+def test_console_static_device_names_never_touch_fs():
+    from skydango.console.server import _console_static
+
+    for n in ("con.js", "nul.js", "aux.css", "com1.js", "nope.js"):
+        assert _console_static(n) is None
+    assert _console_static("console.css") is not None

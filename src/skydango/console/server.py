@@ -51,12 +51,16 @@ _STATIC_TYPES = {"css": "text/css; charset=utf-8", "js": "text/javascript; chars
 
 
 def _console_static(name: str) -> tuple[str, bytes] | None:
-    """`console/static/` 下的 css / js；名字不合规矩或不存在返回 None。"""
+    """`console/static/` 下的 css / js；只给目录列表里真有的普通文件
+    （con.js、nul.js、aux.css 这类 Windows 设备名不会碰文件系统）。"""
     m = _STATIC_NAME.fullmatch(name)
     if m is None or ".." in name:
         return None
     try:
-        return _STATIC_TYPES[m.group(1)], (importlib.resources.files("skydango.console") / "static" / name).read_bytes()
+        root = importlib.resources.files("skydango.console") / "static"
+        if not any(e.name == name and e.is_file() for e in root.iterdir()):
+            return None
+        return _STATIC_TYPES[m.group(1)], (root / name).read_bytes()
     except (OSError, FileNotFoundError):
         return None
 

@@ -23,9 +23,14 @@ function innerOff(d) { return d.source === "live" ? "（没开反思）" : "（�
 function innerUrl(source) { return source && source !== "dango" ? `api/inner?source=${encodeURIComponent(source)}` : "api/inner"; }
 async function loadInner(source) {
   IN.source = source || "dango"; if (IN.loading) return; IN.loading = true;
-  try { const d = await getJSON(innerUrl(IN.source)); d.clock = innerClock(); IN.data = d; renderInner(d); }
-  catch (e) { const c = $("inner-source"); c.className = "chip warn"; c.textContent = "读不到内心数据（面板停了？）"; }
+  const asked = IN.source;
+  try {
+    const d = await getJSON(innerUrl(asked));
+    if (IN.source === asked) { d.clock = innerClock(); IN.data = d; renderInner(d); }  // 期间切了来源：这份是旧的，丢掉
+  }
+  catch (e) { if (IN.source === asked) { const c = $("inner-source"); c.className = "chip warn"; c.textContent = "读不到内心数据（面板停了？）"; } }
   finally { IN.loading = false; }
+  if (IN.source !== asked) return loadInner(IN.source);  // 来源变了：重新读
 }
 function renderInner(d) {
   const c = $("inner-source");
@@ -95,7 +100,7 @@ function renderCurve(container, log, d) {
   const s = svg("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "精力和心情曲线"});
   for (const [a, b, l] of moodSpans(log, from, to)) {
     const r = svg("rect", {x: x(a), y: T, width: Math.max(1, x(b) - x(a)), height: ih});
-    r.style.fill = MOOD_COLOR[l] || "var(--rice)"; r.style.opacity = ".3"; s.append(r);
+    r.style.fill = MOOD_COLOR[l] || "var(--rice)"; r.style.opacity = ".13"; s.append(r);
   }
   for (const [v, name] of [[70, "精神"], [50, "还行"], [30, "有点累"]]) {
     s.append(svg("line", {class: "grid", x1: L, x2: L + iw, y1: y(v), y2: y(v)}));

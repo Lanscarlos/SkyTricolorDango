@@ -23,7 +23,7 @@ function render() {
     $("opt-live").checked = l.live; $("opt-emotes").checked = l.emotes; $("opt-duration").value = l.duration > 0 ? l.duration : "";
     L.launchLoaded = true; liveWarn();
   }
-  $("launch").hidden = mine;
+  $("idle-cols").hidden = mine;
   const off = busy && isSb;                         // 沙盒在跑：表单整个置灰
   for (const x of $("launch").querySelectorAll("input,button")) x.disabled = off;
   if (!st.emotes_allowed) { $("opt-emotes").checked = false; $("opt-emotes").disabled = true; }  // config.toml 关了动作：只能关不能开
@@ -78,7 +78,9 @@ async function pullStatus() {
 
 async function pullLogs() {
   const run = S.state && S.state.run;
-  if (!run || run.kind === "sandbox" || !BUSY.includes(run.state)) return;
+  if (!run || run.kind === "sandbox") return;
+  if (!BUSY.includes(run.state)) { if (!L.drain) return; L.drain = false; }  // 刚停下：再拉最后一次，把收尾 / traceback 读进来
+  else L.drain = true;
   try {
     const r = await getJSON(`api/logs?after=${L.logNext}`), box = $("log");
     if (r.next < L.logNext) { L.logNext = 0; box.textContent = ""; return; }   // 重新启动过：从头来

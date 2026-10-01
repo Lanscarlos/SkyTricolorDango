@@ -118,6 +118,7 @@
   <section id="page-live" class="page" hidden>
     <div class="page-title"><h1>真机团子</h1><span class="chip" id="live-chip"></span><span class="grow"></span><span class="note" id="rundir"></span></div>
     <div id="banners"></div>
+    <div class="cols" id="idle-cols">
     <form class="pane" id="launch">
       <h3>这次怎么跑</h3>
       <div class="pane-body launch-body">
@@ -134,9 +135,11 @@
           <label class="choice"><input type="number" id="opt-duration" min="0" step="60" placeholder="一直跑"> 秒</label>
         </fieldset>
         <div class="launch-go"><button class="btn go" id="start" type="submit">叫醒团子</button></div>
-        <ul id="problems" class="problems" hidden></ul>
+        <div id="problems" hidden></div>
       </div>
     </form>
+    <div class="pane placeholder" id="launch-ph"><p class="note">叫醒之后这里显示实时画面、状态卡片和日志。</p></div>
+    </div>
     <div class="cols" id="watch" hidden>
       <div class="pane live-view"><iframe id="live-frame" title="实时识别画面"></iframe><p class="note" id="live-wait" hidden>团子还在启动，画面出来之后显示在这里。</p></div>
       <div class="live-side">
