@@ -49,7 +49,7 @@ def test_files_only(tmp_path):
     assert s["now"]["mood"]["level"] == "开心" and s["now"]["soft"] == [] and s["now"]["grudge"] is None
     assert [c["name"] for c in s["cards"]] == ["阿花", "路人甲"]  # 好友名单里的在前
     assert s["cards"][0] == {"name": "阿花", "friend": True, "first_met": NOW - 5 * 86400, "days": 2, "visits": 4,
-                             "last_seen": NOW - 60, "said": 10, "to_me": 6}
+                             "last_seen": NOW - 60, "said": 10, "to_me": 6, "outfits": []}
     assert s["cards"][1]["friend"] is False
     assert [r["kind"] for r in s["log"]] == ["energy", "reflect"]  # 7 天前的不给
     assert s["persona"]["catchphrases"][0]["text"] == "害"
@@ -208,3 +208,13 @@ def test_api_forget_dry_run_child_also_changes_file(srv):  # I4：dry-run 子进
     body = json.dumps({"kind": "catchphrase", "text": "害"}).encode()
     assert request(srv.url + "api/inner/forget", body, GOOD) == (200, {"ok": True})
     assert calls and json.loads((srv.inner_dir / "persona.json").read_text("utf-8"))["catchphrases"] == []
+
+
+def test_inner_view_shows_outfits(tmp_path):
+    st = InnerStore(tmp_path)
+    outs = [{"desc": f"套{i}", "feat": [0.1], "key": "k", "first": "2026-09-30", "last": "2026-10-01"} for i in range(4)]
+    st.write_people({"阿花": Card(first_met=NOW, outfits=outs)}, None)
+    s = inner_state(tmp_path, FRIENDS, "idle", lambda: None, NOW)
+    got = s["cards"][0]["outfits"]
+    assert [o["desc"] for o in got] == ["套1", "套2", "套3"]  # 最近 3 套，不带特征向量
+    assert got[0] == {"desc": "套1", "first": "2026-09-30", "last": "2026-10-01"}

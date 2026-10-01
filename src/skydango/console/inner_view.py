@@ -18,6 +18,7 @@ from ..inner.store import InnerStore
 log = logging.getLogger(__name__)
 
 LOG_SHOW_DAYS = 7  # 页面上看最近几天的流水账
+OUTFITS_SHOW = 3  # 关系卡上看最近几套装扮
 RECENT = 10  # 最近几次上线 / 几篇日记
 BUSY_ERROR = "团子正在启动 / 停止，稍等再删"
 
@@ -36,6 +37,8 @@ def _cards(store: InnerStore, friends: list[str]) -> list[dict]:
     return [{
         "name": n, "friend": n in friends, "first_met": c.first_met, "days": len(c.days), "visits": c.visits,
         "last_seen": c.last_seen, "said": c.lines, "to_me": c.to_me,
+        "outfits": [{"desc": o.get("desc", ""), "first": o.get("first", ""), "last": o.get("last", "")}
+                    for o in c.outfits[-OUTFITS_SHOW:]],  # 最近几套，不带特征向量
     } for n, c in ((n, cards[n]) for n in names)]
 
 

@@ -143,3 +143,58 @@ def test_card_line():
     c = Card(first_met=T0 - 86400, last_seen=T0 - 3600, visits=2, days=["2026-09-29", "2026-09-30"], lines=5, to_me=2)
     assert card_line("小明", c, T0) == "小明（今天刚来·认识 1 天·一起玩过 2 天）；见过 2 次，上次 1 小时前；说过 5 句，跟你说过 2 句"
     assert card_line("阿花", Card(first_met=T0), T0).endswith("；还没在身边见过；说过 0 句，跟你说过 0 句")
+
+
+F1, F2, F3, F4 = [0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]
+D1, D2, D3, D4 = T0, T0 + 86400, T0 + 2 * 86400, T0 + 3 * 86400
+
+
+def test_wear_new_then_same_updates_last_day():
+    led = ledger()
+    led.wear("小明", F1, "color-v1", False, D1)
+    led.wear("小明", F2, "color-v1", False, D2)
+    (o,) = led.all_outfits()["小明"]
+    assert (o["desc"], o["feat"], o["first"], o["last"]) == ("", F2, "2026-09-30", "2026-10-01")
+    assert led.card("小明").first_met == D1  # 没卡就建
+
+
+def test_wear_changed_appends_and_keeps_three():
+    led = ledger()
+    for f, d in ((F1, D1), (F2, D2), (F3, D3), (F4, D4)):
+        led.wear("小明", f, "k", True, d)
+    assert [o["feat"] for o in led.all_outfits()["小明"]] == [F2, F3, F4]
+    led.wear("路人甲", F1, "k", True, D1)  # 不认识的名字：什么都不做
+    assert "路人甲" not in led.all_outfits()
+    led2 = ledger(outfit_keep=1)
+    led2.wear("小明", F1, "k", True, D1)
+    led2.wear("小明", F2, "k", True, D2)
+    assert [o["feat"] for o in led2.all_outfits()["小明"]] == [F2]
+
+
+def test_describe_outfit_returns_previous_desc_only_for_a_change():
+    l = ledger()
+    assert l.describe_outfit("小明", "白斗篷", D1) is None  # 没装扮：不建
+    l.wear("小明", F1, "color-v1", True, D1)
+    assert l.describe_outfit("小明", "白斗篷", D1) is None  # 第一套，没有前一套
+    l.wear("小明", F2, "color-v1", True, D2)
+    assert l.describe_outfit("小明", "粉斗篷", D2) == "白斗篷"
+    assert l.all_outfits()["小明"][-1]["desc"] == "粉斗篷"
+
+
+def test_describe_outfit_no_event_for_outfit_from_earlier_session_or_empty_prev():
+    l = ledger()
+    l.wear("小明", F1, "k", True, D1)
+    l.wear("小明", F2, "k", True, D1)  # 前一套没描述
+    assert l.describe_outfit("小明", "粉斗篷", D1) is None
+    card = Card(first_met=D1, outfits=[{"desc": "旧", "feat": F1, "key": "k", "first": "2026-09-30", "last": "2026-09-30"},
+                                       {"desc": "", "feat": F2, "key": "k", "first": "2026-09-30", "last": "2026-09-30"}])
+    l2 = ledger(cards={"小明": card})
+    assert l2.describe_outfit("小明", "新", D1) is None  # 以前上线时加的，不算换装
+
+
+def test_outfits_are_copies():
+    led = ledger()
+    led.wear("小明", F1, "k", True, D1)
+    led.all_outfits()["小明"][0]["desc"] = "改了"
+    led.card("小明").outfits[0]["desc"] = "改了"
+    assert led.all_outfits()["小明"][0]["desc"] == ""

@@ -26,6 +26,7 @@ def open_ledger(
     turns: Callable[[], list[Turn]],  # history.jsonl 的全部轮次（回填用，只在要回填时读）
     persist: bool,
     now: float,
+    outfit_keep: int = 3,
 ) -> Ledger:
     """启动时：补上意外结束的那次 → 没有 people.json 就回填 → 建账本。dry-run（persist = False）什么都不写。
 
@@ -72,7 +73,7 @@ def open_ledger(
     except Exception:
         _log.exception("内心账本：读上线记录出错")
     _log.info("内心账本：%d 个好友的关系卡、以前上线 %d 次%s", len(cards), len(history), "" if persist else "（dry-run，不写盘）")
-    return Ledger(cfg, friends, now, cards, history, store, persist, backfilled)
+    return Ledger(cfg, friends, now, cards, history, store, persist, backfilled, outfit_keep)
 
 
 def show_lines(cfg: InnerConfig, directory: str | Path, friends: list[str], now: float) -> list[str]:

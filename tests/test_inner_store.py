@@ -95,3 +95,21 @@ def test_ledger_not_persisting_writes_nothing(tmp_path):
     assert led.save(T0) is False
     led.close("x", T0 + 1)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_old_people_json_without_outfits_loads(tmp_path):
+    (tmp_path / "people.json").write_text(
+        '{"version": 1, "people": {"小明": {"first_met": 1.0, "days": ["2026-09-30"]}}}', encoding="utf-8")
+    cards, _, ok = InnerStore(tmp_path).load_people()
+    assert ok and cards["小明"].outfits == []
+
+
+def test_outfits_written_only_when_live(tmp_path):
+    for persist, sub in ((True, "live"), (False, "dry")):
+        st = InnerStore(tmp_path / sub)
+        led = Ledger(CFG, lambda: FRIENDS, T0, store=st, persist=persist)
+        led.wear("小明", [0.1], "k", True, T0)
+        led.save(T0)
+        led.close("", T0 + 1)
+    assert InnerStore(tmp_path / "live").load_people()[0]["小明"].outfits[0]["feat"] == [0.1]
+    assert not (tmp_path / "dry").exists() or list((tmp_path / "dry").iterdir()) == []

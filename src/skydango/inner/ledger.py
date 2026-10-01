@@ -71,6 +71,7 @@ class Card:
     lines: int = 0  # 他在聊天里说过几句
     to_me: int = 0  # 其中跟团子说的
     last_line: dict | None = None  # {"t": 时间, "text": 最多 40 字}
+    outfits: list[dict] = field(default_factory=list)  # 最近几套装扮（旧到新）{"desc", "feat", "key", "first", "last"}
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -134,8 +135,11 @@ class Ledger:
         store=None,  # inner.store.InnerStore
         persist: bool = False,  # 只有 live 写盘
         backfilled: float | None = None,  # people.json 是什么时候回填的（写回去时带上）
+        outfit_keep: int = 3,  # 每个好友最多留几套装扮
     ) -> None:
         self.cfg = cfg
+        self.outfit_keep = max(1, outfit_keep)
+        self._appended: set[str] = set()  # 这次上线里新加过装扮的好友（describe_outfit 用来分辨是不是刚换装）
         self.friends = friends
         self.cards: dict[str, Card] = dict(cards or {})
         self.history: list[Session] = list(history or [])
@@ -198,6 +202,40 @@ class Ledger:
     def said(self, now: float) -> None:
         with self._lock:
             self.session.said += 1
+
+    def all_outfits(self) -> dict[str, list[dict]]:
+        """每个有装扮的好友的装扮（深拷贝；启动时给 AppearanceBook.load_cards）。"""
+        with self._lock:
+            return {n: copy.deepcopy(c.outfits) for n, c in self.cards.items() if c.outfits}
+
+    def wear(self, name: str, feat: list[float], key: str, changed: bool, now: float) -> None:
+        """感知层认出这个好友现在的装扮。changed 或还没有装扮 → 追加一套（desc 等描述回来再填），超过 outfit_keep 删最旧；
+        否则只更新最后一套的 last / feat / key。不认识的名字什么都不做。"""
+        with self._lock:
+            n = match_friend(name, self.friends())
+            if n is None:
+                return
+            card = self.cards.setdefault(n, Card(first_met=now))
+            today = day_of(now)
+            if changed or not card.outfits:
+                card.outfits.append({"desc": "", "feat": list(feat), "key": key, "first": today, "last": today})
+                del card.outfits[: -self.outfit_keep]
+                self._appended.add(n)
+            else:
+                last = card.outfits[-1]
+                last["last"], last["feat"], last["key"] = today, list(feat), key
+
+    def describe_outfit(self, name: str, desc: str, now: float) -> str | None:
+        """描述回来了：写进最后一套。最后一套是这次上线里今天新加的、前一套有描述 → 返回前一套的描述（outfit 事件用）。"""
+        with self._lock:
+            n = match_friend(name, self.friends())
+            card = self.cards.get(n) if n else None
+            if card is None or not card.outfits:
+                return None
+            card.outfits[-1]["desc"] = desc
+            if len(card.outfits) < 2 or n not in self._appended or card.outfits[-1]["first"] != day_of(now):
+                return None
+            return card.outfits[-2]["desc"] or None
 
     def save(self, now: float) -> bool:
         """live 时每 save_every 秒写一次 people.json + current.json（身体主循环每圈调）；返回写了没有。"""
