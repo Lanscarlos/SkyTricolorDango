@@ -1845,3 +1845,139 @@ def test_scene_watcher_loads_flame_only_for_brain(monkeypatch):
     assert "light" in cfg.social.accept_strangers
     assert cli._scene_watcher(cfg).flame is None
     assert cli._scene_watcher(cfg, light=True).flame is not None
+
+
+def lit_setup(monkeypatch, flames, black_seq=(0.9,)):
+    """团子身边火焰够久、出请求，身体举蜡烛（mark_tried）；black() 依次返回 black_seq（用完了一直返回最后一个）。"""
+    w, det, clock = light_watcher(monkeypatch, flames)
+    seq = list(black_seq)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v: seq.pop(0) if len(seq) > 1 else seq[0])
+    det.frames = [[self_det(), unlit(1000)]]
+    run_frames(w, clock, 0.0, 3.1)
+    cid = w.requests[LIGHT_KEY].track
+    w.mark_tried(cid)
+    return w, det, clock, cid
+
+
+def test_mark_tried_removes_request_and_blocks_new_ones(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    assert LIGHT_KEY not in w.requests and w._lighting["black0"] == 0.9
+    run_frames(w, clock, 3.2, 5.0)
+    assert LIGHT_KEY not in w.requests
+
+
+def test_lit_false_before_lit_min(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v: 0.1)
+    det.frames = [[self_det(), player(1000)]]
+    run_frames(w, clock, 3.2, 4.5)
+    assert w.lit(cid, 3.1) is False  # 火焰没了、人也亮了，但举起才 1.4 秒
+    run_frames(w, clock, 4.6, 5.3)
+    assert w.lit(cid, 3.1) is True
+
+
+def test_lit_false_while_flame_still_there(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    run_frames(w, clock, 3.2, 6.0)
+    assert w.lit(cid, 3.1) is False
+
+
+def test_lit_true_when_flame_gone_and_person_brightens(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME], black_seq=[0.9])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v: 0.1)
+    det.frames = [[self_det(), player(1000)]]
+    run_frames(w, clock, 3.2, 5.3)
+    assert w.lit(cid, 3.1) is True
+
+
+def test_lit_false_when_flame_gone_but_still_black(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME], black_seq=[0.9])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    run_frames(w, clock, 3.2, 5.3)
+    assert w.lit(cid, 3.1) is False
+
+
+def test_lit_none_when_flame_gone_and_nobody_there(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    det.frames = [[self_det()]]
+    run_frames(w, clock, 3.2, 5.3)
+    assert w.lit(cid, 3.1) is None
+
+
+def test_lit_low_score_person_counts(monkeypatch):
+    """晚上黑影只有 0.27 的框：判结果时也看低分框，不然会误判"走了"。"""
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    det.frames = [[self_det(), unlit(1000, score=0.27)]]
+    run_frames(w, clock, 3.2, 5.3)
+    assert w.lit(cid, 3.1) is False
+
+
+def test_lit_person_must_be_near_flame(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v: 0.1)
+    det.frames = [[self_det(), player(400)]]  # 亮着的人在远处，不是他
+    run_frames(w, clock, 3.2, 5.3)
+    assert w.lit(cid, 3.1) is None
+
+
+def test_lit_without_black_baseline_uses_lit_black_only(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [FLAME])
+    det.frames = [[self_det()]]  # 举蜡烛时火焰下面没人：black0 = None
+    run_frames(w, clock, 0.0, 3.1)
+    cid = w.requests[LIGHT_KEY].track
+    w.mark_tried(cid)
+    assert w._lighting["black0"] is None
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v: 0.1)
+    det.frames = [[self_det(), player(1000)]]
+    run_frames(w, clock, 3.2, 5.3)
+    assert w.lit(cid, 3.1) is True
+
+
+def test_lit_false_while_paused_or_stale(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    det.frames = [[self_det()]]
+    run_frames(w, clock, 3.2, 5.3)
+    assert w.lit(cid, 3.1) is None
+    clock.t = 6.0  # 0.7 秒没跑 process
+    assert w.lit(cid, 3.1) is False
+    clock.t = 5.3
+    w.hold("panel")
+    assert w.lit(cid, 3.1) is False
+    w.release("panel")
+
+
+def test_lit_unknown_clue_is_false(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    assert w.lit(cid + 5, 3.1) is False
+
+
+def test_light_done_not_lit_starts_cooldown(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    w.light_done("timeout")
+    assert w._lighting is None
+    run_frames(w, clock, 3.2, 10.0)
+    assert LIGHT_KEY not in w.requests  # 火焰还在，但在冷却里
+    run_frames(w, clock, 10.1, 63.6)  # 一直跑着（中间断开超过 DISK_GAP 会重新计时）
+    assert LIGHT_KEY in w.requests  # 冷却过了，线索还接着（火焰一直在）
+
+
+def test_light_done_lit_no_cooldown(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    w.light_done("lit")
+    assert w._cooldown_until == float("-inf") and w._flame is None
+    run_frames(w, clock, 3.2, 6.5)
+    assert LIGHT_KEY in w.requests  # 又一个人（新线索）站够了
+
+
+def test_light_done_twice_is_harmless(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    w.light_done("gone")
+    w.light_done("exit")
+    assert w._lighting is None
