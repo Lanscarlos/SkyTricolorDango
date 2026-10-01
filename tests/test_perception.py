@@ -1931,17 +1931,41 @@ def test_lit_person_must_be_near_flame(monkeypatch):
     assert w.lit(cid, 3.1) is None
 
 
-def test_lit_without_black_baseline_uses_lit_black_only(monkeypatch):
+def test_lit_without_dark_sighting_is_never_true(monkeypatch):
+    """举蜡烛时火焰下面没人、之后也没看到过黑的人：原地出现亮的 player 也永远不判 True（宁晚勿早，等身体超时）。"""
     w, det, clock = light_watcher(monkeypatch, [FLAME])
     det.frames = [[self_det()]]  # 举蜡烛时火焰下面没人：black0 = None
     run_frames(w, clock, 0.0, 3.1)
     cid = w.requests[LIGHT_KEY].track
     w.mark_tried(cid)
-    assert w._lighting["black0"] is None
+    assert w._lighting["black0"] is None and w._lighting["dark_box"] is None
     monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
-    monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.1)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.05)
     det.frames = [[self_det(), player(1000)]]
-    run_frames(w, clock, 3.2, 5.5)
+    run_frames(w, clock, 3.2, 6.0)
+    assert w.lit(cid, 3.1) is not True
+
+
+def test_lit_not_fooled_by_other_bright_person(monkeypatch):
+    """黑影走开、另一个本来就亮的人站到火焰原位置（和黑影的框 IoU < 0.3）：不是同一个人，不判点亮。"""
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.9 if box.x == 1000 else 0.05)
+    det.frames = [[self_det(), unlit(1000)]]
+    run_frames(w, clock, 3.2, 3.6)  # 火焰灭了，黑影还在原地（看到他黑）
+    det.frames = [[self_det(), player(1065, y=430)]]  # 黑影走开，另一个亮的人站进来
+    run_frames(w, clock, 3.7, 6.0)
+    assert w.lit(cid, 3.1) is not True
+
+
+def test_lit_when_same_person_brightens(monkeypatch):
+    """同一个框先黑后亮（unlit(1000) → player(1000)）：判点亮。"""
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.9 if det.frames[0][1].cls == "player_unlit" else 0.05)
+    run_frames(w, clock, 3.2, 3.6)
+    det.frames = [[self_det(), player(1000)]]
+    run_frames(w, clock, 3.7, 5.5)
     assert w.lit(cid, 3.1) is True
 
 

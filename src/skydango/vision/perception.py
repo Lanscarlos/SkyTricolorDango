@@ -68,6 +68,7 @@ DIAG_EVERY = 0.5  # 点亮中每隔这么久存一张图（spec 2026-10-01-light
 DIAG_MAX = 30  # 一次最多存这么多张
 DIAG_RUNS = 50  # 一次运行最多存这么多次
 FRAME_STALE = 0.5  # lit()：最近一次扫描比 FRAME_STALE + DISK_EVERY 更旧（感知没在跑 / 团子框丢了）就不判
+LIT_SAME_IOU = 0.3  # 判点亮：变亮的人物框要和点亮中最近一次看到的"黑"框重叠这么多（同一个人；别的亮人走过来不算）
 LIT_SCANS = 2  # 判点亮：连续这么多次扫描（每 DISK_EVERY 一次）都看到他变亮才算
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
 PLACE_GAP = 3.0  # 画面大变后认地图：离上次至少隔这么久（转镜头时画面一直在变）
@@ -1387,7 +1388,7 @@ class PerceptionWatcher:
                 if not same:
                     self._flame_seq += 1
                     clue = self._flame = {"id": self._flame_seq, "first": now, "best": 0.0, "announced": False}
-                clue.update(last=now, pos=pos, r=flame.r, score=flame.score, black=blk, best=max(clue["best"], flame.score))
+                clue.update(last=now, pos=pos, r=flame.r, score=flame.score, black=blk, person_box=person, best=max(clue["best"], flame.score))
             elif clue is not None and now - clue["last"] > DISK_GAP:
                 clue = self._flame = None
             lighting, cooling = self._lighting, now < self._cooldown_until
@@ -1406,8 +1407,12 @@ class PerceptionWatcher:
                         blk = black(frame, person, cfg.lit_v, exclude=me)
                         lighting["person"], lighting["person_at"] = (person, blk), now
                         black0 = lighting["black0"]
+                        if blk is not None and blk >= cfg.lit_black:
+                            lighting["dark_box"] = person  # 他黑着：记下这时的框，之后变亮的得是他
+                        dark = lighting["dark_box"]
                         # blk 为 None = 被团子挡住大半量不准：人还在，但不算变亮
-                        bright = blk is not None and blk < cfg.lit_black and (black0 is None or black0 - blk >= cfg.lit_drop)
+                        bright = (blk is not None and blk < cfg.lit_black and (black0 is None or black0 - blk >= cfg.lit_drop)
+                                  and dark is not None and iou(person, dark) >= LIT_SAME_IOU)
                         lighting["bright"] = lighting["bright"] + 1 if bright else 0
             ready = (clue is not None and lighting is None and not cooling and now - clue["last"] <= DISK_GAP
                      and now - clue["first"] >= cfg.light_after and clue["best"] >= cfg.disk_sure)
@@ -1484,13 +1489,14 @@ class PerceptionWatcher:
 
     def mark_tried(self, clue_id: int) -> None:
         """身体举起蜡烛了：开始"点亮中"（期间不出新请求），记下这时火焰在哪、他有多黑。"""
-        now = self.clock()
+        now, cfg = self.clock(), self.light_cfg
         with self._lock:
             clue = self._flame if self._flame is not None and self._flame["id"] == clue_id else None
             self._lighting = {
                 "id": clue_id, "raised": now, "requested": now,
                 "pos": clue["pos"] if clue else (0, 0), "r": clue["r"] if clue else 20.0,
                 "black0": clue["black"] if clue else None,
+                "dark_box": clue.get("person_box") if clue and cfg is not None and clue["black"] is not None and clue["black"] >= cfg.lit_black else None,
                 "flame_last": clue["last"] if clue else float("-inf"),
                 "person": None, "person_at": float("-inf"),
                 "scan_at": float("-inf"), "bright": 0,  # 最近一次真的找过火焰的时间；连续几次扫描看到他变亮
@@ -1506,7 +1512,9 @@ class PerceptionWatcher:
         拿不准一律 False：感知暂停中、不是现在点亮中的线索、scan_at 比 FRAME_STALE + DISK_EVERY 还旧（感知没在跑 / 团子框丢了）、
         举起不满 lit_min 秒、火焰还在（断开不满 DISK_GAP）、最近一次扫描没找到人（先等等）。
         火焰消失超过 DISK_GAP 后：DISK_GAP 内都没找到人 → None；否则连续 LIT_SCANS 次扫描都看到他
-        （含低分框）black() 比举蜡烛时降了 lit_drop 以上且低于 lit_black（举蜡烛时下面没人就只看 lit_black）→ True，宁晚勿早。"""
+        （含低分框）black() 比举蜡烛时降了 lit_drop 以上且低于 lit_black（举蜡烛时下面没人就只看 lit_black）→ True，宁晚勿早。
+        变亮的人物框还要和点亮中最近一次看到他黑的框重叠 LIT_SAME_IOU 以上（同一个人）：从没看到过他黑的样子永远不判 True
+        （等身体超时放下；别的亮人站到火焰原位置不能算）。"""
         cfg = self.light_cfg
         if cfg is None or self.paused:
             return False
