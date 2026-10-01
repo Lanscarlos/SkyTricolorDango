@@ -336,6 +336,16 @@ def test_serves_console_static(srv):
         assert request(srv.url + bad)[0] == 404
 
 
+def test_page_has_labeling(srv):  # 「标注」页（spec 2026-10-01-gesture-labeling-training §3）
+    status, page = request(srv.url)
+    assert status == 200
+    for s in ('id="page-labeling"', 'data-page="labeling"', 'src="console/static/labeling.js"'):
+        assert s in page, s
+    with urllib.request.urlopen(srv.url + "console/static/labeling.js", timeout=5) as r:
+        assert r.status == 200 and "javascript" in r.headers["Content-Type"]
+        assert "Pages.labeling" in r.read().decode("utf-8")
+
+
 def test_console_static_device_names_never_touch_fs():
     from skydango.console.server import _console_static
 

@@ -9,8 +9,8 @@
 (function(g){
 "use strict";
 const HAS_DOM=typeof document!=="undefined";
-const PAGES=["sandbox","live","inner","scenarios","settings","device"];
-const TITLES={sandbox:"沙盒",live:"真机团子",inner:"内心",scenarios:"剧本和报告",settings:"设置",device:"设备"};
+const PAGES=["sandbox","live","inner","scenarios","labeling","settings","device"];
+const TITLES={sandbox:"沙盒",live:"真机团子",inner:"内心",scenarios:"剧本和报告",labeling:"标注",settings:"设置",device:"设备"};
 const ALIAS={overview:"live"};  // 旧书签
 const BUSY=["starting","running","stopping"];
 const S={state:null,offline:false};

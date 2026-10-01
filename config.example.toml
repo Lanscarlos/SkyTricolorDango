@@ -183,8 +183,10 @@ self_hint = "白色头发、橙色护目镜、橙粉色袍子、背蓝紫色圆�
 # 数据：record --fps 8 录 → perception clips 切片段 → 人工分到 <动作>/ → 训练导出 ONNX → perception gesture-eval 评估
 enabled = false
 model = "models/gesture.onnx"
-labels = ["none", "wave", "bow"]  # 模型输出的顺序
-names = { wave = "挥手", bow = "鞠躬" }
+labels = ["none", "wave", "bow", "cheer", "shy"]  # 模型输出的顺序（第一版：挥手、鞠躬、欢呼、害羞）
+names = { wave = "挥手", bow = "鞠躬", cheer = "欢呼", shy = "害羞" }
+dataset = "datasets/gesture"    # 动作数据目录（_unlabeled/ 刚切的片段，<动作>/ 分好类的）
+stride = 8                      # 切片段时每隔几帧起一段（16 帧一段 → 半重叠）
 min_prob = 0.9                  # 宁可不报：精确率不到 90% 不要打开
 cooldown = 30.0                 # 同一个人同一种动作这么久内只报一次
 

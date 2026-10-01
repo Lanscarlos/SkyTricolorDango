@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "sandbox.js", "live.js", "scenarios.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "sandbox.js", "live.js", "scenarios.js", "labeling.js", "settings.js", "device.js"]
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做
@@ -28,7 +28,7 @@ def test_skeleton():
 
 def test_nav_has_pages_and_marks():
     page = (STATIC / "console.html").read_text(encoding="utf-8")
-    for p in ("sandbox", "live", "inner", "scenarios", "settings", "device"):
+    for p in ("sandbox", "live", "inner", "scenarios", "labeling", "settings", "device"):
         assert f'data-page="{p}"' in page and f'id="mark-{p}"' in page, p
     assert 'href="console/static/console.css"' in page
 

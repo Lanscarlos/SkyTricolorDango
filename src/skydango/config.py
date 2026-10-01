@@ -258,7 +258,7 @@ class SocialConfig:
     bow_delay: float = 2.5  # 看到他亮起来 / 接受点火后等这么久再鞠躬（等闪光动画）
     candle_slot: int = 3  # 轮盘上"举蜡烛"在第几格：按一下举起、再按一下放下（用户 2026-10-01）
     disk_min_score: float = 0.68  # 火焰圆盘的模板匹配分
-    disk_dark: float = 90.0  # 圆盘外环亮度均值低于这个才算深色圆盘（有白圈的是举蜡烛的请求）
+    disk_sure: float = 0.85  # 连着看到火焰的这一段里至少一帧匹配到这么高才出请求（10-01 晚真机：真圆盘常到 0.86~0.99，灯笼菱形最高 0.78）
     flame: str = "assets/candle/flame.png"  # 圆盘里的火焰模板
 
 
@@ -402,10 +402,12 @@ class GestureConfig:
 
     enabled: bool = False
     model: str = "models/gesture.onnx"  # 输入 1×frames×3×size×size（RGB，0~1），输出每个标签的分数（logits 或概率）
-    labels: list[str] = field(default_factory=lambda: ["none", "wave", "bow"])  # 模型输出的顺序；none = 没做这几个动作
-    names: dict[str, str] = field(default_factory=lambda: {"wave": "挥手", "bow": "鞠躬"})  # 事件里的中文名
+    labels: list[str] = field(default_factory=lambda: ["none", "wave", "bow", "cheer", "shy"])  # 模型输出的顺序；none = 没做这几个动作
+    names: dict[str, str] = field(default_factory=lambda: {"wave": "挥手", "bow": "鞠躬", "cheer": "欢呼", "shy": "害羞"})  # 事件里的中文名
     frames: int = 16  # 一段几帧（2 s）
     fps: float = 8.0  # 每秒取几帧
+    stride: int = 8  # 切片段时每隔几帧起一段（16 帧一段、8 帧起一段 = 半重叠）
+    dataset: str = "datasets/gesture"  # 动作数据目录：_unlabeled/ 是刚切的，<动作>/ 是分好类的
     size: int = 112  # 人物裁剪缩放到的边长
     interval: float = 2.0  # 同一个人隔这么久判一次
     min_prob: float = 0.9  # 概率到这个才报（报错动作很尴尬，宁可不报）

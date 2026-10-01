@@ -8,11 +8,14 @@ from skydango.vision.detect import Detection
 from skydango.vision.gesture import (
     ClipBuffer,
     OnnxGestureClassifier,
+    clip_name,
     eligible,
     evaluate,
     extract_clips,
     load_clip,
+    near_center,
     person_crop,
+    recording_of,
 )
 
 
@@ -107,12 +110,61 @@ class WalkingDetector:
 
 def test_extract_clips_cuts_16_frame_windows_per_track(tmp_path):
     frames = [(i * 0.125, np.zeros((1080, 1920, 3), np.uint8)) for i in range(40)]
-    n = extract_clips(frames, WalkingDetector(), tmp_path, GestureConfig(), conf=0.35)
-    assert n == 2
+    n = extract_clips(frames, WalkingDetector(), tmp_path, GestureConfig(), 0.35, "rec")
+    assert n == 4  # 半重叠：段起点 0、8、16、24 帧
     clips = sorted(p for p in tmp_path.iterdir() if p.is_dir())
-    assert len(clips) == 2 and all(len(list(c.glob("*.jpg"))) == 16 for c in clips)
-    assert ":" not in clips[0].name and "t0.00s" in clips[0].name
+    assert len(clips) == 4 and all(len(list(c.glob("*.jpg"))) == 16 for c in clips)
+    assert ":" not in clips[0].name and "t0.00s" in clips[0].name and clips[0].name.startswith("rec__")
     assert imread(next(clips[0].glob("*.jpg"))).shape == (112, 112, 3)
+
+
+class FixedDet:
+    def __init__(self, box):
+        self.box = box
+
+    def detect(self, img):
+        return [Detection("player", self.box, 0.9)]
+
+
+def _frames(n, w=1920, h=1080):
+    return [(i * 0.125, np.zeros((h, w, 3), np.uint8)) for i in range(n)]
+
+
+def test_clip_name_and_recording():
+    assert clip_name("gesture-wave-1", 12, 3, 24.0) == "gesture-wave-1__0012_track3_t24.00s"
+    assert recording_of("gesture-wave-1__0012_track3_t24.00s") == "gesture-wave-1"
+    assert recording_of("0012_track3") == ""
+
+
+def test_near_center():
+    assert near_center(Rect(900, 400, 90, 200), 1920, 200.0, 0.8, 0.4)
+    assert not near_center(Rect(900, 400, 30, 60), 1920, 200.0, 0.8, 0.4)
+    assert not near_center(Rect(100, 400, 90, 200), 1920, 200.0, 0.8, 0.4)
+
+
+def test_extract_clips_half_overlap(tmp_path):
+    # 40 帧、每段 16 帧、每 8 帧起一段：段起点 0、8、16、24 → 4 段
+    n = extract_clips(_frames(40), FixedDet(Rect(900, 400, 90, 300)), tmp_path, GestureConfig(), 0.35, "gesture-wave-1", ref_h=300)
+    assert n == 4
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert all(x.startswith("gesture-wave-1__") for x in names)
+    assert all(len(list((tmp_path / x).glob("*.jpg"))) == 16 for x in names)
+    assert [x.rsplit("_t",1)[1] for x in names] == ["0.00s", "1.00s", "2.00s", "3.00s"]
+
+
+def test_extract_clips_skips_far_and_edge_people(tmp_path):
+    far = extract_clips(_frames(40), FixedDet(Rect(900, 400, 20, 60)), tmp_path / "a", GestureConfig(), 0.35, "r", ref_h=300)
+    edge = extract_clips(_frames(40), FixedDet(Rect(100, 400, 90, 300)), tmp_path / "b", GestureConfig(), 0.35, "r", ref_h=300)
+    assert far == 0 and edge == 0
+
+
+def test_config_gesture_defaults():
+    from skydango.config import Config
+
+    g = Config().gesture
+    assert g.labels == ["none", "wave", "bow", "cheer", "shy"]
+    assert g.names["cheer"] == "欢呼" and g.names["shy"] == "害羞"
+    assert (g.dataset, g.stride, g.enabled) == ("datasets/gesture", 8, False)
 
 
 def _mean_model(path):
@@ -167,3 +219,20 @@ def test_onnx_gesture_classifier_checks_label_count_up_front(tmp_path):
     _mean_model(tmp_path / "g.onnx")  # 输出 3 类
     with pytest.raises(ValueError, match="3"):
         OnnxGestureClassifier(str(tmp_path / "g.onnx"), ["none", "wave"])
+
+
+def test_extract_clips_skips_existing_names_but_keeps_numbering(tmp_path):
+    det = lambda: FixedDet(Rect(900, 400, 90, 300))  # noqa: E731
+    first = extract_clips(_frames(40), det(), tmp_path / "a", GestureConfig(), 0.35, "r", ref_h=300)
+    names = sorted(p.name for p in (tmp_path / "a").iterdir())
+    assert first == 4
+    n = extract_clips(_frames(40), det(), tmp_path / "b", GestureConfig(), 0.35, "r", ref_h=300,
+                      existing={names[0], names[2]})
+    assert n == 2  # 只算真写下来的
+    assert sorted(p.name for p in (tmp_path / "b").iterdir()) == [names[1], names[3]]  # 名字和第一次一样
+
+
+def test_evaluate_wrong_keeps_correct_but_unsure(tmp_path):
+    write_clip(tmp_path / "bow" / "c1", 150)  # 认成鞠躬但没把握
+    r = evaluate(tmp_path, PixelClassifier(), GestureConfig())
+    assert r["wrong"] == [{"clip": "c1", "truth": "bow", "said": "bow", "prob": 0.5}]
