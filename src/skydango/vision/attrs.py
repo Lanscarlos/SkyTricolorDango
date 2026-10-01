@@ -1,7 +1,7 @@
 """感知层第二层：人物属性。
 
 给 YOLO 的框裁图 → 冻住的 DINOv2 主干（`embed.OnnxEmbedder`）→ 一组线性头（存在 `.npz` 里）。
-这个文件现在只有模型格式、裁剪和预测；轨迹上的投票 / 复核在后面加。
+模型格式、裁剪、预测，以及轨迹上的挑裁图 / 投票（`PersonAttrs`）；复核在后面加。
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import numpy as np
 
 from ..config import AttrsConfig
 from .bubbles import Rect
+from .track import Track
 
 log = logging.getLogger(__name__)
 
@@ -141,3 +142,74 @@ def load_model(cfg: AttrsConfig, device: str, embedder: Embedder | None = None) 
         log.warning("人物属性模型的主干键 %s 和现在的 %s 对不上（[attrs] 不启用）", key, want)
         return None
     return AttrModel(data, embedder)
+
+
+PERSON_CLASSES = ("player", "player_unlit")
+
+
+def _covered(box: Rect, panel: Rect | None) -> float:
+    """box 被 panel 盖住的面积占 box 面积的比例。"""
+    if panel is None or box.w <= 0 or box.h <= 0:
+        return 0.0
+    w = min(box.x2, panel.x2) - max(box.x, panel.x)
+    h = min(box.y2, panel.y2) - max(box.y, panel.y)
+    return max(0, w) * max(0, h) / (box.w * box.h)
+
+
+class PersonAttrs:
+    """给 YOLO 的人物轨迹挑框裁图、过模型、把最近几次的概率平均起来（投票）。
+
+    轨迹 data：form_hist（最近 votes 次 form 概率）/ form（类别, 平均概率）/ form_n（累计次数）/
+    crop_at（上次裁图时间）/ cls_hist（最近 votes 帧的 YOLO 类别）。推理连续出错 max_errors 次就自己关掉。
+    """
+
+    def __init__(self, cfg: AttrsConfig, model: AttrModel) -> None:
+        self.cfg = cfg
+        self.model = model
+        self.enabled = True
+        self.errors = 0
+
+    def update(self, frame: np.ndarray, tracks: list[Track], now: float, panel: Rect | None) -> None:
+        if not self.enabled:
+            return
+        cfg = self.cfg
+        people = [t for t in tracks if t.cls in PERSON_CLASSES and t.last == now]
+
+        def recent(t: Track) -> bool:
+            return now - t.data.get("crop_at", float("-inf")) < cfg.every
+
+        picks = [t for t in people
+                 if not t.data.get("rejected") and _covered(t.box, panel) < 0.5
+                 and not (t.data.get("form_n", 0) > 0 and recent(t))]
+        picks.sort(key=lambda t: (t.data.get("form_n", 0) > 0, recent(t), -t.box.h))
+        picks = picks[: cfg.max_crops]
+        probs: list[np.ndarray | None] = []
+        if picks:
+            try:
+                pad, size = self.model.pad("form"), self.model.size
+                res = self.model.predict([(t.cls, crop(frame, t.box, pad, size)) for t in picks])
+                probs = [r.get("form") for r in res]
+            except Exception:
+                self.errors += 1
+                log.exception("人物属性推理出错（连续第 %d 次）", self.errors)
+                if self.errors >= cfg.max_errors:
+                    self.enabled = False
+                    log.warning("人物属性连续出错 %d 次，已自己关掉", self.errors)
+                return  # 这一帧不改任何轨迹
+            self.errors = 0
+        for t in people:
+            hist = t.data.setdefault("cls_hist", [])
+            hist.append(t.cls)
+            del hist[:-cfg.votes]
+        labels = self.model.labels("form")
+        for t, p in zip(picks, probs):
+            if p is None:
+                continue
+            fh = t.data.setdefault("form_hist", [])
+            fh.append(p)
+            del fh[:-cfg.votes]
+            mean = np.mean(fh, axis=0)
+            k = int(np.argmax(mean))
+            t.data["form"] = (labels[k], float(mean[k]))
+            t.data["form_n"] = t.data.get("form_n", 0) + 1
+            t.data["crop_at"] = now

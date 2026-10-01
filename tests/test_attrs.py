@@ -6,8 +6,9 @@ import numpy as np
 
 from skydango.config import AttrsConfig, Config, load_config
 from skydango.vision import attrs
-from skydango.vision.attrs import crop, load_model, save_model
+from skydango.vision.attrs import PersonAttrs, crop, load_model, save_model
 from skydango.vision.bubbles import Rect
+from skydango.vision.track import Track
 
 
 class FakeEmbedder:
@@ -96,3 +97,160 @@ def test_attrs_config_defaults(tmp_path):
     f.write_text("[attrs]\nenabled = true\nmax_crops = 2\n", encoding="utf-8")
     c = load_config(f)
     assert c.attrs.enabled is True and c.attrs.max_crops == 2
+
+
+# ---- PersonAttrs.update ----
+
+
+class FakeModel:
+    """记录每次 predict 收到的项；probs 依次给（用完重复最后一个）。"""
+
+    size = 32
+
+    def __init__(self, probs=None, fail=False):
+        self.calls: list[list[tuple[str, tuple]]] = []
+        self.probs = probs or [np.array([0.1, 0.8, 0.1], np.float32)]
+        self.fail = fail
+        self.n = 0
+
+    def pad(self, head):
+        return 0.15
+
+    def labels(self, head):
+        return ["not_person", "lit", "unlit"]
+
+    def predict(self, items):
+        self.calls.append([(c, img.shape) for c, img in items])
+        if self.fail:
+            raise RuntimeError("boom")
+        out = []
+        for _ in items:
+            out.append({"form": self.probs[min(self.n, len(self.probs) - 1)]})
+            self.n += 1
+        return out
+
+
+FRAME = np.zeros((1080, 1920, 3), np.uint8)
+
+
+def _track(tid, h, now, *, cls="player", form_n=0, crop_at=None, x=None):
+    t = Track(id=tid, cls=cls, box=Rect(x if x is not None else 100 * tid, 300, h // 2, h), score=0.9,
+              first=0.0, last=now)
+    t.data["form_n"] = form_n
+    if crop_at is not None:
+        t.data["crop_at"] = crop_at
+    return t
+
+
+def _pa(model, **kw):
+    return PersonAttrs(AttrsConfig(**kw), model)
+
+
+def test_new_tracks_are_cropped_first_then_by_height():
+    m = FakeModel()
+    pa = _pa(m, max_crops=4)
+    now = 10.0
+    ts = [_track(1, 100, now), _track(2, 90, now)]  # 新的，矮
+    ts += [_track(3 + i, 200 + 10 * i, now, form_n=2, crop_at=now - 0.6) for i in range(4)]  # 已复核，高 200..230
+    pa.update(FRAME, ts, now, None)
+    assert len(m.calls) == 1 and len(m.calls[0]) == 4
+    done = {t.id for t in ts if t.data["form_n"] > (0 if t.id <= 2 else 2)}
+    assert done == {1, 2, 5, 6}  # 2 条新的 + 最高的 2 条（高 220、230）
+
+
+def test_recently_cropped_track_waits_every_seconds():
+    m = FakeModel()
+    pa = _pa(m, every=0.5)
+    t = _track(1, 200, 10.0, form_n=1, crop_at=9.7)
+    pa.update(FRAME, [t], 10.0, None)
+    assert m.calls == []
+    assert t.data["form_n"] == 1
+
+
+def test_votes_average_last_n():
+    probs = [np.array(p, np.float32) for p in
+             ([0, 1, 0], [0, 1, 0], [0.9, 0.1, 0], [0.9, 0.1, 0], [0.9, 0.1, 0], [0, 0.2, 0.8], [0, 0.2, 0.8])]
+    m = FakeModel(probs)
+    pa = _pa(m, votes=5, every=0.5)
+    t = _track(1, 200, 0.0)
+    for i in range(7):
+        t.last = float(i)
+        pa.update(FRAME, [t], float(i), None)
+    assert len(t.data["form_hist"]) == 5
+    assert t.data["form_n"] == 7
+    mean = np.mean(probs[2:], axis=0)
+    label, p = t.data["form"]
+    assert label == ["not_person", "lit", "unlit"][int(np.argmax(mean))]
+    assert abs(p - float(mean.max())) < 1e-6
+    assert t.data["crop_at"] == 6.0
+
+
+def test_half_covered_by_panel_is_skipped():
+    m = FakeModel()
+    pa = _pa(m)
+    t = _track(1, 200, 5.0, x=100)  # 框 100..200 × 300..500
+    pa.update(FRAME, [t], 5.0, Rect(0, 0, 160, 1080))  # 盖住 60%
+    assert m.calls == [] and "form" not in t.data
+    pa.update(FRAME, [t], 5.0, Rect(0, 0, 140, 1080))  # 盖住 40%：要裁
+    assert len(m.calls) == 1
+
+
+def test_paused_style_skip_and_stale_tracks():
+    m = FakeModel()
+    pa = _pa(m)
+    stale = _track(1, 200, 4.0)  # last < now
+    pa.update(FRAME, [stale], 5.0, None)
+    assert m.calls == []
+    assert "cls_hist" not in stale.data
+
+
+def test_non_person_and_rejected_not_cropped():
+    m = FakeModel()
+    pa = _pa(m)
+    tag = _track(1, 100, 5.0, cls="name_tag")
+    rej = _track(2, 200, 5.0)
+    rej.data["rejected"] = True
+    pa.update(FRAME, [tag, rej], 5.0, None)
+    assert m.calls == []
+
+
+def test_errors_disable_after_max_errors(caplog):
+    m = FakeModel(fail=True)
+    pa = _pa(m, max_errors=3, every=0.0)
+    t = _track(1, 200, 0.0)
+    with caplog.at_level(logging.WARNING):
+        for i in range(3):
+            t.last = float(i)
+            assert pa.enabled
+            pa.update(FRAME, [t], float(i), None)
+    assert pa.enabled is False
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert t.data["form_n"] == 0 and "form_hist" not in t.data and "cls_hist" not in t.data
+    n = len(m.calls)
+    t.last = 9.0
+    pa.update(FRAME, [t], 9.0, None)
+    assert len(m.calls) == n
+
+
+def test_success_resets_error_count():
+    m = FakeModel()
+    pa = _pa(m, max_errors=2, every=0.0)
+    t = _track(1, 200, 0.0)
+    for i, fail in enumerate((True, False, True)):
+        m.fail = fail
+        t.last = float(i)
+        pa.update(FRAME, [t], float(i), None)
+    assert pa.enabled
+
+
+def test_cls_hist_records_every_updated_person_track():
+    m = FakeModel()
+    pa = _pa(m, votes=3, max_crops=1, every=10.0)
+    ts = [_track(1, 200, 0.0), _track(2, 150, 0.0)]
+    for i in range(5):
+        for t in ts:
+            t.last = float(i)
+        ts[1].cls = "player_unlit" if i % 2 else "player"
+        pa.update(FRAME, ts, float(i), None)
+    assert ts[1].data["cls_hist"] == ["player", "player_unlit", "player"]
+    assert "form_hist" not in ts[1].data or len(ts[1].data["form_hist"]) <= 3
