@@ -30,6 +30,7 @@ from ..vision.viewer import is_local_host, post_guard, static_asset
 from . import probes
 from .devicecheck import run_checks
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
+from .labeling import GestureLabels
 from .preflight import preflight, problem
 from .reports import list_reports, read_report
 from .replay import KEEP_NOTE, Recorder, Replayer, safe_name
@@ -259,6 +260,10 @@ class ConsoleServer:
 
     def sandbox_dir(self) -> Path:
         return Path(self.store._fallback().sandbox.dir)
+
+    def gesture_labels(self) -> GestureLabels:
+        g = self.store._fallback().gesture
+        return GestureLabels(Path(g.dataset), g.labels, g.names)
 
     def replaying(self) -> bool:
         r = self.replayer
@@ -631,6 +636,19 @@ class ConsoleServer:
                     self._json(200, {"reports": list_reports(console.sandbox_dir() / "reports")})
                 elif url.path.startswith("/api/sandbox/reports/"):
                     self._json(*read_report(console.sandbox_dir() / "reports", url.path[len("/api/sandbox/reports/"):]))
+                elif url.path == "/api/gesture/state":
+                    self._json(200, console.gesture_labels().state())
+                elif url.path == "/api/gesture/frame":
+                    q = parse_qs(url.query)
+                    try:
+                        i = int(q.get("i", [""])[0])
+                    except ValueError:
+                        i = -1
+                    data = console.gesture_labels().frame(q.get("clip", [""])[0], i)
+                    if data is None:
+                        self._json(404, {"ok": False, "text": "没有这一帧"})
+                    else:
+                        self._send(200, "image/jpeg", data)
                 elif url.path == "/api/state":
                     self._json(200, console.state())
                 elif url.path == "/api/logs":
@@ -666,6 +684,8 @@ class ConsoleServer:
                     "/api/run/stop": lambda body: console.stop_run(),
                     "/api/orphan/stop": console.stop_orphan,
                     "/api/inner/forget": console.forget,
+                    "/api/gesture/label": lambda body: console.gesture_labels().label(str(body.get("clip") or ""), str(body.get("to") or "")),
+                    "/api/gesture/undo": lambda body: console.gesture_labels().undo(),
                     "/api/sandbox/start": console.start_sandbox,
                     "/api/sandbox/stop": lambda body: console.stop_sandbox(),
                     "/api/sandbox/reset": lambda body: console.reset_sandbox(),
