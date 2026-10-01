@@ -25,7 +25,7 @@ from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
 from ..chat.tracker import similar
 from ..config import Config
-from ..game.social import IDLE, KIND_NAMES, PASSIVE
+from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, PASSIVE
 from ..imageio import imwrite
 from ..vision.bubbles import Rect, roi_rect
 from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
@@ -50,7 +50,7 @@ from .track import TrackSkill
 
 log = logging.getLogger(__name__)
 
-REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "*")
+REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "light", "*")
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
 SCENE_EVENT_COOLDOWN = 10.0
 SHUTDOWN_REFINE = 8.0  # 退出时镜头闭环复位的细调最多花几秒（粗转照做）；控制台 stop_timeout 60 秒
@@ -201,6 +201,9 @@ class Body:
         self._fallback_last_new = 0.0
         self.stopped = False  # shutdown 之后不再接大脑的命令
         self.skills = SkillRunner(events, clock, panel=self.panel)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
+        self._raised: tuple[int, tuple[int, int], float] | None = None  # 举着蜡烛等他亮起来：(轨迹 id, 圆盘位置, 举起时间)
+        self._bow: tuple[float, float, float | None] | None = None  # 点火后要鞠躬：(到点, 放弃, 兜底放下的蜡烛几时举的)
+        self._lit_at = float("-inf")
 
     # ---- 主循环 ----
     @contextmanager
@@ -245,6 +248,8 @@ class Body:
         self._run_commands()
         self._watch_bubble(self.clock())
         self._watch_idle(self.clock())
+        self._watch_light(self.clock())
+        self._watch_bow(self.clock())
         self._watch_attention(self.clock())
         self._fallback(now)
         self._inner_tick()
@@ -328,6 +333,9 @@ class Body:
                 break
             if fut.set_running_or_notify_cancel():
                 fut.set_exception(ToolError("身体已经停了"))
+        if self._raised is not None:  # 退出时还举着蜡烛：放下
+            self._lower_candle(self._raised[2])
+            self._raised = None
         if self.emotes is not None:  # 轮盘先恢复：镜头闭环复位可能要好几秒，被强杀时轮盘更要紧
             try:
                 self.emotes.restore()
@@ -476,7 +484,7 @@ class Body:
 
     def _reflex_emote(self, name: str, why: str, now: float) -> bool:
         """反射做一个轮盘上的动作：做不了（被挡、在忙、刚做过）就算了，不抛。不占大脑的动作冷却。"""
-        if self.emotes is None or self.blackout or self.skills.active is not None or self._requests:
+        if self.emotes is None or self.blackout or self.skills.active is not None or self._requests or self._raised is not None:
             return False
         if now - self.emotes.last_any < self.cfg.reflex.min_gap:
             return False
@@ -894,8 +902,8 @@ class Body:
                 self.events.put("gesture", text)
 
     def _watch_requests(self, now: float) -> None:
-        """互动请求、按规则自动接受、牵手状态（跟踪中也照常）。"""
-        requests = dict(self.env.requests)
+        """互动请求、按规则自动接受、牵手状态（跟踪中也照常）。light（团子举蜡烛点亮陌生人）在 _watch_light 里做。"""
+        requests = {k: r for k, r in dict(self.env.requests).items() if r.kind != LIGHT}
         current = {(r.name, r.kind) for r in requests.values()}
         for name, kind in sorted(current - self._requests):
             self.events.put("request", f"{name} 发起了{KIND_NAMES.get(kind, kind)}")
@@ -912,7 +920,88 @@ class Body:
                 self.events.put("accepted", f"身体按规则接受了 {name} 的{KIND_NAMES.get(kind, kind)}")
                 if kind == "hand":
                     self._accepted_hand = (name, now)
+                if kind == "candle":
+                    self._schedule_bow(now, None)
         self._watch_holding(now)
+
+    # ---- 点亮没点火的陌生人（spec 2026-10-01-light-unlit-stranger） ----
+    def _watch_light(self, now: float) -> None:
+        """黑影在身边站够了：按 3 号键举蜡烛（绝不点他身上的火焰圆盘：点了会跟着他走），等 YOLO 看到他亮起来。"""
+        if self._raised is not None:
+            self._check_lit(now)
+            return
+        if self.env is None:
+            return
+        req = dict(self.env.requests).get(LIGHT_KEY)
+        if req is None or req.track is None or self.social is None or self.emotes is None:
+            return
+        if not self.social.allowed(req):
+            return
+        if self.skills.active is not None or self.holding or self._bubble_blocked():
+            return
+        try:
+            self.clear_view("emote")
+        except ToolError as exc:
+            log.debug("先不举蜡烛：%s", exc)
+            return
+        self.env.mark_tried(req.track)  # 不管成没成，这个人只举一次
+        if self._dry(False):
+            log.info("[dry-run] 会举蜡烛点亮身边的陌生人")
+            return
+        try:
+            with self._held("wheel"):
+                self.emotes.press_slot(self.cfg.social.candle_slot)
+        except Exception:
+            log.warning("举蜡烛没成功", exc_info=True)
+            return
+        self._raised = (req.track, req.pos, now)
+        log.info("举起蜡烛给身边没点火的陌生人点火")
+
+    def _check_lit(self, now: float) -> None:
+        track, pos, raised_at = self._raised
+        if self.env.lit(track, pos, raised_at):
+            self._raised = None
+            self._lit_at = now
+            log.info("陌生人亮起来了（举蜡烛 %.1f 秒）", now - raised_at)
+            self.events.put("accepted", "你举起蜡烛给身边一个没点火的陌生人点了火（他亮起来了）")
+            self._schedule_bow(now, raised_at)
+        elif now - raised_at >= self.cfg.social.light_timeout:
+            self._raised = None
+            log.warning("举了蜡烛 %.0f 秒他还是黑的（或者走了），不再点他", self.cfg.social.light_timeout)
+            self._lower_candle(raised_at)
+
+    def _schedule_bow(self, now: float, raised_at: float | None) -> None:
+        """点亮了别人（raised_at = 举蜡烛的时间）/ 接受了别人点火（None）：过 bow_delay 鞠躬；做不了鞠躬时把自己举的蜡烛放下。"""
+        name = self.cfg.social.after_light
+        if not name or name not in self._wheel() or self.holding:
+            if raised_at is not None:
+                self._lower_candle(raised_at)
+            return
+        due = now + self.cfg.social.bow_delay
+        self._bow = (due, due + 5.0, raised_at)
+
+    def _watch_bow(self, now: float) -> None:
+        if self._bow is None or now < self._bow[0]:
+            return
+        _, give_up, raised_at = self._bow
+        if self._reflex_emote(self.cfg.social.after_light, f"点完火你{self.cfg.social.after_light}了一下", now):
+            self._bow = None
+        elif now >= give_up:
+            self._bow = None
+            log.info("点火后的%s一直做不了，算了", self.cfg.social.after_light)
+            if raised_at is not None:
+                self._lower_candle(raised_at)
+
+    def _lower_candle(self, raised_at: float) -> None:
+        """按 3 放下自己举的蜡烛——只在举起之后没做过任何动作时（做动作会放下蜡烛，再按就又举起来了）。"""
+        if self.emotes is None or self.emotes.last_any > raised_at or self._dry(False):
+            return
+        try:
+            with self._held("wheel"):
+                self.emotes.press_slot(self.cfg.social.candle_slot)
+            log.info("放下蜡烛")
+        except Exception:
+            log.warning("放下蜡烛没成功", exc_info=True)
 
     def _social_view_clear(self) -> bool:
         try:
@@ -1300,6 +1389,10 @@ class Body:
         things = describe_things(self.env.objects(now)) if hasattr(self.env, "objects") else ""
         if things:
             parts.append("画面里的东西：" + things)
+        if self._raised is not None:
+            parts.append("正在举蜡烛给陌生人点火")
+        elif now - self._lit_at <= self.cfg.social.remember:
+            parts.append(f"{now - self._lit_at:.0f} 秒前你给一个陌生人点了火")
         if self.holding:
             parts.append(f"牵着手：{self.holding}（推测）")
         if self.blackout:
@@ -1473,8 +1566,8 @@ class Body:
         if kind not in REQUEST_KINDS:
             raise ToolError(f"不认识的请求类型 {kind}，可以用：{'、'.join(REQUEST_KINDS)}")
         who = who.strip() or "*"
-        if who == "stranger" and accept and kind != "candle":
-            raise ToolError("陌生人只能接点火，牵手 / 拥抱 / 击掌 / 背背都不接陌生人的")
+        if who == "stranger" and accept and kind not in ("candle", "light"):
+            raise ToolError("陌生人只能接点火（candle）、点亮他（light），牵手 / 拥抱 / 击掌 / 背背都不接陌生人的")
         self.social.set_policy(who, kind, accept)
         return "现在的规则：" + self.social.describe_policy()
 

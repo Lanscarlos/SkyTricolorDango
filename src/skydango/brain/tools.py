@@ -30,8 +30,8 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
     "emote": "做一个动作（只能用 status 里“能做的动作”列出的）。牵着手也能做，不会松手。",
     "set_request_policy": (
         "改互动请求的规则（本次运行有效）。who：好友昵称，或 \"*\" 表示所有好友、\"stranger\" 表示陌生人；"
-        f"kind：{' / '.join(REQUEST_KINDS)}（hand 牵手、hug 拥抱、highfive 击掌、piggyback 背背、candle 点火、* 所有）；"
-        "accept：接不接。陌生人只能接点火。"
+        f"kind：{' / '.join(REQUEST_KINDS)}（hand 牵手、hug 拥抱、highfive 击掌、piggyback 背背、candle 点火、light 点亮没点火的陌生人、* 所有）；"
+        "accept：接不接。陌生人只能用 candle 和 light。"
     ),
     "camera": (
         f"转视角 / 缩放，action：{' / '.join(KEYS)}（left、right 左右转，每步约 45°；up 往上看、down 往下看；zoom_in 拉近、zoom_out 拉远）。"
