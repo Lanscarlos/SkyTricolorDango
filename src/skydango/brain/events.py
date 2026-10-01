@@ -39,11 +39,16 @@ class EventQueue:
         self._dropped = 0
         self._cond = threading.Condition()
         self._listeners: list[Callable[[str], None]] = []
+        self._taps: list[Callable[[str, str, str], None]] = []  # 每个事件的全文（真机聊天记录）
         self.history: deque[Event] = deque(maxlen=20)  # 最近的事件（可视化页面显示用，drain 不清）
 
     def subscribe(self, fn: Callable[[str], None]) -> None:
         """每放一个事件就调 fn(kind)（在放事件的线程里调）；眼睛用它知道有人来了、画面变了。"""
         self._listeners.append(fn)
+
+    def tap(self, fn: Callable[[str, str, str], None]) -> None:
+        """每放一个事件就调 fn(kind, text, who)（合并 / 抵消了也调，在放事件的线程里调）；真机聊天记录用它记来去。"""
+        self._taps.append(fn)
 
     def put(self, kind: str, text: str, who: str = "") -> None:
         with self._cond:
@@ -78,6 +83,11 @@ class EventQueue:
                 fn(kind)
             except Exception:
                 log.exception("事件订阅者出错")
+        for tap in list(self._taps):
+            try:
+                tap(kind, text, who)
+            except Exception:
+                log.exception("事件 tap 出错")
 
     def _find(self, pred) -> int | None:
         return next((i for i, e in enumerate(self._items) if pred(e)), None)
