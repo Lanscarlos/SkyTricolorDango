@@ -41,6 +41,10 @@ GESTURE_SYSTEM = """你是游戏《光·遇》(Sky) 动作片段的标注员。�
 只输出一个 JSON 对象，每个片段一项，键是片段名：
 {"<片段名>": {"label": "wave", "confidence": 0.8, "reason": "一句话说明看到了什么"}}
 label 只能是 wave / bow / cheer / shy / none / unsure；confidence 是 0~1。不要输出别的文字。"""
+# 不看录像名（`--blind`）：去掉录像说明那句，只凭画面判断。看录像名时 Claude 常照着名字判（10-02 实测挥手录像 114 段判了 113 段挥手，其中有一动不动的）
+GESTURE_SYSTEM_BLIND = GESTURE_SYSTEM.replace('有的片段前面会给一句录像说明（比如"这段录像是好友在反复做挥手"），那是提示：画面里实在没有这个动作时照实判 none 或 unsure，别硬凑。\n', "")
+GUESS_FILE = "claude.json"
+BLIND_FILE = "claude-blind.json"  # 不看录像名的初分，和 claude.json 并存；标注页优先显示它
 
 
 @dataclass(frozen=True)
@@ -77,14 +81,15 @@ def recording_hint(recording: str) -> str:
     return ""
 
 
-def build_gesture_message(frames: list[FrameInput], cfg: AssistConfig) -> list[dict]:
-    """一批片段的内容块：规则在 --system-prompt 里，这里每个片段一行文字（名字 + 录像提示）加一张拼图。"""
+def build_gesture_message(frames: list[FrameInput], cfg: AssistConfig, hint: bool = True) -> list[dict]:
+    """一批片段的内容块：规则在 --system-prompt 里，这里每个片段一行文字（名字 + 录像提示）加一张拼图。
+    hint = False：不写录像提示（片段名照样给，它是回答的键）。"""
     from .gesture import recording_of
 
     content: list[dict] = []
     for f in frames:
-        hint = recording_hint(recording_of(f.stem))
-        content.append({"type": "text", "text": f"片段 {f.stem}：{hint}"})
+        note = recording_hint(recording_of(f.stem)) if hint else ""
+        content.append({"type": "text", "text": f"片段 {f.stem}：{note}"})
         content.append(image_block(f.image, 85))
     return content
 
@@ -111,12 +116,16 @@ def _conf(value) -> float:
 
 
 GESTURE_PROTOCOL = Protocol(GESTURE_PROMPT_VERSION, GESTURE_SYSTEM, build_gesture_message, parse_gesture_review)
+GESTURE_BLIND_PROTOCOL = Protocol(
+    GESTURE_PROMPT_VERSION, GESTURE_SYSTEM_BLIND,
+    lambda frames, cfg: build_gesture_message(frames, cfg, hint=False), parse_gesture_review,
+)
 
 
-def load_guess(clip_dir: Path) -> Guess | None:
-    """读片段目录里的 claude.json；没有 / 坏了 / label 不认识返回 None。"""
+def load_guess(clip_dir: Path, name: str = GUESS_FILE) -> Guess | None:
+    """读片段目录里的 claude.json（name = BLIND_FILE 读不看录像名的那份）；没有 / 坏了 / label 不认识返回 None。"""
     try:
-        d = json.loads((Path(clip_dir) / "claude.json").read_text(encoding="utf-8"))
+        d = json.loads((Path(clip_dir) / name).read_text(encoding="utf-8"))
         label = d["label"]
         if label not in GUESSES:
             return None
@@ -125,7 +134,9 @@ def load_guess(clip_dir: Path) -> Guess | None:
         return None
 
 
-def write_guess(clip_dir: Path, g: Guess, model: str) -> None:
+def write_guess(clip_dir: Path, g: Guess, model: str, name: str = GUESS_FILE) -> None:
     entry = {"label": g.label, "confidence": g.confidence, "reason": g.reason, "model": model,
              "prompt_version": GESTURE_PROMPT_VERSION, "t": time.time()}
-    (Path(clip_dir) / "claude.json").write_text(json.dumps(entry, ensure_ascii=False, indent=1), encoding="utf-8")
+    if name == BLIND_FILE:
+        entry["blind"] = True
+    (Path(clip_dir) / name).write_text(json.dumps(entry, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -569,7 +569,7 @@ python -m skydango perception track-eval <录像目录> [--model 模型] [--fps 
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
 python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
 python -m skydango perception clips <录像目录> [--force]  # 动作识别的数据：按人物轨迹切 16 帧片段 → datasets/gesture/_unlabeled；这段录像切过就拒绝，--force 只切数据目录里哪儿都还没有的片段
-python -m skydango perception gesture-label [片段目录]  # Claude 初分动作片段（默认 datasets/gesture/_unlabeled），再去管理面板「标注」页确认
+python -m skydango perception gesture-label [片段目录] [--blind]  # Claude 初分动作片段（默认 datasets/gesture/_unlabeled），再去管理面板「标注」页确认；--blind 不给录像名提示、写 claude-blind.json（标注页优先显示），看名字时它常照名字判
 python -m skydango perception gesture-train [数据目录] [--epochs 60] [--out 路径] [--device cuda|cpu]  # 训练动作模型 → models/gesture-<日期>.onnx + tmp/gesture-train/<时间>/report.md（旁边复制一份 _split.json）；--out 是 [gesture] model 时要加 --force
 python -m skydango perception gesture-eval datasets/gesture --model 模型 [--all]  # 动作模型的精确率 / 召回率（有 _split.json 时只评验证集，模型比切分旧会提醒）
 python -m skydango places add <地名> [--image 图]  # 认地图：截当前画面（遮掉人和 UI）存进 places/<地名>/

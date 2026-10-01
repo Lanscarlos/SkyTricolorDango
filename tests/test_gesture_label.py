@@ -88,8 +88,8 @@ def _cli_env(tmp_path, monkeypatch):
     return cli, cfg, sent
 
 
-def _args(recheck=False, source=None):
-    return SimpleNamespace(source=source, recheck=recheck)
+def _args(recheck=False, source=None, blind=False):
+    return SimpleNamespace(source=source, recheck=recheck, blind=blind)
 
 
 def test_cli_skips_existing_guess_and_recheck(tmp_path, monkeypatch):
@@ -147,3 +147,38 @@ def test_unreadable_clip_is_skipped(tmp_path, monkeypatch, capsys):
     assert load_guess(good).label == "wave" and load_guess(bad) is None
     out = capsys.readouterr().out
     assert "读不了 1 段" in out and "r__0001_track1_t0.00s" in out
+
+
+def test_blind_message_has_no_hint():
+    from skydango.vision.gesture_label import GESTURE_BLIND_PROTOCOL, GESTURE_SYSTEM_BLIND
+
+    msg = GESTURE_BLIND_PROTOCOL.build([FrameInput("gesture-bow-1__0001_track1_t0.00s", SHEET, [])], AssistConfig())
+    assert sum(b["type"] == "image" for b in msg) == 1
+    assert not any("鞠躬" in b.get("text", "") for b in msg)
+    assert GESTURE_BLIND_PROTOCOL.system == GESTURE_SYSTEM_BLIND and "录像说明" not in GESTURE_SYSTEM_BLIND
+
+
+def test_blind_guess_file_is_separate(tmp_path):
+    from skydango.vision.gesture_label import BLIND_FILE
+
+    write_guess(tmp_path, Guess("bow", 0.7, "弯腰"), "sonnet")
+    write_guess(tmp_path, Guess("none", 0.6, "站着"), "sonnet", BLIND_FILE)
+    assert load_guess(tmp_path) == Guess("bow", 0.7, "弯腰")
+    assert load_guess(tmp_path, BLIND_FILE) == Guess("none", 0.6, "站着")
+    assert json.loads((tmp_path / BLIND_FILE).read_text(encoding="utf-8"))["blind"] is True
+
+
+def test_cli_blind_writes_blind_file_and_compares(tmp_path, monkeypatch, capsys):
+    from skydango.vision.gesture_label import BLIND_FILE
+
+    cli, cfg, sent = _cli_env(tmp_path, monkeypatch)
+    un = tmp_path / "ds" / "_unlabeled"
+    a, b = _clip(un, "gesture-bow-1__0001_track1_t0.00s"), _clip(un, "gesture-bow-1__0002_track1_t1.00s")
+    write_guess(a, Guess("bow", 0.5, ""), "m")
+    write_guess(b, Guess("wave", 0.5, ""), "m")
+    cli._perception_gesture_label(cfg, _args(blind=True))
+    assert sorted(s for batch in sent for s in batch) == [a.name, b.name]  # 已有 claude.json 不算做过
+    assert load_guess(a).label == "bow" and load_guess(a, BLIND_FILE).label == "wave"
+    assert "和看录像名的那次一致 1/2" in capsys.readouterr().out
+    cli._perception_gesture_label(cfg, _args(blind=True))  # 做过的跳过
+    assert len(sent) == 1

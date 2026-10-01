@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from ..vision.gesture import recording_of
-from ..vision.gesture_label import load_guess
+from ..vision.gesture_label import BLIND_FILE, load_guess
 
 UNLABELED, DISCARD, LOG = "_unlabeled", "_discard", "_labels.jsonl"
 FRAMES = 16
@@ -41,7 +41,8 @@ class GestureLabels:
         return None
 
     def _item(self, clip: str, where: str) -> dict:
-        g = load_guess(self.root / where / clip)
+        d = self.root / where / clip
+        g = load_guess(d, BLIND_FILE) or load_guess(d)  # 不看录像名的那份更可信（看名字时 Claude 常照着名字判）
         guess = {"label": g.label, "confidence": g.confidence, "reason": g.reason} if g else None
         return {"clip": clip, "recording": recording_of(clip), "where": where, "guess": guess}
 

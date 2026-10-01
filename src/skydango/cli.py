@@ -761,33 +761,37 @@ def _perception_gesture_label(cfg: Config, args) -> None:
     if not root.is_dir():
         raise SystemExit(f"{root} 不是目录：先 perception clips 切片段，或者把片段目录当参数传进来")
     clips = sorted(d for d in root.iterdir() if d.is_dir())
+    blind = args.blind
+    name = gl.BLIND_FILE if blind else gl.GUESS_FILE
+    protocol = gl.GESTURE_BLIND_PROTOCOL if blind else gl.GESTURE_PROTOCOL
     incomplete, done, todo = [], 0, []
     for d in clips:
         if sum(1 for p in d.iterdir() if p.suffix.lower() in SUFFIXES) != 16:
             incomplete.append(d.name)
-        elif gl.load_guess(d) is not None and not args.recheck:
+        elif gl.load_guess(d, name) is not None and not args.recheck:
             done += 1
         else:
             todo.append(d)
     if incomplete:
         print(f"跳过 {len(incomplete)} 段（不是正好 16 张图）：" + "、".join(incomplete))
     if not todo:
-        print(f"没有要初分的片段（{done} 段已有 claude.json；要重做加 --recheck）")
+        print(f"没有要初分的片段（{done} 段已有 {name}；要重做加 --recheck）")
         return
     base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错
     a = dataclasses.replace(cfg.assist, batch=8)
-    cache = dataset / "_assist"
+    cache = dataset / "_assist" / ("blind" if blind else "")  # 两种初分的缓存键一样，分开放
     if args.recheck:  # 重做：Reviewer 的缓存也清掉，不然直接命中
         for d in todo:
             (cache / f"{d.name}.json").unlink(missing_ok=True)
-    cmd = assist.assist_command(base, a, system=gl.GESTURE_SYSTEM)
+    cmd = assist.assist_command(base, a, system=protocol.system)
     work = assist.assist_workdir()
     reviewer = assist.Reviewer(
         lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), cache, a,
-        "gesture", protocol=gl.GESTURE_PROTOCOL,
+        "gesture", protocol=protocol,
     )
-    print(f"{len(todo)} 段交给 Claude（{a.model}）初分：每批 {a.batch} 段、{a.jobs} 路并发"
-          + (f"；{done} 段已有 claude.json，跳过" if done else ""))
+    print(f"{len(todo)} 段交给 Claude（{a.model}）初分" + ("（不看录像名）" if blind else "")
+          + f"：每批 {a.batch} 段、{a.jobs} 路并发" + (f"；{done} 段已有 {name}，跳过" if done else ""))
+    same, both = 0, 0  # --blind：和看录像名的那次比
     counts: dict[str, int] = {}
     failed, gone = 0, 0
     unreadable: list[str] = []
@@ -813,13 +817,19 @@ def _perception_gesture_label(cfg: Config, args) -> None:
                 gone += 1
                 continue
             try:
-                gl.write_guess(d, g, a.model)
+                gl.write_guess(d, g, a.model, name)
             except OSError:
                 gone += 1
                 continue
             counts[g.label] = counts.get(g.label, 0) + 1
+            other = gl.load_guess(d) if blind else None
+            if other is not None:
+                both += 1
+                same += other.label == g.label
         print(f"  {min(c0 + _ASSIST_CHUNK, len(todo))}/{len(todo)} 段")
     print("初分：" + ("、".join(f"{k}×{v}" for k, v in sorted(counts.items())) or "没有") + f"；没初分成 {failed} 段")
+    if both:
+        print(f"和看录像名的那次一致 {same}/{both} 段")
     if gone:
         print(f"已被标走 {gone} 段（初分时已经在标注页挪走了，没写 claude.json）")
     if unreadable:
@@ -2627,6 +2637,8 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
     q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的片段也重新初分")
+    q.add_argument("--blind", action="store_true",
+                   help="不看录像名（不给录像提示），结果写进 claude-blind.json（和 claude.json 并存，标注页优先显示它），最后打印两次一致多少段")
     q = psub.add_parser("gesture-train", help="训练动作模型：DINOv2-small 冻住 + 时序头，导出 ONNX（不覆盖 gesture.onnx）、验证集评估、写报告")
     q.add_argument("data", nargs="?", help="数据目录（默认 [gesture] dataset）")
     q.add_argument("--epochs", type=int, default=60, help="最多训练几轮（验证集 F1 10 轮不涨就停）")

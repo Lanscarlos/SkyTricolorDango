@@ -40,6 +40,13 @@ def test_state_lists_clips_with_guess(tmp_path):
     assert next(x for x in s["clips"] if x["where"] == "wave")["guess"] is None
 
 
+def test_state_prefers_blind_guess(tmp_path):
+    d = make_clip(tmp_path)
+    (d / "claude-blind.json").write_text(json.dumps({"label": "none", "confidence": 0.6, "reason": "站着"}), encoding="utf-8")
+    c = GestureLabels(tmp_path, LABELS).state()["clips"][0]
+    assert c["guess"] == {"label": "none", "confidence": 0.6, "reason": "站着"}
+
+
 def test_label_moves_and_logs(tmp_path):
     make_clip(tmp_path)
     g = GestureLabels(tmp_path, LABELS)
