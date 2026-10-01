@@ -562,7 +562,7 @@ def test_low_confidence_boxes_are_not_tracked_but_kept():
 
 def test_detector_conf():
     assert detector_conf(PerceptionConfig(conf=0.35, low_conf=0.25)) == 0.25
-    assert detector_conf(PerceptionConfig(conf=0.35, hardcases=False)) == 0.35
+    assert detector_conf(PerceptionConfig(conf=0.35, hardcases=False, track_low=False)) == 0.35
 
 
 # ---- label --model / --from-runs（一期 §5.2） ----

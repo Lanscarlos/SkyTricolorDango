@@ -357,7 +357,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
         places=places, place_interval=cfg.places.place_interval,
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
-        social_cfg=cfg.social, flame=flame, **_appearance_parts(cfg, run),
+        social_cfg=cfg.social, flame=flame, camera_settle=cfg.track.settle, **_appearance_parts(cfg, run),
     )
 
 

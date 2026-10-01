@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
+import cv2
 import numpy as np
 
 from ..brain.images import difference, thumb
@@ -50,7 +51,7 @@ from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, Person, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
-from .track import Track, Tracker, iou
+from .track import Track, Tracker, estimate_shift, iou
 from .wardrobe import FRIEND as FRIEND_PRIORITY
 from .wardrobe import ME as ME_PRIORITY
 from .wardrobe import STRANGER as STRANGER_PRIORITY
@@ -76,11 +77,13 @@ OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开�
 # 比 stranger_after 长，不等的话标签被挡住的好友会先冒一次 stranger 事件）；一直攒不到好样本的（太远、被挡）
 # 最多再多等这么久照样判
 STRANGER_GRACE = 1.5
+PAN_SCALE = 8  # 估计画面平移用的缩略图缩小这么多倍
+PAN_KINDS = ("zoom", "move", "spin")  # 这几种镜头事件之后 camera_settle 秒内框高会突变：不更新速度、清走近 / 运动历史
 
 
 def detector_conf(cfg: PerceptionConfig) -> float:
-    """检测器的出框阈值：收集难例时要看到 low_conf ~ conf 之间的框，判定仍按 conf。"""
-    return min(cfg.low_conf, cfg.conf) if cfg.hardcases else cfg.conf
+    """检测器的出框阈值：收集难例、低分框续轨迹时要看到 low_conf ~ conf 之间的框，判定仍按 conf。"""
+    return min(cfg.low_conf, cfg.conf) if cfg.hardcases or cfg.track_low else cfg.conf
 
 
 def approaching(hist: list[tuple[float, float, float]], width: int, grow: float) -> bool:
@@ -198,6 +201,7 @@ class PerceptionWatcher:
         embedder=None,  # 外观特征模型（appearance.make_embedder）
         appearance_cfg: AppearanceConfig | None = None,
         saver=None,  # 攒认人模型的训练数据（CropSaver，None = 不存）
+        camera_settle: float = 0.6,  # 镜头缩放 / 走路 / 转圈后这么久画面才稳（同 [track] settle）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -236,7 +240,15 @@ class PerceptionWatcher:
         self._describe_want: set[tuple[str, str]] = set()  # 要（重新）描述的好友 / 团子，描述回来才去掉
         self._describe_asked: dict[tuple[str, str], float] = {}  # 上次 request 成功的时间：retry_after 内不再问
         self.keep = cfg.keep  # 身体说"走开了"时用
-        self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
+        self.tracker = Tracker(  # 同一个人可能两类来回变
+            cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}),
+            center_gate=cfg.track_center_gate if cfg.track_predict else 0.0, predict=cfg.track_predict,
+        )
+        self.camera_settle = camera_settle
+        self._quiet_until = float("-inf")  # 镜头缩放 / 走路 / 转圈：这之前的帧不攒走近 / 运动历史
+        self._pan = (0.0, 0.0)  # 累计的画面平移（整图像素；失踪记录、运动方向用）
+        self._pan_thumb: np.ndarray | None = None  # 上一帧的平移缩略图（暂停恢复后作废）
+        self.last_shift: tuple[float, float] | None = None  # 这一帧估出的画面平移（track-eval 用）
         self.requests: dict = {}  # 名字 → game.social.Request
         self.labels: dict[str, tuple[int, int, int, int, float]] = {}
         self.circles: dict[str, tuple[str | None, float]] = {}
@@ -317,8 +329,11 @@ class PerceptionWatcher:
         d = now - since
         log.debug("感知恢复（%s），暂停了 %.1f 秒", why, d)
         self._prev_count, self._prev_thumb = 0, None  # 暂停前那一帧不能拿来判"集体消失"（镜头可能已经转走了）
+        self._pan_thumb = None  # 平移也不能跨暂停估
+        self.tracker.calm(now)  # 速度也不能跨暂停用
         for track in list(self.tracker.tracks.values()):  # 暂停前后的框高不能连起来判"走过来"（镜头可能动过）
             track.data.pop("hist", None)
+            track.data.pop("motion_hist", None)
             track.data.pop("clip", None)  # 动作片段也不能跨暂停拼起来
         if d <= 0:
             return
@@ -372,6 +387,39 @@ class PerceptionWatcher:
             self.hold(OCCLUSION)
             return True
         return False
+
+    def camera_moved(self, at: float, kind: str) -> None:
+        """身体动了镜头（turn / zoom / move / spin）。转镜头靠平移估计补偿，什么都不清；
+        缩放、走路、转圈时框高会突变：settle 秒内不更新速度、清走近 / 运动历史（不能当成人在走近走远）。"""
+        if kind in PAN_KINDS:
+            until = at + self.camera_settle
+            self._quiet_until = max(self._quiet_until, until)
+            self.tracker.calm(until)
+
+    def _pan_step(self, frame: np.ndarray, dets: list[Detection], panel_visible: bool) -> tuple[float, float] | None:
+        """这一帧相对上一帧的画面平移（整图像素）：1/8 灰度缩略图的上半部分，聊天面板开着去掉左边三分之一，
+        人物 / 团子 / 名字标签那块不用（人自己会走）。估出来就累加进 self._pan。"""
+        height, width = frame.shape[:2]
+        gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        small = cv2.resize(gray, (max(8, width // PAN_SCALE), max(8, height // PAN_SCALE)), interpolation=cv2.INTER_AREA)
+        small = small[: small.shape[0] // 2].astype(np.float32)
+        prev, self._pan_thumb = self._pan_thumb, small
+        if prev is None or prev.shape != small.shape:
+            return None
+        mask = np.ones(small.shape, bool)
+        if panel_visible:
+            mask[:, : small.shape[1] // 3] = False
+        for d in dets:
+            if d.cls in ("player", UNLIT, "self", "name_tag", "typing"):
+                b = d.box
+                mask[max(0, b.y // PAN_SCALE): (b.y2 + PAN_SCALE - 1) // PAN_SCALE,
+                     max(0, b.x // PAN_SCALE): (b.x2 + PAN_SCALE - 1) // PAN_SCALE] = False
+        shift = estimate_shift(prev, small, mask)
+        if shift is None:
+            return None
+        shift = (shift[0] * PAN_SCALE, shift[1] * PAN_SCALE)
+        self._pan = (self._pan[0] + shift[0], self._pan[1] + shift[1])
+        return shift
 
     def _frozen(self, now: float) -> float:
         """暂停期间按暂停开始那一刻算：给身体的结果停在暂停前。"""
@@ -444,13 +492,20 @@ class PerceptionWatcher:
         dets = promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low)
         if self._occlusion(frame, dets):
             return
-        tracks = self.tracker.update(dets, now)
+        shift = self._pan_step(frame, dets, panel_visible) if self.cfg.track_pan else None
+        self.last_shift = shift
+        tracks = self.tracker.update(dets, now, low=low if self.cfg.track_low else (), shift=shift)
         self._frame_at = now
         selfs = [t for t in tracks if t.cls == "self"]
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs)]
         tags = [t for t in tracks if t.cls == "name_tag"]
         rings = [t for t in tracks if t.cls == "social_ring"]
         bubbles = [t for t in tracks if t.cls == "typing"]
+        for p in players:
+            p.data["pan_at"] = self._pan  # 这一刻的累计平移（轨迹断了以后失踪记录用）
+            if now < self._quiet_until:
+                p.data.pop("hist", None)
+                p.data.pop("motion_hist", None)
         extra = self._far_tags(frame, players, tags, now, width, height, panel_visible)
         if extra:
             tags += [t for t in extra if t.cls == "name_tag"]
@@ -559,7 +614,8 @@ class PerceptionWatcher:
         self._watch_disks(frame, players, now, height)
         self._watch_typing(bubbles, players, selfs, now, width, height)
         if not self.paused:
-            self._watch_approach(players, now, width)
+            if now >= self._quiet_until:  # 镜头缩放 / 走路后画面还没稳：框高变化不是人在走
+                self._watch_approach(players, now, width)
             if self.gestures is not None:
                 self._watch_gestures(frame, players, now, width, height)
         with self._lock:  # 身体线程会同时读（strangers()）
@@ -633,7 +689,7 @@ class PerceptionWatcher:
             ):
                 continue
             fresh.append(d)
-        return self.tracker.update(fresh, now) if fresh else []
+        return self.tracker.update(fresh, now, prune=False) if fresh else []  # 同一帧第二次：不删、不冲掉 dropped
 
     # ---- 认装扮（设计 §3.2、§4） ----
     def _appearance_features(self, frame: np.ndarray, players: list[Track], selfs: list[Track], now: float,
