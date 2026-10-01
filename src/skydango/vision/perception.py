@@ -575,8 +575,11 @@ class PerceptionWatcher:
             self.appearance.forget(now)
             if self.saver is not None:
                 self._save_samples(frame, players, tagged, fresh, now)
+        # 认得出是谁的人（好友）不算"火焰下面那个人"：好友本来就是亮的，站在火焰旁边会被当成点亮了
+        known = [t.box for t in players if t.data.get("name") or t.data.get("tagged") or t.data.get("maybe")]
         self._people_boxes = [
-            (d.box, d.score) for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW]) if d.cls != "self"
+            (d.box, d.score) for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
+            if d.cls != "self" and not any(iou(d.box, k) >= 0.5 for k in known)
         ]
         bonfires = [t for t in tracks if t.cls == "bonfire"]
         self._watch_flames(frame, tags, bonfires, now, width, height, panel_visible)
@@ -1378,7 +1381,7 @@ class PerceptionWatcher:
             if flame is not None:
                 pos = (flame.x, flame.y)
                 person = self._person_at(pos, flame.r)
-                blk = black(frame, person, cfg.lit_v) if person is not None else None
+                blk = black(frame, person, cfg.lit_v, exclude=me) if person is not None else None
                 same = (clue is not None and now - clue["last"] <= DISK_GAP
                         and np.hypot(pos[0] - clue["pos"][0], pos[1] - clue["pos"][1]) <= cfg.light_jump * me.h)
                 if not same:
@@ -1389,7 +1392,10 @@ class PerceptionWatcher:
                 clue = self._flame = None
             lighting, cooling = self._lighting, now < self._cooldown_until
             if lighting is not None:  # 举着蜡烛：先更新火焰位置，再在那里找人、看他有多黑
-                if clue is not None and clue["id"] == lighting["id"]:
+                # 同一条线索，或这次找到的火焰离原来的位置不远（火焰位置跳了成了新线索，其实火还在）
+                near = (flame is not None
+                        and np.hypot(flame.x - lighting["pos"][0], flame.y - lighting["pos"][1]) <= cfg.light_jump * me.h)
+                if clue is not None and (clue["id"] == lighting["id"] or near):
                     lighting["flame_last"], lighting["pos"], lighting["r"] = clue["last"], clue["pos"], clue["r"]
                 if me is not None:  # 团子框丢了就没真的找过，不更新（lit() 靠 scan_at 判扫描新不新）
                     lighting["scan_at"] = now
@@ -1397,10 +1403,11 @@ class PerceptionWatcher:
                     if person is None:
                         lighting["bright"] = 0
                     else:
-                        blk = black(frame, person, cfg.lit_v)
+                        blk = black(frame, person, cfg.lit_v, exclude=me)
                         lighting["person"], lighting["person_at"] = (person, blk), now
                         black0 = lighting["black0"]
-                        bright = blk < cfg.lit_black and (black0 is None or black0 - blk >= cfg.lit_drop)
+                        # blk 为 None = 被团子挡住大半量不准：人还在，但不算变亮
+                        bright = blk is not None and blk < cfg.lit_black and (black0 is None or black0 - blk >= cfg.lit_drop)
                         lighting["bright"] = lighting["bright"] + 1 if bright else 0
             ready = (clue is not None and lighting is None and not cooling and now - clue["last"] <= DISK_GAP
                      and now - clue["first"] >= cfg.light_after and clue["best"] >= cfg.disk_sure)
@@ -1463,9 +1470,9 @@ class PerceptionWatcher:
             raised = self._lighting["raised"] if self._lighting is not None else None
         if person is not None:
             box, blk = person
-            color = (200, 60, 200) if blk >= self.light_cfg.lit_black else (60, 220, 60)
+            color = (200, 60, 200) if blk is None or blk >= self.light_cfg.lit_black else (60, 220, 60)
             cv2.rectangle(img, (box.x, box.y), (box.x2, box.y2), color, 2)
-            cv2.putText(img, f"{blk:.2f}", (box.x, box.y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            cv2.putText(img, "?" if blk is None else f"{blk:.2f}", (box.x, box.y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
         offset = now - (raised if raised is not None else now)
         try:
             diag["dir"].mkdir(parents=True, exist_ok=True)
@@ -1546,7 +1553,7 @@ class PerceptionWatcher:
             "clue": lighting["id"], "result": result, "images": diag["count"],
             "requested": rel(diag["requested"]), "raised": 0.0, "done": rel(self.clock()),
             "black_raised": lighting["black0"],
-            "black_end": round(lighting["person"][1], 3) if lighting["person"] is not None else None,
+            "black_end": round(lighting["person"][1], 3) if lighting["person"] is not None and lighting["person"][1] is not None else None,
             "flame_last": rel(lighting["flame_last"]),
         }
         try:

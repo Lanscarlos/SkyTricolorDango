@@ -148,3 +148,19 @@ def test_black_uses_middle_half_and_top_70_percent():
 
 def test_black_empty_box_is_zero():
     assert black(np.zeros((100, 100, 3), np.uint8), Rect(200, 200, 50, 50)) == 0.0
+
+
+def test_black_excludes_self_box():
+    """框的左半边黑、右半边彩色（团子的身体）：不扣团子只有一半黑，扣掉后剩下的都是黑的。"""
+    f = np.full((400, 400, 3), (60, 90, 40), np.uint8)
+    cv2.rectangle(f, (0, 0), (99, 399), (12, 12, 12), -1)
+    cv2.rectangle(f, (100, 0), (199, 399), (40, 120, 220), -1)
+    box = Rect(0, 0, 200, 400)  # 区域 x 50~150
+    assert black(f, box) == pytest.approx(0.5, abs=0.02)
+    assert black(f, box, exclude=Rect(100, 0, 100, 400)) > 0.95
+
+
+def test_black_mostly_covered_is_none():
+    """团子盖住区域的 70%：剩下的不到 BLACK_MIN_VISIBLE，量不准 → None。"""
+    f = np.full((400, 400, 3), (12, 12, 12), np.uint8)
+    assert black(f, Rect(0, 0, 200, 400), exclude=Rect(80, 0, 100, 400)) is None

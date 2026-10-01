@@ -96,9 +96,14 @@ def find_flame(frame: np.ndarray, area: Rect, flame: np.ndarray, min_score: floa
     return Disk(x1 + best.x, y1 + best.y, flame.shape[0] * scale / 2, best.score)
 
 
-def black(frame: np.ndarray, box: Rect, v: int = 50) -> float:
+BLACK_MIN_VISIBLE = 0.4  # 扣掉团子后剩下的像素不到区域的这么多：被团子挡住大半，量不准
+
+
+def black(frame: np.ndarray, box: Rect, v: int = 50, exclude: Rect | None = None) -> float | None:
     """人物框有多黑：中间一半宽、上 70% 高里很暗（HSV 的 V < v）的像素占比。黑影 ≈ 高，点亮后显出衣服颜色 ≈ 低。
-    下面 30% 不看（脚下的影子），两边不看（背景）。框和画面不重叠返回 0。"""
+    下面 30% 不看（脚下的影子），两边不看（背景）。框和画面不重叠返回 0。
+    exclude（团子框）：落在里面的像素不算（黑影抱着团子站时，团子橙色的身体会把 black 拉低）；
+    剩下的不到区域的 BLACK_MIN_VISIBLE 返回 None（看不清）。"""
     x1 = max(0, round(box.x + box.w / 4))
     x2 = min(frame.shape[1], round(box.x + 3 * box.w / 4))
     y1 = max(0, box.y)
@@ -106,4 +111,11 @@ def black(frame: np.ndarray, box: Rect, v: int = 50) -> float:
     if x2 <= x1 or y2 <= y1:
         return 0.0
     value = frame[y1:y2, x1:x2].max(axis=2)  # HSV 的 V = BGR 三通道最大值
-    return float((value < v).mean())
+    dark = value < v
+    if exclude is None:
+        return float(dark.mean())
+    keep = np.ones(dark.shape, bool)
+    keep[max(0, exclude.y - y1):max(0, exclude.y2 - y1), max(0, exclude.x - x1):max(0, exclude.x2 - x1)] = False
+    if keep.mean() < BLACK_MIN_VISIBLE:
+        return None
+    return float(dark[keep].mean())
