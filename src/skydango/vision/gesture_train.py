@@ -186,7 +186,7 @@ def load_split(root: Path) -> dict | None:
 
 # ---- 第二部分：特征、训练、导出、报告（torch 延迟导入）----
 DINO_NAME = "facebook/dinov2-small"
-DINO_KEY = "dinov2-small-112-v1"  # 特征缓存的目录名：换模型 / 尺寸 / 预处理就换
+DINO_KEY = "dinov2-small-v1"  # 模型 + 预处理的名字（换了就改）；缓存目录还要带上尺寸，见 cache_key
 PATIENCE = 10  # 验证集宏平均 F1 这么多轮没变好就停
 _MEAN = (0.485, 0.456, 0.406)  # ImageNet 归一化（DINOv2 训练时用的）
 _STD = (0.229, 0.224, 0.225)
@@ -196,7 +196,7 @@ _built: dict[str, type] = {}
 
 class Extractor(Protocol):
     """冻住的逐帧特征提取器（实现都是 torch.nn.Module，导出时和时序头一起进 ONNX）：
-    `T×3×S×S`（RGB 0~1）→ `T×D`。key 是特征缓存的目录名。"""
+    `T×3×S×S`（RGB 0~1）→ `T×D`。key = 模型 + 预处理的名字，特征缓存目录是 `<key>-<尺寸>`（见 cache_key）。"""
 
     key: str
 
@@ -296,11 +296,17 @@ def _device_of(module) -> Any:
     return torch.device("cpu")
 
 
+def cache_key(extractor: Extractor, size: int) -> str:
+    """特征缓存的目录名：模型 + 预处理（extractor.key）+ 输入尺寸。是否镜像在文件名里（`_flip`）。"""
+    return f"{extractor.key}-{size}"
+
+
 def features_for(sample: Sample, extractor: Extractor, cache_dir: Path, flip: bool, size: int = 112) -> np.ndarray:
-    """一段的特征 `T×D`，缓存在 `<cache_dir>/<extractor.key>/<片段>[_flip].npy`（有就直接读，读坏了重算）。"""
+    """一段的特征 `T×D`，缓存在 `<cache_dir>/<key>-<size>/<片段>[_flip].npy`（有就直接读，读坏了重算）。
+    目录带尺寸：改了 `[gesture] size` 不会拿旧尺寸提的特征来训练。"""
     import torch
 
-    path = Path(cache_dir) / extractor.key / f"{sample.clip}{'_flip' if flip else ''}.npy"
+    path = Path(cache_dir) / cache_key(extractor, size) / f"{sample.clip}{'_flip' if flip else ''}.npy"
     if path.exists():
         try:
             return np.load(path)
@@ -367,7 +373,7 @@ def train(
     gen = torch.Generator().manual_seed(seed)
     xt, yt, xv_d = xt.to(device), yt.to(device), xv.to(device)
     info: dict = {"loss": [], "val_f1": [], "best_epoch": 0, "best_f1": -1.0, "metric": metric,
-                  "train": len(tr), "val": len(va), "dim": int(dim), "key": extractor.key}
+                  "train": len(tr), "val": len(va), "dim": int(dim), "key": cache_key(extractor, size)}
     best_state = None
     for epoch in range(1, epochs + 1):
         head.train()

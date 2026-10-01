@@ -878,6 +878,8 @@ def _perception_gesture_eval(cfg: Config, args) -> None:
     if split is not None and split.get("val"):
         only = set(split["val"])
         print(f"只评验证集（{len(only)} 段，按 {data / SPLIT_FILE}；--all 评全部）")
+    elif split is not None:
+        print(f"{data / SPLIT_FILE} 里没有验证集：评全部片段（包括训练过的，结果会偏好）")
     clf = gesture.OnnxGestureClassifier(g.model, g.labels, cfg.perception.device)
     _print_gesture_eval(gesture.evaluate(data, clf, g, only=only), g)
 

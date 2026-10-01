@@ -210,11 +210,31 @@ def test_features_cached(tmp_path):
     cache = tmp_path / "_features"
     a = features_for(samples[0], ext, cache, flip=False)
     assert a.shape == (16, 3) and ext.calls == 1
-    assert (cache / "fake" / f"{samples[0].clip}.npy").exists()
+    assert (cache / "fake-112" / f"{samples[0].clip}.npy").exists()
     b = features_for(samples[0], ext, cache, flip=False)
     assert ext.calls == 1 and (a == b).all()
     features_for(samples[0], ext, cache, flip=True)
-    assert ext.calls == 2 and (cache / "fake" / f"{samples[0].clip}_flip.npy").exists()
+    assert ext.calls == 2 and (cache / "fake-112" / f"{samples[0].clip}_flip.npy").exists()
+
+
+def test_features_cache_follows_size(tmp_path):
+    from skydango.vision.gesture_train import features_for, train
+
+    root = tmp_path / "data"
+    write_dataset(root)
+    samples, _ = list_samples(root, ["none", "wave"])
+    s = split(samples, ["none", "wave"])
+    cache = root / "_features"
+    train(samples, s, ["none", "wave"], fake_extractor(), cache, epochs=1, device="cpu", size=112)
+    ext = fake_extractor()
+    head, info = train(samples, s, ["none", "wave"], ext, cache, epochs=1, device="cpu", size=56)
+    assert ext.calls == 2 * len(s["train"]) + len(s["val"])  # 换了尺寸：一个都不复用 112 的缓存
+    assert info["key"] == "fake-56"
+    assert (cache / "fake-56").is_dir() and (cache / "fake-112").is_dir()
+    seen = []
+    ext.forward = lambda frames: (seen.append(tuple(frames.shape)), frames.mean(dim=(2, 3)))[1]
+    features_for(samples[0], ext, tmp_path / "fresh", flip=False, size=56)
+    assert seen == [(16, 3, 56, 56)]  # 按 size 缩放后再提特征
 
 
 def test_temporal_head_shape():
