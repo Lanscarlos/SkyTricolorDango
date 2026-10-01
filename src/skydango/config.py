@@ -251,8 +251,8 @@ class SocialConfig:
     light_after: float = 3.0  # 团子身边的火焰连续看到这么久才举蜡烛（别点路过的）
     light_timeout: float = 8.0  # 举着蜡烛最多等这么久看他亮起来
     lit_min: float = 2.0  # 举蜡烛后至少这么久才可能算点亮（YOLO 近处会把还黑着的人认成 player；未在真机验证）
-    light_area_x: float = 1.2  # 在团子周围找火焰：左右各多少倍团子框高（spec 2026-10-01-light-flame-around-self §9 量）
-    light_area_up: float = 0.6  # 从团子框上沿往上多少倍框高（下到框底）
+    light_area_x: float = 1.4  # 在团子周围找火焰：左右各多少倍团子框高（10-02 在 10-01 晚的帧上量：真火焰最远 1.27 / 0.45 倍框高，再放宽一成）
+    light_area_up: float = 0.5  # 从团子框上沿往上多少倍框高（下到框底；10-02 在 10-01 晚的帧上量：真火焰最远 1.27 / 0.45 倍框高，再放宽一成）
     light_jump: float = 0.5  # 相邻两次火焰位置差多少倍团子框高以内算同一个人
     light_cooldown: float = 60.0  # 没点亮（走了 / 超时 / 被打断）之后多久不再举：认不出是谁，只能按时间
     lit_v: int = 50  # 判点亮：HSV 的 V 低于这个算"很暗"的像素

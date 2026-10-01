@@ -1643,6 +1643,7 @@ def test_light_request_after_flame_seen_long_enough(monkeypatch):
     run(w, 3.1, clock)
     req = w.requests[LIGHT_KEY]
     assert req.kind == "light" and req.pos == (1045, 480) and req.track == 1
+    assert isinstance(w._flame["black"], float)
 
 
 def test_light_request_without_any_person_box(monkeypatch):
@@ -1652,6 +1653,18 @@ def test_light_request_without_any_person_box(monkeypatch):
     for t in (0.0, 1.0, 2.0, 2.5, 3.1):
         run(w, t, clock)
     assert LIGHT_KEY in w.requests
+    assert w._flame["black"] is None
+
+
+def test_flame_over_bonfire_is_ignored(monkeypatch):
+    """篝火的点燃图标也是火焰圆圈：落在篝火框上方的不算；同样的帧没有篝火就出请求。"""
+    bonfire = Detection("bonfire", Rect(990, 470, 120, 100), 0.8)
+    for dets, expect in (([self_det(), bonfire], False), ([self_det()], True)):
+        w, det, clock = light_watcher(monkeypatch, [Disk(1045, 440, 20.0, 0.98)])
+        det.frames = [dets]
+        for t in (0.0, 1.0, 2.0, 2.5, 3.1):
+            run(w, t, clock)
+        assert (LIGHT_KEY in w.requests) is expect
 
 
 def test_search_area_around_self_box(monkeypatch):

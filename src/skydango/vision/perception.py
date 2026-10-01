@@ -568,7 +568,8 @@ class PerceptionWatcher:
         self._people_boxes = [
             (d.box, d.score) for d in people_boxes(dets + [x for x in low if x.score >= LIT_LOW]) if d.cls != "self"
         ]
-        self._watch_flames(frame, tags, now, width, height, panel_visible)
+        bonfires = [t for t in tracks if t.cls == "bonfire"]
+        self._watch_flames(frame, tags, bonfires, now, width, height, panel_visible)
         self._watch_typing(bubbles, players, selfs, now, width, height)
         if not self.paused:
             self._watch_approach(players, now, width)
@@ -1316,13 +1317,17 @@ class PerceptionWatcher:
         x1, y1, x2, y2 = max(0, x1), max(0, y1), min(width, x2), min(height, me.y2)
         return Rect(x1, y1, max(0, x2 - x1), max(0, y2 - y1))
 
-    def _flame_excluded(self, pos: tuple[int, int], tags: list[Track], width: int, height: int,
+    def _flame_excluded(self, pos: tuple[int, int], tags: list[Track], bonfires: list[Track], width: int, height: int,
                         panel_visible: bool) -> str | None:
-        """火焰落在这些地方当没看到：认出了名字的标签下面（好友举蜡烛给团子点火的圆圈）、开着的聊天面板。"""
+        """火焰落在这些地方当没看到：认出了名字的标签下面（好友举蜡烛给团子点火的圆圈）、篝火上方（"点燃"图标也是火焰圆圈）、开着的聊天面板。"""
         for t in tags:
             b = t.box
             if t.data.get("name") and _inside(pos, Rect(round(b.x - 0.5 * b.w), b.y, 2 * b.w, round(4.5 * b.h))):
                 return f"在 {t.data['name']} 的名字标签下面"
+        for t in bonfires:  # 图标浮在柴堆上方：左右各放宽 0.5 倍框宽、往上放宽 1 倍框高、下到框底
+            b = t.box
+            if _inside(pos, Rect(round(b.x - 0.5 * b.w), b.y - b.h, 2 * b.w, 2 * b.h)):
+                return "在篝火上"
         if panel_visible and _inside(pos, roi_rect(self.log_roi, width, height)):
             return "聊天面板挡着"
         return None
@@ -1338,7 +1343,7 @@ class PerceptionWatcher:
                 best, most = box, w * h
         return best
 
-    def _watch_flames(self, frame: np.ndarray, tags: list[Track], now: float, width: int, height: int,
+    def _watch_flames(self, frame: np.ndarray, tags: list[Track], bonfires: list[Track], now: float, width: int, height: int,
                       panel_visible: bool) -> None:
         """团子身边连续 light_after 秒冒着火焰（够近的黑影身上才有）→ 出 light 请求，不管 YOLO 认没认出这个人。"""
         cfg = self.light_cfg
@@ -1354,7 +1359,7 @@ class PerceptionWatcher:
             area = self._flame_area(me, width, height)
             flame = find_flame(frame, area, self.flame, cfg.disk_min_score)
             if flame is not None:
-                skip = self._flame_excluded((flame.x, flame.y), tags, width, height, panel_visible)
+                skip = self._flame_excluded((flame.x, flame.y), tags, bonfires, width, height, panel_visible)
                 if skip:
                     why, flame = f"火焰 {flame.score:.2f} {skip}", None
             self._scan = {"area": area, "me": me, "flame": flame}
@@ -1392,10 +1397,10 @@ class PerceptionWatcher:
             return
         if first:
             log.info("身边有没点火的陌生人：火焰出现了 %.0f 秒（线索 %d）", now - clue["first"], clue["id"])
-            self._on_request(now)
+            self._on_request(frame, now)
         self.requests[LIGHT_KEY] = Request(STRANGER, LIGHT, clue["pos"], now, track=clue["id"])
 
-    def _on_request(self, now: float) -> None:
+    def _on_request(self, frame: np.ndarray, now: float) -> None:
         """第一次出请求时的钩子：存图（Task 5 填）。"""
         pass
 
