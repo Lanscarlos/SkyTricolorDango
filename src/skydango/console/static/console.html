@@ -184,8 +184,30 @@
       </div>
     </div>
   </section>
-  <section id="page-settings" class="page" hidden><p class="placeholder">（设置页还在搬家）</p></section>
-  <section id="page-device" class="page" hidden><p class="placeholder">（设备页还在搬家）</p></section>
+  <section id="page-settings" class="page" hidden>
+    <div class="page-title"><h1>设置</h1><span class="note">面板改的设置写在 console.toml（叠加在 config.toml 之后，config.toml 不会被改），密钥明文写在本机 secrets.toml，别发给别人。</span></div>
+    <div class="banner bad" id="settings-error" hidden></div>
+    <div class="settings-wrap">
+      <nav id="settings-toc" aria-label="设置分组"></nav>
+      <div class="settings-main">
+        <div id="groups"></div>
+        <div class="savebar" id="savebar" hidden>
+          <button class="btn go" type="button" id="save">保存</button>
+          <button class="btn" type="button" id="discard">放弃修改</button>
+          <span class="msg" id="save-msg"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="page-device" class="page" hidden>
+    <div class="page-title"><h1>设备</h1></div>
+    <div class="device">
+      <h2>模拟器连接</h2>
+      <p class="note" id="device-note">检测只读状态，不会往游戏里发任何输入。</p>
+      <button class="btn go" type="button" id="check">开始检测</button>
+      <ul class="checks" id="checks" hidden></ul>
+    </div>
+  </section>
 </main>
 
 <div id="dialog" hidden></div>

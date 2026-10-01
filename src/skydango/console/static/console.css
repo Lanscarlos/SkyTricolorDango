@@ -445,3 +445,48 @@ h4.note{margin:0 0 4px;font-weight:500}
 .logbox pre{margin:0;padding:6px 14px 12px;max-height:340px;overflow:auto;font:12px/1.5 "Cascadia Mono",Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 .logbox pre .e{color:var(--brick-ink)}
 .logbox pre .w{color:var(--amber-ink)}
+
+/* ---- 设置 / 设备 ---- */
+.settings-wrap{display:grid;grid-template-columns:170px minmax(0,1fr);gap:22px;align-items:start;max-width:1040px}
+#settings-toc{position:sticky;top:18px;display:flex;flex-direction:column;gap:2px;font-size:13.5px}
+#settings-toc a{padding:5px 12px;border-radius:8px;color:var(--muted);text-decoration:none}
+#settings-toc a:hover{background:var(--hover);color:var(--ink)}
+.settings-main{min-width:0}
+.group{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px 10px;margin-bottom:16px;scroll-margin-top:12px}
+.group h2{font-size:14px;font-weight:600;letter-spacing:.08em;margin:10px 0 4px}
+.settings-main .row{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,4fr);gap:8px 20px;padding:10px 8px;border-top:1px solid var(--line);border-radius:8px}
+.settings-main .row.dirty{box-shadow:inset 3px 0 0 var(--amber)}
+.settings-main .row.flash{animation:flash 2s;box-shadow:inset 0 0 0 2px var(--sakura)}
+.settings-main label{font-weight:600}
+.settings-main .src{margin-left:8px;font-size:11.5px;color:var(--muted);background:var(--hover);border-radius:999px;padding:0 8px}
+.settings-main .src.secrets,.settings-main .src.console{color:var(--sakura-ink);background:var(--sakura-bg)}
+.settings-main .help{color:var(--muted);font-size:12.5px;margin-top:2px}
+.settings-main .control .line{display:flex;gap:8px;align-items:center}
+.settings-main .control input:not([type=checkbox]),.settings-main .control select{flex:1;min-width:0}
+.settings-main .msg{font-size:12.5px;margin-top:4px}
+.msg.ok{color:var(--matcha-ink)}.msg.warn{color:var(--amber-ink)}.msg.bad{color:var(--brick-ink)}
+.toggle{position:relative;display:inline-block;width:38px;height:22px}
+.toggle input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;z-index:1}
+.toggle span{position:absolute;inset:0;background:var(--ash);border-radius:999px;transition:background .15s}
+.toggle span::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:var(--white);transition:transform .15s}
+.toggle input:checked+span{background:var(--matcha)}
+.toggle input:checked+span::after{transform:translateX(16px)}
+.toggle input:focus-visible+span{outline:2px solid var(--sakura);outline-offset:2px}
+.probe{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 8px 4px;border-top:1px dashed var(--line)}
+.savebar{position:sticky;bottom:0;display:flex;gap:10px;align-items:center;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:10px 14px;box-shadow:var(--lift)}
+.device{max-width:640px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px 16px}
+.device h2{font-size:14px;font-weight:600;letter-spacing:.08em}
+.checks{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:10px}
+.checks li{display:flex;gap:10px;align-items:flex-start}
+.chk-mark{flex:none;width:22px;height:22px;border-radius:50%;text-align:center;line-height:22px;font-weight:700;font-size:13px;color:var(--white);background:var(--ash-ink)}
+.chk-mark.ok{background:var(--matcha)}.chk-mark.fail{background:var(--brick)}.chk-mark.warn{background:var(--amber)}
+.checks .detail{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+.checks .hint{color:var(--amber-ink);font-size:13px}
+.devlist{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.checks img{display:block;max-width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)}
+@media (prefers-reduced-motion:reduce){.settings-main .row.flash{animation:none}.toggle span,.toggle span::after{transition:none}}
+@media (max-width:999px){
+  .settings-wrap{grid-template-columns:1fr}
+  #settings-toc{position:static;flex-direction:row;flex-wrap:wrap}
+  .settings-main .row{grid-template-columns:1fr}
+}

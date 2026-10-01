@@ -157,3 +157,13 @@ def test_live_page():
     line = next(l for l in b.splitlines() if l.strip().startswith("const CARDS="))
     assert '"心情"' in line and '"精力"' in line
     assert "emotes_allowed" in b and "沙盒在跑，先下线" in b and "Pages.live" in b
+
+
+def test_settings_and_device_pages():
+    b = bundle()
+    for id_ in ("settings-toc", "groups", "savebar", "save", "discard", "settings-error", "check", "checks", "device-note"):
+        assert f'id="{id_}"' in b, id_
+    assert '"set-"+' in b.replace(" ", "") and 'replaceAll(".","-")' in b.replace(" ", "")
+    for api in ("api/settings", "api/settings/test", "api/device"):
+        assert api in b
+    assert "Pages.settings" in b and "Pages.device" in b
