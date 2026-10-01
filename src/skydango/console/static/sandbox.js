@@ -1,5 +1,5 @@
 /* 沙盒页（spec 2026-10-01-console-redesign §4.1；沙盒本身见 2026-09-30-brain-sandbox）：顶栏（停着 = 启动表单，跑着 = 沙盒时间牌）+ 三栏工作台。
- * 左：/sandbox/state 长轮询的聊天记录 + 冒充；中：大脑时间线（brain_trace.js）；右：现在（Inner.renderNow）+ 身边 / 团子看到的（/sandbox/op）。
+ * 左：现在（Inner.renderNow）+ 身边 / 团子看到的（/sandbox/op）；中：大脑控制台（brainlog.js）；右：/sandbox/state 长轮询的聊天记录 + 冒充（团子在左、别人在右）。
  * 给别处用：window.sandboxSummary()（左栏卡片）、window.sandboxClock()（内心页）、
  *   S.replay + onReplay(fn) + pullReplay()（api/sandbox/replay 的进度和录制状态，剧本页共用）、document 上的 "scenarios-changed" 事件（另存为之后）。
  * 顶层不碰 document：node 里 require 它能测 Sandbox.lineKind / summaryText（tests/test_console_page.py）。 */
@@ -155,11 +155,11 @@ async function pullSbNow() {  // 沙盒在跑时每 5 秒（不管页面开没�
   catch (e) { /* 下次再取 */ }
 }
 
-/* ---- 大脑时间线 ---- */
+/* ---- 大脑控制台 ---- */
 function mountBrain() {
   $("sb-brain-none").hidden = true;
-  if (typeof mountBrainTrace !== "function") return;
-  SB.trace = mountBrainTrace($("sb-brain"), "sandbox/brain");
+  if (typeof mountBrainConsole !== "function") return;
+  SB.trace = mountBrainConsole($("sb-brain"), "sandbox/brain");
   const c = $("sb-brain").querySelector(".brain-acted");  // 「只看做了事的」默认勾上；用户改过就记住
   if (c) {
     c.checked = lsGet("sb-acted") !== "0"; c.dispatchEvent(new Event("change"));

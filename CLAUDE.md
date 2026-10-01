@@ -437,7 +437,9 @@ dir = "private/sandbox"
 - **子进程** `python -m skydango sandbox --port 19392 [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]`：只给 JSON 接口（`sandbox/server.py`：`/status` `/state` 长轮询 `/op` `/brain` `/inner` `/inner/forget` `/shutdown`，本机 Host + `post_guard`）；
   操作经 `body.call` 在身体线程做（`sandbox/control.py`：冒充发言、来去、陌生人、地名、场景、新鲜事、快进、拨时间、立刻反思）；下线 = `/shutdown`，走最终反思 → 日记 → 合账本，再存 `clock.json`
 - **管理面板**：子进程槽带 kind（团子 / 沙盒），**同一时间只能有一个**（共用令牌和 `.brain-claude/`），另一个在跑时拒绝并提示先停；`/sandbox/*` 转发、`/live/*` 只在团子时转。
-  「沙盒」页：启动选项（接着上次 / 睡一晚 / 自定义）、沙盒时间牌 + 快进、聊天记录（heard 左 / 说的右 / 动作旁白 / 事件分隔线 / 被拦的删除线 + 原因）、现在、身边、场景和新鲜事、大脑时间线；
+  「沙盒」页：顶栏启动选项（接着上次 / 睡一晚 / 自定义）或沙盒时间牌 + 快进；三栏从左到右 团子（现在、身边、场景和新鲜事）/ 大脑控制台 / 聊天记录。
+  聊天记录团子说的在左（樱花底）、冒充的人在右，动作旁白、事件分隔线、被拦的删除线 + 原因；
+  大脑控制台（`console/static/brainlog.js`，和 viewer 的 `brain_trace.js` 同一个 `/brain` 数据）是深色终端日志：轮头（时间 · 原因 · 做了什么 · 耗时 · tokens）、收到的事件一行一条、状态 / 场景折叠、`▶` 工具调用、`↳` 返回，新的一轮在底部、自动跟到底；
   「重置记忆」只在停着时能点（用 `memory/` 覆盖沙盒记忆，`memory/archive/` 不复制）；「内心」页顶上能切 团子 / 沙盒
 - **剧本**（`console/scenario.py` 格式、`console/replay.py` 录制和回放，`sandbox/scenarios/*.toml`）：沙盒启动就开始录，停止 / 再启动记成 offline / online，「另存为」写成剧本；
   回放：沙盒在跑先下线 → 按 `[start]` 重置 / 起 / 发身边 → 每步发出后等安静（`[sandbox] step_timeout` 180 秒，超时记下接着走）；回放中手动操作被拒、页面置灰；「停止回放」做完当前这步就停。

@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "sandbox.js", "live.js", "scenarios.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "sandbox.js", "live.js", "scenarios.js", "settings.js", "device.js"]
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做
@@ -22,14 +22,15 @@ def test_skeleton():
     assert "<script>" not in page  # 没有内联脚本
     for n in JS:
         assert f'src="console/static/{n}"' in page
-    assert page.index('src="static/brain_trace.js"') < page.index('src="console/static/common.js"') < page.index('src="console/static/sandbox.js"')
+    assert page.index('src="console/static/common.js"') < page.index('src="console/static/brainlog.js"') < page.index('src="console/static/sandbox.js"')
+    assert "brain_trace" not in page  # 沙盒页换成 brainlog.js 的控制台；brain_trace.* 只给 viewer 用
 
 
 def test_nav_has_pages_and_marks():
     page = (STATIC / "console.html").read_text(encoding="utf-8")
     for p in ("sandbox", "live", "inner", "scenarios", "settings", "device"):
         assert f'data-page="{p}"' in page and f'id="mark-{p}"' in page, p
-    assert page.index('href="static/brain_trace.css"') < page.index('href="console/static/console.css"')
+    assert 'href="console/static/console.css"' in page
 
 
 def test_offline_relative_and_no_native_dialogs():
@@ -110,11 +111,14 @@ def test_sandbox_page():
     b = bundle()
     for id_ in ("sb-head", "sb-start", "sb-problems", "sb-clock", "sb-replay-bar", "sb-chat", "sb-say", "sb-brain", "sb-now", "sb-nearby", "sb-scene", "sb-rec", "sb-save", "sb-reset"):
         assert f'id="{id_}"' in b, id_
-    assert 'mountBrainTrace($("sb-brain"),"sandbox/brain")' in b.replace(" ", "")
+    assert 'mountBrainConsole($("sb-brain"),"sandbox/brain")' in b.replace(" ", "")
     for api in ("api/sandbox/start", "api/sandbox/stop", "api/sandbox/reset", "api/sandbox/info", "sandbox/state", "sandbox/op", "api/sandbox/save", "api/sandbox/record/new", "api/sandbox/replay"):
         assert api in b
     assert "会用 memory/ 覆盖沙盒记忆" in b and "Pages.sandbox" in b and "sandboxSummary" in b
-    assert "1.15fr 1.1fr .85fr" in (STATIC / "console.css").read_text(encoding="utf-8")
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    assert ".85fr 1.25fr 1fr" in css  # 左团子、中大脑、右聊天
+    page = (STATIC / "console.html").read_text(encoding="utf-8")
+    assert page.index('class="pane sb-right"') < page.index('class="pane sb-brainpane"') < page.index('class="pane sb-chatpane"')
 
 
 def _sandbox_js(expr: str):  # 在 node 里载入 common.js + sandbox.js（没有 document），算 expr
@@ -124,7 +128,7 @@ def _sandbox_js(expr: str):  # 在 node 里载入 common.js + sandbox.js（没�
     return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
 
 
-def test_sandbox_line_kinds():  # 聊天行的样式：反思 = 虚线框，别的事件 = 分隔线；团子说的靠右；被拦的删除线
+def test_sandbox_line_kinds():  # 聊天行的样式：反思 = 虚线框，别的事件 = 分隔线；团子说的（sb-me）靠左；被拦的删除线
     rows = [{"kind": "event", "text": "── 反思：心情 平常 → 开心 ──"}, {"kind": "event", "text": "── 开始反思 ──"},
             {"kind": "event", "text": "── 小明来了 ──"}, {"kind": "heard", "who": "小明"}, {"kind": "said", "who": "团子"},
             {"kind": "act", "who": "团子"}, {"kind": "blocked", "who": "团子"}, {"kind": "blocked", "who": ""}]
@@ -167,3 +171,51 @@ def test_settings_and_device_pages():
     for api in ("api/settings", "api/settings/test", "api/device"):
         assert api in b
     assert "Pages.settings" in b and "Pages.device" in b
+
+
+def _brainlog_js(expr: str):  # 在 node 里载入 brainlog.js（没有 document），算 expr
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = f"const B=require({json.dumps(str(STATIC / 'brainlog.js'))});console.log(JSON.stringify({expr}))"
+    return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+
+
+NL = chr(10)
+PROMPT = NL.join(["[2026年10月1日（周四） 19:19:23] 事件：", "- 聊天  懒洋洋大王：「那我考考你」", "- 懒洋洋大王 来到身边",
+                  "状态：聊天记录面板开 / 身边的好友：懒洋洋大王", "场景（4 秒前看的）：", "看不清"])
+
+
+def test_brainlog_split_prompt():  # 事件一行一条拆出来，状态 / 场景整块折叠
+    got = _brainlog_js(f"B.splitPrompt({json.dumps(PROMPT, ensure_ascii=False)})")
+    assert got == {"head": "事件：", "events": ["聊天 懒洋洋大王：「那我考考你」", "懒洋洋大王 来到身边"],
+                   "rest": NL.join(["状态：聊天记录面板开 / 身边的好友：懒洋洋大王", "场景（4 秒前看的）：", "看不清"])}
+    beat = NL.join(["[2026年10月1日 19:16:53] 没有新事件（定时醒来）", "状态：安静"])
+    assert _brainlog_js(f"B.splitPrompt({json.dumps(beat, ensure_ascii=False)})") == {"head": "没有新事件（定时醒来）", "events": [], "rest": "状态：安静"}
+    assert _brainlog_js("B.splitPrompt('')") == {"head": "", "events": [], "rest": ""}
+
+
+def test_brainlog_step_lines():  # 每种步骤一行：say 直接显示那句话，别的工具 名字 + 紧凑参数，返回出错标出来
+    steps = [{"kind": "thinking", "text": "想想"}, {"kind": "text", "text": "等他回话"},
+             {"kind": "tool", "name": "say", "input": {"text": "老登就是番茄"}},
+             {"kind": "tool", "name": "emote", "input": {"name": "鞠躬", "n": 1}},
+             {"kind": "result", "text": "已发送"}, {"kind": "result", "text": "被拒绝", "error": True}]
+    got = _brainlog_js(f"{json.dumps(steps, ensure_ascii=False)}.map(B.stepLine)")
+    assert got == [{"cls": "think", "mark": "…", "text": "想想"}, {"cls": "note", "mark": "»", "text": "等他回话"},
+                   {"cls": "say", "mark": "▶", "text": "say “老登就是番茄”"},
+                   {"cls": "tool", "mark": "▶", "text": 'emote {"name":"鞠躬","n":1}'},
+                   {"cls": "ret", "mark": "↳", "text": "已发送"}, {"cls": "err", "mark": "↳", "text": "被拒绝"}]
+
+
+def test_brainlog_turn_head_and_idle():  # 轮头：时间 · 原因 · 做了什么 · 耗时 · tokens；没做事的心跳算 idle
+    t = {"start": 0, "reason": "events", "end": 1, "error": None, "tools": ["say"], "steps": [{"kind": "tool"}],
+         "seconds": 2.94, "result": {"tokens": {"input": 4, "output": 80}}}
+    head = _brainlog_js(f"B.turnHead({json.dumps(t)})")
+    assert head.endswith(" · 新消息 / 事件 · say×1 · 2.9s · in 4 / out 80") and len(head.split(" · ")[0]) == 8
+    idle = {"start": 0, "reason": "heartbeat", "end": 1, "error": None, "tools": [], "steps": [], "seconds": 1.7, "result": None}
+    assert _brainlog_js(f"[B.isIdle({json.dumps(idle)}),B.isIdle({json.dumps(t)})]") == [True, False]
+    live = {**t, "end": None, "tools": [], "steps": []}
+    assert "进行中" in _brainlog_js(f"B.turnHead({json.dumps(live)})")
+
+
+def test_brainlog_text_only():  # 大脑的话、工具返回可能带尖括号：只用 textContent，不拼 HTML
+    src = (STATIC / "brainlog.js").read_text(encoding="utf-8")
+    assert "innerHTML" not in src and "insertAdjacentHTML" not in src
