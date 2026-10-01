@@ -63,3 +63,22 @@ def object_distance(bottom: float, height: int, near: float, far: float) -> str:
 def describe_things(things: list[Thing]) -> str:
     """"座位（左边·近）、先祖（前面·远）"；没有返回空串。"""
     return "、".join(f"{OBJECT_NAMES.get(t.kind, t.kind)}（{t.side}·{t.distance}）" for t in things)
+
+
+@dataclass(frozen=True)
+class Seen:
+    """按 Q 喊一声时亮出名字的好友在哪（spec 2026-10-01-q-call §1.2）。"""
+
+    side: str  # "左边" / "前面" / "右边"
+    distance: str | None  # "近" / "中" / "远"；只看到名字标签、没对上人的是 None
+    on_screen: bool = True  # False = 名字贴在屏幕边上：人在画面外
+
+
+@dataclass
+class CallSeen:
+    """一次呼喊窗口的结果：窗口里亮出名字的好友、结束时还剩几个没挂名字的人。"""
+
+    at: float  # 按键时刻（身体拿它取结果）
+    friends: dict[str, Seen]
+    unnamed: int = 0
+    ended: bool = False

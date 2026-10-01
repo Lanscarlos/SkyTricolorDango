@@ -4,7 +4,7 @@ verified = false
 layer = 10
 region = [0.0, 0.0, 0.335, 0.855]
 confirm_frames = 1
-allows = ["say", "emote", "camera", "move", "check_friend", "social"]  # 它本来就该开着，不算遮挡
+allows = ["say", "emote", "camera", "move", "check_friend", "social", "call"]  # 它本来就该开着，不算遮挡
 
 [[features]]
 kind = "builtin"

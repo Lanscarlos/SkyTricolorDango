@@ -117,6 +117,8 @@ far_crops = 3                   # 每帧最多裁几块；0 = 关（perception c
 object_min_hits = 3             # 物品（座位 / 篝火 / 乐器 / 先祖）连续看到几帧才算
 object_near = 0.85              # 物品远近按框底边：底边 ≥ 画面高 × 这个算近（待标定）
 object_far = 0.65               # ≥ 这个算中，再高算远（待标定）
+sticky_names = true             # 挂过名字标签的轨迹不断就一直算在身边（好友稍远名字标签会淡掉）；false = 照旧
+edge_band = 0.06                # 名字标签贴在屏幕最左 / 最右这么宽里、又没挂上人 = 好友在画面外，不算在身边；0 = 关
 
 [places]
 # 认地图（感知层三期，要先打开 [perception]）：和 places/<地名>/ 里的参考截图比，认出在哪张图
@@ -229,6 +231,21 @@ max_presses = 10                # 转 + 缩放一共最多按几次
 max_seconds = 8.0               # 最多花多久
 tag_age = 1.0                   # 名字标签超过这么多秒没更新就不算
 poll = 0.15                     # 等画面停稳后，每隔这么久看一次感知结果
+
+[call]
+# 按 Q 喊一声（大脑模式，要配合 [perception]；spec docs/superpowers/specs/2026-10-01-q-call-design.md）：
+# 稍远的好友头顶亮出名字约 5 秒。大脑有 call 工具；好友刚“走开”、画面里还有没挂名字的人时身体自动喊一次。数字都是估的
+enabled = true
+auto = true
+min_gap = 20.0                  # 任意两次至少隔几秒（卡洛 # 命令窗口里大脑不受限）
+auto_quota = 3                  # 身体自动喊：auto_window 秒里最多几次
+auto_window = 600.0
+auto_after_leave = 30.0         # 好友走开多少秒内还会为他自动喊（同一次走开只喊一次）
+window = 6.0                    # 按键后这么久里亮出来的名字都算
+burst = 1.0                     # 按键后连拍几秒看光圈
+halo = false                    # 光圈认团子：认错会把好友当成团子藏起来，先 perception halo-eval 标定再开
+halo_rise = 25.0                # 头顶平均灰度比按键前高出这么多算冒圈（估的）
+halo_center = 0.35              # 冒圈的人离画面中线不超过屏宽的这么多才算团子
 
 [viewer]
 # 识别可视化网页：python -m skydango view（只看不动）或 run --view，浏览器里实时看画面 + 识别框

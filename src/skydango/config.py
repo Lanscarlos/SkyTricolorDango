@@ -320,6 +320,9 @@ class PerceptionConfig:
     object_min_hits: int = 3  # 一条物品轨迹至少连续看到几帧才算（防一闪而过的误认）
     object_near: float = 0.85  # 远近按框底边：底边 ≥ 画面高 × 这个算近（待标定）
     object_far: float = 0.65  # ≥ 这个算中，再高算远（待标定）
+    # 按 Q 喊一声（spec 2026-10-01-q-call §1）
+    sticky_names: bool = True  # 挂过名字标签的轨迹只要不断就一直算在身边（好友稍远标签就淡掉）；false = 照旧只靠标签
+    edge_band: float = 0.06  # 名字标签中心在最左 / 最右这么宽（屏宽比例）里、又没挂上人 = 好友在画面外（不算在身边）；0 = 关
 
 
 @dataclass
@@ -522,6 +525,25 @@ class PeekConfig:
     max_seconds: float = 8.0  # 最多花多久
     tag_age: float = 1.0  # 名字标签超过这么多秒没更新就不算（判断挡住、每一步测量）
     poll: float = 0.15  # 等画面稳定后，每隔这么久看一次感知结果
+
+
+@dataclass
+class CallConfig:
+    """按 Q 喊一声（spec docs/superpowers/specs/2026-10-01-q-call-design.md）：稍远的好友头顶亮出名字约 5 秒，
+    大脑用 call 工具找人，身体在好友"走开"但画面里还有没挂名字的人时自动兜底喊一次；顺带看呼唤光圈认团子自己。
+    数字都是估的，没在真机标定。"""
+
+    enabled: bool = True  # false：没有 call 工具、不自动喊，提示词 / status / 工具列表逐字照旧（感知层没开时也一样）
+    auto: bool = True  # 身体自动兜底
+    min_gap: float = 20.0  # 任意两次之间至少隔几秒（卡洛 # 命令窗口里大脑的 call 不受限）
+    auto_quota: int = 3  # 身体自动喊：auto_window 秒里最多几次
+    auto_window: float = 600.0
+    auto_after_leave: float = 30.0  # 好友走开多少秒内还会为他自动喊（同一次走开只喊一次）
+    window: float = 6.0  # 呼喊窗口：按键后这么久里亮出来的名字都算（标签约 5 秒 + 余量）
+    burst: float = 1.0  # 按键后连拍几秒看光圈
+    halo: bool = False  # 光圈认团子：认错会把一个好友当成团子过滤掉，先 perception halo-eval 标定、真机核对再开
+    halo_rise: float = 25.0  # 头顶区域平均灰度（0~255）比按键前高出这么多才算冒圈（估的）
+    halo_center: float = 0.35  # 冒圈的人框中心离画面中线不超过屏宽的这么多才算团子（同 peek.self_center）
 
 
 @dataclass
@@ -742,6 +764,7 @@ class Config:
     spin: SpinConfig = field(default_factory=SpinConfig)
     track: TrackConfig = field(default_factory=TrackConfig)
     peek: PeekConfig = field(default_factory=PeekConfig)
+    call: CallConfig = field(default_factory=CallConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     lull: LullConfig = field(default_factory=LullConfig)

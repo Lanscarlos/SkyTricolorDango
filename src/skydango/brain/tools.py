@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable
 
 from ..chat.recall import recall
-from .body import REQUEST_KINDS, ToolError
+from .body import OWNER_NOTE, REQUEST_KINDS, ToolError
+from .calling import CallResult, tool_text, wait_result
 from .camera import KEYS
 
 log = logging.getLogger(__name__)
@@ -75,8 +77,11 @@ INTROSPECT_DESCRIPTION = (
     "查你自己现在的内心细节：精力 / 反思 / 性格 / 日记 / 眼睛。别人问你为什么困、心情为什么这样、你怎么记事时先查再答；"
     "查到的数字别原样念，用自己的话说。"
 )
+# 按 Q 喊一声（spec 2026-10-01-q-call §3.1）：[call] enabled 且开了感知层才注册（look_around 后面），不进 DESCRIPTIONS / TOOL_NAMES
+CALL_DESCRIPTION = "短按 Q 喊一声：稍远的好友头顶会亮出名字约 5 秒，用来找人、看谁还在附近；每喊一次附近的好友都看得到，别常喊。"
+CALL_TIMEOUT = 10.0  # 身体那一步：借面板、按键、连拍约 1~1.3 秒（之后在 MCP 线程里等窗口结束）
 ACTIONS = {
-    "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task", "panel_press",
+    "call", "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task", "panel_press",
     "panel_close",
 }  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
@@ -88,10 +93,19 @@ SANDBOX_NO_IMAGE = "沙盒里没有画面可以放大看，只能靠聊天和场
 SANDBOX_MISSING = {  # 沙盒里没有的部件：工具直接回"沙盒里没有这个"（别让大脑以为是身体坏了）
     "camera": "镜头", "camera_reset": "镜头", "track": "镜头", "look_around": "镜头（转不了身，看场景用 look）",
     "check_friend": "好友树", "panel_read": "面板", "panel_press": "面板", "panel_close": "面板",
-    "set_request_policy": "互动请求（牵手、拥抱……）",
+    "set_request_policy": "互动请求（牵手、拥抱……）", "call": "喊（Q 键）",
 }
 
 _MISSING = object()
+
+
+def finish_call(body, r: CallResult, sleep: Callable[[float], None] = time.sleep) -> str:
+    """call_out 之后（调用方的线程里）：没喊成 → ToolError；dry-run 一句话；否则等呼喊窗口结束，拼结果。"""
+    if r.refused:
+        raise ToolError(r.refused)
+    if r.dry:
+        return "dry-run：没喊"
+    return tool_text(wait_result(body, r, sleep=sleep)) + (OWNER_NOTE if r.reason == "brain-owner" else "")
 
 
 def _get(args: dict, key: str, default, kind: type, label: str):
@@ -118,10 +132,12 @@ def _bool(args: dict, key: str, default=_MISSING) -> bool:
 class ToolBox:
     def __init__(
         self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None, text_only: bool = False, sandbox: bool = False,
-        backstage: bool = False,
+        backstage: bool = False, call: bool = False,
     ) -> None:
         self.body = body
         self.backstage = backstage  # 幕后：有 introspect 工具
+        self.calling = call  # 按 Q 喊一声：有 call 工具
+        self.sleep = time.sleep  # 等呼喊窗口时用；测试换掉
         self.eyes = eyes
         self.text_only = text_only  # 沙盒：没有画面，look 只给眼睛的文字、look_person / look_at 只回一句话
         self.sandbox = sandbox  # 沙盒：镜头、好友树、面板、互动请求这些工具回"沙盒里没有这个"
@@ -186,6 +202,9 @@ class ToolBox:
             if self.eyes.latest is not None and now - self.eyes.last_look < b.cfg.brain.look_min_interval:
                 return self.eyes.summary(now)
             return self.eyes.describe_frame(b.call(b.fresh_frame), now)
+        if name == "call" and self.calling:
+            r = b.call(lambda: b.call_out("brain"), timeout=CALL_TIMEOUT)
+            return finish_call(b, r, self.sleep)  # 在 MCP 线程里等窗口结束，身体照常读聊天
         if name == "introspect" and self.backstage:
             return self._introspect(_str(a, "topic"))
         if name == "recall":  # 只读 memory/ 里的文件，不占身体线程

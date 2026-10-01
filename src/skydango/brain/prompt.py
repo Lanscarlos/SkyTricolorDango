@@ -158,7 +158,12 @@ APPEARANCE_RULES = """- 状态里的装扮（“你自己”、好友名字后�
 GO_ON_OLD = "接对方的话往下聊；"
 GO_ON_NEW = "接得住就接，不想接也可以吐槽一句或者敷衍两句；"
 IDENTITY_SECTION = re.compile(r"## 身份\n.*?(?=\n\n## )", re.S)  # 「身份」整节（到下一节之前）
-REMEMBER_ANCHOR = "- 记住聊过的内容和对方的名字"  # 交情规矩、按需面板的说明都插在这一条前面
+REMEMBER_ANCHOR = "- 记住聊过的内容和对方的名字"
+CALL_ANCHOR = "- 只是想看看四周，用 look_around：它自己转一圈、描述完再转回来，不用你一步步转。\n"
+CALL_RULE = (  # 按 Q 喊一声（spec 2026-10-01-q-call §3.1），[call] enabled 时插在 look_around 那条后面
+    "- 刚还在聊的好友“走开了”但画面里还有人、有人问“你在哪 / 看得到我吗”、卡洛让你找人时，可以 call 喊一声："
+    "稍远的好友头顶会亮出名字约 5 秒，身体告诉你认出了谁、谁在画面外；每喊一次附近的好友都看得到，别常喊。\n"
+)  # 交情规矩、按需面板的说明都插在这一条前面
 
 SUMMARY_REQUEST = """（身体）要下线了。用不超过 300 字写一份这次的经过，留给下次的你：在哪、和谁玩了什么、聊了什么、答应过什么、要注意的事。
 只输出这份经过本身，这次不要调用工具。"""
@@ -231,6 +236,7 @@ def brain_prompt(
     appearance: bool = False,
     backstage: str = "",
     lull: bool = False,
+    call: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -243,7 +249,8 @@ def brain_prompt(
     persona_text：「你攒下的性格」（内心层第 3 期，放在「日子」之前）；temper：性格开着（加「脾气」、放开“接对方的话往下聊”）。
     appearance：认装扮开着（[appearance] enabled，加装扮的规矩）。
     backstage：「幕后」整节（[backstage] enabled，brain/backstage.py 拼好的）；非空时换掉「身份」一节。
-    lull：冷场时的心理活动（[lull] enabled，加「冷场的时候」）。"""
+    lull：冷场时的心理活动（[lull] enabled，加「冷场的时候」）。
+    call：有 call 工具（按 Q 喊一声），「视角」一节加一句什么时候喊。"""
     rules = static_prompt(reply, proactive)
     if lull:  # 插在「身份」之前；幕后再换「身份」整节时不会碰到它
         rules = rules.replace(LULL_ANCHOR, LULL_POINTER, 1).replace("## 身份", LULL_RULES + "\n\n## 身份", 1)
@@ -253,6 +260,8 @@ def brain_prompt(
         rules = rules.replace(SAY_FIRST, SAY_FIRST + BUBBLE_NOTE, 1)
     if quick_around:
         rules = rules.replace("（要十几秒，别常用）", "（几秒就好）")
+    if call:
+        rules = rules.replace(CALL_ANCHOR, CALL_ANCHOR + CALL_RULE, 1)
     if panel_auto:
         rules = rules.replace(REMEMBER_ANCHOR, PANEL_AUTO_NOTE + REMEMBER_ANCHOR, 1)
     if inner:

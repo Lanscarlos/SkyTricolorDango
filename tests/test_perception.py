@@ -1960,3 +1960,147 @@ def test_scene_watcher_loads_flame_only_for_brain(monkeypatch):
     assert "light" in cfg.social.accept_strangers
     assert cli._scene_watcher(cfg).flame is None
     assert cli._scene_watcher(cfg, light=True).flame is not None
+
+
+# ---- 按 Q 喊一声 §1.1：轨迹续命（spec 2026-10-01-q-call） ----
+def _faded(sticky=True):
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), keep=5.0, sticky_names=sticky)
+    w.process(frame(), 0.0, panel_visible=False)
+    det.frames = [[player(1000)]]  # 标签淡掉了，人还在
+    return det, w
+
+
+def test_tag_fades_but_track_keeps_friend_nearby():
+    det, w = _faded()
+    for i in range(1, 100):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    assert w.nearby(9.9) == ["懒洋洋大王"] and w.strangers(9.9) == 0
+
+
+def test_sticky_stops_when_track_breaks():
+    det, w = _faded()
+    for i in range(1, 31):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    det.frames = [[]]  # 人也不见了：从这里开始算 keep
+    for i in range(31, 100):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    assert w.nearby(7.9) == ["懒洋洋大王"]
+    assert w.nearby(8.1) == []
+
+
+def test_sticky_names_off_is_old_behavior():
+    det, w = _faded(sticky=False)
+    for i in range(1, 60):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    assert w.nearby(5.1) == []
+
+
+def test_sticky_ignores_maybe_and_unlit():
+    det = FakeDetector()
+    det.frames = [[player(1000), Detection("player_unlit", Rect(400, 400, 90, 220), 0.9)]]
+    w = watcher(det, keep=5.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    (a,) = [t for t in w.last_tracks if t.cls == "player"]
+    (b,) = [t for t in w.last_tracks if t.cls == "player_unlit"]
+    a.data["maybe"] = "懒洋洋大王"  # 按外观认的：不续
+    b.data.update(name="番茄炒蛋盖饭", tagged=True)  # 黑影轨迹上残留的名字：不续
+    for i in range(1, 20):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    assert "番茄炒蛋盖饭" not in w.last_seen
+
+
+# ---- 按 Q 喊一声 §1.2、§1.3：呼喊窗口、贴边标签 ----
+from skydango.vision.people import Seen  # noqa: E402
+from skydango.vision.perception import FAR_MISSES  # noqa: E402
+
+
+def test_call_window_collects_names_and_unnamed():
+    det = FakeDetector()
+    det.frames = [[player(1500), small(400, y=400)]]  # 右边的人、左边远处的小人
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), far_crops=0)
+    w.process(frame(), 0.0, panel_visible=False)
+    w.called(0.5)
+    det.frames = [[player(1500), tag(1490, 110), small(400, y=400)]]  # 一喊，右边那人头顶亮出名字
+    w.process(frame(), 1.0, panel_visible=False)
+    assert w.call_result(0.5) is None  # 窗口还没结束
+    w.process(frame(), 6.6, panel_visible=False)
+    r = w.call_result(0.5)
+    assert r.ended and r.at == 0.5
+    assert r.friends["懒洋洋大王"].side == "右边" and r.friends["懒洋洋大王"].on_screen
+    assert r.friends["懒洋洋大王"].distance in ("近", "中", "远")
+    assert r.unnamed == 1
+    assert w.call_result(9.9) is None  # 对不上的 at
+
+
+def test_new_call_replaces_old_window():
+    det = FakeDetector()
+    det.frames = [[]]
+    w = watcher(det)
+    w.called(0.0)
+    w.called(1.0)
+    w.process(frame(), 7.5, panel_visible=False)
+    assert w.call_result(0.0) is None and w.call_result(1.0).ended
+
+
+def test_edge_tag_not_nearby_but_in_call_result():
+    det = FakeDetector()
+    det.frames = [[tag(1810, 100, y=500)]]  # 名字贴在屏幕右边（中心 1860）、下面没人：好友在画面外
+    w = watcher(det, FakeOcr({100: "懒洋洋大王"}))
+    w.called(0.0)
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.nearby(0.1) == []
+    assert "懒洋洋大王" in w.labels  # 位置照记：盯人（track）靠它往画面外转
+    w.process(frame(), 6.1, panel_visible=False)
+    assert w.call_result(0.0).friends["懒洋洋大王"] == Seen("右边", None, on_screen=False)
+
+
+def test_edge_band_zero_is_old_behavior():
+    det = FakeDetector()
+    det.frames = [[tag(1810, 100, y=500)]]
+    w = watcher(det, FakeOcr({100: "懒洋洋大王"}), edge_band=0.0)
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.nearby(0.1) == ["懒洋洋大王"]
+
+
+def test_edge_tag_over_a_person_still_counts():
+    det = FakeDetector()
+    det.frames = [[player(1800), tag(1790, 110)]]  # 人站在画面最右边、标签挂在他头上：在画面里
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}))
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.nearby(0.1) == ["懒洋洋大王"]
+
+
+def test_call_window_shifts_while_paused():
+    clock = Clock(0.0)
+    det = FakeDetector()
+    det.frames = [[]]
+    w = watcher(det, clock=clock)
+    w.called(0.0)
+    clock.t = 1.0
+    w.hold("camera")
+    clock.t = 5.0
+    w.release("camera")  # 停了 4 秒：窗口变成 [4, 10]
+    w.process(frame(), 7.0, panel_visible=False)
+    assert w.call_result(0.0) is None
+    w.process(frame(), 10.1, panel_visible=False)
+    assert w.call_result(0.0).ended
+
+
+def test_far_crops_ignore_backoff_and_double_in_window():
+    def backed_off(call):
+        det = CropDetector([small(200 + 300 * i) for i in range(5)])
+        w = far_watcher(det, far_crops=3)
+        w.process(frame(), 0.0, panel_visible=False)
+        for t in w.tracker.tracks.values():  # 都连着几次没找到标签：平时要等 5 秒才再裁
+            t.data["far_miss"] = FAR_MISSES
+            t.data["far_at"] = 0.0
+        if call:
+            w.called(0.9)
+        runs = w.far_runs
+        w.process(frame(), 1.0, panel_visible=False)
+        return w.far_runs - runs
+
+    assert backed_off(False) == 0
+    assert backed_off(True) == 5  # 窗口里不退避、每帧最多 3 × 2 块

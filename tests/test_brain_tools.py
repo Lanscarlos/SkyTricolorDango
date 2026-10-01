@@ -103,7 +103,7 @@ def test_tool_names_and_actions():
         "camera_reset", "attention", "move", "check_friend", "track", "stop_task", "panel_read", "panel_press", "panel_close",
     ]
     assert ACTIONS == {
-        "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task",
+        "call", "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task",
         "panel_press", "panel_close",
     }
 

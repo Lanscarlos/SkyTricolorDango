@@ -29,9 +29,13 @@ from ..chat.tracker import similar
 from ..config import Config
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, PASSIVE
 from ..imageio import imwrite
+from ..device.base import LINUX_KEY_Q
 from ..vision.bubbles import Rect, roi_rect
+from ..vision.halo import HaloWatch
+from ..vision.track import iou
 from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people, describe_things
+from .calling import CallResult, call_available, event_text as call_event_text, status_text as call_status_text
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
@@ -59,6 +63,7 @@ SCENE_EVENT_COOLDOWN = 10.0
 SHUTDOWN_REFINE = 8.0  # 退出时镜头闭环复位的细调最多花几秒（粗转照做）；控制台 stop_timeout 60 秒
 BUTTON_NOTES = {"retreat": "可以按", "allow": "可以按", "other": "要主人放行", "never": "不能按"}
 OWNER_NOTE = "（主人命令模式）"  # 真用到了主人命令窗口的放宽，结果后面标上（brain.jsonl 里看得出来）
+CALL_TRACK_STALE = 1.0  # 喊一声时取感知层最近一帧的人物框：比这旧的不要（同 perception.PEOPLE_STALE）
 PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身体自己打开面板的操作：期间这个面板不算遮挡
 
 
@@ -215,6 +220,12 @@ class Body:
         self._bow: tuple[float, float, float | None] | None = None  # 点火后要鞠躬：(到点, 放弃, 兜底放下的蜡烛几时举的)
         self._dark_at = float("-inf")  # 最近一次黑屏是几时开始的：举蜡烛之后黑过屏（切场景），蜡烛还举没举着说不准
         self._lit_at = float("-inf")
+        # 按 Q 喊一声（spec 2026-10-01-q-call）
+        self.last_call: CallResult | None = None  # 上次喊（status 用；窗口结束后 seen 补上）
+        self._call_at = float("-inf")  # 上次按 Q（dry-run 也记）：min_gap 从这里算
+        self._call_times: deque[float] = deque()  # 身体自动喊的时间（额度）
+        self._auto_called: dict[str, float] = {}  # 好友 → 为他哪一次走开（_left_at 的时间）自动喊过
+        self._pending_auto: CallResult | None = None  # 自动喊了、还在等窗口结果
 
     # ---- 主循环 ----
     @contextmanager
@@ -263,6 +274,7 @@ class Body:
         self._watch_bow(self.clock())
         self._watch_attention(self.clock())
         self._watch_lulls(self.clock())
+        self._watch_call(self.clock())
         self._fallback(now)
         self._inner_tick()
         self._ledger_call("save", self.wall())
@@ -1586,6 +1598,8 @@ class Body:
         soft = self._inner_call(lambda: self._soft_line(self.wall()), default="") if self.persona is not None else ""
         if soft:
             parts.append(soft)
+        if self.last_call is not None and self.last_call.seen is not None:
+            parts.append(call_status_text(self.last_call, now))
         parts.append(self.skills.describe(now))
         if self.cfg.reply.dry_run:
             parts.append("dry-run（说话、动作、转视角、走动都不会真的执行）")
@@ -1998,6 +2012,137 @@ class Body:
         self._ref_thumb = None  # 自己走的，不算画面大变
         self._forget_camera_reference()  # 走过之后转之前那张参照图对不上了：复位时只粗转
         return result + (OWNER_NOTE if relaxed else "")
+
+    # ---- 按 Q 喊一声（spec 2026-10-01-q-call §2） ----
+    def call_out(self, reason: str, *, live: bool = False) -> CallResult:
+        """短按 Q 喊一声：同步按键 + 连拍 burst 秒看光圈，开感知层的呼喊窗口（结果约 window 秒后 env.call_result(at) 才有）。
+        reason："brain" / "auto" / "manual"。不能喊时不抛异常，CallResult.refused 写原因。约 1~1.3 秒。"""
+        cfg = self.cfg.call
+        now = self.clock()
+        if not cfg.enabled:
+            return CallResult(now, reason, refused="没开")
+        if not call_available(self.cfg, self.env):  # 整图 OCR 也有 called()，但收不到呼喊窗口
+            return CallResult(now, reason, refused="没开感知层，喊了也收不到名字")
+        if self.blackout:
+            return CallResult(now, reason, refused="画面黑着（在切场景），现在喊不了")
+        gap = now - self._call_at
+        if gap < cfg.min_gap:
+            if reason == "brain" and self._owner(now):
+                reason = "brain-owner"
+            else:
+                return CallResult(now, reason, refused=f"{gap:.0f} 秒前刚喊过，等一会儿再喊")
+        if self._dry(live):
+            self._call_at = now
+            log.info("dry-run：会喊一声（%s）", reason)
+            return CallResult(now, reason, dry=True)
+        try:
+            self.clear_view("call", live)
+        except ToolError as exc:
+            return CallResult(now, reason, refused=str(exc))
+        if self.device.ime_shown():  # 身体开的框上面关过了：还开着就是别人开的
+            return CallResult(now, reason, refused="输入框开着（按 Q 会变成打字）")
+        moved = max(self._camera_moved_at, self._attention_pressed_at)
+        with self.panel.borrow("call") as was_open:  # 聊天面板开着时按 Q 没反应
+            if was_open:
+                self.sleep(self.cfg.track.settle)  # 面板关掉那一下画面横移：等停稳再拍基准
+            base = self.device.screenshot()
+            tracks = [t for t in list(getattr(self.env, "last_tracks", ())) if self.clock() - t.last <= CALL_TRACK_STALE]
+            selfs = [t for t in tracks if t.cls == "self"]
+            heads = {t.id: t.box for t in selfs}
+            # 和 self 框重叠的 player 框是团子本人（同感知层 _is_self）：别让一个光圈点亮两个区域、判成"别人也在喊"
+            heads.update({t.id: t.box for t in tracks if t.cls == "player" and not any(iou(t.box, s.box) >= 0.5 for s in selfs)})
+            at = self.clock()  # 按键命令发出之前：adb 往返之后才记会把最亮那一下算到窗口之前
+            watch = HaloWatch(base, heads, at, cfg)
+            self.device.hw_key(LINUX_KEY_Q)
+            if at - moved < self.cfg.track.settle:
+                watch.skipped = True  # 镜头刚动过：头顶区域对不上
+            if was_open:
+                watch.skipped = True  # 面板开着：关它时画面横移，感知层这段时间也没新帧，框对不上
+            for _ in range(int(cfg.burst * 100) + 1):  # 张数上限：时钟不走（测试、沙盒）也会停
+                if self.clock() - at >= cfg.burst or watch.skipped:
+                    break
+                try:
+                    frame = self.device.screenshot()
+                except Exception:
+                    log.debug("喊一声连拍截图失败", exc_info=True)
+                    watch.skipped = True
+                    break
+                if is_black(frame):
+                    watch.skipped = True
+                    break
+                watch.add(frame, self.clock())
+            self.env.called(at)
+        self._call_at = at
+        self._ref_thumb = None  # 光圈、面板开关不算画面大变
+        result = CallResult(at, reason)
+        if cfg.halo:
+            result.halo, tid = watch.result(int(base.shape[1]))
+            if result.halo == "self" and tid is not None:
+                result.self_box = watch.boxes[tid]
+                yolo = [t for t in tracks if t.cls == "self"]
+                if len(yolo) != 1:  # YOLO 已经稳稳认出团子就不覆盖
+                    self.env.self_box = result.self_box
+                    log.info("光圈认出团子：%s", result.self_box)
+        self.last_call = result
+        log.info("喊了一声（%s），光圈：%s", reason, result.halo)
+        return result
+
+    def _watch_call(self, now: float) -> None:
+        """身体自动兜底（spec §2.3）：好友刚"走开"、画面里还有没挂名字的人 → 多半只是走远了标签淡掉，喊一声确认。
+        喊完不等：窗口结束后放背景事件 call；认回来的好友照常 return（抵消那条 leave）。"""
+        cfg = self.cfg.call
+        if not (cfg.enabled and cfg.auto) or self.env is None or not hasattr(self.env, "unnamed"):
+            return
+        try:
+            self._collect_auto_call(now)
+            if self._pending_auto is not None:
+                return
+            who = [n for n, t in self._left_at.items()
+                   if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t]
+            if not who or now - self._call_at < cfg.min_gap:
+                return
+            while self._call_times and now - self._call_times[0] > cfg.auto_window:
+                self._call_times.popleft()
+            if len(self._call_times) >= cfg.auto_quota or self.env.unnamed(now) <= 0 or self._auto_call_blocked(now):
+                return
+            for n in who:
+                self._auto_called[n] = self._left_at[n]
+            self._call_times.append(now)
+            log.info("%s 刚走开、画面里还有没挂名字的人：自动喊一声找找", "、".join(who))
+            r = self.call_out("auto")
+            if r.refused:
+                log.info("自动喊一声没喊成：%s", r.refused)
+            elif not r.dry:
+                self._pending_auto = r
+        except Exception:
+            log.exception("自动喊一声出错")
+
+    def _auto_call_blocked(self, now: float) -> bool:
+        if self._bubble_at is not None or self.sender.opened or self.skills.active is not None:
+            return True
+        if self._raised is not None or self.brain_busy() or self.blackout:
+            return True
+        max_age = self.cfg.social.max_age  # 带着请求圈走开的好友：请求留在 env.requests 里不会被清，过时的不算
+        if any(now - getattr(r, "seen_at", now) <= max_age for r in list(dict(getattr(self.env, "requests", None) or {}).values())):
+            return True
+        if self.panels is not None and self.panels.state.others():
+            return True
+        if self.emotes is not None and now - self.emotes.last_any < self.cfg.reflex.min_gap:
+            return True
+        return bool(self.device.ime_shown())  # 最后才问（一次 adb）
+
+    def _collect_auto_call(self, now: float) -> None:
+        r = self._pending_auto
+        if r is None:
+            return
+        seen = self.env.call_result(r.at)
+        if seen is not None:
+            r.seen = seen
+            self.events.put("call", call_event_text(seen))
+            self._pending_auto = None
+        elif now - r.at > self.cfg.call.window + 10:
+            log.info("自动喊一声的结果一直没等到（感知层暂停了？），不等了")
+            self._pending_auto = None
 
     def stop_task(self) -> str:
         return self.skills.cancel(self, "大脑叫停")

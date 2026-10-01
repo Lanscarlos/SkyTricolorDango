@@ -357,8 +357,15 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
         places=places, place_interval=cfg.places.place_interval,
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
-        social_cfg=cfg.social, flame=flame, **_appearance_parts(cfg, run),
+        social_cfg=cfg.social, flame=flame, **_appearance_parts(cfg, run), call_window=cfg.call.window,
     )
+
+
+def _call_enabled(cfg: Config, env) -> bool:
+    """按 Q 喊一声（spec 2026-10-01-q-call）：开着 [call] 且 env 是 YOLO 感知层才有 call 工具。"""
+    from .brain.calling import call_available
+
+    return call_available(cfg, env)
 
 
 def _gesture_classifier(cfg: Config):
@@ -687,6 +694,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_gesture_label(cfg, args)
     elif args.action == "appearance-eval":
         _perception_appearance_eval(cfg, args)
+    elif args.action == "halo-eval":
+        _perception_halo_eval(cfg, args)
 
 
 def _existing_clips(dataset: Path, out: Path, recording: str) -> dict[Path, list[str]]:
@@ -1040,6 +1049,47 @@ def _perception_appearance_eval(cfg: Config, args) -> None:
     print(f"建议：match {fmt(s['match'])}（现在 {a.match:g}）、changed {fmt(s['changed'])}（现在 {a.changed:g}）、margin {s['margin']:g}")
     r = summary["replay"]
     print(f"藏标签重放（现在的配置）：对 {r['right']}、错 {r['wrong']}、漏 {r['missed']}；报告：{out / 'report.md'}")
+
+
+def _perception_halo_eval(cfg: Config, args) -> None:
+    """呼唤光圈的离线标定（spec 2026-10-01-q-call §5）：录像上逐帧跑感知层，画每条人物 / 团子轨迹头顶的亮度变化曲线，
+    标出超过门槛的时间段，给建议的 [call] halo_rise；写 report.md / curves.png / summary.json。"""
+    import json
+
+    from .vision.compare import timed_files
+    from .vision.halo_eval import CANDIDATES, Curves, plot, report_md, segments, suggest
+
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    out = Path(args.output or f"tmp/halo-eval/{time.strftime('%Y%m%d-%H%M%S')}")
+    out.mkdir(parents=True, exist_ok=True)
+    cfg.appearance.enabled = False
+    _, watcher = _perception(cfg, args)
+    print(f"{len(timed)} 帧（{timed[0][0]:.1f}~{timed[-1][0]:.1f} s）→ {out}")
+    curves = Curves()
+    for n, (t, path) in enumerate(timed, 1):
+        frame = imread(path)
+        watcher.process(frame, t, _panel_open(cfg, frame))
+        curves.add(frame, t, [tr for tr in watcher.last_tracks if tr.last == t])
+        if n % 50 == 0:
+            print(f"  {n}/{len(timed)}")
+    rises = curves.rises()
+    current = cfg.call.halo_rise
+    summary = {
+        "source": str(args.source), "frames": len(timed), "suggest": suggest(rises), "current": current,
+        "tracks": {str(k): {"peak": max(v for _, v in pts), "segments": segments(pts, current)} for k, pts in rises.items()},
+        "counts": {f"{c:g}": sum(len(segments(pts, c)) for pts in rises.values()) for c in CANDIDATES},
+    }
+    plot(rises, out / "curves.png")
+    (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out / "report.md").write_text(report_md(summary), encoding="utf-8")
+    s = summary["suggest"]
+    print(f"{len(rises)} 条轨迹；噪声 {s['noise']}、最高的峰 {s['peak']} → 建议 halo_rise {s['halo_rise']}（现在 {current:g}）")
+    print(f"报告：{out / 'report.md'}")
 
 
 def _perception_augment(args) -> None:
@@ -1955,7 +2005,7 @@ def _run_brain(
         events.subscribe(eyes.notice)
         # recall 只读，dry-run 也给
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
-                          sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled)
+                          sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled, call=_call_enabled(cfg, env))
         wardrobe = _wardrobe(cfg, env, ledger, world, base, claude_vars, work, clock)
         server = SkyServer(toolbox)
         server.start()
@@ -1971,7 +2021,7 @@ def _run_brain(
             days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
             persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
             appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
-            lull=cfg.lull.enabled,
+            lull=cfg.lull.enabled, call=_call_enabled(cfg, env),
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
@@ -2510,6 +2560,11 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--device", choices=["cuda", "dml", "cpu"])
     q.add_argument("--embed", help="外观特征：color 或 .onnx 路径（默认 appearance.model）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/appearance-eval/<时间>）")
+    q = psub.add_parser("halo-eval", help="呼唤光圈标定：录像上画每个人头顶的亮度变化曲线，给建议的 [call] halo_rise")
+    q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/q-call-20260930-c）")
+    q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"])
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/halo-eval/<时间>）")
     q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")
     q.add_argument("--runs", default="runs", help="运行目录的上级（默认 runs/）")
     q.add_argument("--last", type=int, default=5, help="看最近几次运行")

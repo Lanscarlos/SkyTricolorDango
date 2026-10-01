@@ -151,6 +151,7 @@ def test_options(clock):
         "panels": False,
         "track": False,
         "max_track_seconds": 60,
+        "call": False,
     }
     bare, _, _, _ = body(clock)
     opts = ManualControl(bare).options()

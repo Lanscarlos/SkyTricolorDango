@@ -88,6 +88,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己、关系卡旧特征、`assign_friends`、换装判定）、攒训练数据 `CropSaver` |
 | `src/skydango/vision/wardrobe.py` | 装扮描述器：排队、优先级、每小时额度，一次性 `claude -p --model haiku` 把人物裁图写成一句话 |
 | `src/skydango/vision/appearance_eval.py` | 认装扮的离线标定（`perception appearance-eval`）：收集轨迹特征、相似度分布、建议门槛、藏标签重放、报告 |
+| `src/skydango/vision/halo.py` `halo_eval.py` | 按 Q 喊一声的呼唤光圈：头顶区域、按键后连拍认团子（`HaloWatch`，纯计算）；离线标定 `perception halo-eval` |
+| `src/skydango/brain/calling.py` | 按 Q 喊一声：`CallResult`、给大脑 / 事件 / status 的文字、`wait_result`（在调用方线程里等呼喊窗口结束）、`call_available` |
 | `src/skydango/vision/viewer.py` | 识别可视化网页（`view` / `run --view`）：标准库 HTTP 服务，画面 + 识别框 + 状态放在同一份快照里，框和中文标签由浏览器画 |
 | `src/skydango/vision/panels.py` `game/panels.py` `assets/panels/` | 面板识别：特征卡快看 + OCR 细读 + 通用兜底认出开着哪些面板（`vision`）；按卡片关面板、点按钮（`game`）；六张特征卡（见「面板识别」） |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
@@ -396,6 +398,27 @@ dir = "private/sandbox"
 - 做完放 `reflex` 背景事件（不单独叫醒大脑），status "刚才下意识：…"、网页"反射"；提示词在「说话」一节多一句"身体已经替你冒了输入气泡"。黑屏、技能在跑、有互动请求、面板挡着时不做；dry-run 走 `pretend`
 - `enabled = false` 完全照旧（不开框、不做动作、`gesture` 照旧交给大脑、提示词不变、`emote` 不查 `min_gap`）；管理面板有 `reflex.enabled` / `reflex.bubble` 两个开关
 
+## 按 Q 喊一声（`[call]`，大脑模式，要配合 `[perception]`）
+
+设计见 `docs/superpowers/specs/2026-10-01-q-call-design.md`，计划 `docs/superpowers/plans/2026-10-01-q-call.md`，操作见 game-ops「呼喊找好友」「呼唤特效」。
+起因：好友稍远一点头顶的名字标签就淡掉（人还在画面里），只有按 Q 才亮出来约 5 秒；以前标签一淡就被判成陌生人、5 秒后"走开了"。**代码已完成，还没在真机上跑过，数字都是估的**（spec §6 真机验证六步）。
+- **轨迹续命**（`[perception] sticky_names`，平时就生效）：挂过名字标签的 `player` 轨迹只要这一帧还接得上就刷新"在身边"；轨迹断了（`track_buffer`）才开始算 `keep` 5 秒。按外观认的 `maybe`、黑影不续
+- **贴边标签**（`[perception] edge_band = 0.06`）：名字标签贴在屏幕最左 / 最右、又没挂上人 = 好友在画面外：**不算在身边**（不刷新 `last_seen`、不挂圆圈），
+  但 `labels` 照记（盯人 track 靠它往画面外转——和 spec §1.3 不同，见计划「偏离 spec」）；`edge_band = 0` 照旧
+- **呼喊窗口**（`PerceptionWatcher.called(at)` / `call_result(at)`）：按键后 `[call] window`（6 秒）里挂上名字的人记方位 / 远近、贴边的记"在画面外"，窗口里 `far_crops` 不退避、块数 ×2；
+  结束那一帧数还剩几个没挂名字的点过火的人（`unnamed`）；暂停时窗口跟着往后挪。EnvWatcher 是空实现
+- **身体喊一声**（`Body.call_out(reason)`）：没开 / 没感知层 / 黑屏 / `min_gap`（20 秒，卡洛 `#` 命令窗口里大脑不受限）/ dry-run（不按，照样计间隔）→ 不按；
+  `clear_view("call")` 关掉身体开的输入框，`ime_shown()` 还开着就拒绝（Q 会变成打字）；`panel.borrow("call")` 里拍基准、`hw_key(16)` 短按、连拍 `burst` 1 秒、`env.called(at)`
+- **光圈认团子**（`[call] halo`，**默认关**）：连拍里按键（命令发出前记的时间）后 0~0.8 秒头顶区域比基准亮 `halo_rise` 以上、恰好一个人、在画面中间（`halo_center`）→ 写 `env.self_box`（YOLO 已经认出一个团子就不覆盖；和 self 框重叠的 player 框算同一个人）；
+  别人也在喊 / 镜头刚动过 / 喊之前聊天面板开着（关面板时画面横移）/ 没有新鲜的人物框 / 黑屏就放弃，**不为确认再按**。认错 = 把一个好友当成团子过滤掉，所以先 `perception halo-eval tmp/record/q-call-20260930-c` 定 `halo_rise`、真机核对再开
+- **自动兜底**（`[call] auto`，`Body._watch_call`）：好友 `auto_after_leave`（30 秒）内走开、还没回来、这次走开没为他喊过，画面里有没挂名字的人，`auto_window` 10 分钟最多 `auto_quota` 3 次；
+  输入框开着、技能在跑、有互动请求、在举蜡烛、别的面板开着、刚做完动作、大脑在回聊天、黑屏都不喊；dry-run 只记日志。喊完不等，窗口结束后放**背景事件** `call`（"你下意识喊了一声：认出 小明（右边·远）…"），
+  认回来的好友照常 `return` 抵消那条 `leave`
+- **大脑工具 `call()`**（`calling.call_available`：`[call] enabled` 且 env 是感知层才注册，在 `look_around` 后面，算"做了事"）：身体按完键就回来，MCP 线程里等窗口结束（最多 `window + 4` 秒），
+  返回"喊了一声：认出 …；小红在画面外（左边）；还有 1 个没挂名字的人。光圈：…"；拒绝时返回原因。提示词「视角」一节加一句什么时候喊；status 多一行"上次喊：2 分钟前（认出小明）"；
+  网页手动控制"喊一声（Q）"（总是真执行、照样过检查）；管理面板有 `call.enabled` / `call.auto`
+- `enabled = false`：没有工具、不自动喊，提示词 / status / 工具列表逐字照旧（续命、贴边是 `[perception]` 的开关）
+
 ## 冷场时的心理活动（`[lull]`，大脑模式）
 
 设计见 `docs/superpowers/specs/2026-10-01-lull-musing-design.md`，计划 `docs/superpowers/plans/2026-10-01-lull-musing.md`。
@@ -531,6 +554,7 @@ python -m skydango perception label <spin 目录> --spin --model 模型  # 转�
 python -m skydango perception label datasets/sky --objects [--model 模型] [--only 通配]  # 物品模式：给已标好人的数据集补标座位 / 篝火 / 乐器 / 先祖和头顶气泡 typing（先备份 labels/），清单在 _assist/objects.md；--only 只做文件名匹配的帧
 python -m skydango perception augment datasets/sky  # 训练集加运动模糊 / 压暗样本（只动 train）
 python -m skydango perception compare <录像目录> [--model 模型] [--far-crops 0]  # 同一批录像对比 YOLO 和整图 OCR → tmp/compare/<时间>/report.md（含远处认出率）
+python -m skydango perception halo-eval <录像目录> [--model 模型]  # 呼唤光圈标定：每个人头顶的亮度曲线、建议的 [call] halo_rise → tmp/halo-eval/<时间>/report.md + curves.png
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
 python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
 python -m skydango perception clips <录像目录> [--force]  # 动作识别的数据：按人物轨迹切 16 帧片段 → datasets/gesture/_unlabeled；这段录像切过就拒绝，--force 只切数据目录里哪儿都还没有的片段

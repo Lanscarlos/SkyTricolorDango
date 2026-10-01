@@ -470,6 +470,7 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 <div class="row" id="ctl-camera"><b>视角</b><button data-cam="left">左转</button><button data-cam="right">右转</button><button data-cam="up">抬头</button><button data-cam="down">低头</button><button data-cam="zoom_in">拉近</button><button data-cam="zoom_out">拉远</button>
 步数<input type="number" id="ctl-steps" value="1" min="1"><button id="ctl-reset">复位</button><button id="ctl-around">环视一圈</button></div>
 <div class="row"><b>看人</b><button id="ctl-pick">在画面上选人</button><span id="ctl-pick-tip" class="n"></span></div>
+<div class="row"><b>喊</b><button id="ctl-call">喊一声（Q）</button><span id="ctl-call-tip" class="n"></span></div>
 <div class="row" id="ctl-track"><b>盯人</b><input type="text" id="ctl-track-name" placeholder="好友名字"><button id="ctl-track-pick">在画面上选</button>
 秒<input type="number" id="ctl-track-sec" value="30" min="1"><button id="ctl-track-go">盯</button><button id="ctl-stop">停下</button><span id="ctl-track-tip" class="n"></span></div>
 <div class="row" id="ctl-panels" hidden><b>面板</b><button id="ctl-panel-read">读面板</button><button id="ctl-panel-close">关面板</button></div>
@@ -515,7 +516,7 @@ function controlLine(action,args,res){const a=args||{};let what;
   if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」`;
   else if(action==="camera")what=`${CAM[a.action]||a.action} ×${a.steps}`;else if(action==="camera_reset")what="复位";
   else if(action==="look_around")what="环视一圈";else if(action==="panel_read")what="读面板";else if(action==="panel_close")what="关面板";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;
-  else if(action==="track")what=`盯着${a.name}（${a.seconds} 秒）`;else if(action==="stop_task")what="停下";else what=action;
+  else if(action==="track")what=`盯着${a.name}（${a.seconds} 秒）`;else if(action==="stop_task")what="停下";else if(action==="call")what="喊一声";else what=action;
   return `${what} → ${res.text}`}
 function ctlApply(){const o=K.opts;if(!o)return;
   $("ctl-warn").hidden=!o.dry_run;
@@ -536,6 +537,7 @@ function ctlLock(){const o=K.opts||{emotes:[],camera:[]},b=K.busy;
   $("ctl-track-sec").max=o.max_track_seconds||60;$("ctl-track-pick").className=K.trackPick?"on":"";
   if(!tr)$("ctl-track-tip").textContent="要开感知层（[perception]）和镜头";
   else if(K.trackPick)$("ctl-track-tip").textContent="点一下画面上的好友";
+  $("ctl-call").disabled=b||!o.call;$("ctl-call-tip").textContent=o.call?"":"要开 [call] 和感知层（[perception]）";
   $("ctl-panels").hidden=!o.panels;$("ctl-panel-read").disabled=$("ctl-panel-close").disabled=b||!o.panels}
 function ctlCount(){const n=[...$("ctl-say-text").value.trim()].length,max=K.opts?K.opts.max_chars:0;
   $("ctl-count").textContent=`${n} / ${max}`;ctlLock()}
@@ -571,6 +573,7 @@ $("ctl-track-go").onclick=()=>{const name=$("ctl-track-name").value.trim();if(!n
   const max=K.opts&&K.opts.max_track_seconds||60,n=Math.min(max,Math.max(1,parseInt($("ctl-track-sec").value,10)||30));
   $("ctl-track-sec").value=n;ctlSend("track",{name,seconds:n})};
 $("ctl-stop").onclick=()=>ctlSend("stop_task",{});
+$("ctl-call").onclick=()=>ctlSend("call",{});
 c.addEventListener("click",e=>{if(!K.trackPick||!last)return;  // 盯人：按快照里的框认出点的是谁，填进名字
   const [x,y]=Stage.toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height),name=Stage.nameAt(last.boxes||[],x,y);
   K.trackPick=false;$("ctl-track-tip").textContent=name?"":"那里没认出好友的名字，换个地方点，或者直接输入";

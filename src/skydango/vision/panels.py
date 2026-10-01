@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 CHAT = "chat_log"  # 聊天记录面板：不算遮挡，开关沿用 Body._watch_panel
 UNKNOWN = "unknown"  # 通用兜底认出的不认识的面板
 DISCONNECT = "disconnect"  # 掉线弹框：两个按钮都不按，身体只报告（assets/panels/disconnect）
-ACTIONS = ("say", "emote", "camera", "move", "check_friend", "social")  # 遮挡护栏 clear_view 的操作名
+ACTIONS = ("say", "emote", "camera", "move", "check_friend", "social", "call")  # 遮挡护栏 clear_view 的操作名
 KINDS = ("template", "dark", "builtin", "text")
 
 _TOP_KEYS = {"label", "verified", "layer", "region", "confirm_frames", "allows", "features", "close", "buttons"}

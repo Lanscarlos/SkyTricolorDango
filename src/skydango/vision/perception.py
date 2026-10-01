@@ -31,7 +31,7 @@ import logging
 import threading
 import time
 from collections import Counter, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
@@ -48,7 +48,7 @@ from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
-from .people import OBJECT_NAMES, Person, Thing, object_distance, side_of
+from .people import OBJECT_NAMES, CallSeen, Person, Seen, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import Track, Tracker, iou
 from .wardrobe import FRIEND as FRIEND_PRIORITY
@@ -198,6 +198,7 @@ class PerceptionWatcher:
         embedder=None,  # 外观特征模型（appearance.make_embedder）
         appearance_cfg: AppearanceConfig | None = None,
         saver=None,  # 攒认人模型的训练数据（CropSaver，None = 不存）
+        call_window: float = 6.0,  # 按 Q 喊一声的窗口秒数（[call] window）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -230,6 +231,9 @@ class PerceptionWatcher:
         self.embedder = embedder
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
         self.saver = saver
+        self.call_window = call_window
+        self._call: CallSeen | None = None  # 最近一次呼喊窗口（只留一次）；self._lock 保护
+        self._call_span = (float("-inf"), float("-inf"))  # 窗口 [开始, 结束]：暂停时跟着往后挪（at 不变，身体拿它取结果）
         self._stranger_backs: list[str] = []  # 走开又回来的陌生人编号，身体取走
         self.wardrobe = None  # vision.wardrobe.Wardrobe：描述装扮（cli 建好大脑后挂上；None = 只判换装、不描述）
         self._outfits: list[OutfitNote] = []  # 好友的装扮，身体取走
@@ -331,6 +335,9 @@ class PerceptionWatcher:
         with self._lock:
             self._strangers = deque((min(t + d, now), n, u) for t, n, u in self._strangers)
         self.tracker.shift(d)
+        with self._lock:
+            if self._call is not None and not self._call.ended:  # 呼喊窗口跟着往后挪：暂停期间看不到的不算
+                self._call_span = (self._call_span[0] + d, self._call_span[1] + d)
         if self.appearance is not None:  # 认装扮的陌生人编号也一样：暂停的时间不算走开，别报"又回来了"
             self.appearance.shift(d, now)
         for track in list(self.tracker.tracks.values()):  # 圆盘的时间戳也跟着挪，否则恢复后"圆盘消失"会短暂为真
@@ -470,12 +477,21 @@ class PerceptionWatcher:
             else:
                 orphans.append(ring)
 
+        tagged = self._assign_tags([p for p in players if p.cls != UNLIT], tags)
+        assigned = {t.id for t in tagged.values()}
         seen = []
         for tag in tags:
             name = tag.data.get("name")
             if not name:
                 continue
             b = tag.box
+            edge = self._offscreen(tag, width) if tag.id not in assigned else None
+            if edge:
+                # 名字贴在屏幕边上 = 好友在画面外（spec 2026-10-01-q-call §1.3）：不算在身边（不然一喊就冒出一串假的"来到身边"），
+                # 位置照记（盯人 track 靠它往画面外转），呼喊窗口里记进结果
+                self.labels[name] = (b.x, b.y, b.w, b.h, now)
+                self._call_note(name, Seen(edge, None, on_screen=False), now)
+                continue
             self.last_seen[name] = now
             self.labels[name] = (b.x, b.y, b.w, b.h, now)
             seen.append(name)
@@ -512,7 +528,6 @@ class PerceptionWatcher:
             self.requests.pop(STRANGER, None)
 
         strangers = unlit = 0
-        tagged = self._assign_tags([p for p in players if p.cls != UNLIT], tags)
         shown = {t.data["name"] for t in tags if t.data.get("name")}
         for player in players:
             name = player.data.get("name")
@@ -552,6 +567,9 @@ class PerceptionWatcher:
                 self.last_seen[maybe] = now  # 好友还在身边、只是名字标签被挡住：别冒出"走开了"（已经走开的不靠外观接回来）
             if is_stranger and self.appearance is not None:
                 self._appearance_stranger(frame, player, players, fresh.get(player.id), now)
+        if self.cfg.sticky_names:
+            self._keep_named(players, now)
+        self._call_tick(players, tags, tagged, assigned, now, width, height)
         if self.appearance is not None:
             self.appearance.forget(now)
             if self.saver is not None:
@@ -579,6 +597,82 @@ class PerceptionWatcher:
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))
 
+    def _keep_named(self, players: list[Track], now: float) -> None:
+        """轨迹续命（spec 2026-10-01-q-call §1.1）：好友稍远一点头顶的名字标签就淡掉，人还在画面里。
+        挂过名字标签的轨迹只要这一帧还接得上，就一直算在身边；轨迹断了（track_buffer）才开始算 keep。
+        按外观认的（maybe）不算；交叉走过身份换错时，名字跟到另一个人身上，标签再亮时纠正（同名标签在别处就摘名字）。"""
+        for p in players:
+            name = p.data.get("name")
+            if p.cls == "player" and name and p.data.get("tagged") and now - p.last <= PEOPLE_STALE:
+                self.last_seen[name] = now
+
+    # ---- 按 Q 喊一声（spec 2026-10-01-q-call §1.2、§1.3） ----
+    def called(self, at: float, *, by_self: bool = True) -> None:
+        """团子按了 Q：开呼喊窗口 [at, at + call_window]，被动收这段时间里亮出来的名字。新窗口顶掉旧的。"""
+        with self._lock:
+            self._call = CallSeen(at, {})
+            self._call_span = (at, at + self.call_window)
+        log.debug("呼喊窗口：%.1f ~ %.1f", at, at + self.call_window)
+
+    def call_result(self, at: float) -> CallSeen | None:
+        """窗口结束后才有；at 对不上（被新的一次顶掉）或还没结束返回 None。"""
+        with self._lock:
+            c = self._call
+            if c is None or c.at != at or not c.ended:
+                return None
+            return replace(c, friends=dict(c.friends))
+
+    def unnamed(self, now: float) -> int:
+        """最近一帧里没挂名字的点过火的人（陌生人、没归类的远处小人；按外观认的好友不算）。"""
+        tracks = [t for t in list(self.last_tracks) if now - t.last <= PEOPLE_STALE]
+        selfs = [t for t in tracks if t.cls == "self"]
+        return self._count_unnamed([t for t in tracks if t.cls == "player" and not self._is_self(t, selfs)])
+
+    @staticmethod
+    def _count_unnamed(players: list[Track]) -> int:
+        return sum(p.cls == "player" and not p.data.get("name") and not p.data.get("maybe") for p in players)
+
+    def _offscreen(self, tag: Track, width: int) -> str | None:
+        """名字标签中心在最左 / 最右 edge_band 里：好友在画面外，返回在哪边。"""
+        band = self.cfg.edge_band * width
+        if band <= 0:
+            return None
+        cx = tag.box.x + tag.box.w / 2
+        return "左边" if cx < band else ("右边" if cx > width - band else None)
+
+    def _calling(self, now: float) -> bool:
+        c = self._call
+        return c is not None and not c.ended and self._call_span[0] <= now <= self._call_span[1]
+
+    def _call_note(self, name: str, seen: Seen, now: float) -> None:
+        if self._calling(now):
+            with self._lock:
+                self._call.friends[name] = seen  # 同一个名字留最后一次
+
+    def _call_tick(self, players: list[Track], tags: list[Track], tagged: dict[int, Track], assigned: set[int],
+                   now: float, width: int, height: int) -> None:
+        """窗口里：这一帧挂上名字的人（方位 / 远近同 people()）、没对上人的名字标签记进结果；窗口过了的第一帧收尾。"""
+        c = self._call
+        if c is None or c.ended or now < self._call_span[0]:
+            return
+        if now > self._call_span[1]:
+            with self._lock:
+                c.unnamed = self._count_unnamed(players)
+                c.ended = True
+            log.debug("呼喊窗口结束：%s；没挂名字 %d 个", "、".join(c.friends) or "没看到名字", c.unnamed)
+            return
+        for tag in tags:  # 只看到名字、下面没框到人（贴边的在上面已经记过）
+            name = tag.data.get("name")
+            if name and tag.id not in assigned and self._offscreen(tag, width) is None:
+                self._call_note(name, Seen(side_of(tag.box.x + tag.box.w / 2, width), None), now)
+        ref = self._ref_height(height)
+        for p in players:
+            tag = tagged.get(p.id)
+            name = tag.data.get("name") if tag is not None else None
+            if name and p.cls == "player":
+                where = side_of(p.box.x + p.box.w / 2, width)
+                self._call_note(name, Seen(where, distance(p.box.h, ref, self.cfg.near, self.cfg.far)), now)
+
     def _far_tags(self, frame: np.ndarray, players: list[Track], tags: list[Track], now: float,
                   width: int, height: int, panel_visible: bool) -> list[Track]:
         """三期 §1：远处的小人没挂上名字标签 → 在它头顶裁一块再检测一次（只要 name_tag / social_ring），返回新接上的轨迹。
@@ -590,10 +684,11 @@ class PerceptionWatcher:
         # 远处的标签只在裁剪那一帧出现：下次裁剪要赶在标签轨迹被追踪器删掉（track_buffer）之前，
         # 不然每次都是新轨迹，名字投票、"同一条标签轨迹只记一次"都不起作用
         retry = min(FAR_RETRY, 0.8 * self.cfg.track_buffer)
+        calling = self._calling(now)  # 呼喊窗口里远处小人的标签真的画出来了：不退避、多裁几块
 
         def due(p: Track) -> bool:
             # 连着几次都没找到标签（多半是点过火的陌生人）：放慢到 FAR_BACKOFF 秒一次，别一直占推理
-            wait = FAR_BACKOFF if p.data.get("far_miss", 0) >= FAR_MISSES else retry
+            wait = FAR_BACKOFF if p.data.get("far_miss", 0) >= FAR_MISSES and not calling else retry
             return now - p.data.get("tag_at", float("-inf")) >= retry and now - p.data.get("far_at", float("-inf")) >= wait
 
         def tag_inside(area: Rect | None) -> bool:  # 原图里已经框到了标签（只是位置没挂上人）：裁了也只会找到它
@@ -606,7 +701,7 @@ class PerceptionWatcher:
         ]
         todo.sort(key=lambda p: p.data.get("far_at", float("-inf")))
         found: list[Detection] = []
-        for p in todo[: self.cfg.far_crops]:
+        for p in todo[: self.cfg.far_crops * (2 if calling else 1)]:
             p.data["far_at"] = now
             area = far_region(p.box, width, height)
             if area is None:

@@ -206,3 +206,9 @@ def test_scan_ignores_status_icons_below_friend_labels():
                    background=False, icons=IconClassifier(load_icons("assets/social")), icon_offset=2.23)
     w.observe(img, 5.0, panel_visible=False)
     assert w.requests == {}
+
+
+def test_env_watcher_call_stubs():
+    w = EnvWatcher(None, EnvConfig(), lambda: [], [0, 0, 0.3, 0.8], background=False)
+    w.called(1.0)
+    assert w.call_result(1.0) is None
