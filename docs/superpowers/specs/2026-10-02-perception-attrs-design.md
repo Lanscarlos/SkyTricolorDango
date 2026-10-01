@@ -95,7 +95,7 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 - `u = (yolo_w × YOLO 侧 + (1 − yolo_w) × 外形侧)`，`yolo_w` 默认 0.5；外形还没复核过时只用 YOLO 侧
 
 `data["unlit"]` 滞回：初值按 `u ≥ 0.5`；之后连续 `flip_votes`（3）帧 `u` 都在另一边（> 0.6 或 < 0.4）才翻。
-**下游所有 `t.cls == UNLIT` / `!= UNLIT` 的判断改成读 `is_unlit(t)`**（`enabled = false` 时就是 `t.cls == UNLIT`）：陌生人计数、`_assign_tags`、`sweep` 的黑影、`far_tags` 的人选、认装扮的人选。
+**下游所有 `t.cls == UNLIT` / `!= UNLIT` 的判断改成读 `is_unlit(t)`**（`enabled = false` 时就是 `t.cls == UNLIT`）：陌生人计数、`_assign_tags`、`far_tags` 的人选、认装扮的人选。`sweep()`（转圈汇总）用的是逐帧检测、没有轨迹，照旧看 YOLO 类别。
 
 **不改的**：点亮陌生人那条链路（`feat/light-flame`：团子周围找火焰、`black()` 量人物多黑、`lit_frames` 判点亮）照它自己的规则，这一期不接外形头 —— 它刚改完、还没上真机，两边一起动出问题分不清是谁。等它真机过了，再单独评估要不要让"点亮了"也参考外形头。
 
@@ -178,7 +178,7 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 
 ## 9. 实施顺序和验证
 
-**前置**：`feat/light-flame` 合进 main 之后再动 `perception.py`（它正在改同一个文件的点火部分）。追踪器升级（`2026-10-01-tracking-relink-motion-design.md`）10-02 已合并，这一期在它上面接：`open_low` 和复核刷新 `strong_last`（§3.3）；失踪好友接回（`relink`）、续命（`sticky_names`）、运动方向不接 `rejected` 的轨迹和外形是 `spirit` / `shared` 的轨迹；`track-eval` 加一列"复核撤下 / 放行"。
+**前置**：`feat/light-flame` 合进 main 之后再动 `perception.py`（它正在改同一个文件的点火部分）。追踪器升级（`2026-10-01-tracking-relink-motion-design.md`）10-02 已合并，这一期在它上面接：`open_low` 和复核刷新 `strong_last`（§3.3）；失踪好友接回（`relink`）、续命（`sticky_names`）、运动方向不接 `rejected` 的轨迹和外形是 `spirit` / `shared` 的轨迹。
 
 1. 测速：`dinov2-small.onnx` 在 cuda 上单张 / 批 4 张各多少 ms，导出的有没有 batch 维（没有就重导一份带动态 batch 的，放 `models/dinov2-small-b.onnx`）
 2. 数据：`perception crops datasets/sky --model models/sky-yolo-v7.pt` + 难例 → `attrs-label` → 标注页确认 → `--writeback`
