@@ -198,3 +198,24 @@ def test_outfits_are_copies():
     led.all_outfits()["小明"][0]["desc"] = "改了"
     led.card("小明").outfits[0]["desc"] = "改了"
     assert led.all_outfits()["小明"][0]["desc"] == ""
+
+
+def test_describe_outfit_is_one_shot():  # 同一套的描述再回来一次：不再给前一套（不重复发 outfit 事件）
+    l = ledger()
+    l.wear("小明", F1, "k", True, D1)
+    l.describe_outfit("小明", "白斗篷", D1)
+    l.wear("小明", F2, "k", True, D1)
+    assert l.describe_outfit("小明", "粉斗篷", D1) == "白斗篷"
+    assert l.describe_outfit("小明", "粉色斗篷", D1) is None
+    assert l.all_outfits()["小明"][-1]["desc"] == "粉色斗篷"
+    l.wear("小明", F3, "k", True, D1)  # 又换了一套：照样给
+    assert l.describe_outfit("小明", "黑斗篷", D1) == "粉色斗篷"
+
+
+def test_status_line_puts_look_first():
+    led = ledger()
+    led.present(["阿花"], T0)
+    assert led.status_line(["阿花", "路人"], T0 + 10, {"阿花": "粉色长斗篷", "路人": "白斗篷"}) == (
+        "阿花（粉色长斗篷·今天刚来·今天刚认识）、路人（白斗篷）"
+    )
+    assert led.status_line(["阿花"], T0 + 10, {}) == led.status_line(["阿花"], T0 + 10) == "阿花（今天刚来·今天刚认识）"

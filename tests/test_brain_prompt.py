@@ -258,3 +258,22 @@ def test_go_on_line_does_not_contradict_proactive():  # 终审：别和“别硬
 def test_prompt_mentions_idle_looking():
     text = static_prompt(ReplyConfig())
     assert "东张西望" in text and "attention" in text
+
+
+# ---- 认装扮（spec 2026-10-01-appearance §6） ----
+def test_prompt_appearance_rules_only_when_enabled():
+    from skydango.brain.prompt import APPEARANCE_RULES, TEMPER_RULES
+
+    assert APPEARANCE_RULES not in brain_prompt(ReplyConfig(), None)
+    assert APPEARANCE_RULES in brain_prompt(ReplyConfig(), None, appearance=True)
+    text = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True, appearance=True)
+    assert text.index(TEMPER_RULES) < text.index(APPEARANCE_RULES) < text.index("- 记住聊过的内容和对方的名字")
+    for s in ("看图猜的", "像小明", "随口提", "“你自己”那行"):
+        assert s in APPEARANCE_RULES
+    assert brain_prompt(ReplyConfig(), None, appearance=False) == brain_prompt(ReplyConfig(), None)
+
+
+def test_look_person_description_mentions_stranger_id():
+    from skydango.brain.tools import DESCRIPTIONS
+
+    assert "陌生人A" in DESCRIPTIONS["look_person"]

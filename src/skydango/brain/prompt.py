@@ -137,6 +137,11 @@ TEMPER_RULES = """- 有立场：不同意就直说（“我觉得雨林就是丑
 - 有执念和怪癖：人设和「你攒下的性格」里的执念可以反复提、口头禅会用，偶尔说点出人意料的话；别每句都用。
 - 状态里写着“收着点”的人：不损、不唱反调、不拒绝，好好说话。
 """
+# 认装扮（spec 2026-10-01-appearance §6）：插在脾气之后
+APPEARANCE_RULES = """- 状态里的装扮（“你自己”、好友名字后面、陌生人后面的颜色和样子）是看图猜的，可能不准；“像小明”是没看到名字、按外观认的，别当成一定是他。
+- 提装扮像玩家那样随口提：夸、吐槽、问在哪换的；别报一长串。好友换了装扮可以说一句，别每次见面都念。
+- “你自己”那行是你身上穿的，有人问你穿的什么就照着答。
+"""
 GO_ON_OLD = "接对方的话往下聊；"
 GO_ON_NEW = "接得住就接，不想接也可以吐槽一句或者敷衍两句；"
 REMEMBER_ANCHOR = "- 记住聊过的内容和对方的名字"  # 交情规矩、按需面板的说明都插在这一条前面
@@ -209,6 +214,7 @@ def brain_prompt(
     mind: bool = False,
     persona_text: str = "",
     temper: bool = False,
+    appearance: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -218,7 +224,8 @@ def brain_prompt(
     proactive：看场合主动开口（[proactive] enabled）。
     bubble：身体反射替大脑冒输入气泡（[reflex] enabled 且 bubble）。
     days：「日子」一节（内心层，放在「上次聊到哪」之前）；inner：内心层开着（加交情规矩）；mind：反思开着（加心情 / 别扭 / 惦记的规矩）。
-    persona_text：「你攒下的性格」（内心层第 3 期，放在「日子」之前）；temper：性格开着（加「脾气」、放开“接对方的话往下聊”）。"""
+    persona_text：「你攒下的性格」（内心层第 3 期，放在「日子」之前）；temper：性格开着（加「脾气」、放开“接对方的话往下聊”）。
+    appearance：认装扮开着（[appearance] enabled，加装扮的规矩）。"""
     rules = static_prompt(reply, proactive)
     if bubble:
         rules = rules.replace(SAY_FIRST, SAY_FIRST + BUBBLE_NOTE, 1)
@@ -233,4 +240,6 @@ def brain_prompt(
     if temper:  # 插在心情规矩之后
         rules = rules.replace(GO_ON_OLD, GO_ON_NEW, 1)
         rules = rules.replace(REMEMBER_ANCHOR, TEMPER_RULES + REMEMBER_ANCHOR, 1)
+    if appearance:  # 插在脾气之后
+        rules = rules.replace(REMEMBER_ANCHOR, APPEARANCE_RULES + REMEMBER_ANCHOR, 1)
     return memory_prompt(reply, store, history_turns, now, days, persona_text) + "\n\n" + rules

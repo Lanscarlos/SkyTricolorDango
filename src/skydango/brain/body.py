@@ -828,11 +828,12 @@ class Body:
             # 跟踪中转镜头：人进出画面是自己转的，不是人来了 / 走了。不发人来人走的事件、不更新比较基准，技能结束后下一圈照常比较。
             # 转镜头时框变大变小会被当成"走过来"、动作也认不准：攒着的丢掉，免得跟踪结束后冒出过时的事件。
             # 互动请求、自动接受、牵手状态照常（下面）
-            for pop in ("pop_approaches", "pop_gestures"):
+            for pop in ("pop_approaches", "pop_gestures", "pop_stranger_backs"):
                 if hasattr(self.env, pop):
                     getattr(self.env, pop)()
             if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
                 self.panel.bubble_seen(now)
+            self._watch_outfits()  # 装扮照记（账本）
         else:
             self._watch_comings(now, near)
         self._watch_requests(now)
@@ -892,6 +893,28 @@ class Body:
                 if self.cfg.reflex.enabled and self._return_gesture(who, label, text, now):
                     continue  # 身体已经回礼了（reflex 事件），不再叫大脑决定
                 self.events.put("gesture", text)
+        if hasattr(self.env, "pop_stranger_backs"):  # 认装扮（spec 2026-10-01-appearance §6）：陌生人走开又被认回来
+            book = getattr(self.env, "appearance", None)
+            for sid in self.env.pop_stranger_backs():
+                look = book.look("stranger", sid) if book is not None else ""
+                self.events.put("stranger_back", f"刚才那个{sid}（{look}）又回来了" if look else f"刚才那个{sid}又回来了")
+        self._watch_outfits()
+
+    def _watch_outfits(self) -> None:
+        """好友的装扮写进关系卡；换装后新描述回来了 → outfit 背景事件。没开内心层（没账本）只取走、不记。"""
+        if not hasattr(self.env, "pop_outfits"):
+            return
+        notes = self.env.pop_outfits()
+        if self.ledger is None:
+            return
+        wall = self.wall()
+        for o in notes:
+            if o.state == "described":
+                prev = self._ledger_call("describe_outfit", o.name, o.desc, wall)
+                if prev:
+                    self.events.put("outfit", f"{o.name}换了装扮：上次是「{prev}」，现在「{o.desc}」", who=o.name)
+            else:
+                self._ledger_call("wear", o.name, o.feat, o.key, o.state != "same", wall)
 
     def _watch_requests(self, now: float) -> None:
         """互动请求、按规则自动接受、牵手状态（跟踪中也照常）。"""
@@ -978,7 +1001,7 @@ class Body:
         """
         if self.env is None:
             return None
-        people = [p for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        people = [p for p in self.env.people(now) if p.name and p.sure] if hasattr(self.env, "people") else []  # "像小明"见 _locate_by_look
         labels = {n: v for n, v in dict(self.env.labels).items()  # env 后台线程会改这个 dict：先拍快照
                   if now - v[4] <= self.cfg.env.interval * 2 + 1}
         for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
@@ -990,6 +1013,22 @@ class Body:
                     return self._below_tag(label[:4]), True
         return None
 
+    def _locate_by_look(self, name: str, now: float) -> tuple[Rect, str] | None:
+        """_locate 找不到时按外观找：先找编号对得上的陌生人（"陌生人A"），再找没看到名字、像这个好友的人。
+        返回 (框, 附注)：像谁的附注"（没看到名字，按外观认的）"，陌生人编号的附注是空的。"""
+        if self.env is None or not hasattr(self.env, "people"):
+            return None
+        people = list(self.env.people(now))
+        for p in people:
+            if p.sid and p.sid == name:
+                return p.box, ""
+        maybe = [p for p in people if p.kind == "friend" and p.name and not p.sure]
+        for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
+            for p in maybe:
+                if same(p.name):
+                    return p.box, "（没看到名字，按外观认的）"
+        return None
+
     def target_x(self, name: str, now: float) -> tuple[float, str] | None:
         """技能 track 用：(这个好友在画面上的中心 x 像素, 来源 "body" / "tag")；看不到返回 None。
 
@@ -999,6 +1038,7 @@ class Body:
         if self.env is None:
             return None
         people = [p for p in self.env.people(now) if p.kind == "friend" and p.name] if hasattr(self.env, "people") else []
+        people.sort(key=lambda p: not p.sure)  # 看到名字的排前面；只有"像他"的也照样能盯
         max_age = self.cfg.track.max_age
         labels = {n: v for n, v in dict(self.env.labels).items() if now - v[4] <= max_age}  # 后台线程会改：先拍快照
         for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
@@ -1043,7 +1083,11 @@ class Body:
             raise ToolError(f"{brain.look_min_interval:.0f} 秒内刚看过，等一下再看")
         if self.env is None:
             raise ToolError("没开环境识别，认不出名字；用 look(image=true) 自己看")
-        found = self._locate(name, now)
+        found, by_look = self._locate(name, now), ""
+        if found is None:  # 没看到名字：陌生人编号 / "像他"的人
+            alt = self._locate_by_look(name, now)
+            if alt is not None:
+                found, by_look = (alt[0], False), alt[1]
         if found is None or found[0].w < 8 or found[0].h < 8:
             known = self._recognized(now)
             where = f"画面里现在认得出：{'、'.join(known)}" if known else "画面里现在一个名字都没认出来"
@@ -1066,7 +1110,7 @@ class Body:
         text = f"这是 {name}（原图 ({x1}, {y1}) 起 {x2 - x1}×{y2 - y1}）"
         if guessed:
             text += "；按名字标签估的位置，可能没框全"
-        return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text + note}]
+        return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text + note + by_look}]
 
     # ---- look_person 换角度（peek）：好友躲在团子身后 ----
     def _self_box(self, now: float, since: float | None = None) -> Rect | None:
@@ -1282,9 +1326,14 @@ class Body:
         if others:
             parts.append("开着的面板：" + "、".join(p.describe() for p in others))
         near = self.env.nearby(now) if self.env is not None else []
-        friends = "、".join(near)
+        me = self.env.my_look() if hasattr(self.env, "my_look") else ""
+        if me:
+            parts.append("你自己：" + me)
+        looks = self.env.looks(list(near)) if near and hasattr(self.env, "looks") else {}
+        friends = "、".join(f"{n}（{looks[n]}）" if looks.get(n) else n for n in near)
         if near and self.ledger is not None:
-            friends = self._ledger_call("status_line", near, self.wall(), default="") or friends
+            args = (near, self.wall(), looks) if looks else (near, self.wall())
+            friends = self._ledger_call("status_line", *args, default="") or friends
         parts.append("身边的好友：" + (friends or "没看到"))
         if hasattr(self.env, "strangers"):
             parts.append(f"身边的陌生人：{self.env.strangers(now)} 个")

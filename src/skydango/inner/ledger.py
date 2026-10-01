@@ -107,10 +107,11 @@ def _today_minutes(card: Card, now: float) -> float:
     return card.today_minutes if card.today == day_of(now) else 0.0
 
 
-def describe(name: str, card: Card, now: float) -> str:
-    """小明（今天一起 40 分钟·认识 21 天·一起玩过 9 天）"""
+def describe(name: str, card: Card, now: float, look: str = "") -> str:
+    """小明（今天一起 40 分钟·认识 21 天·一起玩过 9 天）；look：现在的装扮描述，放在最前（小明（粉色长斗篷·今天……））"""
     minutes = _today_minutes(card, now)
-    bits = ["今天刚来" if minutes < 1 else f"今天一起 {int(minutes + 1e-6)} 分钟"]
+    bits = [look] if look else []
+    bits.append("今天刚来" if minutes < 1 else f"今天一起 {int(minutes + 1e-6)} 分钟")
     known = days_between(day_of(card.first_met), day_of(now))
     bits.append("今天刚认识" if known <= 0 else f"认识 {known} 天")
     if len(card.days) > 1:
@@ -235,7 +236,10 @@ class Ledger:
             card.outfits[-1]["desc"] = desc
             if len(card.outfits) < 2 or n not in self._appended or card.outfits[-1]["first"] != day_of(now):
                 return None
-            return card.outfits[-2]["desc"] or None
+            prev = card.outfits[-2]["desc"] or None
+            if prev:
+                self._appended.discard(n)  # 只给一次：这一套的描述再回来不重复发 outfit 事件
+            return prev
 
     def save(self, now: float) -> bool:
         """live 时每 save_every 秒写一次 people.json + current.json（身体主循环每圈调）；返回写了没有。"""
@@ -277,15 +281,20 @@ class Ledger:
             self.history.append(self.session)
 
     # ---- 给大脑看的 ----
-    def status_line(self, names: Sequence[str], now: float) -> str:
-        """status 的“身边的好友”：有卡的带交情，没卡的只写名字。"""
+    def status_line(self, names: Sequence[str], now: float, looks: dict[str, str] | None = None) -> str:
+        """status 的“身边的好友”：有卡的带交情，没卡的只写名字；looks：{名字: 装扮描述}，有就放在括号最前。"""
+        looks = looks or {}
         with self._lock:
             friends = self.friends()
             parts = []
             for raw in names:
                 name = match_friend(raw, friends)
                 card = self.cards.get(name) if name else None
-                parts.append(describe(name, card, now) if card is not None else raw)
+                look = looks.get(raw) or (looks.get(name, "") if name else "")
+                if card is not None:
+                    parts.append(describe(name, card, now, look))
+                else:
+                    parts.append(f"{raw}（{look}）" if look else raw)
         return "、".join(parts)
 
     def days_prompt(self, now: float, diaries: list[str] | None = None) -> str:
