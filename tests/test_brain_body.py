@@ -1460,7 +1460,7 @@ def test_viewer_info_has_panel_state(clock):
 
 
 def test_viewer_info_has_task_and_recent_says(clock):
-    # 管理面板总览的状态卡片：正在做、刚说过（spec console §3）
+    # 管理面板真机团子页的状态卡片：正在做、刚说过（spec console §3）
     class Viewer:
         info = None
 

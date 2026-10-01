@@ -231,3 +231,31 @@ def test_sandbox_kind_uses_its_port_and_blocks_dango(tmp_path):
     wait_state(r, EXITED)
     assert build_sandbox_command(Path("c.toml"), 19392, 42, "sleep", python="py") == [
         "py", "-m", "skydango", "-c", "c.toml", "sandbox", "--port", "19392", "--no-browser", "--parent-pid", "42", "--start", "sleep"]
+
+
+def _crash_with(tmp_path, lines: list[str]):
+    r = runner(tmp_path)
+    code = "import sys\nfor s in %r: print(s, flush=True)\nsys.exit(1)" % (lines,)
+    r.start([sys.executable, "-c", code], ENV(), LaunchOptions())
+    wait_state(r, CRASHED)
+    return r.status()
+
+
+def test_crashed_status_has_error_line(tmp_path):
+    st = _crash_with(tmp_path, ["INFO 启动", "11:23:18 错误: 没有找到 API Key，请设置环境变量 DEEPSEEK_API_KEY", "bye"])
+    assert st["state"] == "crashed" and st["error"] == "没有找到 API Key，请设置环境变量 DEEPSEEK_API_KEY"
+
+
+def test_crashed_without_error_line_uses_last_line(tmp_path):
+    st = _crash_with(tmp_path, ["a", "Traceback (most recent call last):", "ValueError: boom", ""])
+    assert st["error"] == "ValueError: boom"
+
+
+def test_running_has_no_error(tmp_path):
+    r = runner(tmp_path)
+    r.start(child(r), ENV(), LaunchOptions())
+    wait_state(r, RUNNING)
+    st = r.status()
+    assert st["state"] == "running" and st["error"] is None
+    r.stop()
+    wait_state(r, EXITED)

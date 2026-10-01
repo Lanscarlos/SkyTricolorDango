@@ -261,7 +261,22 @@ class Runner:
                 "options": _options_dict(self._options),
                 "kind": self._kind,
                 "port": self._port,
+                "error": self._error_reason() if self._state == CRASHED else None,
             }
+
+    def _error_reason(self) -> str | None:
+        """崩溃原因：倒着找带「错误:」的行（取冒号后面的），没有就取最后一行非空的；调用时已持锁。"""
+        last = None
+        for _, text in reversed(self._lines):
+            line = text.strip()
+            if not line:
+                continue
+            if last is None:
+                last = line
+            i = line.find("错误:")
+            if i >= 0:
+                return line[i + len("错误:"):].strip()[:200]
+        return last[:200] if last else None
 
     def logs(self, after: int = 0) -> dict:
         """行号从 1 连续编号；after = 已经拿到的最后一行，环形缓冲丢掉的行不再返回。"""

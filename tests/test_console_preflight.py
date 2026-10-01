@@ -27,16 +27,18 @@ def store_with(tmp_path, console="", secrets=""):
 
 def test_preflight_brain_needs_token_and_mcp(tmp_path):
     assert preflight(store_with(tmp_path), LaunchOptions(brain=True), busy=False, find_spec=lambda n: None) == [
-        "大脑模式要 Claude 令牌：去设置页填", "大脑要用 mcp：先 pip install --user mcp"]
+        {"text": "大脑模式要 Claude 令牌：去设置页填", "setting": "secret.claude"},
+        {"text": "大脑要用 mcp：先 pip install --user mcp", "setting": None},
+        {"text": "大脑离线时的备用回复要大模型的 API Key：去设置页填", "setting": "secret.llm"}]
 
 
 def test_preflight_ok_with_token(tmp_path):
-    s = store_with(tmp_path, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "t"\n')
+    s = store_with(tmp_path, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "t"\nDEEPSEEK_API_KEY = "k"\n')
     assert preflight(s, LaunchOptions(), busy=False, find_spec=HAS) == []
 
 
 def test_preflight_agent_needs_key_unless_echo(tmp_path):
-    assert preflight(store_with(tmp_path), LaunchOptions(brain=False), False, HAS) == ["普通模式要大模型的 API Key：去设置页填"]
+    assert preflight(store_with(tmp_path), LaunchOptions(brain=False), False, HAS) == [{"text": "普通模式要大模型的 API Key：去设置页填", "setting": "secret.llm"}]
     echo = store_with(tmp_path, console='[llm]\nprovider = "echo"\n')
     assert preflight(echo, LaunchOptions(brain=False), False, HAS) == []
 
@@ -44,7 +46,7 @@ def test_preflight_agent_needs_key_unless_echo(tmp_path):
 def test_preflight_busy_and_broken_config(tmp_path):
     s = store_with(tmp_path, console="[device]\nserail = 1\n", secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "t"\n')
     problems = preflight(s, LaunchOptions(), busy=True, find_spec=HAS)
-    assert problems[0] == "团子已经在运行" and "serail" in problems[1] and len(problems) == 2
+    assert problems[0]["text"] == "团子已经在运行" and "serail" in problems[1]["text"] and len(problems) == 2
 
 
 def test_llm_probe_reports_success_and_failure():
@@ -104,3 +106,29 @@ def test_claude_probe_failures(monkeypatch):
         raise subprocess.TimeoutExpired(cmd, 60)
 
     assert probe_claude("claude", ".x", "tok", run=slow) == {"ok": False, "text": "失败：60 秒没回应"}
+
+
+TOKEN = 'SKYDANGO_CLAUDE_TOKEN = "t"\n'
+KEY = 'DEEPSEEK_API_KEY = "k"\n'
+
+
+def test_brain_needs_llm_key_for_fallback(tmp_path):
+    s = store_with(tmp_path, secrets="[env]\n" + TOKEN)  # 有 Claude 令牌、没有大模型 Key
+    assert preflight(s, LaunchOptions(brain=True), busy=False, find_spec=HAS) == [
+        {"text": "大脑离线时的备用回复要大模型的 API Key：去设置页填", "setting": "secret.llm"}]
+
+
+def test_brain_echo_provider_needs_no_llm_key(tmp_path):
+    s = store_with(tmp_path, console='[llm]\nprovider = "echo"\n', secrets="[env]\n" + TOKEN)
+    assert preflight(s, LaunchOptions(brain=True), busy=False, find_spec=HAS) == []
+
+
+def test_missing_claude_token_points_to_setting(tmp_path):
+    s = store_with(tmp_path, secrets="[env]\n" + KEY)
+    assert {"text": "大脑模式要 Claude 令牌：去设置页填", "setting": "secret.claude"} in preflight(s, LaunchOptions(brain=True), busy=False, find_spec=HAS)
+
+
+def test_all_problems_are_dicts(tmp_path):
+    s = store_with(tmp_path, console="[device]\nserail = 1\n")  # 现有测试里的坏配置
+    for p in preflight(s, LaunchOptions(), busy=True, find_spec=HAS):
+        assert set(p) == {"text", "setting"}

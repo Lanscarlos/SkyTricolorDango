@@ -33,7 +33,7 @@ def make(tmp_path, upstream, sandbox_port=None):
         f'[sandbox]\ndir = "{(tmp_path / "sandbox").as_posix()}"\nport = {port}\n'
         f'[reply]\nmemory_dir = "{(tmp_path / "memory").as_posix()}"\n'
         '[brain]\nowner_name = "卡洛"\n', encoding="utf-8")
-    srv = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n', child_port=free_port())
+    srv = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n', child_port=free_port())
     srv.runner = srv.fake_runner = KindRunner()
     srv.sandbox_port_value = port
     return srv
@@ -54,18 +54,18 @@ def post(srv, path, body):
 def test_sandbox_start_refused_while_dango_runs(srv):
     srv.runner.state = "running"
     status, res = post(srv, "api/sandbox/start", {"start": "resume"})
-    assert status == 409 and any("先停团子" in p for p in res["problems"])
+    assert status == 409 and any("先停团子" in p["text"] for p in res["problems"])
     assert srv.runner.started == []
 
 
 def test_dango_start_refused_while_sandbox_runs(srv):
     srv.runner.state, srv.runner.kind = "running", "sandbox"
     status, res = post(srv, "api/run/start", OPTS)
-    assert status == 409 and any("先在「沙盒」页下线沙盒" in p for p in res["problems"])
-    assert not any("团子已经在运行" in p for p in res["problems"])
+    assert status == 409 and any("先在「沙盒」页下线沙盒" in p["text"] for p in res["problems"])
+    assert not any("团子已经在运行" in p["text"] for p in res["problems"])
     assert srv.runner.started == []
-    assert request(srv.url + "api/state")[1]["problems"][0].startswith("沙盒在运行")
-    assert post(srv, "api/run/stop", {}) == (200, {"ok": True}) and srv.runner.stopped == 0  # 总览的停止不动沙盒
+    assert request(srv.url + "api/state")[1]["problems"][0]["text"].startswith("沙盒在运行")
+    assert post(srv, "api/run/stop", {}) == (200, {"ok": True}) and srv.runner.stopped == 0  # 真机的停止不动沙盒
 
 
 def test_sandbox_start_builds_command(srv):
@@ -89,6 +89,8 @@ def test_sandbox_start_refused_with_orphan(tmp_path, upstream):
     try:
         status, res = post(s, "api/sandbox/start", {"start": "resume"})
         assert status == 409 and res["orphan"] is True and s.runner.started == []
+        info = request(s.url + "api/sandbox/info")[1]  # 沙盒页停着时也要能给「让它退出」（有问题时启动按钮是灰的）
+        assert info["orphan"] is True and any("上次留下的沙盒" in p["text"] for p in info["problems"])
         assert post(s, "api/orphan/stop", {"kind": "sandbox"}) == (200, {"ok": True})
         assert upstream.posts[-1] == "/shutdown"
     finally:
@@ -185,3 +187,15 @@ def test_forget_source_sandbox_changes_sandbox_file(srv, tmp_path):
 def test_inner_dango_while_sandbox_runs_reads_files(srv):
     srv.runner.state, srv.runner.kind = "running", "sandbox"
     assert request(srv.url + "api/inner")[1]["source"] == "files"  # 团子没在跑：不去 /live/inner
+
+
+# ---- 报告接口（console-redesign Task 3）----
+def test_reports_routes(srv, tmp_path):
+    reports = tmp_path / "sandbox" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "r-20261001-000000.md").write_text("hi", encoding="utf-8")
+    (tmp_path / "sandbox" / "x.md").write_text("secret", encoding="utf-8")
+    assert request(srv.url + "api/sandbox/reports")[1]["reports"][0]["name"] == "r-20261001-000000.md"
+    assert request(srv.url + "api/sandbox/reports/r-20261001-000000.md")[1]["text"] == "hi"
+    assert request(srv.url + "api/sandbox/reports/..%2fx.md")[0] == 404
+    assert request(srv.url + "api/sandbox/reports", headers={"Host": f"evil.com:{srv.port}"})[0] == 403

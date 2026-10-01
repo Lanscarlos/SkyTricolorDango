@@ -129,7 +129,7 @@ def srv(tmp_path, upstream):
 
 @pytest.fixture
 def srv_with_token(tmp_path, upstream):
-    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n', child_port=free_port())
+    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n', child_port=free_port())
     yield s
     s.stop()
 
@@ -154,7 +154,7 @@ def test_post_needs_header_and_json(srv):
 def test_state_and_logs(srv):
     status, state = request(srv.url + "api/state")
     assert status == 200 and state["run"]["state"] == "idle" and state["launch"] == OPTS | {"duration": 0.0}
-    assert state["problems"] == ["大脑模式要 Claude 令牌：去设置页填"] and state["orphan"] is True  # 假上游占着 child_port
+    assert [p["text"] for p in state["problems"]] == ["大脑模式要 Claude 令牌：去设置页填", "大脑离线时的备用回复要大模型的 API Key：去设置页填"] and state["orphan"] is True  # 假上游占着 child_port
     assert request(srv.url + "api/logs?after=1") == (200, {"next": 2, "lines": ["b"]})
 
 
@@ -170,7 +170,7 @@ def test_start_rejects_bad_options(srv, body):  # Review Focus 5
 
 def test_start_reports_preflight_problems(srv):  # 没有 Claude 令牌
     status, res = request(srv.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
-    assert status == 409 and "Claude 令牌" in res["problems"][0] and srv.fake_runner.started == []
+    assert status == 409 and "Claude 令牌" in res["problems"][0]["text"] and srv.fake_runner.started == []
 
 
 def test_start_remembers_options_and_injects_secrets(srv_with_token):
@@ -258,49 +258,7 @@ def test_unknown_routes_404(srv):
     assert request(srv.url + "api/nope", b"{}", GOOD)[0] == 404
 
 
-# ---- 页面 ----
-def _console_page() -> str:
-    import importlib.resources
-
-    return (importlib.resources.files("skydango.console") / "static/console.html").read_text(encoding="utf-8")
-
-
-def test_page_has_four_tabs_and_uses_relative_api():
-    import re
-
-    page = _console_page()
-    for tab in ("tab-overview", "tab-live", "tab-settings", "tab-device"):
-        assert f'id="{tab}"' in page
-    assert not re.search(r"""fetch\(\s*[`"']/""", page)  # 相对路径
-    assert '"X-Skydango":"1"' in page.replace(" ", "")
-    assert "http://" not in page and "https://" not in page  # 离线也能用：不引外部资源
-
-
-def test_page_has_inner_tab():  # spec 2026-09-30-inner-viewer §3
-    page = _console_page()
-    live, inner, settings = (page.index(f'data-tab="{t}"') for t in ("live", "inner", "settings"))
-    assert live < inner < settings  # 「实时画面」后面
-    for id_ in ("tab-inner", "inner-source", "inner-now", "inner-curve", "inner-log", "inner-persona", "inner-cards", "inner-days"):
-        assert f'id="{id_}"' in page
-    for fn in ("function renderInnerNow(", "function loadInner(", "api/inner", "api/inner/forget"):
-        assert fn in page
-    for text in ("（没开反思）", "实时取不到，显示的是上次保存的", "团子正在启动 / 停止，稍等再删", "只看有改动的"):
-        assert text in page
-    assert "IN.lastState" in page  # 终审 I2：团子状态一变就重读一次（停止中按钮置灰、来源标签跟着变）
-
-
-def test_page_script_parses(tmp_path):
-    import re
-    import shutil
-    import subprocess
-
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("没有 node")
-    script = re.search(r"<script>(.*)</script>", _console_page(), re.S).group(1)
-    path = tmp_path / "console.js"
-    path.write_text(script, encoding="utf-8")
-    assert subprocess.run([node, "--check", str(path)]).returncode == 0
+# ---- 静态文件（页面本身的测试在 test_console_page.py）----
 
 
 def test_serves_shared_brain_trace_assets(srv):  # 沙盒页的大脑时间线和 viewer 用同一份脚本
@@ -312,10 +270,10 @@ def test_serves_shared_brain_trace_assets(srv):  # 沙盒页的大脑时间线�
 
 
 def test_start_refused_while_orphan_holds_port(tmp_path, upstream):  # 终审 Important 3：别起第二个团子
-    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n')
+    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n')
     try:
         status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
-        assert status == 409 and "上次留下的团子" in res["problems"][0] and s.fake_runner.started == []
+        assert status == 409 and "上次留下的团子" in res["problems"][0]["text"] and s.fake_runner.started == []
         assert request(s.url + "api/state")[1]["orphan"] is True
     finally:
         s.stop()
@@ -333,7 +291,6 @@ def test_state_says_when_emotes_are_off_in_config(tmp_path, upstream):  # spec �
         assert request(s.url + "api/state")[1]["emotes_allowed"] is False
     finally:
         s.stop()
-    assert "emotes_allowed" in _console_page()
 
 
 def test_start_refused_while_checking_device(tmp_path, upstream):  # 检测和团子不能同时碰设备
@@ -344,13 +301,13 @@ def test_start_refused_while_checking_device(tmp_path, upstream):  # 检测和�
         release.wait(5)
         return []
 
-    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n', checks=slow_checks, child_port=free_port())
+    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n', checks=slow_checks, child_port=free_port())
     try:
         t = threading.Thread(target=request, args=(s.url + "api/device", b"{}", GOOD))
         t.start()
         assert started.wait(5)
         status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
-        assert status == 409 and "正在检测设备" in res["problems"][0] and s.fake_runner.started == []
+        assert status == 409 and "正在检测设备" in res["problems"][0]["text"] and s.fake_runner.started == []
         assert request(s.url + "api/device", b"{}", GOOD)[0] == 409
         release.set()
         t.join(5)
@@ -366,30 +323,22 @@ def test_live_proxy_timeout_is_503(srv):
     assert request(srv.url + "live/hang") == (503, {"ok": False, "text": "团子没在运行"})
 
 
-def test_cards_show_mood_and_energy():  # 终审 I8
-    line = next(l for l in _console_page().splitlines() if l.startswith("const CARDS="))
-    assert '"心情"' in line and '"精力"' in line
+def test_sandbox_info_has_problems(srv):  # 没有 Claude 令牌
+    info = request(srv.url + "api/sandbox/info")[1]
+    assert any(p["setting"] == "secret.claude" for p in info["problems"])
+    assert all(set(p) == {"text", "setting"} for p in info["problems"])
 
 
-def test_page_has_sandbox_tab():  # 沙盒计划 Task 8（spec 2026-09-30-brain-sandbox §5）
-    page = _console_page()
-    inner, sandbox, settings = (page.index(f'data-tab="{t}"') for t in ("inner", "sandbox", "settings"))
-    assert inner < sandbox < settings  # 「内心」后面
-    for id_ in ("tab-sandbox", "sb-start", "sb-clock", "sb-chat", "sb-say", "sb-now", "sb-nearby", "sb-scene", "sb-scenario", "sb-brain",
-                "inner-source-toggle"):
-        assert f'id="{id_}"' in page, id_
-    assert 'src="static/brain_trace.js"' in page and 'href="static/brain_trace.css"' in page
-    assert 'mountBrainTrace($("sb-brain"),"sandbox/brain")' in page.replace(" ", "")
-    for api in ("api/sandbox/start", "api/sandbox/stop", "api/sandbox/reset", "api/sandbox/info", "sandbox/state", "sandbox/op"):
-        assert api in page
-    assert "会用 memory/ 覆盖沙盒记忆" in page  # 重置记忆的确认框
-    assert page.index("<script src=") < page.index("<script>")  # 共用脚本在内联脚本前面（test_page_script_parses 只取内联那段）
+def test_serves_console_static(srv):
+    with urllib.request.urlopen(srv.url + "console/static/console.css", timeout=5) as r:
+        assert r.status == 200 and "text/css" in r.headers["Content-Type"]
+    for bad in ("console/static/console.html", "console/static/../server.py", "console/static/%2e%2e/server.py", "console/static/nope.js", "console/static/con.js", "console/static/nul.js", "console/static/aux.css"):
+        assert request(srv.url + bad)[0] == 404
 
 
-def test_page_has_scenario_controls():  # 沙盒计划 Task 11：剧本区
-    page = _console_page()
-    for id_ in ("sb-rec", "sb-rec-new", "sb-save", "sb-script", "sb-replay", "sb-replay-stop", "sb-progress", "sb-report"):
-        assert f'id="{id_}"' in page, id_
-    for api in ("api/sandbox/scenarios", "api/sandbox/save", "api/sandbox/replay", "api/sandbox/replay/stop", "api/sandbox/record/new"):
-        assert api in page
-    assert "（录制、回放下一步做）" not in page
+def test_console_static_device_names_never_touch_fs():
+    from skydango.console.server import _console_static
+
+    for n in ("con.js", "nul.js", "aux.css", "com1.js", "nope.js"):
+        assert _console_static(n) is None
+    assert _console_static("console.css") is not None
