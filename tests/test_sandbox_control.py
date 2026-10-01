@@ -20,7 +20,7 @@ from skydango.inner.reflect import Reflector
 from skydango.inner.store import InnerStore
 from skydango.sandbox.clock import SimClock
 from skydango.sandbox.control import SandboxControl, clock_text
-from skydango.sandbox.transcript import Transcript
+from skydango.brain.transcript import Transcript
 from skydango.sandbox.world import Scene, sandbox_world
 
 WALL = time.mktime((2026, 9, 30, 23, 0, 0, 0, 0, -1))  # 沙盒时间：9 月 30 日 23:00

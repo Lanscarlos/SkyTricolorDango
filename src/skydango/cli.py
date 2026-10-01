@@ -1628,7 +1628,7 @@ def cmd_sandbox(cfg: Config, args) -> None:
     from .sandbox import clock as sandbox_clock
     from .sandbox.control import SandboxControl
     from .sandbox.server import SandboxServer
-    from .sandbox.transcript import Transcript
+    from .brain.transcript import Transcript
     from .sandbox.world import Scene, sandbox_world
 
     sb = cfg.sandbox
