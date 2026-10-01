@@ -110,6 +110,7 @@ def body(clock, live=False, frames=None, panel_mode=None, **kw):
     cfg.reply.disclosure_prefix = ""
     cfg.sender.open_chat_key = 28
     cfg.proactive.enabled = False  # 旧行为的测试：不管主动开口；pro_body 打开
+    cfg.lull.enabled = kw.pop("lull", False)  # 旧行为的测试：不认冷场；test_brain_lull_body 打开
     cfg.panel.mode = "always"  # 旧行为的测试：面板常开（2026-09-30 起默认 auto）；按需打开的用 panel_mode="auto"
     device = kw.pop("device_override", None) or FakeDevice(frames or [scene()])
     reader = FakeReader()

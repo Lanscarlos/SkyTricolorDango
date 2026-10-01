@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import bisect
 import copy
 import logging
 import math
@@ -41,6 +42,7 @@ from ..inner.energy import Energy, awake_minutes, energy as inner_energy
 from ..inner.ledger import card_line, match_friend
 from ..inner.ledger import ago
 from ..inner.log import ENERGY_EVERY, diff as diff_inner
+from ..inner.lull import Lull, LullTracker, parse_musing
 from ..inner.mind import sounds_upset
 from ..inner.reflect import materials as reflect_materials_text
 from .attention import Attention, Target as AttnTarget
@@ -172,6 +174,11 @@ class Body:
         self.said: list[str] = []  # 说过（含 dry-run）的话
         self.spoken: deque[Spoken] = deque(maxlen=50)  # 大脑说过的话（含 dry-run）和是不是主动开口；手动控制说的不记
         self.friend_names: Callable[[], list[str]] = lambda: []  # 好友名单（场合里认聊天的说话人），cli 设
+        # 冷场时的心理活动（spec 2026-10-01-lull-musing）：好友不说话了 / 聊着聊着走了，叫醒大脑、记它心里想的
+        self.lulls: LullTracker | None = (
+            LullTracker(cfg.lull, lambda who: is_friend_fn(self.friend_names())(who)) if cfg.lull.enabled else None
+        )
+        self.on_musing: Callable[[str], None] | None = None  # 记下心里想的一句时调；沙盒记进聊天记录
         self._news: queue.Queue[str] = queue.Queue()  # 眼睛线程交来的新鲜事，身体线程里过滤后变成 notice
         self._place_seen = ""  # 上次认出的（非空）地名：换了地方就发 notice
         self._notice_at = float("-inf")
@@ -252,6 +259,7 @@ class Body:
         self._watch_light(self.clock())
         self._watch_bow(self.clock())
         self._watch_attention(self.clock())
+        self._watch_lulls(self.clock())
         self._fallback(now)
         self._inner_tick()
         self._ledger_call("save", self.wall())
@@ -421,20 +429,21 @@ class Body:
         self.heard = (self.heard + fresh)[-20:]
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
+        notes = [self._lull_call(lambda m=m: self.lulls.heard(self.wall(), m.speaker, m.text), "") or "" for m in fresh]
         if self.brain_offline(now):  # 大脑离线：交给备用回复，不排进大脑的事件
             self._fallback_pending.extend(fresh)
             self._fallback_last_new = now
             return
         owner = self.cfg.brain.owner_name
-        for m in fresh:
+        for m, note in zip(fresh, notes):  # note：这句结束了冷场时附上的“你刚才在想”
             if owner and m.speaker == owner and m.text.startswith("#"):
                 self._owner_window_until = now + self.cfg.brain.owner_window
                 if m.text.startswith("#允许") and m.text[3:].strip():  # 放行一个面板按钮（panel_press 用）
                     self._permits.append((m.text[3:].strip(), now + self.cfg.panels.permit_window))
-                self.events.put("owner_command", f"卡洛的命令：{m.text}")
+                self.events.put("owner_command", f"卡洛的命令：{m.text}{note}")
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
             else:
-                self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」")
+                self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」{note}")
         if self.cfg.reflex.enabled:
             self._on_heard(fresh, now)
 
@@ -852,25 +861,86 @@ class Body:
             self._watch_comings(now, near)
         self._watch_requests(now)
 
+    # ---- 冷场（spec 2026-10-01-lull-musing） ----
+    def _lull_call(self, fn: Callable[[], Any], default: Any = None) -> Any:
+        """冷场相关的调用：没开（lulls 为 None）返回 default；出错只记日志，这一圈照常。"""
+        if self.lulls is None:
+            return default
+        try:
+            return fn()
+        except Exception:
+            log.exception("冷场追踪出错")
+            return default
+
+    def _watch_lulls(self, now: float) -> None:
+        if self.lulls is None:
+            return
+        wall = self.wall()
+        near = self.env.nearby(now) if self.env is not None else []
+        cues = self._lull_call(lambda: self.lulls.tick(wall, near, list(self.chat), paused=self.blackout), []) or []
+        for cue in cues:
+            self.events.put("lull", cue.text)
+            if cue.final and self.reflector is not None:  # 冷到最后一个节点：算一次动静，反思到点照常跑
+                self.reflector.stirred(now)
+        for lull in self._lull_call(self.lulls.pop_finished, []) or []:
+            self._lull_note(lull)
+
+    def _lull_note(self, lull: Lull) -> None:
+        """结束的冷场写成一行（说话人“（冷场）”），按冷场开始的时间插进反思材料。"""
+        if self.mind is None:
+            return
+        row = (lull.t0, "（冷场）", self.lulls.summary(lull, self.wall()))
+        bisect.insort(self._reflect_chat, row, key=lambda r: r[0])
+        session = list(self._session_chat)
+        bisect.insort(session, row, key=lambda r: r[0])
+        self._session_chat.clear()
+        self._session_chat.extend(session)
+
+    def mused(self, text: str) -> None:
+        """大脑一轮最后的文字（身体线程里调）：有“心里：”且正在冷场，就记下来。"""
+        if self.lulls is None:
+            return
+        thought = parse_musing(text, self.cfg.lull.musing_max)
+        wall = self.wall()
+        if not thought or not self._lull_call(lambda: self.lulls.muse(thought, wall), False):
+            return
+        log.info("心里：%s", thought)
+        if self.mind_log is not None:
+            for lull in self.lulls.active():
+                self._inner_call(lambda lull=lull: self.mind_log.musing(wall, list(lull.who), lull.kind, thought))
+        if self.on_musing is not None:
+            try:
+                self.on_musing(thought)
+            except Exception:
+                log.exception("on_musing 出错")
+
     def _watch_comings(self, now: float, near_list: list[str] | None = None) -> None:
         """人来人走：身边有谁、陌生人、正在输入的气泡、有人走过来、对团子做动作。"""
         near = set(self.env.nearby(now) if near_list is None else near_list)
         if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
             self.panel.trigger("arrive", now)
         for name in sorted(near - self._nearby):
+            back = self._lull_call(lambda: self.lulls.returned(name, self.wall()))  # 聊着聊着走开的回来了：立刻叫醒
             if now - self._left_at.get(name, float("-inf")) <= self.cfg.brain.rejoin:  # 走出画面又回来：不用再打招呼
-                self.events.put("return", f"{name} 回来了", who=name)
+                if back:
+                    self.events.put("lull", f"{name} 回来了{back}", who=name)
+                else:
+                    self.events.put("return", f"{name} 回来了", who=name)
             else:
                 want = self._inner_call(lambda: self.mind.want_note(name), default="") if self.mind is not None else ""
                 joke = ""
                 if self.persona is not None and name not in self.soft_names(self.wall()):  # 收着点的人：不提老梗
                     joke = self._inner_call(lambda: self.persona.joke_note(name), default="")
-                text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}{joke or ''}"
+                text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}{joke or ''}{back or ''}"
                 self.events.put("arrive", text, who=name)
                 self._reflect_note(f"{name} 来到身边")
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
-            self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
+            gone = self._lull_call(lambda: self.lulls.left(name, self.wall(), list(self.chat)))  # 聊着聊着走了：立刻叫醒
+            if gone:
+                self.events.put("lull", gone, who=name)
+            else:
+                self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
             self._arrive_notes.pop(name, None)
             self._reflect_note(f"{name} 走开了")
             self._left_at[name] = now
@@ -1497,6 +1567,9 @@ class Body:
             except Exception:
                 log.exception("算场合出错")
                 parts.append("场合：算不出来（详见日志）")
+        lull = self._lull_call(lambda: self.lulls.status(self.wall()), "")
+        if lull:
+            parts.append(lull)
         if self.mind is not None:
             heart = self._inner_call(lambda: self.mind.line(self.wall(), self._energy))
             if heart:
@@ -2019,6 +2092,9 @@ class Body:
     def reflect_materials(self, final: bool) -> str:
         """拼给反思的材料：上次反思以来的聊天和来去、相关好友的关系卡、笔记里提到他们的行。"""
         wall = self.wall()
+        if final:  # 下线前还没结束的冷场也写进去
+            for lull in self._lull_call(lambda: self.lulls.flush(wall), []) or []:
+                self._lull_note(lull)
         friends = self._safe_friends()
         names = list(dict.fromkeys(
             [n for n in (match_friend(who, friends) for _, who, _ in self._reflect_chat) if n]
@@ -2106,6 +2182,7 @@ class Body:
             "soft": [{"who": who, "text": text, "until": until} for who, (until, text) in self._soft_until.items() if wall < until],
             "persona": self.persona.to_dict() if self.persona is not None else None,
             "log": self.mind_log.recent() if self.mind_log is not None else [],
+            "musing": self._lull_call(lambda: self.lulls.snapshot(wall), []) or [],
         }
 
     def _watch_upset(self, fresh: list[Message]) -> None:
