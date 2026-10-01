@@ -1317,11 +1317,15 @@ class PerceptionWatcher:
         for p in players:
             if p.box.h < self.cfg.stranger_min_height * height:
                 continue
+            # 没点火的人：player_unlit，或者判成陌生人的 player（近处还黑着的人 YOLO 常认成 player，10-01 晚真机就这样一直没举蜡烛）。
+            # 点过火的陌生人身上没有火焰，find_disk 找不到；误匹配靠 disk_sure 挡
+            dark = p.cls == UNLIT or bool(p.data.get("stranger"))
+            stand_in = p.cls == "player" and any(iou(b, p.box) >= cfg.lit_iou for b in boxes)
             if p.id in tried:
                 pass
-            elif p.cls == UNLIT:
+            elif dark and not stand_in:
                 pass
-            elif p.cls == "player" and any(iou(b, p.box) >= cfg.lit_iou for b in boxes):
+            elif stand_in:
                 pass  # 举过蜡烛的人原位冒出的新 player（lit() 的替身候选）：也要看他身上圆盘还在不在
             else:
                 continue
@@ -1339,7 +1343,7 @@ class PerceptionWatcher:
                 with self._lock:
                     if p.id in self._lit_mem:
                         self._lit_mem[p.id][1] = d.get("disk_last", float("-inf"))
-            if p.id in tried or p.cls != UNLIT:  # 举过蜡烛的 / 替身候选：只更新圆盘还在不在（lit() 用），不参与挑请求
+            if p.id in tried or stand_in or not dark:  # 举过蜡烛的 / 替身候选：只更新圆盘还在不在（lit() 用），不参与挑请求
                 continue
             if (now - d.get("disk_last", float("-inf")) <= DISK_GAP and now - d["disk_first"] >= cfg.light_after
                     and d["disk_best"] >= cfg.disk_sure):

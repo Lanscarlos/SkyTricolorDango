@@ -1681,8 +1681,34 @@ def test_far_or_lit_people_get_no_disk_check(monkeypatch):
     det, clock = FakeDetector(), Clock()
     w = watcher(det, clock=clock)
     w.light_cfg, w.flame = SocialConfig(), np.ones((4, 4), np.uint8)
-    det.frames = [[unlit(1000, h=40), player(300)]]  # 远处的小黑影（< stranger_min_height）、亮着的人
+    det.frames = [[unlit(1000, h=40), player(300)]]  # 远处的小黑影（< stranger_min_height）、刚出现还不算陌生人的人
     run(w, 0.0, clock)
+    assert calls == []
+
+
+def test_dark_stranger_seen_as_player_still_gets_light_request(monkeypatch):
+    """10-01 晚真机：黑影站到团子身边、举着蜡烛，YOLO 认成 player（0.68）不是 player_unlit。
+    判成陌生人（没名字标签、过了 stranger_after）的 player 也找火焰，不然永远不举蜡烛。"""
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[player(1000)]]
+    for t in (0.0, 0.5, 1.0, 2.0, 3.0, 4.0):
+        run(w, t, clock)
+        if t < 4.0:
+            assert LIGHT_KEY not in w.requests, t  # 1.0 s 才算陌生人，从那时起找火焰、再等 light_after
+    req = w.requests[LIGHT_KEY]
+    assert req.kind == "light" and req.track is not None
+
+
+def test_friend_gets_no_disk_check(monkeypatch):
+    """挂着名字标签的（好友）不找火焰：好友举蜡烛走原来的 candle 请求。"""
+    calls = []
+    monkeypatch.setattr(perception_mod, "find_disk", lambda *a: calls.append(a) or DISK)
+    det, clock = FakeDetector(), Clock()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), clock=clock)
+    w.light_cfg, w.flame = SocialConfig(), np.ones((4, 4), np.uint8)
+    det.frames = [[player(1000), tag(990, 110)]]
+    for t in (0.0, 1.0, 2.0, 3.0):
+        run(w, t, clock)
     assert calls == []
 
 
