@@ -12,14 +12,18 @@ class LightEnv(FakeEnv):
     def __init__(self):
         super().__init__()
         self.tried = []
+        self.done = []
         self.lit_result = False
 
-    def mark_tried(self, track_id):
-        self.tried.append(track_id)
+    def mark_tried(self, clue_id):
+        self.tried.append(clue_id)
         self.requests.pop(LIGHT_KEY, None)
 
-    def lit(self, track_id, pos, since):
+    def lit(self, clue_id, since):
         return self.lit_result
+
+    def light_done(self, result):
+        self.done.append(result)
 
 
 class LightEmotes(ReflexEmotes):
@@ -122,7 +126,7 @@ def test_dry_run_only_logs(clock):
     b, dev, env, emotes, events = lb(clock, live=False)
     offer(env, clock)
     b.step()
-    assert presses(dev) == 0 and env.tried == [7]
+    assert presses(dev) == 0 and env.tried == [7] and env.done == ["dry-run"]
 
 
 def test_policy_off_does_nothing(clock):
@@ -379,3 +383,94 @@ def test_schedule_bow_merges_raised_at_into_pending_bow(clock):
     assert b._bow[0] == due and b._bow[2] == 5.0
     b._schedule_bow(clock() + 2, None)
     assert b._bow[2] == 5.0
+
+
+# ---- 他走了 / 各种结局都告诉感知层（spec §4） ----
+def test_gone_lowers_candle_without_bow(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    env.lit_result = None
+    clock.advance(2.5)
+    b.step()
+    assert presses(dev) == 2 and emotes.done == [] and env.done == ["gone"] and b._raised is None
+
+
+def test_done_results(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    env.lit_result = True
+    b.step()
+    assert env.done == ["lit"]
+
+
+def test_timeout_reports_done(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    clock.advance(8.1)
+    b.step()
+    assert env.done == ["timeout"]
+
+
+def test_emote_while_raised_reports_interrupted(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    clock.advance(1.0)
+    emotes.perform("挥手")
+    b.step()
+    assert env.done == ["interrupted"]
+
+
+def test_accepting_other_interaction_reports_interrupted(clock):
+    social = AllowAll()
+    b, dev, env, emotes, events = lb(clock, social=social)
+    offer(env, clock)
+    b.step()
+    env.requests["小明"] = Request("小明", "hand", (990, 400), clock())
+    social.to_handle = ["小明:hand"]
+    b.step()
+    assert env.done == ["interrupted"]
+
+
+def test_accepting_other_interaction_with_only_bow_pending_reports_nothing_more(clock):
+    """点亮后只排着鞠躬时接受别的互动：这次点亮早报过 lit，不能再报一次。"""
+    social = AllowAll()
+    b, dev, env, emotes, events = lb(clock, social=social)
+    offer(env, clock)
+    b.step()
+    env.lit_result = True
+    b.step()
+    env.requests["小明"] = Request("小明", "hand", (990, 400), clock())
+    social.to_handle = ["小明:hand"]
+    b.step()
+    assert env.done == ["lit"]
+
+
+def test_dry_run_reports_done_right_away(clock):
+    b, dev, env, emotes, events = lb(clock, live=False)
+    offer(env, clock)
+    b.step()
+    assert env.tried == [7] and env.done == ["dry-run"]
+
+
+def test_shutdown_while_raised_reports_exit(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    b.shutdown()
+    assert env.done == ["exit"]
+
+
+def test_press_failure_reports_failed(clock):
+    b, dev, env, emotes, events = lb(clock)
+
+    def boom(slot):
+        raise RuntimeError("adb 断了")
+
+    emotes.press_slot = boom
+    offer(env, clock)
+    b.step()
+    assert env.done == ["failed"] and b._raised is None
