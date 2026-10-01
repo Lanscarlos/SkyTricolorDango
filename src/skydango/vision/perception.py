@@ -63,7 +63,8 @@ DISK_EVERY = 0.3  # 团子周围最多隔这么久找一次火焰
 DISK_GAP = 1.0  # 火焰断开不超过这么久算同一条线索（火焰会晃）
 SELF_MAX_AGE = 1.0  # 找火焰：团子框这么久没更新就不用（宁可漏，不全屏乱找）
 LIT_LOW = 0.2  # 点亮陌生人开着时检测器按这个出框：晚上黑影分数低（10-01 晚 0.27 / 0.28），找"火焰下面那个人"时也看低分框
-FRAME_STALE = 0.5  # lit()：最近一帧比这更旧（感知没在跑）就不判
+FRAME_STALE = 0.5  # lit()：最近一次扫描比 FRAME_STALE + DISK_EVERY 更旧（感知没在跑 / 团子框丢了）就不判
+LIT_SCANS = 2  # 判点亮：连续这么多次扫描（每 DISK_EVERY 一次）都看到他变亮才算
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
 PLACE_GAP = 3.0  # 画面大变后认地图：离上次至少隔这么久（转镜头时画面一直在变）
 FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹最多隔这么久裁一次（还要比 track_buffer 短）；挂上名字标签后这么久内也不裁
@@ -224,7 +225,6 @@ class PerceptionWatcher:
         self.gesture_cfg = gesture_cfg or GestureConfig()
         self.light_cfg = social_cfg
         self.flame = flame
-        self._frame_at = float("-inf")  # 最近一帧处理完的时间（lit() 判最近一帧够不够新，不用 clock：没跑 process 时不判）
         self._flame: dict | None = None  # 团子身边现在的火焰线索（spec 2026-10-01-light-flame-around-self §3；self._lock 保护）
         self._flame_seq = 0
         self._flame_check = float("-inf")
@@ -347,7 +347,7 @@ class PerceptionWatcher:
                 self._flame["first"] += d
                 self._flame["last"] += d
             if self._lighting is not None:
-                for key in ("raised", "flame_last", "person_at"):
+                for key in ("raised", "flame_last", "person_at", "scan_at"):
                     self._lighting[key] += d  # -inf 加 d 还是 -inf
             self._cooldown_until += d
 
@@ -454,7 +454,6 @@ class PerceptionWatcher:
         if self._occlusion(frame, dets):
             return
         tracks = self.tracker.update(dets, now)
-        self._frame_at = now
         selfs = [t for t in tracks if t.cls == "self"]
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs)]
         tags = [t for t in tracks if t.cls == "name_tag"]
@@ -1378,17 +1377,28 @@ class PerceptionWatcher:
             elif clue is not None and now - clue["last"] > DISK_GAP:
                 clue = self._flame = None
             lighting, cooling = self._lighting, now < self._cooldown_until
-            if lighting is not None:  # 举着蜡烛：火焰最后的位置下面现在有没有人、多黑
-                person = self._person_at(lighting["pos"], lighting["r"])
-                if person is not None:
-                    lighting["person"], lighting["person_at"] = (person, black(frame, person, cfg.lit_v)), now
-            if lighting is not None and clue is not None and clue["id"] == lighting["id"]:
-                lighting["flame_last"], lighting["pos"], lighting["r"] = clue["last"], clue["pos"], clue["r"]
+            if lighting is not None:  # 举着蜡烛：先更新火焰位置，再在那里找人、看他有多黑
+                if clue is not None and clue["id"] == lighting["id"]:
+                    lighting["flame_last"], lighting["pos"], lighting["r"] = clue["last"], clue["pos"], clue["r"]
+                if me is not None:  # 团子框丢了就没真的找过，不更新（lit() 靠 scan_at 判扫描新不新）
+                    lighting["scan_at"] = now
+                    person = self._person_at(lighting["pos"], lighting["r"])
+                    if person is None:
+                        lighting["bright"] = 0
+                    else:
+                        blk = black(frame, person, cfg.lit_v)
+                        lighting["person"], lighting["person_at"] = (person, blk), now
+                        black0 = lighting["black0"]
+                        bright = blk < cfg.lit_black and (black0 is None or black0 - blk >= cfg.lit_drop)
+                        lighting["bright"] = lighting["bright"] + 1 if bright else 0
             ready = (clue is not None and lighting is None and not cooling and now - clue["last"] <= DISK_GAP
                      and now - clue["first"] >= cfg.light_after and clue["best"] >= cfg.disk_sure)
             first = ready and not clue["announced"]
             if ready:
                 clue["announced"] = True
+                self.requests[LIGHT_KEY] = Request(STRANGER, LIGHT, clue["pos"], now, track=clue["id"])
+            else:
+                self.requests.pop(LIGHT_KEY, None)
         if now - self._flame_log >= 1.0:
             self._flame_log = now
             if clue is not None:
@@ -1396,13 +1406,9 @@ class PerceptionWatcher:
                           now - clue["first"], clue["best"], "（冷却中）" if cooling else "", "（正在点亮）" if lighting else "")
             elif why:
                 log.debug("没找火焰 / 不算：%s", why)
-        if not ready:
-            self.requests.pop(LIGHT_KEY, None)
-            return
         if first:
             log.info("身边有没点火的陌生人：火焰出现了 %.0f 秒（线索 %d）", now - clue["first"], clue["id"])
             self._on_request(frame, now)
-        self.requests[LIGHT_KEY] = Request(STRANGER, LIGHT, clue["pos"], now, track=clue["id"])
 
     def _on_request(self, frame: np.ndarray, now: float) -> None:
         """第一次出请求时的钩子：存图（Task 5 填）。"""
@@ -1419,30 +1425,35 @@ class PerceptionWatcher:
                 "black0": clue["black"] if clue else None,
                 "flame_last": clue["last"] if clue else float("-inf"),
                 "person": None, "person_at": float("-inf"),
+                "scan_at": float("-inf"), "bright": 0,  # 最近一次真的找过火焰的时间；连续几次扫描看到他变亮
             }
-        self.requests.pop(LIGHT_KEY, None)
+            self.requests.pop(LIGHT_KEY, None)
 
     def lit(self, clue_id: int, since: float) -> bool | None:
         """举蜡烛（since 时刻）之后：True 他亮了；False 还在等（火焰还在 / 还黑着 / 拿不准）；None 火焰没了、那里也没人（走了）。
 
-        拿不准一律 False：感知暂停中、最近一帧比 FRAME_STALE 还旧、举起不满 lit_min 秒、不是现在点亮中的线索。
-        火焰消失超过 DISK_GAP 后看它最后位置下面的人（含低分框）：这一帧找到、black() 比举蜡烛时降了 lit_drop 以上
-        且低于 lit_black → True（举蜡烛时下面没人就只看 lit_black）；找到但还黑 → False；DISK_GAP 内都没找到 → None。"""
+        一律按最近一次真的找过火焰的时间（scan_at）判，不看 process 写的帧时间（两者之间身体线程调进来会错位）。
+        拿不准一律 False：感知暂停中、不是现在点亮中的线索、scan_at 比 FRAME_STALE + DISK_EVERY 还旧（感知没在跑 / 团子框丢了）、
+        举起不满 lit_min 秒、火焰还在（断开不满 DISK_GAP）、最近一次扫描没找到人（先等等）。
+        火焰消失超过 DISK_GAP 后：DISK_GAP 内都没找到人 → None；否则连续 LIT_SCANS 次扫描都看到他
+        （含低分框）black() 比举蜡烛时降了 lit_drop 以上且低于 lit_black（举蜡烛时下面没人就只看 lit_black）→ True，宁晚勿早。"""
         cfg = self.light_cfg
-        frame_at = self._frame_at
-        if cfg is None or self.paused or self.clock() - frame_at > FRAME_STALE or frame_at - since < cfg.lit_min:
+        if cfg is None or self.paused:
             return False
         with self._lock:
             L = self._lighting
-            if L is None or L["id"] != clue_id or frame_at - L["flame_last"] <= DISK_GAP:
+            if L is None or L["id"] != clue_id:
                 return False
-            person, person_at, black0 = L["person"], L["person_at"], L["black0"]
-        if frame_at - person_at > DISK_GAP:
-            return None
-        if person_at < frame_at - DISK_EVERY - 1e-6:  # 最近一次找火焰没找到人：先等等
+            ref, flame_last, person_at, bright = L["scan_at"], L["flame_last"], L["person_at"], L["bright"]
+        if self.clock() - ref > FRAME_STALE + DISK_EVERY or ref - since < cfg.lit_min:
             return False
-        blk = person[1]
-        return blk < cfg.lit_black and (black0 is None or black0 - blk >= cfg.lit_drop)
+        if ref - flame_last <= DISK_GAP:
+            return False
+        if ref - person_at > DISK_GAP:
+            return None
+        if person_at < ref:  # 最近一次找火焰没找到人：先等等
+            return False
+        return bright >= LIT_SCANS
 
     def light_done(self, result: str) -> None:
         """身体这次点亮结束了（lit / gone / timeout / interrupted / dry-run / exit / failed）：结束"点亮中"；
@@ -1450,6 +1461,7 @@ class PerceptionWatcher:
         cfg = self.light_cfg
         with self._lock:
             L, self._lighting = self._lighting, None
+            self.requests.pop(LIGHT_KEY, None)
             if L is None:
                 return
             self._flame = None  # 这条线索用过了：之后要重新连续看满 light_after 秒
