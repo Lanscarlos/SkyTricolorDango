@@ -40,7 +40,18 @@ def paint(*items):
     return img
 
 
-def make(appearance=True, hardcases=None, acfg_kw=None, **cfg):
+class FakeSaver:
+    def __init__(self, fail=False):
+        self.calls, self.fail = [], fail
+
+    def offer(self, track_id, who, crop, now, row):
+        self.calls.append((track_id, who, crop, now, row))
+        if self.fail:
+            raise RuntimeError("磁盘满了")
+        return True
+
+
+def make(appearance=True, hardcases=None, acfg_kw=None, saver=None, **cfg):
     cfg.setdefault("stranger_after", 1.0)
     cfg.setdefault("keep", 5.0)
     det = FakeDetector()
@@ -51,7 +62,7 @@ def make(appearance=True, hardcases=None, acfg_kw=None, **cfg):
         extra = dict(appearance=AppearanceBook(acfg, emb.key, keep=cfg["keep"]), embedder=emb, appearance_cfg=acfg)
     w = PerceptionWatcher(
         det, FakeOcr(OCR), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
-        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, hardcases=hardcases, **extra,
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, hardcases=hardcases, saver=saver, **extra,
     )
     return w, det
 
@@ -235,3 +246,29 @@ def test_describe_people_wording():
         == "像小红（没看到名字，右边·远）、陌生人A（白斗篷，前面·中）"
     assert describe_people([Person(3, "stranger", None, R, "前面", "中", sid="陌生人B"),
                             Person(4, "friend", "小明", R, "左边", "近")]) == "陌生人B（前面·中）、小明（左边·近）"
+
+
+def test_saver_gets_tagged_friend_and_stranger_samples_but_not_self():
+    saver = FakeSaver()
+    w, det = make(saver=saver)
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None), (player(1500), WHITE), (player(200), GREEN)], 0.0, 2.0)
+    whos = {c[1] for c in saver.calls}
+    assert XIAOMING in whos and any(x.startswith("t") for x in whos)
+    _, who, crop, now, row = next(c for c in saver.calls if c[1] == XIAOMING)
+    assert crop.ndim == 3 and crop.size
+    assert row["tag"] == XIAOMING and row["best"] == XIAOMING and row["score"] > 0.9
+    assert set(row) >= {"t", "track", "maybe", "sid", "box", "place"} and len(row["box"]) == 4
+
+
+def test_saver_never_offered_for_self():
+    saver = FakeSaver()
+    w, det = make(saver=saver)
+    run(w, det, [(Detection("self", Rect(900, 500, 120, 300), 0.9), PINK)], 0.0, 1.0)
+    assert saver.calls == []
+
+
+def test_saver_error_does_not_break_perception():
+    saver = FakeSaver(fail=True)
+    w, det = make(saver=saver)
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 1.0)
+    assert saver.calls and w.appearance.friends[XIAOMING].n >= 3

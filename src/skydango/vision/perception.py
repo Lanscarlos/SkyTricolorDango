@@ -176,7 +176,7 @@ class PerceptionWatcher:
         appearance=None,  # vision.appearance.AppearanceBook：认装扮（None = 不认，行为照旧）
         embedder=None,  # 外观特征模型（appearance.make_embedder）
         appearance_cfg: AppearanceConfig | None = None,
-        saver=None,  # 攒训练数据（Task 5 接上）
+        saver=None,  # 攒认人模型的训练数据（CropSaver，None = 不存）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -511,6 +511,8 @@ class PerceptionWatcher:
                 self._appearance_stranger(frame, player, players, fresh.get(player.id), now)
         if self.appearance is not None:
             self.appearance.forget(now)
+            if self.saver is not None:
+                self._save_samples(frame, players, tagged, fresh, now)
         self._watch_typing(bubbles, players, selfs, now, width, height)
         if not self.paused:
             self._watch_approach(players, now, width)
@@ -618,6 +620,25 @@ class PerceptionWatcher:
             t.data["samples"] = t.data.get("samples", 0) + 1
             out[t.id] = (feat, t.box)
         return out
+
+    def _save_samples(self, frame: np.ndarray, players: list[Track], tagged: dict[int, Track],
+                      fresh: dict, now: float) -> None:
+        """这一帧新算出好样本的人（没点火的、团子不要）：裁图连同元数据交给 saver 攒训练数据，出错只记日志。"""
+        for p in players:
+            if p.cls != "player" or p.id not in fresh:
+                continue
+            feat, box = fresh[p.id]
+            try:
+                tag = tagged.get(p.id)
+                name = (tag.data.get("name") if tag is not None else None) or None
+                best, score = self.appearance.best_friend(feat)
+                row = {
+                    "t": now, "track": p.id, "tag": name, "maybe": p.data.get("maybe"), "sid": p.data.get("sid"),
+                    "box": [box.x, box.y, box.w, box.h], "best": best, "score": round(score, 4), "place": self.place,
+                }
+                self.saver.offer(p.id, name or f"t{p.id}", describe_crop(frame, box), now, row)
+            except Exception:
+                log.exception("存认装扮训练数据出错")
 
     def _learn(self, kind: str, who: str, sample: tuple[np.ndarray, Rect], frame: np.ndarray, now: float) -> None:
         feat, box = sample

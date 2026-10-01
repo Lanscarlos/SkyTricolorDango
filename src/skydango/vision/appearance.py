@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
 import threading
+import time
+from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass, field
+
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from ..config import AppearanceConfig
+from ..imageio import imwrite
 from .bubbles import Rect
 from .embed import OnnxEmbedder, cosine, unit
 from .track import iou
+
+log = logging.getLogger(__name__)
 
 
 def _inter(a: Rect, b: Rect) -> int:
@@ -217,6 +227,15 @@ class AppearanceBook:
             f = self.card_feats.get(name)
             return f is not None and cosine(track_feat, f) >= self.cfg.card_match
 
+    def best_friend(self, feat) -> tuple[str | None, float]:
+        """和哪个好友最像、余弦多少（只读；学到的 + 卡里的，没有候选 = (None, 0.0)）。"""
+        with self._lock:
+            scored = [(cosine(feat, f), n) for n, f, _ in self._candidates(set())]
+        if not scored:
+            return None, 0.0
+        score, name = max(scored)
+        return name, float(score)
+
     def stranger_id(self, feat, now: float, exclude: frozenset[str] | set[str] = frozenset()) -> tuple[str, bool]:
         """陌生人编号：认回已有的（第二项 = 离开超过 keep 秒又回来了），否则新编号。
         exclude = 此刻别的轨迹正占着的编号：最像的被占着就起新编号（不退而求其次认第二像的）。"""
@@ -265,3 +284,42 @@ class AppearanceBook:
             if p is None or not p.crops:
                 return None
             return max(p.crops, key=lambda c: c[0])[1]
+
+
+_BAD_NAME = re.compile(r'[<>:"/\\|?*]')
+
+
+class CropSaver:
+    """运行时攒认人模型的训练数据：好样本的裁图存 folder/crops/<名字>/<毫秒>.jpg，一行元数据追加进 folder/appearance.jsonl。
+    同一条轨迹隔 save_every 秒才存一张，总数到 save_max 就停。"""
+
+    def __init__(self, folder: Path, save_every: float, save_max: int, wall: Callable[[], float] = time.time) -> None:
+        self.folder = Path(folder)
+        self.save_every = save_every
+        self.save_max = save_max
+        self.wall = wall
+        self.count = 0
+        self._last: dict[int, float] = {}
+        self._lock = threading.Lock()
+
+    def offer(self, track_id: int, who: str, crop: np.ndarray, now: float, row: dict) -> bool:
+        with self._lock:
+            if self.count >= self.save_max:
+                return False
+            if now - self._last.get(track_id, float("-inf")) < self.save_every:
+                return False
+            folder = self.folder / "crops" / _BAD_NAME.sub("_", who)
+            stamp = int(self.wall() * 1000)
+            name, i = f"{stamp}.jpg", 0
+            while (folder / name).exists():
+                i += 1
+                name = f"{stamp}-{i}.jpg"
+            imwrite(folder / name, crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            rel = f"crops/{folder.name}/{name}"
+            with open(self.folder / "appearance.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"file": rel, **row}, ensure_ascii=False) + "\n")
+            self._last[track_id] = now
+            self.count += 1
+            if self.count == self.save_max:
+                log.info("认装扮训练数据攒够 %d 张，不再存了", self.save_max)
+            return True

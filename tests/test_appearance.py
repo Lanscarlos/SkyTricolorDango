@@ -1,8 +1,10 @@
+import json
+
 import numpy as np
 import pytest
 
 from skydango.config import AppearanceConfig, Config
-from skydango.vision.appearance import AppearanceBook, ColorEmbedder, describe_crop, good_crop, make_embedder
+from skydango.vision.appearance import AppearanceBook, ColorEmbedder, CropSaver, describe_crop, good_crop, make_embedder
 from skydango.vision.bubbles import Rect
 from skydango.vision.embed import cosine, unit
 
@@ -215,3 +217,37 @@ def test_card_state_and_drift():
     assert not m.drifted("me", "") and m.look("me", "") == "白斗篷"
     m.learn("me", "", V_BLUE, 1.0)
     assert m.drifted("me", "")
+
+
+CROP = person(WHITE, PINK)
+
+
+def test_crop_saver_rate_limits_per_track_and_caps(tmp_path):
+    s = CropSaver(tmp_path, save_every=2.0, save_max=3)
+    assert s.offer(1, "小明", CROP, 0.0, {"t": 0.0}) and not s.offer(1, "小明", CROP, 1.0, {})
+    assert s.offer(2, "t2", CROP, 1.0, {}) and s.offer(1, "小明", CROP, 2.5, {}) and not s.offer(3, "t3", CROP, 9.0, {})
+    assert len(list((tmp_path / "crops").rglob("*.jpg"))) == 3
+    rows = [json.loads(l) for l in (tmp_path / "appearance.jsonl").read_text("utf-8").splitlines()]
+    assert rows[0]["file"].startswith("crops/小明/") and rows[0]["t"] == 0.0
+
+
+def test_crop_saver_sanitizes_names(tmp_path):
+    CropSaver(tmp_path, 2.0, 10).offer(1, 'a:b*?', CROP, 0.0, {})
+    assert (tmp_path / "crops" / "a_b__").is_dir()
+
+
+def test_crop_saver_same_millisecond_does_not_overwrite(tmp_path):
+    s = CropSaver(tmp_path, 0.0, 10, wall=lambda: 100.0)
+    assert s.offer(1, "小明", CROP, 0.0, {}) and s.offer(1, "小明", CROP, 1.0, {})
+    assert len(list((tmp_path / "crops" / "小明").glob("*.jpg"))) == 2
+
+
+def test_book_best_friend():
+    cfg = AppearanceConfig(enabled=True)
+    b = AppearanceBook(cfg, "k")
+    e = ColorEmbedder()
+    assert b.best_friend(e.embed(person(WHITE, PINK))) == (None, 0.0)
+    b.learn("friend", "小明", e.embed(person(WHITE, PINK)), 0.0)
+    b.learn("friend", "番茄", e.embed(person(WHITE, BLUE)), 0.0)
+    name, score = b.best_friend(e.embed(person(WHITE, PINK)))
+    assert name == "小明" and score > 0.95
