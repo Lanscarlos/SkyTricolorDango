@@ -2210,3 +2210,40 @@ def test_peek_lost_after_undoing_zoom_still_uses_revealed_view(clock):  # 露出
     b, _, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 460, 120, 36), small), (None, None)])
     _, note = b.look_person("小明")
     assert "没看清" not in note["text"] and "按名字标签估的" not in note["text"]
+
+
+# ---- 接还没回的好友聊天不算主动开口（spec 2026-10-01-lull-musing §4 修复 1） ----
+def test_reply_to_pending_chat_not_proactive(clock):
+    b, _, reader = pro_body(clock)
+    reader.batches = [[msg("在吗", speaker="阿花")]]
+    b.step()
+    b.say("在呢")  # 这一轮是被别的事件叫醒的（brain_busy 为假），但前面有没回的话
+    assert b.spoken[-1].proactive is False
+    assert b.occasion().last is None
+
+
+def test_pending_expires(clock):
+    b, _, reader = pro_body(clock)
+    reader.batches = [[msg("在吗", speaker="阿花")]]
+    b.step()
+    clock.advance(91)
+    b.say("在呢")
+    assert b.spoken[-1].proactive is True
+
+
+def test_after_my_reply_back_to_proactive(clock):
+    b, _, reader = pro_body(clock)
+    reader.batches = [[msg("在吗", speaker="阿花")]]
+    b.step()
+    b.say("在呢")
+    clock.advance(5)
+    b.say("还有事吗")  # 已经接过了：再说就是主动的
+    assert [s.proactive for s in b.spoken] == [False, True]
+
+
+def test_stranger_line_not_pending(clock):
+    b, _, reader = pro_body(clock)
+    reader.batches = [[msg("hi", speaker="")]]
+    b.step()
+    b.say("你好")
+    assert b.spoken[-1].proactive is True

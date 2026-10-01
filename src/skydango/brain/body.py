@@ -1619,6 +1619,17 @@ class Body:
                 return
             self.sleep(self.cfg.vision.poll_interval)
 
+    def _pending_reply(self, wall: float) -> bool:
+        """有还没接的好友聊天（reply_window 内、团子在那之后还没说过）：这时说的话是接话，不算主动开口。
+        被别的事件（来人、走开……）叫醒的一轮里接上一句也算（spec 2026-10-01-lull-musing §4 修复 1）。"""
+        is_friend = is_friend_fn(self.friend_names())
+        for t, who, _ in reversed(self.chat):
+            if who == "我":
+                return False
+            if is_friend(who):
+                return wall - t <= self.cfg.proactive.reply_window
+        return False
+
     def say(self, text: str, live: bool = False, reply: bool = False) -> str:
         """live = 手动控制：dry-run 下也真的发（护栏照旧）。reply = 明确是接话（大脑离线时的备用回复），不算主动开口。"""
         now = self.clock()
@@ -1629,7 +1640,9 @@ class Body:
         if not self.limiter.allow(now):
             self._blocked(text, "说得太快了")
             raise ToolError("说得太快了，等几秒再说")
-        proactive = self.cfg.proactive.enabled and not live and not reply and not self.brain_busy()
+        proactive = (
+            self.cfg.proactive.enabled and not live and not reply and not self.brain_busy() and not self._pending_reply(self.wall())
+        )
         if proactive:
             blocked = self.occasion().blocked
             if blocked:
