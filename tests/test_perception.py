@@ -1653,32 +1653,93 @@ def test_far_or_lit_people_get_no_disk_check(monkeypatch):
     assert calls == []
 
 
-def test_lit_when_same_track_turns_player(monkeypatch):
-    w, det, clock = light_watcher(monkeypatch, [DISK])
+def lit_track(monkeypatch, disks):
+    """黑影站着、圆盘看到了，身体举蜡烛（mark_tried）；返回 (w, det, clock, 轨迹 id)。"""
+    w, det, clock = light_watcher(monkeypatch, disks)
     det.frames = [[unlit(1000)]]
     run(w, 0.0, clock)
     tid = w.last_tracks[0].id
-    assert w.lit(tid, (1045, 480), 0.0) is False
+    w.mark_tried(tid)
+    return w, det, clock, tid
+
+
+def run_frames(w, clock, start, end, step=0.1):
+    """每 step 秒一帧，从 start 到 end（含）。"""
+    k = 0
+    while start + k * step <= end + 1e-9:
+        run(w, round(start + k * step, 3), clock)
+        k += 1
+
+
+def test_lit_when_same_track_turns_player(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [None])  # 身上没有圆盘
+    assert w.lit(tid, (1045, 480), -5.0) is False
     det.frames = [[player(1000)]]  # 同一个位置翻成 player：cross 组保证 id 不变
-    run(w, 0.5, clock)
-    run(w, 0.6, clock)
-    assert w.lit(tid, (1045, 480), 0.0) is False  # 才 2 帧
-    run(w, 0.7, clock)
+    run_frames(w, clock, 0.1, 0.2)
+    assert w.lit(tid, (1045, 480), -5.0) is False  # 才 2 帧
+    run(w, 0.3, clock)
+    assert w.lit(tid, (1045, 480), -5.0) is True
+
+
+def test_lit_needs_lit_min_after_raising(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [None])
+    det.frames = [[player(1000)]]
+    run_frames(w, clock, 0.1, 1.9)
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 举了才 1.9 秒：YOLO 近处会把还黑着的人认成 player
+    run_frames(w, clock, 2.0, 2.1)
     assert w.lit(tid, (1045, 480), 0.0) is True
 
 
+def test_lit_false_while_disk_still_seen(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [DISK])
+    monkeypatch.setattr(perception_mod, "find_disk", lambda *a: DISK if clock.t < 3.0 else None)  # 3 秒后圆盘才没
+    det.frames = [[player(1000)]]
+    run_frames(w, clock, 0.1, 3.5)  # _tried 的黑影翻成 player 后照样找圆盘
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 圆盘 0.5 秒前还看到过
+    run_frames(w, clock, 3.6, 4.2)
+    assert w.lit(tid, (1045, 480), 0.0) is True  # 圆盘断开超过 DISK_GAP
+
+
 def test_lit_fallback_when_track_breaks(monkeypatch):
-    w, det, clock = light_watcher(monkeypatch, [DISK])
-    det.frames = [[unlit(1000)]]
-    run(w, 0.0, clock)
-    tid = w.last_tracks[0].id
+    w, det, clock, tid = lit_track(monkeypatch, [DISK])
     det.frames = [[]]
     run(w, 1.5, clock)  # 闪光：一帧都没认出来，轨迹过了 track_buffer 被删
     assert w.lit(tid, (1045, 480), 0.0) is None
     det.frames = [[player(1010)]]  # 原地冒出一个亮着的人，没有名字标签
     for t in (1.6, 1.7, 1.8):
         run(w, t, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 举了才 1.8 秒
+    run(w, 2.1, clock)
     assert w.lit(tid, (1045, 480), 0.0) is True
+
+
+def test_lit_fallback_when_old_track_frozen(monkeypatch):
+    """闪光时出现重复轨迹：原轨迹框冻住（没有检测接上它），不用等它超时。"""
+    w, det, clock, tid = lit_track(monkeypatch, [None])
+    det.frames = [[player(1000, y=500)]]  # 和原框重叠 0.37：够当替身，但没到追踪的跨类别 IoU 0.5，接不上原轨迹
+    run_frames(w, clock, 0.1, 0.4)
+    assert w.lit(tid, (1045, 480), -5.0) is False  # 原轨迹才 0.4 秒没接上，还算在；它没变成 player
+    run_frames(w, clock, 0.5, 0.8)
+    assert tid in w.tracker.tracks and w.tracker.tracks[tid].last == 0.0  # 原轨迹还没超时（track_buffer 1 秒）
+    assert w.lit(tid, (1045, 480), -5.0) is True  # 0.8 > STALE_LIT：当没了，新冒出的 player 兜底
+
+
+def test_lit_frozen_track_ignores_passer_by(monkeypatch):
+    """原轨迹冻住后，旁边走过来的别人（框不重叠）不能算他点亮了。"""
+    w, det, clock, tid = lit_track(monkeypatch, [None])
+    det.frames = [[player(1000, y=700)]]  # x 同、但在原框下方不重叠
+    run_frames(w, clock, 0.1, 0.8)
+    assert w.lit(tid, (1045, 480), -5.0) is None
+
+
+def test_lit_fallback_distance_is_tight(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [DISK])
+    det.frames = [[]]
+    run(w, 1.5, clock)
+    det.frames = [[player(1000 + 63)]]  # 框宽 90：中心比 pos 偏了 0.7 倍框宽
+    for t in (1.6, 1.7, 1.8, 2.5):
+        run(w, t, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is None
 
 
 def test_lit_fallback_ignores_friend(monkeypatch):
@@ -1690,6 +1751,6 @@ def test_lit_fallback_ignores_friend(monkeypatch):
     run(w, 1.5, clock)
     w.ocr = FakeOcr({110: "懒洋洋大王"})
     det.frames = [[player(1010), tag(1000, 110)]]  # 冒出来的是挂着好友名字的
-    for t in (1.6, 1.7, 1.8):
+    for t in (1.6, 1.7, 1.8, 2.5):
         run(w, t, clock)
     assert w.lit(tid, (1045, 480), 0.0) is None
