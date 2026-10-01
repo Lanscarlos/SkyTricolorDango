@@ -34,7 +34,33 @@
 <main id="work">
   <section id="page-sandbox" class="page" hidden><p class="placeholder">（沙盒页还在搬家）</p></section>
   <section id="page-live" class="page" hidden><p class="placeholder">（真机团子页还在搬家）</p></section>
-  <section id="page-inner" class="page" hidden><p class="placeholder">（内心页还在搬家）</p></section>
+  <section id="page-inner" class="page" hidden>
+    <div class="page-title">
+      <h1 id="inner-title">团子的内心</h1>
+      <span class="seg" id="inner-source-toggle" role="group" aria-label="看谁的内心"><button type="button" data-src="dango" aria-pressed="true">团子</button><button type="button" data-src="sandbox" aria-pressed="false">沙盒</button></span>
+      <span class="chip" id="inner-source">读取中…</span>
+      <span class="grow"></span>
+      <button class="btn sm" type="button" id="inner-refresh">刷新</button>
+    </div>
+    <div class="cols inner-cols">
+      <div class="inner-col">
+        <section class="pane" id="inner-now" aria-label="现在"></section>
+        <section class="pane">
+          <h3>曲线<span class="grow"></span><span class="seg" id="inner-range"><button type="button" data-h="24" aria-pressed="true">最近 24 小时</button><button type="button" data-h="168" aria-pressed="false">7 天</button></span></h3>
+          <div class="pane-body" id="inner-curve"></div>
+        </section>
+        <section class="pane">
+          <h3>反思记录<span class="grow"></span><label class="inner-check"><input type="checkbox" id="inner-changed"> 只看有改动的</label></h3>
+          <div class="pane-body" id="inner-log"></div>
+        </section>
+      </div>
+      <div class="inner-col">
+        <section class="pane"><h3>性格档案</h3><div class="pane-body" id="inner-persona"></div></section>
+        <section class="pane"><h3>关系卡</h3><div class="pane-body" id="inner-cards"></div></section>
+        <section class="pane"><h3>日子和日记</h3><div class="pane-body" id="inner-days"></div></section>
+      </div>
+    </div>
+  </section>
   <section id="page-scenarios" class="page" hidden><p class="placeholder">（剧本和报告页还在搬家）</p></section>
   <section id="page-settings" class="page" hidden><p class="placeholder">（设置页还在搬家）</p></section>
   <section id="page-device" class="page" hidden><p class="placeholder">（设备页还在搬家）</p></section>

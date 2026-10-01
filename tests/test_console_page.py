@@ -81,3 +81,13 @@ def test_time_helpers():  # 照搬旧实现
           "console.log(JSON.stringify([pad2(3),span(30),span(600),span(7200),span(86400*3),fmtUptime(5),fmtUptime(125),fmtUptime(3725),fmtUptime(null)]))")
     out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
     assert out == ["03", "不到 1 分钟", "10 分钟", "2 小时", "3 天", "5 秒", "2 分钟", "1 小时 2 分", ""]
+
+
+def test_inner_page():
+    b = bundle()
+    for id_ in ("inner-source-toggle", "inner-source", "inner-now", "inner-curve", "inner-log", "inner-persona", "inner-cards", "inner-days", "inner-refresh", "inner-range", "inner-changed"):
+        assert f'id="{id_}"' in b, id_
+    for s in ("api/inner", "api/inner/forget", "Inner.renderNow", "Pages.inner", "IN.lastState"):
+        assert s in b
+    for text in ("（没开反思）", "实时取不到，显示的是上次保存的", "团子正在启动 / 停止，稍等再删", "只看有改动的", "删了团子就不会再用它（不能撤销）"):
+        assert text in b
