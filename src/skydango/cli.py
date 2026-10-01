@@ -674,6 +674,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_clips(cfg, args)
     elif args.action == "gesture-eval":
         _perception_gesture_eval(cfg, args)
+    elif args.action == "appearance-eval":
+        _perception_appearance_eval(cfg, args)
 
 
 def _perception_clips(cfg: Config, args) -> None:
@@ -773,6 +775,58 @@ def _perception_compare(cfg: Config, args) -> None:
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out / "report.md").write_text(report_md(summary), encoding="utf-8")
     print(f"两边不一致 {len(summary['diff_frames'])} 帧；报告：{out / 'report.md'}")
+
+
+def _perception_appearance_eval(cfg: Config, args) -> None:
+    """认装扮的离线标定（spec 2026-10-01-appearance §10）：录像上跑感知层（强制打开认装扮，不存训练数据、不描述），
+    收集每条轨迹的外观特征 → 相似度分布、建议的 match / changed / margin、藏标签重放，写 report.md / summary.json。"""
+    import dataclasses
+    import json
+
+    from .vision.appearance_eval import Harvester, pair_scores, replay, report_md, suggest, untagged
+    from .vision.compare import timed_files
+
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    a = cfg.appearance
+    a.enabled = True
+    if args.embed:
+        a.model = args.embed
+    out = Path(args.output or f"tmp/appearance-eval/{time.strftime('%Y%m%d-%H%M%S')}")
+    out.mkdir(parents=True, exist_ok=True)
+    _, watcher = _perception(cfg, args)  # 只挂记忆簿：saver = None、没有描述器
+    print(f"{len(timed)} 帧（{timed[0][0]:.1f}~{timed[-1][0]:.1f} s），特征 {watcher.embedder.key} → {out}")
+    harvest = Harvester()
+    for n, (t, path) in enumerate(timed, 1):
+        frame = imread(path)
+        watcher.process(frame, t, _panel_open(cfg, frame))
+        harvest.add(watcher.tracker.tracks.values(), t)
+        if n % 50 == 0:
+            print(f"  {n}/{len(timed)}")
+    ids = harvest.by_identity()
+    same, diff = pair_scores(ids)
+    s = suggest(same, diff)
+    seq = harvest.sequence()
+    summary = {
+        "source": str(args.source), "frames": len(timed), "embed": watcher.embedder.key,
+        "identities": {k: len(v) for k, v in ids.items()}, "suggest": s,
+        "current": {"match": a.match, "changed": a.changed, "margin": a.margin},
+        "replay": replay(seq, a),
+    }
+    if s["match"] is not None and s["changed"] is not None:
+        summary["replay_suggested"] = replay(seq, dataclasses.replace(a, match=s["match"], changed=s["changed"], margin=s["margin"]))
+    (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out / "report.md").write_text(report_md(summary), encoding="utf-8")
+    fmt = lambda v: "—" if v is None else f"{v:.2f}"  # noqa: E731
+    print(f"{len(ids)} 个身份（{sum(not untagged(k) for k in ids)} 个带名字），"
+          f"同一身份 {s['same_n']} 对、不同身份 {s['diff_n']} 对")
+    print(f"建议：match {fmt(s['match'])}（现在 {a.match:g}）、changed {fmt(s['changed'])}（现在 {a.changed:g}）、margin {s['margin']:g}")
+    r = summary["replay"]
+    print(f"藏标签重放（现在的配置）：对 {r['right']}、错 {r['wrong']}、漏 {r['missed']}；报告：{out / 'report.md'}")
 
 
 def _perception_augment(args) -> None:
@@ -2177,6 +2231,12 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
     q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关；开关各跑一次对比）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/compare/<时间>）")
+    q = psub.add_parser("appearance-eval", help="认装扮的离线标定：录像上统计同一个人 / 不同人的外观相似度，给出建议的门槛，藏标签重放")
+    q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
+    q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q.add_argument("--device", choices=["cuda", "cpu"])
+    q.add_argument("--embed", help="外观特征：color 或 .onnx 路径（默认 appearance.model）")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/appearance-eval/<时间>）")
     q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")
     q.add_argument("--runs", default="runs", help="运行目录的上级（默认 runs/）")
     q.add_argument("--last", type=int, default=5, help="看最近几次运行")
