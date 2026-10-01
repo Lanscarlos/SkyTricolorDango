@@ -1764,7 +1764,7 @@ def _run_brain(
             now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
             days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
             persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
-            appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store, wall()),
+            appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
@@ -1958,8 +1958,10 @@ def _persona_prompt(persona) -> str:
         return ""
 
 
-def _backstage_prompt(cfg: Config, store, now: float, run=None, repo=None) -> str:
-    """「幕后」一节（spec 2026-10-01-backstage）：[backstage] enabled 才有；live 时记下看到了哪个提交。拼出错就不写这一节。"""
+def _backstage_prompt(cfg: Config, store, now: float | None = None, run=None, repo=None) -> str:
+    """「幕后」一节（spec 2026-10-01-backstage）：[backstage] enabled 才有；live 时记下看到了哪个提交。拼出错就不写这一节。
+
+    now 默认真实时间：提交时间是真实时间，别用世界的钟（沙盒的 wall() 会超前）。"""
     if not cfg.backstage.enabled:
         return ""
     from .brain.backstage import changelog, git_runner, read_seen, repo_root, section, write_seen
@@ -1971,7 +1973,7 @@ def _backstage_prompt(cfg: Config, store, now: float, run=None, repo=None) -> st
             run = git_runner(repo) if repo is not None else None
         lines, head = [], None
         if run is not None:
-            lines, head = changelog(run, read_seen(mark) if mark is not None else None, now,
+            lines, head = changelog(run, read_seen(mark) if mark is not None else None, time.time() if now is None else now,
                                     cfg.backstage.changelog_max, cfg.backstage.changelog_days)
         if head and mark is not None and not cfg.reply.dry_run:
             write_seen(mark, head)

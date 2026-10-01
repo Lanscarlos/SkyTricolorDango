@@ -59,3 +59,10 @@ def test_backstage_prompt_reads_seen(tmp_path):
 def test_backstage_prompt_no_store():
     out = _backstage_prompt(_cfg(), None, NOW, run=fake_runner([]))
     assert out.startswith("## 幕后")
+
+
+def test_backstage_prompt_uses_real_time_not_world_clock(tmp_path, monkeypatch):
+    """沙盒的 wall() 会比真实时间超前：更新记录要按真实时间算（spec §3）。"""
+    monkeypatch.setattr("skydango.cli.time.time", lambda: NOW)
+    out = _backstage_prompt(_cfg(dry_run=True), MemoryStore(tmp_path), run=fake_runner([]))
+    assert "- 今天 feat(brain): 会查自己了" in out

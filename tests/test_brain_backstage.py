@@ -151,3 +151,13 @@ def test_section_changelog_heading_with_owner():
 
 def test_section_keeps_braces_in_changelog():
     assert "- 今天 feat: {x}" in section("卡洛", "s", "h", "s", ["- 今天 feat: {x}"])
+
+
+def test_section_says_how_to_admit_without_tripping_filter():
+    """“我又不是真人”会被 clean_reply 的真人过滤拦下：提示词要让她直接说“我是 AI”。"""
+    from skydango.chat.responder import clean_reply
+
+    for owner in ("卡洛", ""):
+        s = section(owner, "sonnet", "haiku", "sonnet", [])
+        assert "直接说“我是 AI”" in s and "我又不是真人" in s
+    assert clean_reply("我是AI啦", 30) and not clean_reply("我又不是真人", 30)
