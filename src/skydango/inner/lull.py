@@ -105,6 +105,40 @@ class LullTracker:
         lull.who = still
         lull.said = [text for t, who, text in chat if t > lull.t0 and who == ME]
 
+    # ---- 情况②：聊着聊着走了 ----
+    def left(self, name: str, wall: float, chat: Chat) -> str | None:
+        """好友走开时调：他刚说过话、或团子刚说过话，就开始一个“走开”的冷场、返回事件文字；否则 None。"""
+        spoke = any(t >= wall - self.cfg.leave_spoke and similar(who, name, 0.75) for t, who, _ in chat)
+        said = any(t >= wall - self.cfg.leave_said and who == ME for t, who, _ in chat)
+        if not (spoke or said) or not chat:
+            return None
+        musings: list[tuple[float, float, str]] = []
+        silent = self._silent()
+        if silent is not None and name in silent.who:
+            silent.who = tuple(n for n in silent.who if n != name)
+            if not silent.who:  # 冷场对象只剩他：想过的话跟着转过来
+                self._lulls.remove(silent)
+                self._done_t0 = max(self._done_t0, silent.t0)
+                musings = silent.musings
+        self._lulls = [lull for lull in self._lulls if not (lull.kind == "left" and lull.who == (name,))]
+        _, who, text = chat[-1]
+        self._lulls.append(Lull("left", (name,), wall, (who, text), stage=0, musings=musings))
+        said_by = "你" if who == ME else "他" if similar(who, name, 0.75) else (who or "（看不出是谁）")
+        return f"冷场  {name} 聊着聊着走开了。走之前最后是{said_by}说的「{_q(text)}」。"
+
+    def returned(self, name: str, wall: float) -> str | None:
+        """好友回来：有他“走开”的冷场就结束、返回附注；否则 None。"""
+        lull = next((x for x in self._lulls if x.kind == "left" and x.who == (name,)), None)
+        if lull is None:
+            return None
+        note = self._left_note(lull, wall)
+        self._end(lull, wall, "后来他回来了")
+        return note
+
+    def _left_note(self, lull: Lull, wall: float) -> str:
+        thought = self._thought(lull)
+        return f"（走开了 {_dur(wall - lull.t0)}" + (f"，你刚才在想：{thought}）" if thought else "）")
+
     def _advance(self, lull: Lull, wall: float) -> Cue | None:
         stages = self.cfg.stages
         passed = [i for i, s in enumerate(stages) if wall - lull.t0 >= s]
@@ -118,6 +152,8 @@ class LullTracker:
         return lull.who[0] if len(lull.who) == 1 else f"大家（{'、'.join(lull.who)}）"
 
     def _cue_text(self, lull: Lull, wall: float) -> str:
+        if lull.kind == "left":
+            return f"冷场  {lull.who[0]} 走开 {_dur(wall - lull.t0)}了，还没回来。"
         speaker, text = lull.last or ("", "")
         if speaker == ME:
             tail = f"最后是你说的「{_q(text)}」，{'他没接' if len(lull.who) == 1 else '没人接'}。"
@@ -133,6 +169,11 @@ class LullTracker:
     def status(self, wall: float) -> str:
         parts = []
         for lull in self._lulls:
+            if lull.kind == "left":
+                head = f"{lull.who[0]} 走开 {_dur(wall - lull.t0)}了 "
+                head += f"· 在想：{self._thought(lull)}（{_dur(lull.musings[-1][1])}时）" if lull.musings else "· 在想：（还没想过）"
+                parts.append(head)
+                continue
             speaker, text = lull.last or ("", "")
             said = "你" if speaker == ME else (speaker or "（看不出是谁）")
             head = f"{self._obj(lull)} {_dur(wall - lull.t0)}没说话（最后是{said}说的「{_q(text)}」）"
@@ -149,7 +190,9 @@ class LullTracker:
         end = lull.ended_at if lull.ended_at is not None else wall
         speaker, _ = lull.last or ("", "")
         dur = _dur(end - lull.t0)
-        if speaker == ME:
+        if lull.kind == "left":
+            out = f"{lull.who[0]}聊着聊着走开了 {dur}。"
+        elif speaker == ME:
             out = f"{dur}，{self._obj(lull)}没接你的话。"
         else:
             out = f"{dur}，{self._obj(lull)}说完你没接，大家都没再说话。"
@@ -162,12 +205,15 @@ class LullTracker:
         """好友开口：结束冷场，返回附在这条聊天后面的话；没有冷场（或不是好友）返回空。"""
         if not self.is_friend(speaker):
             return ""
+        note = ""
         silent = self._silent()
-        if silent is None:
-            return ""
-        thought = self._thought(silent)
-        note = f"（冷场了 {_dur(wall - silent.t0)}" + (f"，你刚才在想：{thought}）" if thought else "）")
-        self._end(silent, wall, f"后来{speaker}说「{_q(text)}」")
+        if silent is not None:
+            thought = self._thought(silent)
+            note = f"（冷场了 {_dur(wall - silent.t0)}" + (f"，你刚才在想：{thought}）" if thought else "）")
+            self._end(silent, wall, f"后来{speaker}说「{_q(text)}」")
+        for lull in [x for x in self._lulls if x.kind == "left" and similar(speaker, x.who[0], 0.75)]:
+            note = note or self._left_note(lull, wall)
+            self._end(lull, wall, f"后来他说「{_q(text)}」")
         return note
 
     def _end(self, lull: Lull, wall: float, ending: str) -> None:

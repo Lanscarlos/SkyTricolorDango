@@ -163,3 +163,76 @@ def test_snapshot():
     snap = t.snapshot(T0 + 80)
     assert snap[0]["kind"] == "silent" and snap[0]["who"] == ["懒洋洋大王"]
     assert snap[0]["last"] == ["我", "在呢"] and snap[0]["musings"][0]["text"] == "他是不是去忙了"
+
+
+# ---- 情况②：聊着聊着走了（spec §1） ----
+LEFT_AT = T0 + 100
+
+
+def test_left_after_he_spoke():
+    t = tracker()
+    chat = [(T0, "懒洋洋大王", "我去拿个东西")]
+    assert t.left("懒洋洋大王", LEFT_AT, chat) == "冷场  懒洋洋大王 聊着聊着走开了。走之前最后是他说的「我去拿个东西」。"
+
+
+def test_left_after_i_spoke():
+    t = tracker()
+    chat = [(T0 - 200, "懒洋洋大王", "哈哈"), (T0 + 50, "我", "你要牵好我哦")]
+    assert "走之前最后是你说的「你要牵好我哦」" in t.left("懒洋洋大王", LEFT_AT, chat)
+
+
+def test_left_not_chatting():
+    t = tracker()
+    chat = [(LEFT_AT - 121, "懒洋洋大王", "哈哈"), (LEFT_AT - 61, "我", "嗯")]
+    assert t.left("懒洋洋大王", LEFT_AT, chat) is None
+    assert t.left("懒洋洋大王", LEFT_AT, [(LEFT_AT - 30, "懒洋洋大玉", "拜")]) is not None  # OCR 错字照样算
+
+
+def left_one(musing=None):
+    t = tracker()
+    t.left("懒洋洋大王", LEFT_AT, [(T0, "懒洋洋大王", "我去拿个东西")])
+    if musing:
+        assert t.muse(musing, LEFT_AT + 10)
+    return t
+
+
+def test_left_stages():
+    t = left_one()
+    assert t.tick(LEFT_AT + 179, [], []) == []
+    assert t.tick(LEFT_AT + 180, [], []) == [Cue("冷场  懒洋洋大王 走开 3 分钟了，还没回来。", False)]
+    cues = t.tick(LEFT_AT + 360, [], [])
+    assert len(cues) == 1 and cues[0].final
+
+
+def test_returned():
+    t = left_one("是不是我说错话了")
+    assert t.returned("阿花", LEFT_AT + 200) is None
+    assert t.returned("懒洋洋大王", LEFT_AT + 200) == "（走开了 3 分钟，你刚才在想：是不是我说错话了）"
+    assert t.active() == []
+    summary = t.summary(t.pop_finished()[0], LEFT_AT + 200)
+    assert summary.startswith("懒洋洋大王聊着聊着走开了 3 分钟。") and summary.endswith("后来他回来了")
+
+
+def test_left_heard_ends():
+    t = left_one()
+    assert t.heard(LEFT_AT + 70, "懒洋洋大玉", "我回来了") == "（走开了 1 分钟）"
+    assert t.active() == []
+
+
+def test_left_takes_over_silent():
+    t, chat = started()
+    t.muse("他是不是去忙了", T0 + 70)
+    assert t.left("懒洋洋大王", T0 + 80, chat) is not None
+    lulls = t.active()
+    assert len(lulls) == 1 and lulls[0].kind == "left"
+    assert lulls[0].musings[0][2] == "他是不是去忙了"
+    assert t.tick(T0 + 81, [], chat) == []  # 情况① 没有再冒出来
+
+
+def test_both_kinds_status():
+    t = tracker()
+    chat = [(T0, "阿花", "好看"), (T0 + 5, "懒洋洋大王", "我去拿个东西")]
+    t.left("懒洋洋大王", T0 + 10, chat)
+    t.tick(T0 + 70, ["阿花"], chat)
+    status = t.status(T0 + 70)
+    assert status.startswith("冷场：") and "；" in status and "阿花" in status and "懒洋洋大王 走开" in status
