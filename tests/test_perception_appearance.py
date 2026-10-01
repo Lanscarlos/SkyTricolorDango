@@ -6,6 +6,7 @@ from skydango.config import AppearanceConfig, EnvConfig, PerceptionConfig
 from skydango.vision.appearance import AppearanceBook, ColorEmbedder
 from skydango.vision.bubbles import Rect
 from skydango.vision.detect import Detection
+from skydango.vision.embed import unit
 from skydango.vision.people import Person, describe_people
 from skydango.vision.perception import PerceptionWatcher
 
@@ -361,11 +362,48 @@ def test_described_friend_pushes_note():
     w, det = make()
     w.wardrobe = FakeWardrobe()
     run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
-    F = w.appearance.friends[XIAOMING].feat
+    F = w.appearance.friends[XIAOMING].feat.copy()
+    F[int(np.argmax(F))] *= 0.9  # 描述时的特征和现在的平均特征差一点（还是同一套）
+    F = unit(F)
     w.on_described("friend", XIAOMING, "粉色长斗篷", F)
     note = w.pop_outfits()[-1]
     assert note.state == "described" and w.looks([XIAOMING])[XIAOMING] == "粉色长斗篷"
     assert (note.name, note.desc, note.key) == (XIAOMING, "粉色长斗篷", "color-v1")
+    assert note.feat == [round(float(x), 3) for x in F]  # 用描述时的特征，不是现在的
+    assert note.feat != [round(float(x), 3) for x in w.appearance.friends[XIAOMING].feat]
+
+
+class BusyWardrobe(FakeWardrobe):
+    """同一个身份在排队 / 描述中时拒绝（同真的 Wardrobe）。"""
+
+    def __init__(self):
+        super().__init__()
+        self.busy = set()
+
+    def request(self, kind, who, priority, crop, feat, now):
+        if (kind, who) in self.busy:
+            return False
+        self.busy.add((kind, who))
+        return super().request(kind, who, priority, crop, feat, now)
+
+
+def test_stale_description_after_outfit_change_is_dropped():
+    w, det = make()
+    fake = w.wardrobe = BusyWardrobe()
+    body, label = player(1000), tag(990, 110)
+    run(w, det, [(body, PINK), (label, None)], 0.0, 2.0)
+    assert [n.state for n in w.pop_outfits()] == ["new"] and fake.requests == [("friend", XIAOMING)]
+    run(w, det, [(body, GREEN), (label, None)], 2.1, 4.0)  # 请求还在排着，人换了装
+    assert fake.requests == [("friend", XIAOMING)]
+    fake.busy.clear()  # 上一套（粉）的描述回来了
+    w.on_described("friend", XIAOMING, "粉色长斗篷", fake.calls[0][4])
+    assert w.pop_outfits() == [] and w.looks([XIAOMING]) == {}
+    run(w, det, [(body, GREEN), (label, None)], 4.1, 5.0)
+    assert fake.requests == [("friend", XIAOMING)] * 2  # 现在这一套接着请求
+    assert unit(fake.calls[1][4]) @ solid_feat(GREEN) > 0.9
+    assert w.appearance.friends[XIAOMING].redescribed == 0 and w.pop_outfits() == []  # 没多出 changed
+    w.on_described("friend", XIAOMING, "绿斗篷", fake.calls[1][4])
+    assert [n.state for n in w.pop_outfits()] == ["described"] and w.looks([XIAOMING]) == {XIAOMING: "绿斗篷"}
 
 
 def test_friend_changes_mid_session_noted_and_redescribed():

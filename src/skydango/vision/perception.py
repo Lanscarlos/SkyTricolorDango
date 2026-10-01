@@ -44,7 +44,7 @@ from ..game.social import IDLE, KIND_NAMES, Request, is_request
 from .appearance import describe_crop, good_crop
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
-from .embed import unit
+from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, Person, Thing, object_distance, side_of
@@ -729,17 +729,26 @@ class PerceptionWatcher:
 
     def on_described(self, kind: str, who: str, desc: str, feat) -> None:
         """描述器线程回调：记进记忆簿；好友的再推一条 described 给身体（写关系卡、发 outfit 事件）。"""
-        if self.appearance is None:
+        book = self.appearance
+        if book is None:
             return
-        self.appearance.set_desc(kind, who, desc, feat)
-        log.info("装扮描述：%s：%s", who or "团子", desc)
+        feat = unit(feat)
         key = (kind, who)
+        p = book.me if kind == "me" else (book.friends if kind == "friend" else book.strangers).get(who)
+        if p is not None and cosine(feat, p.feat) < self.appearance_cfg.changed:
+            # 送去描述之后换了装（请求在描述器里排着时）：这是上一套的描述，不记、不推，want 留着，
+            # 这一套等下一个样本再请求（不算一次重新描述）
+            log.info("装扮描述：%s 已经换了装，丢掉上一套的描述「%s」", who or "团子", desc)
+            with self._lock:
+                self._describe_asked.pop(key, None)
+            return
+        book.set_desc(kind, who, desc, feat)
+        log.info("装扮描述：%s：%s", who or "团子", desc)
         with self._lock:
             self._describe_want.discard(key)
             self._describe_asked.pop(key, None)
         if kind == "friend":
-            p = self.appearance.friends.get(who)
-            self._note(who, p.feat if p is not None else unit(feat), "described", desc)
+            self._note(who, feat, "described", desc)
 
     def pop_outfits(self) -> list[OutfitNote]:
         """取走好友的装扮（new / same / changed / described），身体写进关系卡。"""
