@@ -258,12 +258,16 @@ class Wheel:
             self.assign(slot, name)
         return slot
 
-    def perform(self, name: str) -> int:
-        slot = self.ensure(name)
+    def press(self, slot: int) -> None:
+        """按这一格的数字键（锁定格也能按：3 号格常驻举蜡烛）。"""
         if self.device.ime_shown():
             raise WheelError("输入框开着，按数字键会变成打字")
         self.device.hw_key(self.cfg.slot_keys[slot - 1])
         self.last_used[slot] = self.clock()
+
+    def perform(self, name: str) -> int:
+        slot = self.ensure(name)
+        self.press(slot)
         log.info("做动作「%s」（格子 %d）", name, slot)
         return slot
 

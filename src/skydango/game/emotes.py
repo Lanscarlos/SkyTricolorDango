@@ -96,6 +96,11 @@ class EmotePlayer:
             self.last_swap = now
         self._mark(now, reflex)
 
+    def press_slot(self, slot: int) -> None:
+        """按轮盘某一格的数字键，不算动作（不占冷却、不更新 last_any）：3 号格举蜡烛 / 放下蜡烛（spec 2026-10-01-light-unlit-stranger）。"""
+        self._close_input()
+        self.wheel.press(slot)
+
     def _mark(self, now: float, reflex: bool) -> None:
         self.last_any = now
         if not reflex:
