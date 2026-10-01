@@ -62,7 +62,6 @@ UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 DISK_EVERY = 0.3  # 团子周围最多隔这么久找一次火焰
 DISK_GAP = 1.0  # 火焰断开不超过这么久算同一条线索（火焰会晃）
-SELF_MAX_AGE = 1.0  # 找火焰：团子框这么久没更新就不用（宁可漏，不全屏乱找）
 SELF_HOLD = 3.0  # 团子框丢了（黑影贴着团子时 YOLO 常认不出 self）最多沿用最近的框这么久：镜头跟着团子，屏幕位置几乎不变
 LIT_LOW = 0.2  # 点亮陌生人开着时检测器按这个出框：晚上黑影分数低（10-01 晚 0.27 / 0.28），找"火焰下面那个人"时也看低分框
 DIAG_EVERY = 0.5  # 点亮中每隔这么久存一张图（spec 2026-10-01-light-flame-around-self §5）
@@ -1324,7 +1323,7 @@ class PerceptionWatcher:
     def _self_now(self, now: float) -> Rect | None:
         """团子现在在哪：最近这一帧有新检测的 self 轨迹里分数最高的。找不到时沿用最近的框最多 SELF_HOLD 秒。
         黑影贴着团子时 YOLO 常认不出 self；镜头跟着团子，屏幕位置几乎不变，短时间沿用最近的框是安全的。"""
-        # 只用这一帧有新检测（刚匹配）的 self 轨迹（之前用 SELF_MAX_AGE 内的老轨迹，但现在黑影贴着时那些也会掉分、不进追踪）
+        # 只用这一帧刚匹配上的 self 轨迹；别的时候都走下面的沿用
         fresh_selfs = [t for t in self.tracker.tracks.values() if t.cls == "self" and now - t.last < 1e-6]
         if fresh_selfs:
             best = max(fresh_selfs, key=lambda t: t.score)

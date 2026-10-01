@@ -1686,15 +1686,15 @@ def test_no_self_box_no_search(monkeypatch):
 
 
 def test_stale_self_track_still_used_within_a_second(monkeypatch):
-    """黑影贴着团子认不出团子时沿用最近的团子框最多 SELF_HOLD 秒（之前是 SELF_MAX_AGE 1 秒）。
-    1 秒内用旧框找火焰（SELF_MAX_AGE），1~3 秒用 _me_last 继续找（SELF_HOLD），3 秒后停止。"""
+    """黑影贴着团子认不出团子时沿用最近的团子框最多 SELF_HOLD 秒。
+    SELF_HOLD 内用 _me_last 继续找，过了就停止。"""
     w, det, clock = light_watcher(monkeypatch, [FLAME])
     det.frames = [[self_det()]]
     run(w, 0.0, clock)
     det.frames = [[]]
     run(w, 0.5, clock)  # 这一帧没认出团子，但 0.5 秒前有
     assert len(w.areas) == 2
-    run(w, 1.6, clock)  # SELF_MAX_AGE 过了（1.6 > 1.0），但 SELF_HOLD 内（1.6 < 3.0）还在找
+    run(w, 1.6, clock)  # SELF_HOLD 内（1.6 < 3.0）还在找
     assert len(w.areas) == 3
     run(w, 3.1, clock)  # 过了 SELF_HOLD（3.1 > 3.0）：不找
     assert len(w.areas) == 3
@@ -2064,12 +2064,13 @@ def test_lit_needs_two_bright_scans(monkeypatch):
 
 
 def test_lit_false_when_self_box_lost(monkeypatch):
-    """团子框丢了就不找火焰：火焰"消失"不能自己成立，lit 一直是 False（不是 True / None）。"""
+    """团子框丢了超过 SELF_HOLD 就不再找火焰：火焰"消失"不能自己成立，之后 lit 是 False（不是 True / None）。
+    SELF_HOLD 之内沿用最后的团子框照样真扫描（见 test_self_box_held_while_hidden），那时判出点亮是对的。"""
     w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
     monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
     monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.1)
     det.frames = [[player(1000)]]
-    run_frames(w, clock, 3.2, 6.0)
+    run_frames(w, clock, 3.2, 7.0)  # 最后一次认出团子是 3.0 秒左右，沿用到 6 秒多就过期
     assert w.lit(cid, 0.0) is False
 
 
