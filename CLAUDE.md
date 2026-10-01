@@ -54,7 +54,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   `yolo` 不在 PATH 上，用 `.pydeps\bin\yolo.exe`。ultralytics 设置（`.cache/ultralytics/Ultralytics/settings.json`）的 datasets / weights / runs 指到仓库的 `datasets/`、`models/`、`runs/`
 - 往 `.pydeps/` 加包：`python -m pip install --no-deps --target .pydeps <包>`（`--target` 不看已装的包，不加 `--no-deps` 会把 numpy 等再装一份、还可能装上 CPU 版 torch；
   缺哪个依赖就显式列出来，装完 `python -m pip check`）。torch 要加 `--index-url https://download.pytorch.org/whl/cu128`
-- `config.toml` 是本机配置（gitignore），模板是 `config.example.toml`
+- `config.toml` 是本机配置（gitignore），模板是 `config.example.toml`；记忆在私有仓库，新电脑先按「记忆」一节克隆到 `private/`
 - 模拟器里装了 ADBKeyboard 并设为当前输入法（输中文用）；用户自己要打字时 `python -m skydango ime off`
 - 在 Git Bash 里调 `adb shell` 带 `/dev/...` 路径时要 `export MSYS_NO_PATHCONV=1`，否则路径会被改写
 
@@ -93,7 +93,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
 
-## 记忆（`memory/`，不进 git）
+## 记忆（`memory/`，不进 git；两台电脑用私有仓库同步，见本节末尾）
 
 | 文件 | 内容 | 谁写 |
 |---|---|---|
@@ -112,6 +112,29 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 `memory init` 用配置生成 profile / friends，`memory show` 查看，`memory update` 立刻整理。
 随手记和整理（`NotesKeeper`）在大脑模式和 `memory update` 里走 Claude Code（`[brain] memory_model`，默认 sonnet，一次性 `claude -p`、令牌同大脑、不给工具，`brain/claude.py` 的 `ClaudeLlm`）；
 只有 `run --no-brain` 的普通 Agent 还用 `[llm]`（DeepSeek）。
+
+### 两台电脑共用记忆（私有仓库）
+
+本仓库是公开的，记忆和沙盒数据放在**私有仓库** `git@github.com:Lanscarlos/SkyTricolorDango-Memory.git`（2026-10-01 建），
+克隆到本仓库根目录的 `private/`（gitignore）：`private/memory/` 是上面那张表里的记忆，`private/sandbox/` 是沙盒目录（记忆、`clock.json`、剧本、报告）。
+用户白天在单位电脑、晚上在个人电脑：真机 `run --live` 只在个人电脑跑，单位电脑主要跑大脑沙盒。
+
+新电脑第一次：
+```bash
+git clone git@github.com:Lanscarlos/SkyTricolorDango-Memory.git private
+```
+然后在本机 `config.toml` 里加（不加就还是用 `memory/`、`sandbox/`，读不到这份记忆）：
+```toml
+[reply]
+memory_dir = "private/memory"
+
+[sandbox]
+dir = "private/sandbox"
+```
+- **用之前** `git -C private pull`，**团子 / 沙盒下线后**在 `private/` 里提交并推送（`history.jsonl`、`inner/` 是一直追加的，两台电脑别同时跑，不然会冲突）
+- `private/` 里的 `.gitattributes` 是 `* -text`：文件原样保存，不转换换行符
+- 沙盒的记忆目录不能在记忆目录里面（`check_separate` 会拒绝），所以是 `private/` 下并列两个目录，而不是直接把私有仓库克隆成 `memory/`
+- **私有仓库别改成公开**，内容也别往本仓库里贴：里面有好友昵称、本名和聊天原话（好友里可能有未成年人）
 
 ## 运行目录（`runs/`，不进 git）
 
