@@ -194,4 +194,27 @@ class Tracker:
 
 
 def estimate_shift(prev: np.ndarray, cur: np.ndarray, mask: np.ndarray | None) -> tuple[float, float] | None:
-    raise NotImplementedError
+    """两张同尺寸灰度缩略图之间的画面平移（缩略图像素，内容往右 / 下挪为正）；估不出返回 None。
+
+    mask：True = 可用（人物框、聊天面板之类会自己动的地方填成均值，不让它们带偏）。
+    纯色 / 纹理太少、相位相关的响应太低、或者挪得比宽度的 1/3 还多（多半是切了画面）都不信。"""
+    a, b = prev.astype(np.float32), cur.astype(np.float32)
+    if a.shape != b.shape or a.ndim != 2 or min(a.shape) < 8:
+        return None
+    if mask is not None:
+        if not mask.any():
+            return None
+        fill_a, fill_b = float(a[mask].mean()), float(b[mask].mean())
+        a, b = np.where(mask, a, fill_a), np.where(mask, b, fill_b)
+        used = a[mask], b[mask]
+    else:
+        used = a, b
+    if min(float(used[0].std()), float(used[1].std())) < 1.0:
+        return None
+    win = cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F)
+    (dx, dy), response = cv2.phaseCorrelate(a, b, win)
+    if not np.isfinite(response) or response < PAN_MIN_RESPONSE or not (np.isfinite(dx) and np.isfinite(dy)):
+        return None
+    if abs(dx) > a.shape[1] / 3 or abs(dy) > a.shape[0] / 3:
+        return None
+    return float(dx), float(dy)
