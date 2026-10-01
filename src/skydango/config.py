@@ -252,6 +252,8 @@ class SocialConfig:
     light_timeout: float = 8.0  # 举着蜡烛最多等这么久看他亮起来（YOLO player_unlit → player）
     lit_frames: int = 3  # YOLO 连续几帧认成 player 才算点亮
     lit_min: float = 2.0  # 举蜡烛后至少这么久才可能算点亮（YOLO 近处会把还黑着的人认成 player；未在真机验证）
+    lit_iou: float = 0.3  # lit()：替身 player 和原轨迹最后的框至少重叠这么多才算同一个人（未在真机验证）
+    lit_stale: float = 0.5  # lit()：原轨迹这么久没接上检测就当冻住了（闪光时出现重复轨迹、原轨迹框冻住；未在真机验证）
     after_light: str = "鞠躬"  # 点亮别人 / 接受别人点火后做的动作（轮盘上要有；鞠躬顺带放下蜡烛），空 = 不做
     bow_delay: float = 2.5  # 看到他亮起来 / 接受点火后等这么久再鞠躬（等闪光动画）
     candle_slot: int = 3  # 轮盘上"举蜡烛"在第几格：按一下举起、再按一下放下（用户 2026-10-01）

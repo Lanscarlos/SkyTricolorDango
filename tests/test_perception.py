@@ -1701,7 +1701,7 @@ def test_lit_false_while_disk_still_seen(monkeypatch):
 
 
 def test_lit_fallback_when_track_breaks(monkeypatch):
-    w, det, clock, tid = lit_track(monkeypatch, [DISK])
+    w, det, clock, tid = lit_track(monkeypatch, [DISK, None])
     det.frames = [[]]
     run(w, 1.5, clock)  # 闪光：一帧都没认出来，轨迹过了 track_buffer 被删
     assert w.lit(tid, (1045, 480), 0.0) is None
@@ -1714,22 +1714,69 @@ def test_lit_fallback_when_track_breaks(monkeypatch):
 
 
 def test_lit_fallback_when_old_track_frozen(monkeypatch):
-    """闪光时出现重复轨迹：原轨迹框冻住（没有检测接上它），不用等它超时。"""
-    w, det, clock, tid = lit_track(monkeypatch, [None])
+    """闪光时出现重复轨迹：原轨迹框冻住（没有检测接上它），不用等它超时。since 取"刚举完蜡烛"。"""
+    w, det, clock, tid = lit_track(monkeypatch, [DISK, None])
+    w.light_cfg.lit_min = 0.3  # 本测试只看冻住的判断，别被 lit_min 挡住
     det.frames = [[player(1000, y=500)]]  # 和原框重叠 0.37：够当替身，但没到追踪的跨类别 IoU 0.5，接不上原轨迹
     run_frames(w, clock, 0.1, 0.4)
-    assert w.lit(tid, (1045, 480), -5.0) is False  # 原轨迹才 0.4 秒没接上，还算在；它没变成 player
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 原轨迹才 0.4 秒没接上，还算在；它没变成 player
     run_frames(w, clock, 0.5, 0.8)
     assert tid in w.tracker.tracks and w.tracker.tracks[tid].last == 0.0  # 原轨迹还没超时（track_buffer 1 秒）
-    assert w.lit(tid, (1045, 480), -5.0) is True  # 0.8 > STALE_LIT：当没了，新冒出的 player 兜底
+    assert w.lit(tid, (1045, 480), 0.0) is True  # 0.8 > lit_stale：当没了，新冒出的 player（first 0.1 >= since）兜底
 
 
-def test_lit_frozen_track_ignores_passer_by(monkeypatch):
-    """原轨迹冻住后，旁边走过来的别人（框不重叠）不能算他点亮了。"""
-    w, det, clock, tid = lit_track(monkeypatch, [None])
-    det.frames = [[player(1000, y=700)]]  # x 同、但在原框下方不重叠
+def stall_setup(monkeypatch, disk_until=-1.0):
+    """黑影举了蜡烛；他的重复轨迹（还黑着的 player）和原框重叠、满帧；原轨迹没接上检测。disk_until 前新冒出的人身上圆盘还在。"""
+    w, det, clock, tid = lit_track(monkeypatch, [DISK])
+    monkeypatch.setattr(perception_mod, "find_disk", lambda *a: DISK if clock.t < disk_until else None)
+    w.light_cfg.lit_min = 0.3
+    det.frames = [[player(1000, y=500)]]
+    return w, det, clock, tid
+
+
+def test_lit_not_true_when_process_stalled(monkeypatch):
+    w, det, clock, tid = stall_setup(monkeypatch)
     run_frames(w, clock, 0.1, 0.8)
-    assert w.lit(tid, (1045, 480), -5.0) is None
+    assert w.lit(tid, (1045, 480), 0.0) is True  # 前提：正常跑着时这就是"亮了"
+    clock.t = 1.6  # 之后 0.8 秒没有 process()（卡了 / 被挡）：不能因为"原轨迹看着冻住"就判亮
+    assert w.lit(tid, (1045, 480), 0.0) is False
+
+
+def test_lit_false_while_paused(monkeypatch):
+    w, det, clock, tid = stall_setup(monkeypatch)
+    run_frames(w, clock, 0.1, 0.8)
+    w.hold("panel")
+    assert w.lit(tid, (1045, 480), 0.0) is False
+    w.release("panel")
+
+
+def test_lit_resume_shifts_disk_times(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    run_frames(w, clock, 0.1, 0.9)
+    before = w.tracker.tracks[tid].data["disk_last"]
+    clock.t = 0.9
+    w.hold("blackout")
+    clock.t = 3.9
+    w.release("blackout")  # 暂停了 3 秒
+    d = w.tracker.tracks[tid].data
+    assert d["disk_last"] == before + 3.0 and d["disk_check"] >= before + 3.0 and d["disk_first"] >= 3.0
+
+
+def test_lit_fallback_needs_disk_gone_on_candidate(monkeypatch):
+    w, det, clock, tid = stall_setup(monkeypatch, disk_until=1.5)  # 新冒出来的"人"身上圆盘 1.5 秒前还看得到
+    run_frames(w, clock, 0.1, 1.6)
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 圆盘刚消失，没过 DISK_GAP
+    run_frames(w, clock, 1.7, 2.8)
+    assert w.lit(tid, (1045, 480), 0.0) is True
+
+
+def test_lit_fallback_candidate_never_scanned_is_not_gone(monkeypatch):
+    w, det, clock, tid = stall_setup(monkeypatch)
+    run_frames(w, clock, 0.1, 0.8)
+    cand = [t for t in w.tracker.tracks.values() if t.id != tid][0]
+    cand.data.pop("disk_check")  # 没扫过圆盘：不能当作"消失"
+    assert w.lit(tid, (1045, 480), 0.0) is False
 
 
 def test_lit_fallback_distance_is_tight(monkeypatch):
