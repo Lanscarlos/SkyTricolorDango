@@ -137,6 +137,14 @@ class JsonHandler(BaseHTTPRequestHandler):
         except ValueError:
             return 0
 
+    def _wait(self, url, cap: float = 2.0) -> float:
+        """长轮询最多等几秒：query 里的 wait，夹到 [0, cap]；坏值用 cap。"""
+        try:
+            value = float(parse_qs(url.query).get("wait", [cap])[0])
+        except ValueError:
+            return cap
+        return max(0.0, min(cap, value)) if value == value else cap
+
     def _send(self, code: int, ctype: str, body: bytes) -> None:
         try:
             self.send_response(code)
@@ -188,6 +196,7 @@ class Viewer:
         self._server: ThreadingHTTPServer | None = None
         self.brain = None  # brain.trace.BrainTrace：有它网页才显示大脑时间线
         self.control = None  # brain.manual.ManualControl：有它网页才显示手动控制栏（只在本机模式挂）
+        self.chat = None  # brain.transcript.Transcript：真机聊天记录（管理面板真机页用），只在大脑真机模式挂
         self.on_shutdown: Callable[[], None] | None = None  # POST /shutdown 时调（cli 里设成 interrupt_main，走 Ctrl+C 的收尾）
         # 内心页（spec 2026-09-30-inner-viewer §2）：cli 在 run --view 时经 body.call 挂上；None 时 /inner、/inner/forget 回 404
         self.inner: Callable[[], dict] | None = None
@@ -322,6 +331,12 @@ class Viewer:
                         self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
                         return
                     self._json(*inner_response(viewer.inner))
+                elif url.path == "/chat" and viewer.chat is not None:
+                    if not self._local_host():
+                        self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                    else:
+                        version, lines = viewer.chat.wait_since(self._after(url), self._wait(url, WAIT))
+                        self._json(200, {"v": version, "lines": lines})
                 elif url.path == "/brain" and viewer.brain is not None:
                     self._send(200, "application/json; charset=utf-8", brain_body(viewer.brain, self._after(url)))
                 else:

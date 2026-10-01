@@ -786,3 +786,35 @@ def test_page_has_maybe_style_and_hover():
     assert 'maybe:"按外观认的好友"' in PAGE
     assert "[6,4]" in PAGE
     assert "mousemove" in PAGE and "mouseleave" in PAGE
+
+
+# ---- 真机聊天记录（spec 2026-10-01-console-live-page §3.2）----
+def test_chat_endpoint_404_without_transcript():
+    v = viewer()
+    url = v.start()
+    try:
+        assert request(url + "chat?after=0")[0] == 404
+    finally:
+        v.stop()
+
+
+def test_chat_endpoint_long_polls():
+    from types import SimpleNamespace
+
+    from skydango.brain.transcript import Transcript
+
+    v = viewer()
+    v.chat = Transcript(SimpleNamespace(wall=lambda: 1_790_000_000.0))
+    v.chat.add("heard", "在吗", "小明")
+    url = v.start()
+    port = url.rstrip("/").rsplit(":", 1)[1]
+    try:
+        status, body = request(url + "chat?after=0&wait=2")
+        assert status == 200 and body["v"] == 1 and body["lines"][0]["text"] == "在吗"
+        status, body = request(url + "chat?after=1&wait=0.1")  # 没有新的：等一下回空
+        assert status == 200 and body == {"v": 1, "lines": []}
+        status, body = request(url + "chat?after=9&wait=0")  # 浏览器记的比这边大：从头给
+        assert len(body["lines"]) == 1
+        assert request(url + "chat?after=0", None, {"Host": f"evil.example:{port}"})[0] == 403
+    finally:
+        v.stop()
