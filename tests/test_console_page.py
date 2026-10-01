@@ -137,3 +137,12 @@ def test_sandbox_summary_text():  # 左栏卡片：「10月1日 11:28 · 开心 
     assert _sandbox_js(f"[Sandbox.summaryText({t},'开心','精神'),Sandbox.summaryText({t},'',''),Sandbox.summaryText({t},null,'困')]") == [
         "10月1日 11:28 · 开心 · 精神", "10月1日 11:28", "10月1日 11:28 · 困"]
     assert _sandbox_js("[sandboxSummary(),typeof sandboxClock]") == [None, "function"]  # 沙盒没在跑：没有摘要
+
+
+def test_scenarios_page():
+    b = bundle()
+    for id_ in ("sc-list", "sc-progress", "sc-reports", "sc-reader"):
+        assert f'id="{id_}"' in b, id_
+    for api in ("api/sandbox/scenarios", "api/sandbox/replay", "api/sandbox/replay/stop", "api/sandbox/reports"):
+        assert api in b
+    assert "回放时每一步会真的调 Claude，花额度" in b and "renderMarkdown(" in b and "Pages.scenarios" in b
