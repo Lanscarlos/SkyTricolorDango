@@ -1960,3 +1960,52 @@ def test_scene_watcher_loads_flame_only_for_brain(monkeypatch):
     assert "light" in cfg.social.accept_strangers
     assert cli._scene_watcher(cfg).flame is None
     assert cli._scene_watcher(cfg, light=True).flame is not None
+
+
+# ---- 按 Q 喊一声 §1.1：轨迹续命（spec 2026-10-01-q-call） ----
+def _faded(sticky=True):
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), keep=5.0, sticky_names=sticky)
+    w.process(frame(), 0.0, panel_visible=False)
+    det.frames = [[player(1000)]]  # 标签淡掉了，人还在
+    return det, w
+
+
+def test_tag_fades_but_track_keeps_friend_nearby():
+    det, w = _faded()
+    for i in range(1, 100):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    assert w.nearby(9.9) == ["懒洋洋大王"] and w.strangers(9.9) == 0
+
+
+def test_sticky_stops_when_track_breaks():
+    det, w = _faded()
+    for i in range(1, 31):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    det.frames = [[]]  # 人也不见了：从这里开始算 keep
+    for i in range(31, 100):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    assert w.nearby(7.9) == ["懒洋洋大王"]
+    assert w.nearby(8.1) == []
+
+
+def test_sticky_names_off_is_old_behavior():
+    det, w = _faded(sticky=False)
+    for i in range(1, 60):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    assert w.nearby(5.1) == []
+
+
+def test_sticky_ignores_maybe_and_unlit():
+    det = FakeDetector()
+    det.frames = [[player(1000), Detection("player_unlit", Rect(400, 400, 90, 220), 0.9)]]
+    w = watcher(det, keep=5.0)
+    w.process(frame(), 0.0, panel_visible=False)
+    (a,) = [t for t in w.last_tracks if t.cls == "player"]
+    (b,) = [t for t in w.last_tracks if t.cls == "player_unlit"]
+    a.data["maybe"] = "懒洋洋大王"  # 按外观认的：不续
+    b.data.update(name="番茄炒蛋盖饭", tagged=True)  # 黑影轨迹上残留的名字：不续
+    for i in range(1, 20):
+        w.process(frame(), i * 0.1, panel_visible=False)
+    assert "番茄炒蛋盖饭" not in w.last_seen

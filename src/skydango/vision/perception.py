@@ -552,6 +552,8 @@ class PerceptionWatcher:
                 self.last_seen[maybe] = now  # 好友还在身边、只是名字标签被挡住：别冒出"走开了"（已经走开的不靠外观接回来）
             if is_stranger and self.appearance is not None:
                 self._appearance_stranger(frame, player, players, fresh.get(player.id), now)
+        if self.cfg.sticky_names:
+            self._keep_named(players, now)
         if self.appearance is not None:
             self.appearance.forget(now)
             if self.saver is not None:
@@ -578,6 +580,15 @@ class PerceptionWatcher:
         self.timings.append(((detected - started) * 1000, (time.perf_counter() - started) * 1000))
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))
+
+    def _keep_named(self, players: list[Track], now: float) -> None:
+        """轨迹续命（spec 2026-10-01-q-call §1.1）：好友稍远一点头顶的名字标签就淡掉，人还在画面里。
+        挂过名字标签的轨迹只要这一帧还接得上，就一直算在身边；轨迹断了（track_buffer）才开始算 keep。
+        按外观认的（maybe）不算；交叉走过身份换错时，名字跟到另一个人身上，标签再亮时纠正（同名标签在别处就摘名字）。"""
+        for p in players:
+            name = p.data.get("name")
+            if p.cls == "player" and name and p.data.get("tagged") and now - p.last <= PEOPLE_STALE:
+                self.last_seen[name] = now
 
     def _far_tags(self, frame: np.ndarray, players: list[Track], tags: list[Track], now: float,
                   width: int, height: int, panel_visible: bool) -> list[Track]:
