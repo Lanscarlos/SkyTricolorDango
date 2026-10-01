@@ -409,8 +409,8 @@ dir = "private/sandbox"
   结束那一帧数还剩几个没挂名字的点过火的人（`unnamed`）；暂停时窗口跟着往后挪。EnvWatcher 是空实现
 - **身体喊一声**（`Body.call_out(reason)`）：没开 / 没感知层 / 黑屏 / `min_gap`（20 秒，卡洛 `#` 命令窗口里大脑不受限）/ dry-run（不按，照样计间隔）→ 不按；
   `clear_view("call")` 关掉身体开的输入框，`ime_shown()` 还开着就拒绝（Q 会变成打字）；`panel.borrow("call")` 里拍基准、`hw_key(16)` 短按、连拍 `burst` 1 秒、`env.called(at)`
-- **光圈认团子**（`[call] halo`，**默认关**）：连拍里按键后 0.1~0.8 秒头顶区域比基准亮 `halo_rise` 以上、恰好一个人、在画面中间（`halo_center`）→ 写 `env.self_box`（YOLO 已经认出一个团子就不覆盖）；
-  别人也在喊 / 镜头刚动过 / 黑屏就放弃，**不为确认再按**。认错 = 把一个好友当成团子过滤掉，所以先 `perception halo-eval tmp/record/q-call-20260930-c` 定 `halo_rise`、真机核对再开
+- **光圈认团子**（`[call] halo`，**默认关**）：连拍里按键（命令发出前记的时间）后 0~0.8 秒头顶区域比基准亮 `halo_rise` 以上、恰好一个人、在画面中间（`halo_center`）→ 写 `env.self_box`（YOLO 已经认出一个团子就不覆盖；和 self 框重叠的 player 框算同一个人）；
+  别人也在喊 / 镜头刚动过 / 喊之前聊天面板开着（关面板时画面横移）/ 没有新鲜的人物框 / 黑屏就放弃，**不为确认再按**。认错 = 把一个好友当成团子过滤掉，所以先 `perception halo-eval tmp/record/q-call-20260930-c` 定 `halo_rise`、真机核对再开
 - **自动兜底**（`[call] auto`，`Body._watch_call`）：好友 `auto_after_leave`（30 秒）内走开、还没回来、这次走开没为他喊过，画面里有没挂名字的人，`auto_window` 10 分钟最多 `auto_quota` 3 次；
   输入框开着、技能在跑、有互动请求、在举蜡烛、别的面板开着、刚做完动作、大脑在回聊天、黑屏都不喊；dry-run 只记日志。喊完不等，窗口结束后放**背景事件** `call`（"你下意识喊了一声：认出 小明（右边·远）…"），
   认回来的好友照常 `return` 抵消那条 `leave`
