@@ -14,7 +14,9 @@
   --soft:#fbf8f1;--bubble:#f3ece0;--track:#ece4d5;--hover:#f7f1e6;--white:#fff;
   --refl-line:#d7c7a8;--refl-bg:#fbf6ea;--refl-ink:#7a6847;
   --shadow:0 1px 0 #efe6d6;--lift:0 10px 30px rgba(80,60,30,.14);--shade:rgba(59,51,43,.28);--ball-shade:rgba(0,0,0,.12);
-  --text:var(--ink);  /* brain_trace.css 用 --text / --muted / --line */
+  /* 沙盒页的大脑控制台：纸感页面里嵌一块暖墨色终端 */
+  --term-bg:#2b2622;--term-head:#332d28;--term-line:#463e37;--term-fg:#ece4d6;--term-dim:#9c907f;
+  --term-sakura:#f2a9c4;--term-matcha:#a9cf9c;--term-amber:#e9b765;--term-red:#ef8f7c;--term-indigo:#a5bbe3;
   --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
   --mono:"Cascadia Mono",Consolas,monospace;
 }
@@ -168,32 +170,6 @@ input[type=checkbox],input[type=radio]{accent-color:var(--matcha)}
 .toast-x{flex:none;background:none;border:0;padding:0 2px;font-size:16px;line-height:1.3;cursor:pointer;color:inherit;opacity:.7}
 .toast-x:hover{opacity:1}
 
-/* ---- 大脑时间线（brain_trace.js）的纸感覆盖：盖过 brain_trace.css 给 viewer 的深色 ---- */
-.console .brain-trace .bt-head{font-size:12.5px;color:var(--muted)}
-.console .brain-trace .bt-head b{color:var(--ink);font-weight:600}
-.console .brain-trace .brain-state.warn{color:var(--amber-ink)}
-.console .brain-trace .brain-state.bad{color:var(--brick)}
-.console .brain-trace .turn{border:1px solid var(--line);border-left:3px solid var(--matcha);border-radius:8px;margin:8px 0;padding:0 10px;background:var(--soft)}
-.console .brain-trace .turn[open]{background:var(--card)}
-.console .brain-trace .turn>summary{color:var(--ink);font-size:12.5px}
-.console .brain-trace .turn>summary .t{font-family:var(--mono);color:var(--muted)}
-.console .brain-trace .turn.err{border-left-color:var(--brick)}
-.console .brain-trace .turn.err>summary{color:var(--brick-ink)}
-.console .brain-trace .turn.live{border-left-color:var(--indigo)}
-.console .brain-trace .turn.live>summary{color:var(--indigo)}
-.console .brain-trace .step{border-left-color:var(--line)}
-.console .brain-trace .step h4{color:var(--muted)}
-.console .brain-trace .step pre{font:12px/1.5 var(--mono);background:var(--paper);border-radius:6px;padding:5px 8px;margin-top:3px;color:var(--ink)}
-.console .brain-trace .k-thinking{border-color:var(--wisteria)}
-.console .brain-trace .k-text{border-color:var(--matcha)}
-.console .brain-trace .k-tool{border-color:var(--indigo)}
-.console .brain-trace .k-result{border-color:var(--ash)}
-.console .brain-trace .k-result.error{border-color:var(--amber)}
-.console .brain-trace .k-result.error pre{color:var(--amber-ink)}
-.console .brain-trace .k-end{border-color:var(--muted)}
-.console .brain-trace .k-end.error pre{color:var(--brick-ink)}
-.console .brain-trace .step button,.console .brain-trace .tbody>button{border:1px solid var(--line);background:var(--card);border-radius:7px;padding:1px 9px;font-size:12px;cursor:pointer;color:var(--ink)}
-
 /* ---- 少动 ---- */
 @media (prefers-reduced-motion:reduce){
   body[data-state=starting] .dango i,.runcard[data-state=busy] .rc-dot{animation:none;opacity:.8}
@@ -322,22 +298,22 @@ h4.note{margin:0 0 4px;font-weight:500}
 .sb-reel{width:160px;height:6px;border-radius:3px;background:var(--track);overflow:hidden}
 .sb-reel i{display:block;height:100%;width:0;background:var(--amber);transition:width .4s}
 
-.sb-cols{flex:1;grid-template-columns:1.15fr 1.1fr .85fr;padding:14px 20px;min-height:0}
+.sb-cols{flex:1;grid-template-columns:.85fr 1.25fr 1fr;padding:14px 20px;min-height:0}
 .sb-cols>.pane{display:flex;flex-direction:column;min-height:0;overflow:hidden}
 .sb-cols .scroll{flex:1;min-height:0;overflow:auto;padding:4px 14px 12px;scrollbar-width:thin;scrollbar-color:var(--ash) transparent}
 .sb-quiet{letter-spacing:0;font-weight:400}
 
-/* 左：聊天记录。团子靠右樱花底、别人靠左米色底、事件 = 居中分隔线、反思 = 虚线框、动作斜体、被拦删除线 + 原因 */
+/* 右：聊天记录。团子靠左樱花底、别人靠右米色底、事件 = 居中分隔线、反思 = 虚线框、动作斜体、被拦删除线 + 原因 */
 .sb-ev{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;margin:10px 0;text-align:center}
 .sb-ev::before,.sb-ev::after{content:"";flex:1;min-width:16px;height:1px;background:var(--line)}
-.sb-msg{max-width:82%;margin:6px 0}
+.sb-msg{max-width:82%;margin:6px 0 6px auto;text-align:right}
 .sb-msg .who{font-size:11.5px;color:var(--muted)}
-.sb-msg .b{display:inline-block;background:var(--bubble);border-radius:4px 12px 12px 12px;padding:6px 11px;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}
-.sb-msg.sb-me{margin-left:auto;text-align:right}
-.sb-me .b{background:var(--sakura-bg);color:var(--sakura-ink);border-radius:12px 4px 12px 12px}
+.sb-msg .b{display:inline-block;background:var(--bubble);border-radius:12px 4px 12px 12px;padding:6px 11px;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}
+.sb-msg.sb-me{margin-left:0;margin-right:auto;text-align:left}
+.sb-me .b{background:var(--sakura-bg);color:var(--sakura-ink);border-radius:4px 12px 12px 12px}
 .sb-blocked .b{text-decoration:line-through;opacity:.6}
 .sb-blocked .why{font-size:11.5px;color:var(--brick-ink)}
-.sb-act{font-size:12.5px;color:var(--muted);font-style:italic;margin:4px 0;text-align:right}
+.sb-act{font-size:12.5px;color:var(--muted);font-style:italic;margin:4px 0;text-align:left}
 .sb-refl{border:1px dashed var(--refl-line);background:var(--refl-bg);border-radius:8px;padding:6px 10px;font-size:12.5px;margin:10px 0;color:var(--refl-ink);overflow-wrap:anywhere}
 .sb-refl time{color:var(--muted)}
 .sb-say{flex:none;border-top:1px solid var(--line);padding:10px 12px;background:var(--soft)}
@@ -346,19 +322,49 @@ h4.note{margin:0 0 4px;font-weight:500}
 .sb-say input[name=name]{width:110px}
 .sb-say input[name=text]{flex:1}
 
-/* 中：大脑时间线。brain_trace 自己的头（大脑 · 模型 · 已醒 N 轮 · 在线 · 只看做了事的）当作栏标题，钉在顶上 */
-.sb-brainpane:has(#sb-brain:not([hidden]))>h3{display:none}
-#sb-brain-scroll{padding-top:0}
-#sb-brain-scroll>.none{padding-top:4px}
-#sb-brain .bt-head{position:sticky;top:0;z-index:1;margin:0 -14px 4px;padding:10px 14px 6px;background:var(--card);border-bottom:1px solid var(--line);font-size:12.5px}
-#sb-brain .bt-head b{font-size:12px;letter-spacing:.12em;color:var(--muted)}
-#sb-brain .turn>summary{align-items:baseline}
-#sb-brain .turn>summary>span:nth-of-type(2){background:var(--matcha-bg);color:var(--matcha-ink);border-radius:5px;padding:0 6px;font-size:11.5px}
-#sb-brain .turn.err>summary>span:nth-of-type(2){background:var(--brick-bg);color:var(--brick-ink)}
-#sb-brain .turn>summary>span:nth-of-type(4){margin-left:auto}
-#sb-brain .turn>summary>.n{font-family:var(--mono);font-size:11.5px}
+/* 中：大脑控制台（brainlog.js）：整栏是一块深色终端，日志在 .bc-log 里自己滚 */
+.sb-cols>.sb-brainpane{background:var(--term-bg);border-color:var(--term-line);position:relative}
+.sb-brainpane>.none{color:var(--term-dim);padding:12px 14px;font-family:var(--mono);font-size:12.5px}
+.brain-console{flex:1;min-height:0;display:flex;flex-direction:column}
+.brain-console[hidden]{display:none}
+.bc-head{flex:none;display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--term-line);background:var(--term-head);color:var(--term-dim);font-size:12.5px}
+.bc-head b{color:var(--term-fg);font-size:12px;letter-spacing:.12em;font-weight:600}
+.bc-head label{margin-left:auto;display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
+.bc-state.warn{color:var(--term-amber)}.bc-state.bad{color:var(--term-red)}
+.bc-log{flex:1;min-height:0;overflow:auto;padding:4px 14px 16px;font:12.5px/1.65 var(--mono);color:var(--term-fg);scrollbar-width:thin;scrollbar-color:var(--term-line) transparent}
+.bc-turn{margin-top:10px}
+.bc-turn[hidden]{display:none}
+.bc-th{display:flex;align-items:center;gap:8px;color:var(--term-dim);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bc-th::before{content:"──";flex:none;opacity:.6}
+.bc-th::after{content:"";flex:1;min-width:12px;height:1px;background:var(--term-line)}
+.bc-th:hover{color:var(--term-fg)}
+.bc-th.copied::after{content:"已复制";height:auto;background:none;flex:none;color:var(--term-matcha)}
+.bc-turn.idle{margin-top:4px}.bc-turn.idle .bc-th{opacity:.55}
+.bc-turn.err .bc-th{color:var(--term-red)}
+.bc-turn.live .bc-th{color:var(--term-amber)}
+.bc-line{display:flex;gap:8px;padding-left:2px}
+.bc-line .m{flex:none;width:1.1em;text-align:center;color:var(--term-dim)}
+.bc-line .x{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.bc-line.in .m{color:var(--term-amber)}
+.bc-line.dim .x,.bc-line.ret .x,.bc-line.think .x{color:var(--term-dim)}
+.bc-line.think .x{font-style:italic}
+.bc-line.note .x{color:var(--term-matcha)}
+.bc-line.say .m,.bc-line.say .x{color:var(--term-sakura)}
+.bc-line.tool .m,.bc-line.tool .x{color:var(--term-indigo)}
+.bc-line.err .m,.bc-line.err .x{color:var(--term-amber)}
+.bc-line.fail .m,.bc-line.fail .x{color:var(--term-red)}
+details.bc-fold{display:block}
+details.bc-fold>summary{display:flex;gap:8px;padding-left:2px;cursor:pointer;list-style:none}
+details.bc-fold>summary::-webkit-details-marker{display:none}
+details.bc-fold>summary .m{flex:none;width:1.1em;text-align:center}
+.bc-ctx>summary{color:var(--term-dim)}
+.bc-ctx[open]>summary .m{transform:rotate(90deg)}
+details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px solid var(--term-line);white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;color:var(--term-dim)}
+.bc-jump{position:absolute;right:16px;bottom:14px;border:1px solid var(--term-line);background:var(--term-head);color:var(--term-fg);border-radius:999px;padding:3px 12px;font-size:12px;cursor:pointer;box-shadow:var(--lift)}
+.bc-jump[hidden]{display:none}
+.bc-jump:hover{border-color:var(--term-dim)}
 
-/* 右：现在 + 世界（身边、团子看到的） */
+/* 左：团子——现在 + 世界（身边、团子看到的） */
 .sb-cols>.sb-right{overflow:auto;scrollbar-width:thin;scrollbar-color:var(--ash) transparent}
 #sb-now>h3{margin:0;padding:10px 14px 6px;font-size:12px;letter-spacing:.12em;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:8px}
 #sb-now .now-rows{grid-template-columns:52px minmax(0,1fr)}
@@ -385,6 +391,7 @@ h4.note{margin:0 0 4px;font-weight:500}
   .sb-head,.sb-replay-bar{padding-left:12px;padding-right:12px}
   .sb-cols{padding:12px}
   .sb-cols>.pane{height:70vh}
+  .sb-cols>.sb-chatpane{order:1}.sb-cols>.sb-brainpane{order:2}.sb-cols>.sb-right{order:3}
 }
 
 /* ---- 剧本 ---- */

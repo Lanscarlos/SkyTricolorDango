@@ -1,7 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>团子管理面板</title>
-<link rel="stylesheet" href="static/brain_trace.css">
 <link rel="stylesheet" href="console/static/console.css">
 </head>
 <body class="console" data-state="idle">
@@ -76,25 +75,6 @@
       <button class="btn sm halt" type="button" id="sb-replay-stop">停止回放</button>
     </div>
     <div class="cols sb-cols" id="sb-cols">
-      <section class="pane sb-chatpane" aria-label="聊天记录">
-        <h3>聊天记录<span class="grow"></span><span class="sb-quiet" id="sb-quiet"></span></h3>
-        <div class="scroll sb-chat" id="sb-chat" aria-live="polite"><p class="none">启动沙盒之后，冒充好友说句话试试。</p></div>
-        <form class="sb-say" id="sb-say" autocomplete="off">
-          <fieldset id="sb-say-set">
-            <select name="who" aria-label="谁说"></select>
-            <input name="name" placeholder="陌生人名字" aria-label="陌生人名字" hidden>
-            <input name="text" placeholder="冒充他说点什么，回车发送" aria-label="说的话">
-            <button class="btn go" type="submit">发送</button>
-          </fieldset>
-        </form>
-      </section>
-      <section class="pane sb-brainpane" aria-label="大脑时间线">
-        <h3>大脑</h3>
-        <div class="scroll" id="sb-brain-scroll">
-          <p class="none" id="sb-brain-none">（沙盒跑起来之后这里是大脑时间线）</p>
-          <div id="sb-brain" hidden></div>
-        </div>
-      </section>
       <section class="pane sb-right" aria-label="现在和世界">
         <div id="sb-now"></div>
         <fieldset class="sb-sec" id="sb-nearby">
@@ -112,6 +92,22 @@
           <div class="sb-row"><button class="btn sm" type="button" id="sb-scene-go">改场景</button></div>
           <div class="sb-row"><input id="sb-notice" placeholder="新鲜事：天黑了" aria-label="新鲜事"><button class="btn sm" type="button" id="sb-notice-go">放</button></div>
         </fieldset>
+      </section>
+      <section class="pane sb-brainpane" aria-label="大脑控制台">
+        <p class="none" id="sb-brain-none">（沙盒跑起来之后这里是大脑的控制台）</p>
+        <div id="sb-brain" hidden></div>
+      </section>
+      <section class="pane sb-chatpane" aria-label="聊天记录">
+        <h3>聊天记录<span class="grow"></span><span class="sb-quiet" id="sb-quiet"></span></h3>
+        <div class="scroll sb-chat" id="sb-chat" aria-live="polite"><p class="none">启动沙盒之后，冒充好友说句话试试。</p></div>
+        <form class="sb-say" id="sb-say" autocomplete="off">
+          <fieldset id="sb-say-set">
+            <select name="who" aria-label="谁说"></select>
+            <input name="name" placeholder="陌生人名字" aria-label="陌生人名字" hidden>
+            <input name="text" placeholder="冒充他说点什么，回车发送" aria-label="说的话">
+            <button class="btn go" type="submit">发送</button>
+          </fieldset>
+        </form>
       </section>
     </div>
   </section>
@@ -216,10 +212,10 @@
 <div id="dialog" hidden></div>
 <div id="toasts" aria-live="polite"></div>
 
-<script src="static/brain_trace.js"></script>
 <script src="console/static/common.js"></script>
 <script src="console/static/markdown.js"></script>
 <script src="console/static/inner.js"></script>
+<script src="console/static/brainlog.js"></script>
 <script src="console/static/sandbox.js"></script>
 <script src="console/static/live.js"></script>
 <script src="console/static/scenarios.js"></script>
