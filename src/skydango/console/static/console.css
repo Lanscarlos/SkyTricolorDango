@@ -439,7 +439,7 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .lv-sep{width:1px;height:18px;background:var(--line)}
 #opt-duration{width:84px}
 .lv-head .live-warn{margin:0}
-.lv-run{display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap;min-width:0}
+.lv-run{flex:1;display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap;min-width:0}  /* 占满剩下的宽：运行目录很长时自己折行，「日志」按钮不被挤下去 */
 .lv-dir{font-family:var(--mono);font-size:12px;user-select:all;overflow-wrap:anywhere}
 .lv-banners{flex:none;padding:0 20px}
 .lv-banners:empty{display:none}
@@ -484,7 +484,7 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 #lv-canvas.picking{cursor:crosshair}
 .lv-screen>.none{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:0 16px}
 .lv-legend{position:absolute;right:8px;top:8px;max-width:72%;display:flex;flex-wrap:wrap;gap:3px 10px;padding:7px 10px;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:var(--lift);font-size:12px;color:var(--muted)}
-.lv-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.lv-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;box-shadow:inset 0 0 0 1px var(--line)}  /* 先祖是白色：描一圈边 */
 .lv-brain{flex:1;min-height:0;display:flex;flex-direction:column;position:relative;background:var(--term-bg)}
 .lv-brain>.none{color:var(--term-dim);padding:12px 14px;font-family:var(--mono);font-size:12.5px}
 
