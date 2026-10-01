@@ -13,6 +13,7 @@ def test_example_config_loads():
     assert cfg.panel.mode == "auto" and cfg.panel.idle_peek == 30.0  # 2026-09-30 真机验收后默认按需打开
     assert cfg.device.serial.startswith("127.0.0.1")
     assert cfg.proactive.enabled is True and cfg.proactive.quota_quiet == 2
+    assert cfg.lull.enabled is True and cfg.lull.stages == [60.0, 180.0, 360.0]
 
 
 def test_unknown_key_rejected(tmp_path):

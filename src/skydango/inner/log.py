@@ -98,6 +98,10 @@ class MindLog:
         """kind 是性格条目的类别（catchphrase / joke / opinion），记在 what 里（kind 字段留给记录类别 forget）。"""
         return self._add({"t": t, "kind": "forget", "what": kind, "text": text, "who": who, "topic": topic})
 
+    def musing(self, t: float, who: list[str], kind: str, text: str) -> dict:
+        """冷场时心里想的一句（spec 2026-10-01-lull-musing §3）；kind 是冷场的种类（silent / left），记在 lull 里。"""
+        return self._add({"t": t, "kind": "musing", "who": list(who), "lull": kind, "text": text})
+
     def recent(self) -> list[dict]:
         """内存里的（旧到新）。"""
         return list(self._rows)

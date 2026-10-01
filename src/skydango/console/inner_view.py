@@ -44,7 +44,7 @@ def _cards(store: InnerStore, friends: list[str]) -> list[dict]:
 
 def _files_now(store: InnerStore, rows: list[dict], now: float) -> dict:
     """文件里的“现在”：mind.json 的心情 / 别扭 / 心愿，流水账最后一条精力；收着点不存盘，是空的。"""
-    out: dict = {"mood": None, "energy": None, "grudge": None, "wants": [], "soft": []}
+    out: dict = {"mood": None, "energy": None, "grudge": None, "wants": [], "soft": [], "musing": []}
     if store.mind_path.is_file():
         m = store.load_mind(quarantine=False)
         out["mood"] = {"level": m.mood.level, "text": m.mood.text, "since": m.mood.since}
@@ -74,7 +74,7 @@ def inner_state(inner_dir: Path, friends: list[str], state: str, live: Callable[
     inner_dir = Path(inner_dir)
     store = InnerStore(inner_dir)
     rows = _safe(lambda: read_log(inner_dir / "mind_log.jsonl", now - LOG_SHOW_DAYS * 86400), [])
-    files_now = _safe(lambda: _files_now(store, rows, now), {"mood": None, "energy": None, "grudge": None, "wants": [], "soft": []})
+    files_now = _safe(lambda: _files_now(store, rows, now), {"mood": None, "energy": None, "grudge": None, "wants": [], "soft": [], "musing": []})
     persona = None
     if store.persona_path.is_file():
         persona = _safe(lambda: store.load_persona(quarantine=False).to_dict(), None)
@@ -90,7 +90,7 @@ def inner_state(inner_dir: Path, friends: list[str], state: str, live: Callable[
         if isinstance(snap, dict):
             source = "live"
             now_part = {k: snap.get(k) for k in ("mood", "energy", "grudge")}
-            now_part.update({k: snap.get(k) or [] for k in ("wants", "soft")})
+            now_part.update({k: snap.get(k) or [] for k in ("wants", "soft", "musing")})
             persona = snap.get("persona")
             merged = _merge_log(rows, snap.get("log") or [])
         else:

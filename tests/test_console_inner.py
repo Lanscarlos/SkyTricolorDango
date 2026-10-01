@@ -218,3 +218,12 @@ def test_inner_view_shows_outfits(tmp_path):
     got = s["cards"][0]["outfits"]
     assert [o["desc"] for o in got] == ["套1", "套2", "套3"]  # 最近 3 套，不带特征向量
     assert got[0] == {"desc": "套1", "first": "2026-09-30", "last": "2026-10-01"}
+
+
+def test_live_musing_passes_through(tmp_path):  # 冷场时的心理活动 §3：内心页“在想”
+    fill(tmp_path)
+    musing = [{"kind": "silent", "who": ["阿花"], "since": NOW - 70, "last": ["我", "在呢"], "musings": [{"t": NOW - 5, "text": "她忙去了吧"}]}]
+    s = inner_state(tmp_path, FRIENDS, "running", lambda: live_snap(musing=musing), NOW)
+    assert s["now"]["musing"] == musing
+    s = inner_state(tmp_path, FRIENDS, "idle", lambda: pytest.fail("没在跑不该取实时"), NOW)
+    assert s["now"]["musing"] == []

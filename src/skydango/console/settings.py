@@ -55,6 +55,7 @@ FIELDS: tuple[Field, ...] = (
     Field("inner.enabled", "内心账本", "给好友记关系卡（见过几次、上次什么时候）和每次上线的日子；关掉就回到老样子", "bool", "brain"),
     Field("inner.reflect", "反思", "定时想想刚才发生的事：心情、精力、闹别扭、惦记的事，下线写日记；关掉就只记账", "bool", "brain"),
     Field("inner.persona", "性格", "攒口头禅、老梗和看法，敢唱反调、会拒绝、熟人之间互损；关掉就回到第 2 期", "bool", "brain"),
+    Field("lull.enabled", "冷场时的心理活动", "好友不说话了、聊着聊着走了时团子心里会犯嘀咕，按节点叫醒大脑；关掉就回到老样子", "bool", "brain"),
     Field("backstage.enabled", "幕后", "团子知道自己是 AI、卡洛做了她，能跟卡洛聊她自己怎么运作；好友要在 friends.md 里写「知道团子是 AI」才会跟他承认", "bool", "brain"),
     Field("env.enabled", "识别环境", "后台 OCR 画面：身边有谁、在哪", "bool", "features"),
     Field("perception.enabled", "YOLO 感知层", "开发中；打开后替换定时整图 OCR，要先训练模型", "bool", "features"),

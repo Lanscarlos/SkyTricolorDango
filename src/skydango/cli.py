@@ -1765,6 +1765,7 @@ def _run_brain(
             days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
             persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
             appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
+            lull=cfg.lull.enabled,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
@@ -1794,6 +1795,8 @@ def _run_brain(
     body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
     body.brain_busy = lambda: brain.chat_turn
     body.brain_turn = lambda: brain.last_turn  # 替大脑开的输入框：开框之后的那一轮结束了没说话就关
+    if body.lulls is not None:  # 冷场时大脑心里想的（“心里：”）记到身体那边
+        brain.on_text = lambda text: body.call(lambda began=brain.last_turn[0]: body.mused(text, began), timeout=3)
     if on_ready is not None:
         try:
             on_ready(BrainParts(

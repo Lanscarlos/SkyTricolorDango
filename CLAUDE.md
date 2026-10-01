@@ -91,7 +91,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/candle.py` | 火焰圆盘（没点火的黑影站到身边时他身上的深色圆 + 火焰）：只用来判断黑影在能点火的距离里，**绝不点**；`white_ring` 分孤儿圆圈是举蜡烛请求（有白圈）还是圆盘 |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
-| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析 |
+| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 每页一个 js，左侧栏 + 六页：沙盒（默认）/ 真机团子 / 内心 / 剧本和报告 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
 | `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、聊天记录 `transcript.py`、操作和状态 `control.py`、JSON 接口 `server.py` |
@@ -388,6 +388,26 @@ dir = "private/sandbox"
 - **额度**：反射**不占**大脑的动作冷却（`EmotePlayer.perform(name, reflex=True)` 只更新 `last_any`）；自己 `quota_window` 里最多 `quota` 个；任何两个动作之间至少 `min_gap`（4 秒，大脑的 `emote` 也查）
 - 做完放 `reflex` 背景事件（不单独叫醒大脑），status "刚才下意识：…"、网页"反射"；提示词在「说话」一节多一句"身体已经替你冒了输入气泡"。黑屏、技能在跑、有互动请求、面板挡着时不做；dry-run 走 `pretend`
 - `enabled = false` 完全照旧（不开框、不做动作、`gesture` 照旧交给大脑、提示词不变、`emote` 不查 `min_gap`）；管理面板有 `reflex.enabled` / `reflex.bubble` 两个开关
+
+## 冷场时的心理活动（`[lull]`，大脑模式）
+
+设计见 `docs/superpowers/specs/2026-10-01-lull-musing-design.md`，计划 `docs/superpowers/plans/2026-10-01-lull-musing.md`。
+起因：沙盒里好友安静下来后团子一直不说话，大脑只写“不说：等卡洛回”，心里太平静。**代码已完成，还没用真 Claude / 真机跑过，数字都是估的**（spec「用真 Claude 在沙盒验证」四步）。
+- **两种冷场**（`inner/lull.py` 的 `LullTracker`，纯计算、墙钟）：① 好友在身边不说话了：最后一句（谁说的都算）过去 `stages[0]` 秒、这句之前 `talk_window` 秒内有好友说过话、他还在身边；
+  ② 聊着聊着走了：好友走开时他 `leave_spoke` 秒内说过话、或团子 `leave_said` 秒内说过话。说话人按 `similar(…, 0.75)` 模糊匹配（OCR 错字），看不出是谁的不算好友
+- **节点**：`stages`（60 / 180 / 360 秒）各放一次立刻叫醒的 `lull` 事件（不在 `BACKGROUND` 里，不受心跳退档影响）；② 走开先照旧发背景 `leave`，`leave_grace`（15 秒）还没回来才叫醒一次（名字标签闪一下不算，宽限内回来 `leave` / `return` 照旧互相抵消），之后用后两个节点；
+  最后一个节点之后再过 `stages[0]` 秒冷场结束（“后来就一直安静着” / “一直没回来”），不再挂在 status 里；快进跳过几个节点只发最新的；黑屏时不推进；
+  冷场中团子又说话不重新计时，只在文字里写“这之间你又说了…”；跟踪技能在跑时不判 ②（`_watch_comings` 本来就不跑）
+- **结束**：任何好友开口（附在那条聊天事件后面：“（冷场了 2 分钟，你刚才在想：…）”）；② 的人回来（叫醒过的：原来的背景 `return` 换成 `lull` 事件“X 回来了（走开了 3 分钟，你刚才在想：…）”，超过 `rejoin` 的 `arrive` 也附上）；
+  ① 的对象聊着聊着走了，想过的话转给 ②；冷了很久才走（不算聊着聊着）或镜头转开，① 结束、留下总结“后来他走开了”。冷场追踪和人来人走用同一份身边名单（`_lull_near`）
+- **心里想的**：提示词「冷场的时候」要求被冷场叫醒时在最后的文字里写一行“心里：……”；`Brain.on_text` 每轮把最后的文字交给 `body.mused`（经 `body.call`），`parse_musing` 取最后一行、截 `musing_max` 字，
+  只挂到大脑这一轮开始之前就有、已经叫醒过的冷场上（`brain.last_turn[0]`，冷场在这一轮里结束了就丢掉）；不加工具。status 多一项“冷场：懒洋洋大王 3 分钟没说话（最后是你说的「…」）· 在想：…（1 分钟时）”
+- **留下的影响**：冷场结束（或下线前最终反思时还没结束）写成一行、说话人“（冷场）”，按冷场开始的时间插进反思材料（`_reflect_chat` / `_session_chat`）；冷到最后一个节点算一次 `reflector.stirred`；代码不直接改心情，由反思定
+- **看得到的地方**：status、沙盒聊天记录旁白“── 心里：… ──”（`body.on_musing`）、内心页「现在」的“在想”（`inner_snapshot()["musing"]`，只有实时）、流水账 `musing` 行（`MindLog.musing`，live 才写盘，内心页反思记录里列出）。
+  **不写** `history.jsonl`、随手记、关系卡
+- **顺带修了**：被 `arrive` 之类叫醒的一轮里接上一句没回的好友聊天（`proactive.reply_window` 内、团子之后还没说过，`Body._pending_reply`）不再算主动开口；
+  「主动开口」的“分寸”写清“没人接”只看状态里“上次主动开口”那一行（这一句改动 `enabled = false` 时也在）
+- 不依赖内心层（`mind` 为 None 时照样叫醒、记“在想”，只是不进反思材料和流水账）。`enabled = false`：不认冷场、`leave` / `return` 照旧、提示词和 status 照旧；管理面板有 `lull.enabled` 开关
 
 ## 内心层（`[inner]`，大脑模式）
 

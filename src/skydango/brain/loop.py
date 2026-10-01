@@ -71,6 +71,7 @@ class Brain:
         self.limited = False  # 最近一次失败是订阅额度用完（沙盒状态里显示还要等多久）
         self.last_turn = (float("-inf"), float("-inf"))  # 最近一轮（成功或失败）的 (开始, 结束)：身体据此关掉替大脑开的输入框
         self.in_turn = False  # 正在一轮里（wake 开始到结束，成功 / 失败都算）：沙盒判断安静了没有用
+        self.on_text: Callable[[str], None] | None = None  # 每轮成功后把最后的文字交出去（身体取“心里：”，spec 2026-10-01-lull-musing §2）
         self.chat_turn = False  # 正在回聊天（这一轮取走了聊天 / 主人命令，还没结束）：身体据此别把聊天面板当成安静关掉
 
     # ---- 什么时候醒 ----
@@ -161,6 +162,12 @@ class Brain:
         self._ok()
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1
         self._log(result)
+        text = (result.get("result") or "").strip()
+        if text and self.on_text is not None:
+            try:
+                self.on_text(text)
+            except Exception:
+                log.exception("交出这一轮的文字出错")
 
     def farewell(self) -> str:
         """退出前让它写一份这次的经过，记进 inbox.md（只在 live、没在失败时）；返回写出的经过，没写出来是空字符串。"""
