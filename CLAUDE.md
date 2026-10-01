@@ -228,7 +228,9 @@ dir = "private/sandbox"
   **失踪好友接回**（`relink`）：挂着名字的轨迹被删 → 失踪记录，`keep` 秒内在预测位置附近冒出来的没名字的人接成 `maybe`（`maybe_by = "relink"`，"像小明"，后果同认装扮的 maybe：不判陌生人、刷新在场、不发 arrive / return），有歧义（一人对两条记录 / 两人一样近）不接，标签亮出来名字说了算，认装扮不拿外观否掉它；
   **运动方向**（`motion`）：`motion_hist` 存补偿过平移的中心 x，`motion_of` 出 走近 / 走远 / 往左走 / 往右走 / 站着（防抖 `motion_hold`），`Person.motion`、status"小明（左边·中，正在走远）"、网页悬停；只给数据，track / 注意力 / 冷场还没用它；
   身体动镜头调 `env.camera_moved(at, kind)`（turn / zoom / move / spin；缩放、走路、转圈后 `[track] settle` 秒内不攒走近 / 运动历史、速度清零；注意力自己的 nudge 和 `move` 只通知、不设 `_camera_moved_at`）；
-  开关全关逐字是原来的行为。定阈值：`perception track-eval <录像目录> [--fps 6.5]` → `tmp/track-eval/<时间>/report.md`（基线 vs 当前配置；目标接回证实错 = 0、确认冤枉明显下降）
+  护栏（最终评审后加的）：低分框阶段只认 IoU、只靠低分框续着的轨迹最多续命 5 秒（`LOW_ONLY_MAX`）；跟着镜头一起动的人（配上的是不带平移的预测框）速度和运动方向不减背景平移（`Track.drift`）；
+  接回的"像他"30 秒（6 个 `keep`）没被名字标签证实就摘、也不报走近；身体在 `held("camera")` 里转了镜头，恢复后第一帧拿暂停前的缩略图估一次平移（门槛 0.4），估不出就作废所有轨迹的位置、清掉失踪记录；
+  开关全关逐字是原来的行为（`camera_moved` 的缩放 / 走路静默期不受开关管）。定阈值：`perception track-eval <录像目录> [--fps 6.5]` → `tmp/track-eval/<时间>/report.md`（基线 vs 当前配置；目标接回证实错 = 0、确认冤枉明显下降）
 - **核显 / 没有 N 卡的机器**（`device = "dml"`，`vision/onnxrt.py`，**未在 Windows 核显上验证**）：在 GPU 机器上导出 `.onnx`（`.pydeps\bin\yolo.exe export model=models/sky-yolo-v7.pt format=onnx imgsz=960`）拷过去，
   `pip uninstall onnxruntime` 再 `pip install onnxruntime-directml`（两个包都叫 `onnxruntime` 模块，只能装一个；以后 `pip install -e ".[ocr]"` 会把 onnxruntime 装回来盖掉，要重装 directml；`pip check` 报 skydango 缺 onnxruntime 是正常的）。
   先 `perception bench --model models/sky-yolo.onnx --images <录像目录>` 看后端是不是 `DmlExecutionProvider`、每帧多少 ms，再按实测把 `fps` 降下来（估计 2~3）。

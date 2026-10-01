@@ -51,7 +51,7 @@ from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, Person, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
-from .track import Track, Tracker, estimate_shift, iou
+from .track import PAN_MIN_RESPONSE, PAN_RECHECK_RESPONSE, Track, Tracker, estimate_shift, iou
 from .wardrobe import FRIEND as FRIEND_PRIORITY
 from .wardrobe import ME as ME_PRIORITY
 from .wardrobe import STRANGER as STRANGER_PRIORITY
@@ -81,6 +81,9 @@ PAN_SCALE = 8  # 估计画面平移用的缩略图缩小这么多倍
 RELINK_EARLY = 0.2  # 接回的候选轨迹最早可以比失踪记录的"最后看到"早这么久冒出来（同一帧里先删后建）
 RELINK_PREDICT = 1.0  # 接回时按速度最多往前推这么久
 RELINK_AMBIGUOUS = 1.3  # 一条记录的两个候选，近的要比远的近这么多倍才不算歧义
+RELINK_MAX_KEEPS = 6  # 接回的"像他"这么多个 keep 还没被名字标签证实就摘掉（接错了总得有个出口）
+LOW_ONLY_MAX = 5.0  # 只靠低分框续着的轨迹最多续命这么久（低分框可能是石像之类认错的东西）
+TRACKING_SWITCHES = ("sticky_names", "track_low", "track_predict", "track_pan", "relink", "motion")  # 全关 = 原来的追踪
 PAN_KINDS = ("zoom", "move", "spin")  # 这几种镜头事件之后 camera_settle 秒内框高会突变：不更新速度、清走近 / 运动历史
 
 
@@ -309,6 +312,8 @@ class PerceptionWatcher:
         self._pan_thumb: np.ndarray | None = None  # 上一帧的平移缩略图（暂停恢复后作废）
         self.last_shift: tuple[float, float] | None = None  # 这一帧估出的画面平移（track-eval 用）
         self._lost: dict[str, Lost] = {}  # 名字 → 断掉的好友轨迹（relink）
+        self._camera_held = False  # 这次暂停里有身体转镜头（hold("camera")）
+        self._pan_recheck = False  # 恢复后第一帧：拿暂停前的缩略图估一次平移，估不出就作废所有轨迹的位置
         self.requests: dict = {}  # 名字 → game.social.Request
         self.labels: dict[str, tuple[int, int, int, int, float]] = {}
         self.circles: dict[str, tuple[str | None, float]] = {}
@@ -353,6 +358,8 @@ class PerceptionWatcher:
                 self._held_since = self.clock()
                 log.debug("感知暂停：%s", reason)
             self._holds[reason] += 1
+            if reason == "camera":
+                self._camera_held = True
 
     def release(self, reason: str) -> None:
         with self._lock:
@@ -389,7 +396,12 @@ class PerceptionWatcher:
         d = now - since
         log.debug("感知恢复（%s），暂停了 %.1f 秒", why, d)
         self._prev_count, self._prev_thumb = 0, None  # 暂停前那一帧不能拿来判"集体消失"（镜头可能已经转走了）
-        self._pan_thumb = None  # 平移也不能跨暂停估
+        if self._camera_held and any(getattr(self.cfg, k) for k in TRACKING_SWITCHES):
+            # 暂停期间身体转了镜头：留着暂停前的缩略图，恢复后第一帧估一次平移，估不出再作废位置（process 里）
+            self._pan_recheck = True
+        else:
+            self._pan_thumb = None  # 平移不能跨暂停估
+        self._camera_held = False
         self.tracker.calm(now)  # 速度也不能跨暂停用
         for track in list(self.tracker.tracks.values()):  # 暂停前后的框高不能连起来判"走过来"（镜头可能动过）
             track.data.pop("hist", None)
@@ -399,8 +411,11 @@ class PerceptionWatcher:
             return
         for name, t in list(self.last_seen.items()):
             self.last_seen[name] = min(t + d, now)
-        for lost in self._lost.values():
+        for lost in list(self._lost.values()):
             lost.last = min(lost.last + d, now)
+        for track in list(self.tracker.tracks.values()):
+            if "relink_at" in track.data:
+                track.data["relink_at"] += d
         for name, (x, y, w, h, t) in list(self.labels.items()):
             self.labels[name] = (x, y, w, h, min(t + d, now))
         for name, (kind, t) in list(self.circles.items()):
@@ -476,7 +491,7 @@ class PerceptionWatcher:
                 b = d.box
                 mask[max(0, b.y // PAN_SCALE): (b.y2 + PAN_SCALE - 1) // PAN_SCALE,
                      max(0, b.x // PAN_SCALE): (b.x2 + PAN_SCALE - 1) // PAN_SCALE] = False
-        shift = estimate_shift(prev, small, mask)
+        shift = estimate_shift(prev, small, mask, PAN_RECHECK_RESPONSE if self._pan_recheck else PAN_MIN_RESPONSE)
         if shift is None:
             return None
         shift = (shift[0] * PAN_SCALE, shift[1] * PAN_SCALE)
@@ -556,6 +571,13 @@ class PerceptionWatcher:
             return
         shift = self._pan_step(frame, dets, panel_visible) if self.cfg.track_pan else None
         self.last_shift = shift
+        if self._pan_recheck:
+            self._pan_recheck = False
+            if shift is None:
+                # 转了镜头、又估不出转了多少：原来屏幕位置上的人已经不是原来那个了。轨迹全作废（不记失踪），按名字重新认
+                log.debug("转过镜头、估不出平移：%d 条轨迹的位置作废", len(self.tracker.tracks))
+                self.tracker.tracks.clear()
+                self._lost.clear()
         tracks = self.tracker.update(dets, now, low=low if self.cfg.track_low else (), shift=shift)
         self._frame_at = now
         if self.cfg.relink:
@@ -681,7 +703,8 @@ class PerceptionWatcher:
             if maybe and now - self.last_seen.get(maybe, float("-inf")) <= self.cfg.keep:
                 self.last_seen[maybe] = now  # 好友还在身边、只是名字标签被挡住：别冒出"走开了"（已经走开的不靠外观接回来）
             name = player.data.get("name")
-            if self.cfg.sticky_names and name and player.data.get("tagged") and now - player.last <= PEOPLE_STALE:
+            if (self.cfg.sticky_names and name and player.data.get("tagged") and now - player.last <= PEOPLE_STALE
+                    and now - player.strong_last <= LOW_ONLY_MAX):
                 self.last_seen[name] = now  # 续命：挂过名字的轨迹没断就还在身边（走远了标签会自己淡掉），断了才开始算 keep
             if is_stranger and self.appearance is not None:
                 self._appearance_stranger(frame, player, players, fresh.get(player.id), now)
@@ -999,7 +1022,16 @@ class PerceptionWatcher:
             del self._lost[name]
 
     def _relink(self, players: list[Track], shown: set[str], now: float) -> None:
-        """没名字的新轨迹冒在失踪好友的预测位置附近：接成"像他"（maybe，maybe_by = relink）。有歧义不接。"""
+        """没名字的新轨迹冒在失踪好友的预测位置附近：接成"像他"（maybe，maybe_by = relink）。有歧义不接。
+        接上之后 RELINK_MAX_KEEPS 个 keep 还没被名字标签证实就摘掉。"""
+        limit = RELINK_MAX_KEEPS * self.cfg.keep
+        for p in players:
+            d = p.data
+            if d.get("maybe_by") == "relink" and now - d.get("relink_at", now) > limit:
+                log.info("轨迹 %d 接回成 %s 之后 %.0f 秒都没看到名字，摘掉", p.id, d.get("maybe"), now - d["relink_at"])
+                for key in ("maybe", "maybe_by", "relink_at"):
+                    d.pop(key, None)
+                d["relink_expired"] = True
         if not self._lost:
             return
         held = shown | {v for p in players for k in ("name", "maybe") if (v := p.data.get(k))}
@@ -1038,7 +1070,7 @@ class PerceptionWatcher:
                 log.debug("轨迹 %d 对得上好几个断掉的好友，不接", p.id)
                 continue
             lost = self._lost.pop(name)
-            p.data["maybe"], p.data["maybe_by"] = name, "relink"
+            p.data["maybe"], p.data["maybe_by"], p.data["relink_at"] = name, "relink", now
             for key in ("sid", "miss"):
                 p.data.pop(key, None)
             log.info("轨迹 %d 像是 %s（断了 %.1f 秒，按位置接回）", p.id, name, now - lost.last)
@@ -1323,7 +1355,7 @@ class PerceptionWatcher:
             hist.append((now, float(p.box.h), p.box.x + p.box.w / 2))
             while hist and now - hist[0][0] > self.cfg.approach_window:
                 hist.popleft()
-            maybe = p.data.get("maybe")
+            maybe = p.data.get("maybe") if p.data.get("maybe_by") != "relink" else None  # 按位置接回的不报走近（可能接错）
             who = (
                 p.data.get("name")
                 or (maybe if maybe and maybe in self.nearby(now) else None)  # 按外观认的：他还在身边才算（同 last_seen 的规矩）
@@ -1347,7 +1379,7 @@ class PerceptionWatcher:
         cfg = self.cfg
         for p in players:
             hist: deque = p.data.setdefault("motion_hist", deque())
-            hist.append((now, float(p.box.h), p.box.x + p.box.w / 2 - self._pan[0]))
+            hist.append((now, float(p.box.h), p.box.x + p.box.w / 2 - p.drift[0]))  # 减掉被画面平移带走的（跟着镜头动的人不减）
             while hist and now - hist[0][0] > cfg.motion_window:
                 hist.popleft()
             settle_motion(p.data, motion_of(hist, now, cfg), now, cfg.motion_hold)

@@ -163,3 +163,48 @@ def test_shift_ignores_masked_region():
 def test_shift_none_when_too_large():
     prev = _texture(seed=2)
     assert estimate_shift(prev, np.roll(prev, 100, axis=1), None) is None
+
+
+# ---- 最终评审的修复 ----
+def test_tie_order_unchanged_when_defaults():
+    """开关全关逐字照旧：IoU 一样时还是序号大的检测先配（原来的 sort(reverse=True)）。"""
+    t = Tracker()
+    (a,) = t.update([P(100)], 0.0)
+    out = t.update([P(85), P(115)], 0.1)
+    assert out[1].id == a.id and out[0].id != a.id
+
+
+def test_velocity_not_polluted_when_person_moves_with_camera():
+    """镜头绕着团子转，身边的人在屏幕上不动（配上的是不带平移的预测框）：速度不该减掉背景平移。"""
+    t = Tracker(predict=True, center_gate=0.6)
+    (a,) = t.update([P(300, w=90, h=220)], 0.0)
+    for i in range(1, 4):
+        (b,) = t.update([P(300, w=90, h=220)], 0.15 * i, shift=(120, 0))
+        assert b.id == a.id
+    assert abs(a.vx) < 50 and a.drift == (0.0, 0.0)
+
+
+def test_drift_accumulates_when_panned_box_wins():
+    t = Tracker()
+    (a,) = t.update([P(100)], 0.0)
+    t.update([P(140)], 0.1, shift=(40, 0))
+    assert a.drift == (40.0, 0.0)
+
+
+def test_low_stage_is_iou_only():
+    t = Tracker(center_gate=0.6, predict=True)
+    t.update([P(100, w=20, h=40)], 0.0)
+    assert t.update([], 0.15, low=[P(117, w=20, h=40, s=0.3)]) == []  # 中心距离够、IoU 不够：低分框不续
+
+
+def test_strong_last_only_moves_on_high_score_hits():
+    t = Tracker()
+    (a,) = t.update([P(100)], 0.0)
+    t.update([], 0.1, low=[P(101, s=0.3)])
+    assert a.strong_last == 0.0 and a.last == 0.1
+
+
+def test_shift_rejects_unrelated_images_with_strict_threshold():
+    a, b = _texture(seed=11), _texture(seed=12)
+    assert estimate_shift(a, b, None, min_response=0.4) is None
+    assert estimate_shift(a, np.roll(a, 9, axis=1), None, min_response=0.4) is not None

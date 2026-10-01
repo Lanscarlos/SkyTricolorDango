@@ -339,3 +339,78 @@ def test_overlay_carries_motion():
     t = run(w, det, walk, 0.0, 2.5)
     (entry,) = [e for e in w.overlay(t) if e["kind"] in ("player", "stranger")]
     assert entry["motion"] == body(w).data["motion"]
+
+
+# ---- 最终评审的修复 ----
+def test_motion_standing_when_person_moves_with_camera():
+    """身边的人跟着镜头一起动（屏幕上不动）、背景在平移：是站着，不是往左走。"""
+    base = _texture(9)
+    w, det = make()
+    t = run(w, det, [player(300)], 0.0, 2.5, img=lambda t: np.roll(base, round(t * 10) * 16, axis=1))
+    assert [p.motion for p in w.people(t)] == ["站着"]
+
+
+def _camera_hold(w, now, at, until):
+    now[0] = at
+    w.hold("camera")
+    now[0] = until
+    w.release("camera")
+
+
+def _go(w, det, now, dets, a, b, img):
+    t = a
+    while t < b - 1e-9:
+        now[0] = t
+        det.frames = [dets]
+        w.process(img, t, False)
+        t = round(t + 0.1, 3)
+
+
+def test_camera_turn_in_hold_without_pan_drops_positions():
+    """held 里转了镜头、恢复后估不出平移：原来屏幕位置上的人不能直接续成小明，也不能按位置接回。"""
+    now = [0.0]
+    w, det = make(clock=lambda: now[0])
+    _go(w, det, now, [player(800), tag(800)], 0.0, 1.0, _texture(1))
+    _camera_hold(w, now, 1.0, 1.5)
+    _go(w, det, now, [player(800)], 1.5, 4.0, _texture(2))  # 完全换了一幅画面
+    assert not body(w).data.get("name") and not body(w).data.get("maybe")
+    assert body(w).data.get("stranger")
+
+
+def test_camera_turn_in_hold_with_pan_keeps_track():
+    now = [0.0]
+    w, det = make(clock=lambda: now[0])
+    base = _texture(3)
+    _go(w, det, now, [player(800), tag(800)], 0.0, 1.0, base)
+    first = body(w).id
+    _camera_hold(w, now, 1.0, 1.5)
+    _go(w, det, now, [player(960)], 1.5, 2.0, np.roll(base, 160, axis=1))
+    assert body(w).id == first and body(w).data.get("name") == NAME
+
+
+def test_relinked_maybe_expires_without_tag():
+    w, det = make()
+    lose(w, det)
+    run(w, det, [player(830)], 2.2, 3.0)
+    assert body(w).data.get("maybe") == NAME
+    run(w, det, [player(830)], 3.0, 34.0)
+    d = body(w).data
+    assert not d.get("maybe") and d.get("stranger")
+
+
+def test_relinked_maybe_does_not_report_approach():
+    w, det = make()
+    lose(w, det, x=870)
+    w.pop_approaches()
+    grow = lambda t: [player(870 - round((t - 2.2) * 30), h=220 + round((t - 2.2) * 80), y=400 - round((t - 2.2) * 80))]
+    run(w, det, grow, 2.2, 4.5)
+    assert body(w).data.get("maybe_by") == "relink"
+    assert NAME not in w.pop_approaches()
+
+
+def test_sticky_stops_on_low_only_track():
+    w, det = make(relink=False)
+    run(w, det, [player(800), tag(800)], 0.0, 1.0)
+    t = run(w, det, [player(800, s=0.3)], 1.0, 12.0)  # 只有低分框续着：最多续 LOW_ONLY_MAX 秒
+    assert body(w).weak_hits > 0
+    assert NAME not in w.nearby(t)

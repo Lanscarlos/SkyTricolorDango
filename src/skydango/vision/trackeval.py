@@ -16,9 +16,9 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 
 from ..config import PerceptionConfig
+from .perception import TRACKING_SWITCHES as SWITCHES
 from .track import Track
 
-SWITCHES = ("sticky_names", "track_low", "track_predict", "track_pan", "relink", "motion")
 CAUSES = ("低分框", "位移", "画面平移", "漏检")
 VERDICTS = ("对", "错", "未证实")
 TIMELINE_MAX = 60  # 报告里最多列几条轨迹的运动方向
@@ -93,7 +93,8 @@ def evaluate(items: Iterable[tuple], watcher, keep: float | None = None) -> dict
         frames += 1
         now[0] = t
         watcher.process(frame, t, panel)
-        for track in watcher.tracker.dropped:
+        updated = watcher._frame_at == t  # 被挡住提前返回的帧没跑 tracker.update：dropped 还是上一帧的
+        for track in watcher.tracker.dropped if updated else ():
             who = _who(track)
             if who:
                 friends.setdefault(who, _friend())["breaks"][miss.pop(track.id, "漏检")] += 1
@@ -116,9 +117,10 @@ def evaluate(items: Iterable[tuple], watcher, keep: float | None = None) -> dict
                 friends.setdefault(name, _friend())["wronged"] += 1
             if d.get("maybe_by") == "relink" and d.get("maybe"):
                 relinked[track.id] = d["maybe"]
-            elif name and track.id in relinked:
+            elif track.id in relinked:  # 接回被摘了：挂上名字 → 对 / 错；超时摘掉 → 未证实；别的（他的标签在别处、变黑影）→ 错
                 was = relinked.pop(track.id)
-                friends.setdefault(was, _friend())["relinks"]["对" if name == was else "错"] += 1
+                verdict = ("对" if name == was else "错") if name else ("未证实" if d.get("relink_expired") else "错")
+                friends.setdefault(was, _friend())["relinks"][verdict] += 1
             who = name or d.get("maybe")
             motion = d.get("motion")
             if who and motion:

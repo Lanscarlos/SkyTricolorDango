@@ -26,6 +26,8 @@ VELOCITY_GAP = 0.5  # 两次匹配隔得比这久就不更新速度（中间可�
 VELOCITY_ALPHA = 0.5  # 速度的指数平均
 GATE_RATIO = (0.67, 1.5)  # 中心距离候选：框高比要在这之间
 PAN_MIN_RESPONSE = 0.1  # 画面平移估计：相位相关的响应低于这个不信（估的）
+# 隔着一段暂停（身体转了镜头）估平移要严得多：两幅不相关的噪声图响应也能到 0.3，真平移约 0.7
+PAN_RECHECK_RESPONSE = 0.4
 
 
 def iou(a: Rect, b: Rect) -> float:
@@ -53,6 +55,8 @@ class Track:
     vh: float = 0.0  # 框高变化（像素 / 秒）
     weak_hits: int = 0  # 被低分框续上的次数（track-eval 用）
     pan: tuple[float, float] = (0.0, 0.0)  # 上次匹配以来累计的画面平移
+    drift: tuple[float, float] = (0.0, 0.0)  # 这条轨迹被画面平移带着走了多少（只算带平移的预测框配上的那几次；运动方向用）
+    strong_last: float = float("-inf")  # 最近一次被高分框接上（或创建）的时间：只靠低分框续着的轨迹别无限续命
 
 
 def _moved(box: Rect, dx: float, dy: float, dh: float = 0.0) -> Rect:
@@ -84,21 +88,22 @@ class Tracker:
     def calm(self, until: float) -> None:
         """速度清零，until 之前不再更新速度（镜头缩放 / 走路 / 转圈、暂停恢复时）。"""
         self.calm_until = max(self.calm_until, until)
-        for track in self.tracks.values():
+        for track in list(self.tracks.values()):  # 身体线程会调：感知线程可能同时在增删轨迹
             track.vx = track.vy = track.vh = 0.0
 
     def predicted(self, track: Track, now: float) -> list[Rect]:
         """预测框：最后的框 + 速度 × 时间（最多 PREDICT_MAX 秒，predict 关着时不动）+ 累计的画面平移。
         平移不为零时再给一个不加平移的（近处的人和远处背景平移量不一样，两个都试）。"""
+        return [box for box, _ in self._preds(track, now)]
+
+    def _preds(self, track: Track, now: float) -> list[tuple[Rect, bool]]:
+        """(预测框, 是不是加了画面平移的那个)。"""
         dt = min(max(now - track.last, 0.0), PREDICT_MAX) if self.predict else 0.0
         base = (track.vx * dt, track.vy * dt, track.vh * dt)
         px, py = track.pan
-        out = [_moved(track.box, base[0] + px, base[1] + py, base[2])]
         if px or py:
-            out.append(_moved(track.box, *base))
-        elif not any(base):
-            out[0] = track.box
-        return out
+            return [(_moved(track.box, base[0] + px, base[1] + py, base[2]), True), (_moved(track.box, *base), False)]
+        return [(_moved(track.box, *base) if any(base) else track.box, False)]
 
     def _need(self, track: Track, det: Detection) -> float | None:
         if track.cls == det.cls:
@@ -107,54 +112,61 @@ class Tracker:
             return self.cross_iou
         return None
 
-    def _pairs(self, dets: Sequence[Detection], tracks: Iterable[Track], now: float) -> list:
-        """候选 (分数, 检测序号, 轨迹 id)；分数是元组 (1, IoU) / (0, 中心距离分)，IoU 候选永远排在前面。"""
+    def _pairs(self, dets: Sequence[Detection], tracks: Iterable[Track], now: float, gate_on: bool = True) -> list:
+        """候选 (分数, 检测序号, 轨迹 id, 是不是带平移的预测框配上的)；分数是元组 (1, IoU) / (0, 中心距离分)，
+        IoU 候选永远排在前面；分数一样时序号大的先配（同原来的 sort(reverse=True)）。gate_on = False：只认 IoU（低分框）。"""
         pairs = []
         for track in tracks:
-            preds = self.predicted(track, now)
+            preds = self._preds(track, now)
             for di, det in enumerate(dets):
                 need = self._need(track, det)
                 if need is None:
                     continue
-                overlap = max(iou(p, det.box) for p in preds)
+                overlap, panned = max((iou(p, det.box), panned) for p, panned in preds)
                 if overlap >= need:
-                    pairs.append(((1, overlap), di, track.id))
+                    pairs.append(((1, overlap), di, track.id, panned))
                     continue
-                if self.center_gate <= 0 or track.cls != det.cls or not track.box.h:
+                if not gate_on or self.center_gate <= 0 or track.cls != det.cls or not track.box.h:
                     continue
                 ratio = det.box.h / track.box.h
                 if not GATE_RATIO[0] <= ratio <= GATE_RATIO[1]:
                     continue
-                dist, gate = min((_center_dist(p, det.box), self.center_gate * p.h) for p in preds)
+                dist, gate, panned = min((_center_dist(p, det.box), self.center_gate * p.h, panned) for p, panned in preds)
                 if dist <= gate:
-                    pairs.append(((0, 0.3 * (1 - dist / gate) if gate else 0.0), di, track.id))
-        pairs.sort(key=lambda p: (p[0], -p[1], -p[2]), reverse=True)
+                    pairs.append(((0, 0.3 * (1 - dist / gate) if gate else 0.0), di, track.id, panned))
+        pairs.sort(key=lambda p: (p[0], p[1], p[2]), reverse=True)
         return pairs
 
-    def _assign(self, dets: Sequence[Detection], free: dict[int, Track], now: float) -> dict[int, Track]:
-        """贪心配对：返回 {检测序号: 轨迹}，配上的轨迹从 free 里拿掉。"""
+    def _assign(self, dets: Sequence[Detection], free: dict[int, Track], now: float, strong: bool = True) -> dict[int, Track]:
+        """贪心配对：返回 {检测序号: 轨迹}，配上的轨迹从 free 里拿掉。strong = False（低分框）：只认 IoU。"""
         matched: dict[int, Track] = {}
-        for _, di, tid in self._pairs(dets, list(free.values()), now):
+        for _, di, tid, panned in self._pairs(dets, list(free.values()), now, gate_on=strong):
             if di in matched or tid not in free:
                 continue
             track = free.pop(tid)
-            self._hit(track, dets[di], now)
+            self._hit(track, dets[di], now, panned, strong)
             matched[di] = track
         return matched
 
-    def _hit(self, track: Track, det: Detection, now: float) -> None:
+    def _hit(self, track: Track, det: Detection, now: float, panned: bool = False, strong: bool = True) -> None:
+        """panned：带平移的预测框配上的（人站在背景里，被平移带着走）；不带平移的配上 = 人跟着镜头一起动（身边的人），
+        这时背景平移不是他的位移，不能从速度里减掉。"""
         if track.cls != det.cls:
             track.cls = det.cls
             track.flips += 1
+        pan = track.pan if panned else (0.0, 0.0)
         dt = now - track.last
         if 0 < dt <= VELOCITY_GAP and now >= self.calm_until:
             old, new = track.box, det.box
-            sx = (new.x + new.w / 2 - old.x - old.w / 2 - track.pan[0]) / dt
-            sy = (new.y + new.h / 2 - old.y - old.h / 2 - track.pan[1]) / dt
+            sx = (new.x + new.w / 2 - old.x - old.w / 2 - pan[0]) / dt
+            sy = (new.y + new.h / 2 - old.y - old.h / 2 - pan[1]) / dt
             sh = (new.h - old.h) / dt
             a = VELOCITY_ALPHA
             track.vx, track.vy, track.vh = (1 - a) * track.vx + a * sx, (1 - a) * track.vy + a * sy, (1 - a) * track.vh + a * sh
+        track.drift = (track.drift[0] + pan[0], track.drift[1] + pan[1])
         track.box, track.score, track.last = det.box, det.score, now
+        if strong:
+            track.strong_last = now
         track.pan = (0.0, 0.0)
         track.hits += 1
 
@@ -173,14 +185,14 @@ class Tracker:
                 del self.tracks[track.id]
         free = dict(self.tracks)
         matched = self._assign(dets, free, now)
-        weak = self._assign(low, free, now) if low and free else {}
+        weak = self._assign(low, free, now, strong=False) if low and free else {}
         for track in weak.values():
             track.weak_hits += 1
         out = []
         for di, det in enumerate(dets):
             track = matched.get(di)
             if track is None:
-                track = Track(self._next, det.cls, det.box, det.score, now, now)
+                track = Track(self._next, det.cls, det.box, det.score, now, now, strong_last=now)
                 self.tracks[track.id] = track
                 self._next += 1
             out.append(track)
@@ -193,7 +205,8 @@ class Tracker:
             track.last += d
 
 
-def estimate_shift(prev: np.ndarray, cur: np.ndarray, mask: np.ndarray | None) -> tuple[float, float] | None:
+def estimate_shift(prev: np.ndarray, cur: np.ndarray, mask: np.ndarray | None,
+                   min_response: float = PAN_MIN_RESPONSE) -> tuple[float, float] | None:
     """两张同尺寸灰度缩略图之间的画面平移（缩略图像素，内容往右 / 下挪为正）；估不出返回 None。
 
     mask：True = 可用（人物框、聊天面板之类会自己动的地方填成均值，不让它们带偏）。
@@ -213,7 +226,7 @@ def estimate_shift(prev: np.ndarray, cur: np.ndarray, mask: np.ndarray | None) -
         return None
     win = cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F)
     (dx, dy), response = cv2.phaseCorrelate(a, b, win)
-    if not np.isfinite(response) or response < PAN_MIN_RESPONSE or not (np.isfinite(dx) and np.isfinite(dy)):
+    if not np.isfinite(response) or response < min_response or not (np.isfinite(dx) and np.isfinite(dy)):
         return None
     if abs(dx) > a.shape[1] / 3 or abs(dy) > a.shape[0] / 3:
         return None
