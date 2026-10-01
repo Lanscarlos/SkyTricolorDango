@@ -137,8 +137,10 @@ class Agent:
             if self.viewer is not None:
                 self._show(frame, now, fresh)
             # light（团子举蜡烛点亮陌生人）只有大脑模式的身体会做：这里不管，不然它一直挂着、每圈都进 held("social")
-            requests = {k: r for k, r in dict(self.env.requests).items() if r.kind != LIGHT} if self.env is not None else {}
-            if self.social is not None and requests:
+            requests = {}
+            if self.social is not None and self.env is not None:
+                requests = {k: r for k, r in dict(self.env.requests).items() if r.kind != LIGHT}
+            if requests:
                 try:
                     with self._held("social"):
                         self.social.handle(requests, now)
