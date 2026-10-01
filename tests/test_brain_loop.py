@@ -395,3 +395,31 @@ def test_limit_left_only_after_quota_failure(clock):  # 沙盒计划 Task 4：�
     clock.advance(100)
     brain.wake(clock(), "heartbeat")
     assert brain.limit_left(clock()) == 0 and brain.limited is False
+
+
+# ---- 冷场时的心理活动：每轮最后的文字交回身体（spec 2026-10-01-lull-musing §2） ----
+def test_on_text_gets_final_text(clock):
+    brain, _, _, _ = make(clock, FakeSession(ok("不说：等\n心里：嗯")))
+    got = []
+    brain.on_text = got.append
+    brain.wake(clock(), "heartbeat")
+    assert got == ["不说：等\n心里：嗯"]
+
+
+def test_on_text_error_does_not_break_turn(clock):
+    brain, _, _, _ = make(clock, FakeSession(ok("心里：嗯")))
+
+    def boom(text):
+        raise RuntimeError("身体坏了")
+
+    brain.on_text = boom
+    brain.wake(clock(), "heartbeat")
+    assert brain.failures == 0 and brain.failing_since is None
+
+
+def test_on_text_not_called_on_failure(clock):
+    brain, _, _, _ = make(clock, FakeSession(ClaudeError("挂了")))
+    got = []
+    brain.on_text = got.append
+    brain.wake(clock(), "heartbeat")
+    assert got == []
