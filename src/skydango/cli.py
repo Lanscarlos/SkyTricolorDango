@@ -357,8 +357,15 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
         places=places, place_interval=cfg.places.place_interval,
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
-        social_cfg=cfg.social, flame=flame, **_appearance_parts(cfg, run),
+        social_cfg=cfg.social, flame=flame, **_appearance_parts(cfg, run), call_window=cfg.call.window,
     )
+
+
+def _call_enabled(cfg: Config, env) -> bool:
+    """按 Q 喊一声（spec 2026-10-01-q-call）：开着 [call] 且 env 是 YOLO 感知层才有 call 工具。"""
+    from .brain.calling import call_available
+
+    return call_available(cfg, env)
 
 
 def _gesture_classifier(cfg: Config):
@@ -1955,7 +1962,7 @@ def _run_brain(
         events.subscribe(eyes.notice)
         # recall 只读，dry-run 也给
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
-                          sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled)
+                          sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled, call=_call_enabled(cfg, env))
         wardrobe = _wardrobe(cfg, env, ledger, world, base, claude_vars, work, clock)
         server = SkyServer(toolbox)
         server.start()
@@ -1971,7 +1978,7 @@ def _run_brain(
             days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
             persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
             appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
-            lull=cfg.lull.enabled,
+            lull=cfg.lull.enabled, call=_call_enabled(cfg, env),
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,

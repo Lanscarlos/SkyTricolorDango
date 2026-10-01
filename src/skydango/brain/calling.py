@@ -32,6 +32,11 @@ class CallResult:
     seen: CallSeen | None = None  # 窗口结束后补上
 
 
+def call_available(cfg, env) -> bool:
+    """有没有 call 工具 / 自动喊：开着 [call]，且 env 是 YOLO 感知层（整图 OCR、沙盒收不到呼喊窗口）。"""
+    return bool(cfg.call.enabled) and hasattr(env, "unnamed")
+
+
 def seen_text(seen: CallSeen) -> str:
     """"认出 小明（右边·远）、懒洋洋大王（左边·近）；小红在画面外（左边）；还有 1 个没挂名字的人"。"""
     on = [f"{n}（{s.side}·{s.distance}）" if s.distance else f"{n}（{s.side}）" for n, s in seen.friends.items() if s.on_screen]

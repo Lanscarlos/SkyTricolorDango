@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from .camera import KEYS, MAX_STEPS
-from .tools import AROUND_TIMEOUT, RESET_TIMEOUT, ToolError
+from .calling import call_available
+from .tools import AROUND_TIMEOUT, CALL_TIMEOUT, RESET_TIMEOUT, ToolError, finish_call
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ class ManualControl:
         self.body = body
         self.eyes = eyes  # brain.eyes.Eyes：没开感知层时环视完交给它描述
         self.events = events  # brain.events.EventQueue：做成了告诉大脑
+        self.sleep = time.sleep  # 喊一声等呼喊窗口时用；测试换掉
 
     def options(self) -> dict:
         """网页填按钮用：现在能做的动作、视角操作、看人开没开、说话字数上限、是不是 dry-run。"""
@@ -56,6 +59,7 @@ class ManualControl:
             # 盯人要镜头 + 感知层（people()）；认不出这个人等身体回话
             "track": b.camera is not None and hasattr(getattr(b, "env", None), "people"),
             "max_track_seconds": cfg.track.max_seconds,
+            "call": call_available(cfg, getattr(b, "env", None)),  # 按 Q 喊一声：要开 [call] 和感知层
         }
 
     def run(self, action: str, args: dict) -> dict:
@@ -64,7 +68,12 @@ class ManualControl:
         try:
             out = self.body.call(fn, timeout=timeout)
             # 没开感知层时环视拿回的是几张图：交给眼睛描述（在这个线程里，不占身体）
-            text = self._around(out) if action == "look_around" and not isinstance(out, str) else self._describe(out)
+            if action == "call":  # 身体按完键就回来了：在这个线程里等呼喊窗口结束（约 6 秒），不占身体
+                text = finish_call(self.body, out, self.sleep)
+            elif action == "look_around" and not isinstance(out, str):
+                text = self._around(out)
+            else:
+                text = self._describe(out)
         except ToolError as exc:
             result = {"ok": False, "text": str(exc)}
         except Exception as exc:
@@ -114,6 +123,8 @@ class ManualControl:
             return (lambda: b.track(name, seconds, live=True)), f"盯着{name}（{seconds} 秒）", None
         if action == "stop_task":
             return b.stop_task, "停下正在做的事", None
+        if action == "call":
+            return (lambda: b.call_out("manual", live=True)), "喊了一声", CALL_TIMEOUT
         if action == "panel_read":
             return (lambda: b.panel_read()), "读了面板", None
         if action == "panel_close":

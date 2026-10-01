@@ -15,7 +15,7 @@ import uvicorn
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import CallToolResult, TextContent
 
-from .tools import INTROSPECT_DESCRIPTION, ToolBox, descriptions
+from .tools import CALL_DESCRIPTION, INTROSPECT_DESCRIPTION, ToolBox, descriptions
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +60,11 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     @srv.tool(name="look_around", description=DESCRIPTIONS["look_around"])
     def look_around():
         return call("look_around")
+
+    if toolbox.calling:  # 按 Q 喊一声：开关打开、有感知层才有（关掉时工具列表逐字照旧）
+        @srv.tool(name="call", description=CALL_DESCRIPTION)
+        def call_out():
+            return call("call")
 
     @srv.tool(name="status", description=DESCRIPTIONS["status"])
     def status():
