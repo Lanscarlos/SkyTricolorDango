@@ -71,6 +71,12 @@ class EnvWatcher:
         self._busy = False
         self._lock = threading.Lock()
 
+    def called(self, at: float, *, by_self: bool = True) -> None:
+        """按 Q 喊一声的窗口：整图 OCR 不收（感知层没开时身体本来就不喊），接口和感知层一致。"""
+
+    def call_result(self, at: float):
+        return None
+
     def observe(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
         """主循环每帧调一次；到了间隔就扫一次（默认在后台线程里）。"""
         if now - self._last_scan < self.cfg.interval:
