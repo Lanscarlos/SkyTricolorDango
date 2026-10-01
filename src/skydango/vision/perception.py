@@ -50,6 +50,9 @@ from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, Person, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import Track, Tracker, iou
+from .wardrobe import FRIEND as FRIEND_PRIORITY
+from .wardrobe import ME as ME_PRIORITY
+from .wardrobe import STRANGER as STRANGER_PRIORITY
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +156,18 @@ class Talker:
     start: float  # 这次气泡开始（气泡断开超过 bubble_gap 再出现算新的一句）
 
 
+@dataclass(frozen=True)
+class OutfitNote:
+    """好友的一套装扮（身体取走写进关系卡）：new = 卡里没有可比的，same / changed = 和卡里最近一套比，
+    changed 也用于上线中途换装；described = 描述回来了（desc 有字）。"""
+
+    name: str
+    feat: list[float]  # 平均特征，3 位小数
+    key: str  # 特征模型的 key
+    state: str
+    desc: str = ""
+
+
 class PerceptionWatcher:
     def __init__(
         self,
@@ -205,6 +220,10 @@ class PerceptionWatcher:
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
         self.saver = saver
         self._stranger_backs: list[str] = []  # 走开又回来的陌生人编号，身体取走
+        self.wardrobe = None  # vision.wardrobe.Wardrobe：描述装扮（cli 建好大脑后挂上；None = 只判换装、不描述）
+        self._outfits: list[OutfitNote] = []  # 好友的装扮，身体取走
+        self._describe_want: set[tuple[str, str]] = set()  # 要（重新）描述的好友 / 团子，描述回来才去掉
+        self._describe_asked: dict[tuple[str, str], float] = {}  # 上次 request 成功的时间：retry_after 内不再问
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.tracker = Tracker(cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}))  # 同一个人可能两类来回变
         self.requests: dict = {}  # 名字 → game.social.Request
@@ -642,7 +661,91 @@ class PerceptionWatcher:
 
     def _learn(self, kind: str, who: str, sample: tuple[np.ndarray, Rect], frame: np.ndarray, now: float) -> None:
         feat, box = sample
-        self.appearance.learn(kind, who, feat, now, crop=(box.h, describe_crop(frame, box).copy()))
+        p = self.appearance.learn(kind, who, feat, now, crop=(box.h, describe_crop(frame, box).copy()))
+        self._outfit_triggers(kind, who, p, box, frame.shape[0], now)
+
+    # ---- 装扮描述（设计 §3.3、§4.4）：学到新的好样本时才判断，不是每帧 ----
+    def _outfit_triggers(self, kind: str, who: str, p, box: Rect, frame_h: int, now: float) -> None:
+        book, acfg = self.appearance, self.appearance_cfg
+        key = (kind, who)
+        if kind == "me":
+            if p.desc and key not in self._describe_want and p.redescribed < acfg.redescribe_max \
+                    and book.drifted("me", ""):
+                p.redescribed += 1
+                log.info("团子换了装扮，重新描述（这次上线第 %d 次）", p.redescribed)
+                self._redescribe(key)
+            if not p.desc or key in self._describe_want:
+                self._ask(kind, who, ME_PRIORITY, p, frame_h, now)
+        elif kind == "friend":
+            if not p.checked:
+                if p.n < acfg.min_samples:
+                    return
+                p.checked = True
+                state = book.card_state(who)
+                log.info("%s 的装扮：%s", who, {"new": "第一次记", "same": "和上次一样", "changed": "换了"}[state])
+                self._note(who, p.feat, state)
+                card = book.card_desc.get(who, "")
+                if state == "same" and card:
+                    book.set_desc("friend", who, card, p.feat)  # 同一套：直接用卡里的描述，不再花额度
+                    return
+                with self._lock:
+                    self._describe_want.add(key)
+            elif key not in self._describe_want and p.redescribed < acfg.redescribe_max and book.drifted("friend", who):
+                p.redescribed += 1
+                log.info("%s 中途换了装扮，重新描述（这次上线第 %d 次）", who, p.redescribed)
+                self._note(who, p.feat, "changed")
+                self._redescribe(key)
+            if key in self._describe_want:
+                self._ask(kind, who, FRIEND_PRIORITY, p, frame_h, now)
+        elif not p.desc and distance(box.h, self._ref_height(frame_h), self.cfg.near, self.cfg.far) != "远":
+            self._ask(kind, who, STRANGER_PRIORITY, p, frame_h, now)
+
+    def _note(self, name: str, feat: np.ndarray, state: str, desc: str = "") -> None:
+        note = OutfitNote(name, [round(float(x), 3) for x in feat], self.appearance.key, state, desc)
+        with self._lock:
+            self._outfits.append(note)
+
+    def _redescribe(self, key: tuple[str, str]) -> None:
+        with self._lock:
+            self._describe_want.add(key)
+            self._describe_asked.pop(key, None)
+        if self.wardrobe is not None:
+            self.wardrobe.reset(*key)
+
+    def _ask(self, kind: str, who: str, priority: int, p, frame_h: int, now: float) -> None:
+        """交给描述器：框够高的样本才送；retry_after 内问过就不再问（描述器自己也去重、限次）。"""
+        if self.wardrobe is None or not self.appearance_cfg.describe:
+            return
+        key = (kind, who)
+        if now - self._describe_asked.get(key, float("-inf")) < self.appearance_cfg.retry_after:
+            return
+        crop = self.appearance.best_crop(kind, who, min_height=self.appearance_cfg.describe_min_height * frame_h)
+        if crop is None:
+            return  # 框不够高：等后面的样本
+        if self.wardrobe.request(kind, who, priority, crop, p.feat, now):
+            log.debug("排队描述装扮：%s %s", kind, who)
+            with self._lock:
+                self._describe_asked[key] = now
+
+    def on_described(self, kind: str, who: str, desc: str, feat) -> None:
+        """描述器线程回调：记进记忆簿；好友的再推一条 described 给身体（写关系卡、发 outfit 事件）。"""
+        if self.appearance is None:
+            return
+        self.appearance.set_desc(kind, who, desc, feat)
+        log.info("装扮描述：%s：%s", who or "团子", desc)
+        key = (kind, who)
+        with self._lock:
+            self._describe_want.discard(key)
+            self._describe_asked.pop(key, None)
+        if kind == "friend":
+            p = self.appearance.friends.get(who)
+            self._note(who, p.feat if p is not None else unit(feat), "described", desc)
+
+    def pop_outfits(self) -> list[OutfitNote]:
+        """取走好友的装扮（new / same / changed / described），身体写进关系卡。"""
+        with self._lock:
+            out, self._outfits = self._outfits, []
+        return out
 
     def _appearance_identify(self, frame: np.ndarray, players: list[Track], selfs: list[Track],
                              tagged: dict[int, Track], shown: set[str], fresh: dict, now: float,

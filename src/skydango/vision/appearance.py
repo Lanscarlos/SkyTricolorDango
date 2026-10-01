@@ -278,12 +278,14 @@ class AppearanceBook:
                 return self.card_desc.get(who, "") if kind == "friend" else ""
             return p.desc
 
-    def best_crop(self, kind: str, who: str) -> np.ndarray | None:
+    def best_crop(self, kind: str, who: str, min_height: float = 0.0) -> np.ndarray | None:
+        """最近几个好样本里框最高的那张描述裁图；框高不到 min_height（像素）就 None。"""
         with self._lock:
             p = self._get(kind, who)
             if p is None or not p.crops:
                 return None
-            return max(p.crops, key=lambda c: c[0])[1]
+            h, crop = max(p.crops, key=lambda c: c[0])
+            return crop if h >= min_height else None
 
 
 _BAD_NAME = re.compile(r'[<>:"/\\|?*]')

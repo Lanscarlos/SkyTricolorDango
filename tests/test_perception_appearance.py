@@ -272,3 +272,147 @@ def test_saver_error_does_not_break_perception():
     w, det = make(saver=saver)
     run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 1.0)
     assert saver.calls and w.appearance.friends[XIAOMING].n >= 3
+
+
+# ---- 触发描述、好友装扮交给身体（Task 7） ----
+class FakeWardrobe:
+    """只记 request / reset，不描述。"""
+
+    def __init__(self):
+        self.requests, self.calls, self.resets = [], [], []
+
+    def request(self, kind, who, priority, crop, feat, now):
+        self.requests.append((kind, who))
+        self.calls.append((kind, who, priority, crop, feat, now))
+        return True
+
+    def reset(self, kind, who):
+        self.resets.append((kind, who))
+
+
+def solid_feat(color):
+    return ColorEmbedder().embed(np.full((220, 54, 3), color, np.uint8))
+
+
+def card(color, desc):
+    return [{"desc": desc, "feat": [round(float(x), 3) for x in solid_feat(color)], "key": "color-v1"}]
+
+
+ME_BOX = Detection("self", Rect(900, 500, 100, 250), 0.9)
+
+
+def test_me_described_once_then_on_drift():
+    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "redescribe_max": 1})
+    fake = w.wardrobe = FakeWardrobe()
+    run(w, det, [(ME_BOX, GREEN)], 0.0, 1.0)
+    assert fake.requests == [("me", "")] and fake.calls[0][2] == 0  # ME 优先级
+    w.on_described("me", "", "绿色斗篷", w.appearance.me.feat)
+    assert w.my_look() == "绿色斗篷" and w.pop_outfits() == []  # 团子不进好友装扮队列
+    run(w, det, [(ME_BOX, GREEN)], 1.1, 2.0)
+    assert fake.requests == [("me", "")]  # 没换装不再描述
+    run(w, det, [(ME_BOX, PINK)], 2.1, 4.0)  # 在衣柜换了装
+    assert fake.requests == [("me", "")] * 2 and fake.resets == [("me", "")]
+    w.on_described("me", "", "粉色斗篷", w.appearance.me.feat)
+    run(w, det, [(ME_BOX, GREEN)], 4.1, 6.0)  # 又换回来：这次上线重新描述的次数用完了
+    assert fake.requests == [("me", "")] * 2 and w.my_look() == "粉色斗篷"
+
+
+def test_friend_without_card_is_described_and_noted_new():
+    w, det = make()
+    fake = w.wardrobe = FakeWardrobe()
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
+    notes = w.pop_outfits()
+    assert [n.state for n in notes] == ["new"] and fake.requests == [("friend", XIAOMING)]
+    (n,) = notes
+    assert n.name == XIAOMING and n.key == "color-v1" and n.desc == ""
+    assert len(n.feat) == len(w.appearance.friends[XIAOMING].feat)
+    assert all(round(x, 3) == x for x in n.feat)
+    assert fake.calls[0][2] == 1 and fake.calls[0][3].shape[0] > 220  # FRIEND 优先级；送的是扩过边的描述裁图
+    assert w.pop_outfits() == []
+
+
+def test_friend_same_outfit_uses_card_desc_without_request():
+    w, det = make()
+    fake = w.wardrobe = FakeWardrobe()
+    w.appearance.load_cards({XIAOMING: card(PINK, "粉色长斗篷")})
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
+    assert [n.state for n in w.pop_outfits()] == ["same"]
+    assert fake.requests == []
+    assert w.looks([XIAOMING]) == {XIAOMING: "粉色长斗篷"}
+
+
+def test_friend_same_outfit_without_card_desc_is_described():
+    w, det = make()
+    fake = w.wardrobe = FakeWardrobe()
+    w.appearance.load_cards({XIAOMING: card(PINK, "")})
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
+    assert [n.state for n in w.pop_outfits()] == ["same"] and fake.requests == [("friend", XIAOMING)]
+
+
+def test_friend_changed_outfit_is_described():
+    w, det = make()
+    fake = w.wardrobe = FakeWardrobe()
+    w.appearance.load_cards({XIAOMING: card(GREEN, "绿斗篷")})
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
+    assert [n.state for n in w.pop_outfits()] == ["changed"] and fake.requests == [("friend", XIAOMING)]
+
+
+def test_described_friend_pushes_note():
+    w, det = make()
+    w.wardrobe = FakeWardrobe()
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
+    F = w.appearance.friends[XIAOMING].feat
+    w.on_described("friend", XIAOMING, "粉色长斗篷", F)
+    note = w.pop_outfits()[-1]
+    assert note.state == "described" and w.looks([XIAOMING])[XIAOMING] == "粉色长斗篷"
+    assert (note.name, note.desc, note.key) == (XIAOMING, "粉色长斗篷", "color-v1")
+
+
+def test_friend_changes_mid_session_noted_and_redescribed():
+    w, det = make()
+    fake = w.wardrobe = FakeWardrobe()
+    body, label = player(1000), tag(990, 110)
+    run(w, det, [(body, PINK), (label, None)], 0.0, 2.0)
+    w.on_described("friend", XIAOMING, "粉色长斗篷", w.appearance.friends[XIAOMING].feat)
+    w.pop_outfits()
+    run(w, det, [(body, GREEN), (label, None)], 2.1, 4.0)  # 挂着标签换了衣服
+    assert [n.state for n in w.pop_outfits()] == ["changed"]
+    assert fake.requests == [("friend", XIAOMING)] * 2 and fake.resets == [("friend", XIAOMING)]
+    assert w.appearance.friends[XIAOMING].redescribed == 1
+
+
+def test_short_friend_box_waits_for_a_taller_sample():
+    w, det = make()
+    fake = w.wardrobe = FakeWardrobe()
+    run(w, det, [(player(1000, h=150), PINK), (tag(990, 110), None)], 0.0, 1.0)  # 好样本，但不到 describe_min_height
+    assert [n.state for n in w.pop_outfits()] == ["new"] and fake.requests == []
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 1.1, 2.0)
+    assert fake.requests == [("friend", XIAOMING)]
+
+
+def test_describe_off_still_notes_outfits():
+    w, det = make(acfg_kw={"every": 1, "min_samples": 3, "describe": False})
+    fake = w.wardrobe = FakeWardrobe()
+    run(w, det, [(ME_BOX, GREEN), (player(1400), PINK), (tag(1390, 110), None)], 0.0, 2.0)
+    assert [n.state for n in w.pop_outfits()] == ["new"] and fake.requests == []
+    w2, det2 = make()  # 没挂描述器
+    run(w2, det2, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.0)
+    assert [n.state for n in w2.pop_outfits()] == ["new"]
+
+
+def test_near_stranger_described():
+    w, det = make()
+    fake = w.wardrobe = FakeWardrobe()
+    run(w, det, [(player(1500), WHITE)], 0.0, 2.0)
+    assert fake.requests == [("stranger", "陌生人A")] and fake.calls[0][2] == 2
+    w.on_described("stranger", "陌生人A", "白斗篷", w.appearance.strangers["陌生人A"].feat)
+    assert w.pop_outfits() == [] and w.people(2.0)[0].look == "白斗篷"
+
+
+def test_far_stranger_not_described():
+    w, det = make()
+    fake = w.wardrobe = FakeWardrobe()
+    big_me = Detection("self", Rect(700, 300, 200, 600), 0.9)  # 团子框高 600：220 高的人算远
+    run(w, det, [(big_me, GREEN), (player(1500), WHITE)], 0.0, 2.0)
+    assert players(w)[0].data["sid"] == "陌生人A"
+    assert [r for r in fake.requests if r[0] == "stranger"] == []
