@@ -54,7 +54,8 @@
 - 新类型 `light`：`KIND_NAMES["light"] = "点亮陌生人"`；不进 `PASSIVE`；`SocialConfig.accept_strangers` 默认改成 `["candle", "light"]`
 - 大脑的 `set_request_policy` 的 kind 多一个 `light`（`REQUEST_KINDS`、工具说明、提示词「互动请求」一节各加一句："light 点亮陌生人：没点火的陌生人站到你身边时身体会自动举蜡烛给他点火，不想点可以关"）；只对陌生人
 - 状态机（每圈 `_watch_light(now)`）：
-  1. **闲着**：有 `light` 请求、`allowed`、`candle_slot` 格子上有东西 → 过护栏（同反射动作：黑屏、技能在跑、面板挡着、输入框开着、牵着手、别的互动请求挂着都先不做；`clear_view("emote")` 过不了不做）→
+  1. **闲着**：有 `light` 请求、`allowed`、没有排着的鞠躬、离上一个动作够 `reflex.min_gap` → 过护栏（同反射动作：黑屏、技能在跑、面板挡着、输入框开着、牵着手、别的互动请求挂着都先不做；`clear_view("emote")` 过不了不做）→
+     （不查 3 号格里是什么：锁定格，图标库多半认不出蜡烛图标；按用户说的 3 号格常驻举蜡烛）
      按 `candle_slot`（3）键举蜡烛（`_held("wheel")`，走 `wheel` 按数字键的同一条路），记下 `raised_at`、目标轨迹，`env.mark_tried(track)`
   2. **举着**：`env.lit(track, pos)` 为 True → 成功，进"等鞠躬"；过了 `light_timeout`（8 s）还不是 True（还是黑的 / 人走了）→ 失败，按 3 放下蜡烛（只有 `emotes.last_any` 还早于 `raised_at`，也就是之后没做过动作时才按），
      WARNING 日志"举了蜡烛 8 秒他还是黑的（或者走了），不再点他"
