@@ -219,3 +219,20 @@ def test_onnx_gesture_classifier_checks_label_count_up_front(tmp_path):
     _mean_model(tmp_path / "g.onnx")  # 输出 3 类
     with pytest.raises(ValueError, match="3"):
         OnnxGestureClassifier(str(tmp_path / "g.onnx"), ["none", "wave"])
+
+
+def test_extract_clips_skips_existing_names_but_keeps_numbering(tmp_path):
+    det = lambda: FixedDet(Rect(900, 400, 90, 300))  # noqa: E731
+    first = extract_clips(_frames(40), det(), tmp_path / "a", GestureConfig(), 0.35, "r", ref_h=300)
+    names = sorted(p.name for p in (tmp_path / "a").iterdir())
+    assert first == 4
+    n = extract_clips(_frames(40), det(), tmp_path / "b", GestureConfig(), 0.35, "r", ref_h=300,
+                      existing={names[0], names[2]})
+    assert n == 2  # 只算真写下来的
+    assert sorted(p.name for p in (tmp_path / "b").iterdir()) == [names[1], names[3]]  # 名字和第一次一样
+
+
+def test_evaluate_wrong_keeps_correct_but_unsure(tmp_path):
+    write_clip(tmp_path / "bow" / "c1", 150)  # 认成鞠躬但没把握
+    r = evaluate(tmp_path, PixelClassifier(), GestureConfig())
+    assert r["wrong"] == [{"clip": "c1", "truth": "bow", "said": "bow", "prob": 0.5}]

@@ -166,3 +166,23 @@ def test_log_failure_moves_clip_back(tmp_path, monkeypatch):
     monkeypatch.setattr(g, "_log", lambda e: (_ for _ in ()).throw(OSError("disk")))
     assert g.label(CLIP, "wave")[0] == 500
     assert (tmp_path / "_unlabeled" / CLIP).is_dir() and not (tmp_path / "wave" / CLIP).exists()
+
+
+def test_failed_rename_does_not_copy(tmp_path, monkeypatch):
+    """改名失败（比如文件被占用）就是挪不动：不能退回 复制 + 删除，免得片段两边都有。"""
+    import os
+
+    make_clip(tmp_path)
+    g = GestureLabels(tmp_path, LABELS)
+    real = os.rename
+
+    def fail(src, dst, *a, **k):
+        if CLIP in str(src):
+            raise PermissionError("in use")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "rename", fail)
+    code, body = g.label(CLIP, "wave")
+    assert code == 409 and "挪不动" in body["text"]
+    assert (tmp_path / "_unlabeled" / CLIP).is_dir() and not (tmp_path / "wave" / CLIP).exists()
+    assert not (tmp_path / "_labels.jsonl").exists()

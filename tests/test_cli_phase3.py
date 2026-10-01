@@ -156,6 +156,96 @@ def test_perception_gesture_eval_prints_verdict(tmp_path, monkeypatch, capsys):
     assert "wave" in out and "100%" in out and "达标" in out
 
 
+def test_perception_gesture_eval_warns_when_model_older_than_split(tmp_path, monkeypatch, capsys):
+    import os
+
+    import numpy as np
+
+    from skydango.imageio import imwrite
+    from skydango.vision import gesture
+
+    data = tmp_path / "data"
+    clip = data / "wave" / "r__0000_track1_t0.00s"
+    clip.mkdir(parents=True)
+    for i in range(16):
+        imwrite(clip / f"{i:02d}.png", np.full((32, 32, 3), 100, np.uint8))
+    (data / "_split.json").write_text('{"train": [], "val": ["r__0000_track1_t0.00s"]}', encoding="utf-8")
+
+    class Fake:
+        def __init__(self, *a, **k):
+            pass
+
+        def classify(self, clip):
+            return "wave", 0.95
+
+    monkeypatch.setattr(gesture, "OnnxGestureClassifier", Fake)
+    model = tmp_path / "old.onnx"
+    model.write_bytes(b"x")
+    t = (data / "_split.json").stat().st_mtime
+    os.utime(model, (t - 3600, t - 3600))
+    cli.main(["perception", "gesture-eval", str(data), "--model", str(model)])
+    assert "这个模型比现在的切分旧" in capsys.readouterr().out
+    os.utime(model, (t + 3600, t + 3600))
+    cli.main(["perception", "gesture-eval", str(data), "--model", str(model)])
+    assert "切分旧" not in capsys.readouterr().out
+    cli.main(["perception", "gesture-eval", str(data), "--model", str(model), "--all"])  # 不按切分评：不提醒
+    os.utime(model, (t - 3600, t - 3600))
+    cli.main(["perception", "gesture-eval", str(data), "--model", str(model), "--all"])
+    assert "切分旧" not in capsys.readouterr().out
+
+
+def _clips_env(tmp_path, monkeypatch):
+    import numpy as np
+
+    from skydango.imageio import imwrite
+    from skydango.vision import detect
+
+    rec = tmp_path / "rec1"
+    rec.mkdir()
+    for i in range(40):
+        imwrite(rec / f"{i:04d}_{i * 0.125:06.2f}s.jpg", np.zeros((1080, 1920, 3), np.uint8))
+    monkeypatch.setattr(detect, "make_detector", lambda *a, **k: WalkDetector())
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.toml").write_text('[gesture]\ndataset = "ds"\n', encoding="utf-8")
+    return rec, tmp_path / "ds"
+
+
+def test_perception_clips_rerun_refused_and_force_adds_only_new(tmp_path, monkeypatch, capsys):
+    import shutil
+
+    import pytest
+
+    rec, ds = _clips_env(tmp_path, monkeypatch)
+    cli.main(["-c", "config.toml", "perception", "clips", str(rec)])
+    first = sorted(p.name for p in (ds / "_unlabeled").iterdir())
+    assert len(first) == 4 and all(x.startswith("rec1__") for x in first)
+    (ds / "wave").mkdir()
+    (ds / "_unlabeled" / first[0]).rename(ds / "wave" / first[0])  # 标成挥手
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as e:
+        cli.main(["-c", "config.toml", "perception", "clips", str(rec)])
+    msg = str(e.value)
+    assert "rec1__" in msg and "--force" in msg and "wave" in msg and "_unlabeled" in msg
+    assert sorted(p.name for p in (ds / "_unlabeled").iterdir()) == first[1:]
+    shutil.rmtree(ds / "_unlabeled" / first[1])  # 被删掉的那段 --force 会补回来
+    cli.main(["-c", "config.toml", "perception", "clips", str(rec), "--force"])
+    assert sorted(p.name for p in (ds / "_unlabeled").iterdir()) == first[1:]  # 已在 wave/ 的不重切
+    assert [p.name for p in (ds / "wave").iterdir()] == [first[0]]
+    assert "切出 1 段" in capsys.readouterr().out
+
+
+def test_perception_clips_same_basename_from_other_dir_refused(tmp_path, monkeypatch):
+    import pytest
+
+    rec, ds = _clips_env(tmp_path, monkeypatch)
+    cli.main(["-c", "config.toml", "perception", "clips", str(rec)])
+    other = tmp_path / "elsewhere" / "rec1"
+    other.parent.mkdir()
+    rec.rename(other)
+    with pytest.raises(SystemExit):
+        cli.main(["-c", "config.toml", "perception", "clips", str(other)])
+
+
 def test_places_add_works_before_any_feature_model(tmp_path, monkeypatch, capsys):
     from skydango.imageio import imwrite
 

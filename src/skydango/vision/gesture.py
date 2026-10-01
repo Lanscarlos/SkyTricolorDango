@@ -131,17 +131,19 @@ def load_clip(folder: Path) -> list[np.ndarray]:
 def extract_clips(
     frames: Iterable[tuple[float, np.ndarray]], detector, out: Path, cfg: GestureConfig, conf: float,
     recording: str, ref_h: float | None = None, near: float = 0.8, far: float = 0.4,
+    existing: set[str] | frozenset[str] = frozenset(),
 ) -> int:
-    """录像 [(秒, 图)]（可以是生成器）→ 每条 player 轨迹按 fps 取帧，切成 frames 张一段存起来（每 stride 帧起一段，半重叠），返回段数。
+    """录像 [(秒, 图)]（可以是生成器）→ 每条 player 轨迹按 fps 取帧，切成 frames 张一段存起来（每 stride 帧起一段，半重叠），返回写下的段数。
 
     只收近处、画面中间的人（`near_center`；远处的人太小、边上的人不是对着团子的）。ref_h 是团子的框高：
-    不给就用这一帧检测到的 `self` 框高，也没有就按 0.2 × 帧高。"""
+    不给就用这一帧检测到的 `self` 框高，也没有就按 0.2 × 帧高。
+    existing：数据目录里已经有的片段名（可能已经标过、挪走了），这些不再写；编号照样往后数，同一段录像重切出来的名字不变。"""
     tracker = Tracker(buffer=1.0, min_iou=0.3)
     buffers: dict[int, list[tuple[float, np.ndarray]]] = {}  # 轨迹 → [(秒, 裁剪)]
     last: dict[int, float] = {}
     gap = 0.9 / max(cfg.fps, 0.1)
     keep = max(cfg.frames - cfg.stride, 0)  # 存完一段后留下的帧数
-    n = 0
+    n = written = 0
     out.mkdir(parents=True, exist_ok=True)
     for t, img in frames:
         height, width = img.shape[:2]
@@ -162,13 +164,16 @@ def extract_clips(
             crops.append((t, person_crop(img, track.box, cfg.size)))
             if len(crops) < cfg.frames:
                 continue
-            folder = out / clip_name(recording, n, track.id, crops[0][0])
-            folder.mkdir(parents=True, exist_ok=True)
-            for i, (_, crop) in enumerate(crops):
-                imwrite(folder / f"{i:02d}.jpg", crop)
+            name = clip_name(recording, n, track.id, crops[0][0])
+            if name not in existing:
+                folder = out / name
+                folder.mkdir(parents=True, exist_ok=True)
+                for i, (_, crop) in enumerate(crops):
+                    imwrite(folder / f"{i:02d}.jpg", crop)
+                written += 1
             n += 1
             buffers[track.id] = crops[len(crops) - keep:] if keep else []
-    return n
+    return written
 
 
 def _pr(tp: int, fp: int, fn: int) -> dict:

@@ -331,6 +331,7 @@ def test_cli_gesture_train_end_to_end(tmp_path, monkeypatch, capsys):
     assert len(reports) == 1
     text = reports[0].read_text(encoding="utf-8")
     assert "类别顺序" in text and "none, wave" in text and "验证集" in text
+    assert (reports[0].parent / "_split.json").read_text("utf-8") == (root / "_split.json").read_text("utf-8")
     assert "报告" in capsys.readouterr().out
 
     # gesture-eval：有 _split.json 默认只评验证集，--all 评全部
@@ -339,6 +340,35 @@ def test_cli_gesture_train_end_to_end(tmp_path, monkeypatch, capsys):
     assert f"{len(gt.load_split(root)['val'])} 段" in val_out and "只评验证集" in val_out
     cli.main(["-c", "config.toml", "perception", "gesture-eval", str(root), "--model", "models/g.onnx", "--all"])
     assert "50 段" in capsys.readouterr().out
+
+
+def test_cli_refuses_out_onto_gesture_model(tmp_path, monkeypatch):
+    from skydango import cli
+
+    root = tmp_path / "data"
+    root.mkdir()
+    (tmp_path / "config.toml").write_text('[gesture]\nmodel = "models/gesture.onnx"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["-c", "config.toml", "perception", "gesture-train", str(root), "--out", "./models/../models/gesture.onnx"])
+    assert "--force" in str(e.value) and "gesture.onnx" in str(e.value)
+    # --force：过了这一关（数据目录是空的，在后面"片段不够"那里停）
+    with pytest.raises(SystemExit) as e:
+        cli.main(["-c", "config.toml", "perception", "gesture-train", str(root), "--out", "models/gesture.onnx", "--force"])
+    assert "不够" in str(e.value)
+
+
+def test_report_marks_correct_but_unsure():
+    from skydango.vision.gesture_train import report_md
+
+    evaluation = {"wave": {"tp": 0, "fp": 0, "fn": 2, "precision": None, "recall": 0.0},
+                  "all": {"tp": 0, "fp": 0, "fn": 2, "precision": None, "recall": 0.0}, "clips": 2,
+                  "wrong": [{"clip": "a", "truth": "wave", "said": "wave", "prob": 0.5},
+                            {"clip": "b", "truth": "wave", "said": "none", "prob": 0.9}]}
+    text = report_md(data=Path("d"), model=Path("m.onnx"), labels=["none", "wave"], names={}, samples=[],
+                     split={"train": [], "val": []}, info={}, evaluation=evaluation, min_prob=0.8)
+    assert "`a`：其实是 wave，模型说 wave（0.50，没到 min_prob）" in text
+    assert "`b`：其实是 wave，模型说 none（0.90）" in text
 
 
 def test_default_out_does_not_touch_gesture_onnx(tmp_path):

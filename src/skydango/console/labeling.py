@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -93,7 +92,9 @@ class GestureLabels:
             return 409, "目标目录里已经有同名片段"
         try:
             target.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(self.root / src / clip), str(target / clip))
+            # 同一个数据目录（同一个盘）里直接改名：要么挪过去、要么原地不动。shutil.move 改名失败会退回 复制 + 删除，
+            # Windows 上文件被占用时可能删一半，片段两边都有
+            (self.root / src / clip).rename(target / clip)
         except OSError as exc:
             return 409, f"挪不动：{exc}"
         return 200, ""

@@ -689,6 +689,19 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_appearance_eval(cfg, args)
 
 
+def _existing_clips(dataset: Path, out: Path, recording: str) -> dict[Path, list[str]]:
+    """数据目录每个子目录（_unlabeled、各类别、_discard……）和输出目录里，这段录像已经切出来的片段：{目录: [片段名]}。"""
+    bases = sorted(d for d in dataset.iterdir() if d.is_dir()) if dataset.is_dir() else []
+    if out.is_dir() and out.resolve() not in {b.resolve() for b in bases}:
+        bases.append(out)
+    found: dict[Path, list[str]] = {}
+    for base in bases:
+        names = sorted(p.name for p in base.iterdir() if p.is_dir() and p.name.startswith(f"{recording}__"))
+        if names:
+            found[base] = names
+    return found
+
+
 def _perception_clips(cfg: Config, args) -> None:
     """动作识别的数据（三期 §3）：record 录的画面 → 按人物轨迹切成 16 帧的片段，人工挪进 <数据目录>/<动作>/。"""
     from .vision.compare import timed_files
@@ -704,12 +717,21 @@ def _perception_clips(cfg: Config, args) -> None:
         raise SystemExit(str(exc)) from None
     if skipped:
         print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
-    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
     out = Path(args.output) if args.output else Path(cfg.gesture.dataset) / "_unlabeled"
     recording = Path(args.source).resolve().name  # 片段名带录像名，后面标注 / 训练按它找回来源
+    existing = _existing_clips(Path(cfg.gesture.dataset), out, recording)
+    if existing and not args.force:
+        where = "、".join(f"{base}（{len(names)} 段）" for base, names in existing.items())
+        raise SystemExit(
+            f"录像 {recording} 切过了：{where} 里已经有 {recording}__ 开头的片段。重切会在 _unlabeled 里再造一份已经标过的片段，"
+            "训练时两份可能标得不一样。\n加 --force 只切数据目录里哪儿都还没有的片段（已有的名字一律跳过）；"
+            "要是另一段录像碰巧同名，先把录像目录改个名再切")
+    names = {n for group in existing.values() for n in group}
+    detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
     n = extract_clips(((t, imread(path)) for t, path in timed), detector, out, cfg.gesture, p.conf, recording,
-                      near=p.near, far=p.far)
-    print(f"切出 {n} 段（每段 {cfg.gesture.frames} 张、{cfg.gesture.fps:g} 张/秒）→ {out}")
+                      near=p.near, far=p.far, existing=names)
+    print(f"切出 {n} 段（每段 {cfg.gesture.frames} 张、{cfg.gesture.fps:g} 张/秒）→ {out}"
+          + (f"；数据目录里已有的 {len(names)} 段同名片段没重切" if names else ""))
     print(f"人工看一遍，把片段目录挪进 <数据目录>/<动作>/（{' / '.join(cfg.gesture.labels)}；none = 站着、走路、别的动作），"
           "再用 perception gesture-eval 评估")
 
@@ -755,12 +777,19 @@ def _perception_gesture_label(cfg: Config, args) -> None:
     print(f"{len(todo)} 段交给 Claude（{a.model}）初分：每批 {a.batch} 段、{a.jobs} 路并发"
           + (f"；{done} 段已有 claude.json，跳过" if done else ""))
     counts: dict[str, int] = {}
-    failed = 0
+    failed, gone = 0, 0
+    unreadable: list[str] = []
     for c0 in range(0, len(todo), _ASSIST_CHUNK):
-        chunk = todo[c0 : c0 + _ASSIST_CHUNK]
-        frames = [assist.FrameInput(d.name, gl.contact_sheet(load_clip(d)), []) for d in chunk]
+        chunk, frames = [], []
+        for d in todo[c0 : c0 + _ASSIST_CHUNK]:
+            try:  # 片段可能刚在标注页被挪走，或者有张图坏了：跳过这一段，别让整次初分停下
+                frames.append(assist.FrameInput(d.name, gl.contact_sheet(load_clip(d)), []))
+            except (OSError, RuntimeError, ValueError):
+                unreadable.append(d.name)
+                continue
+            chunk.append(d)
         try:
-            guesses = reviewer.review(frames)
+            guesses = reviewer.review(frames) if frames else {}
         except assist.AssistLimit:
             raise SystemExit(f"订阅额度用完了：已初分的片段存好了，额度恢复后重跑同一条命令会接着做（缓存 {cache}）") from None
         for d in chunk:
@@ -768,10 +797,21 @@ def _perception_gesture_label(cfg: Config, args) -> None:
             if g is None:
                 failed += 1
                 continue
-            gl.write_guess(d, g, a.model)
+            if not d.is_dir():  # Claude 看的这几分钟里，片段在标注页被标走了
+                gone += 1
+                continue
+            try:
+                gl.write_guess(d, g, a.model)
+            except OSError:
+                gone += 1
+                continue
             counts[g.label] = counts.get(g.label, 0) + 1
         print(f"  {min(c0 + _ASSIST_CHUNK, len(todo))}/{len(todo)} 段")
     print("初分：" + ("、".join(f"{k}×{v}" for k, v in sorted(counts.items())) or "没有") + f"；没初分成 {failed} 段")
+    if gone:
+        print(f"已被标走 {gone} 段（初分时已经在标注页挪走了，没写 claude.json）")
+    if unreadable:
+        print(f"读不了 {len(unreadable)} 段（片段目录没了或者有图坏了，跳过）：" + "、".join(unreadable))
     u = reviewer.usage
     print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")
 
@@ -780,10 +820,14 @@ def _perception_gesture_train(cfg: Config, args) -> None:
     """训练动作模型（vision/gesture_train.py）：确认过的片段 → 切分（_split.json）→ DINOv2-small 特征 + 时序头
     → 导出 ONNX（不覆盖 models/gesture.onnx）→ 和 PyTorch 比输出 → 验证集评估 → 报告 tmp/gesture-train/<时间>/report.md。"""
     import datetime as dt
+    import shutil
 
     from .vision import gesture, gesture_train as gt
 
     g = cfg.gesture
+    if args.out and Path(args.out).resolve() == Path(g.model).resolve() and not args.force:
+        raise SystemExit(f"--out {args.out} 就是 [gesture] model 正在用的模型：没评估过的新模型别直接覆盖它。"
+                         "换个路径训练、看完报告达标再复制过去；确实要覆盖就加 --force")
     data = Path(args.data) if args.data else Path(g.dataset)
     if not data.is_dir():
         raise SystemExit(f"{data} 不是目录：先 perception clips 切片段，再在管理面板「标注」页确认")
@@ -838,12 +882,13 @@ def _perception_gesture_train(cfg: Config, args) -> None:
         _print_gesture_eval(evaluation, g)
     folder = Path("tmp") / "gesture-train" / f"{now:%Y%m%d-%H%M%S}"
     folder.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(data / gt.SPLIT_FILE, folder / gt.SPLIT_FILE)  # 下次训练会改写数据目录里的切分，这份留给这个模型对照
     report = folder / "report.md"
     report.write_text(gt.report_md(
         data=data, model=out, labels=g.labels, names=g.names, samples=samples, split=sp, info=info,
         evaluation=evaluation, min_prob=g.min_prob, skipped=skipped, parity=parity, notes=notes, when=now,
     ), encoding="utf-8")
-    print(f"报告 → {report}")
+    print(f"报告 → {report}（这次的切分也复制了一份在旁边）")
     print(f"类别顺序（= 模型输出顺序）：{', '.join(g.labels)}；达标后再复制成 {g.model}、打开 [gesture] enabled")
 
 
@@ -878,6 +923,13 @@ def _perception_gesture_eval(cfg: Config, args) -> None:
     if split is not None and split.get("val"):
         only = set(split["val"])
         print(f"只评验证集（{len(only)} 段，按 {data / SPLIT_FILE}；--all 评全部）")
+        try:
+            older = Path(g.model).stat().st_mtime < (data / SPLIT_FILE).stat().st_mtime
+        except OSError:
+            older = False
+        if older:  # 切分是后来的训练重写的：这个模型训练时用的是另一份切分
+            print("注意：这个模型比现在的切分旧，验证集里可能有它训练过的片段，分数会偏高"
+                  "（它训练时的切分在 tmp/gesture-train/<时间>/_split.json）")
     elif split is not None:
         print(f"{data / SPLIT_FILE} 里没有验证集：评全部片段（包括训练过的，结果会偏好）")
     clf = gesture.OnnxGestureClassifier(g.model, g.labels, cfg.perception.device)
@@ -2422,13 +2474,16 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
     q.add_argument("-o", "--output", help="输出目录（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q.add_argument("--force", action="store_true",
+                   help="这段录像切过也接着切：数据目录里哪儿都还没有的片段才写（已标过、挪走的不会再造一份）")
     q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
     q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的片段也重新初分")
     q = psub.add_parser("gesture-train", help="训练动作模型：DINOv2-small 冻住 + 时序头，导出 ONNX（不覆盖 gesture.onnx）、验证集评估、写报告")
     q.add_argument("data", nargs="?", help="数据目录（默认 [gesture] dataset）")
     q.add_argument("--epochs", type=int, default=60, help="最多训练几轮（验证集 F1 10 轮不涨就停）")
-    q.add_argument("--out", help="ONNX 输出路径（默认 models/gesture-<日期>.onnx）")
+    q.add_argument("--out", help="ONNX 输出路径（默认 models/gesture-<日期>.onnx；是 [gesture] model 时要加 --force）")
+    q.add_argument("--force", action="store_true", help="允许 --out 直接覆盖 [gesture] model 正在用的模型")
     q.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="训练用的设备（没 CUDA 自动退回 CPU）")
     q = psub.add_parser("gesture-eval", help="在分好类的片段（<数据目录>/<动作>/<片段>/）上评估动作模型的精确率 / 召回率")
     q.add_argument("data", help="数据目录，比如 datasets/gesture")

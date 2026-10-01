@@ -506,5 +506,6 @@ def report_md(
                   + ("达标（精确率 ≥ 90%、召回率 ≥ 60%）" if ok else "没达标")]
         wrong = evaluation.get("wrong", [])
         lines += ["", f"### 认错的片段（{len(wrong)}）", ""]
-        lines += [f"- `{w['clip']}`：其实是 {w['truth']}，模型说 {w['said']}（{w['prob']:.2f}）" for w in wrong] or ["没有"]
+        lines += [f"- `{w['clip']}`：其实是 {w['truth']}，模型说 {w['said']}（{w['prob']:.2f}"
+                  + ("，没到 min_prob）" if w["said"] == w["truth"] else "）") for w in wrong] or ["没有"]
     return "\n".join(lines) + "\n"

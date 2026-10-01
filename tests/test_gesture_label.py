@@ -113,3 +113,37 @@ def test_incomplete_clip_skipped(tmp_path, monkeypatch, capsys):
     cli._perception_gesture_label(cfg, _args())
     assert sent == [["r__0002_track1_t1.00s"]]
     assert "r__0001_track1_t0.00s" in capsys.readouterr().out
+
+
+def test_clip_labeled_in_page_while_running_is_skipped(tmp_path, monkeypatch, capsys):
+    cli, cfg, sent = _cli_env(tmp_path, monkeypatch)
+    from skydango.brain import claude
+
+    un = tmp_path / "ds" / "_unlabeled"
+    a, b = _clip(un, "r__0001_track1_t0.00s"), _clip(un, "r__0002_track1_t1.00s")
+    inner = claude.one_shot_message
+
+    def run(cmd, env, cwd, content, timeout):
+        out = inner(cmd, env, cwd, content, timeout)
+        (tmp_path / "ds" / "wave").mkdir(exist_ok=True)
+        a.rename(tmp_path / "ds" / "wave" / a.name)  # Claude 还在看的时候，网页上标走了
+        return out
+
+    monkeypatch.setattr("skydango.brain.claude.one_shot_message", run)
+    cli._perception_gesture_label(cfg, _args())
+    assert load_guess(b).label == "wave"
+    assert load_guess(tmp_path / "ds" / "wave" / a.name) is None  # 标走的不写 claude.json
+    assert "已被标走 1 段" in capsys.readouterr().out
+
+
+def test_unreadable_clip_is_skipped(tmp_path, monkeypatch, capsys):
+    cli, cfg, sent = _cli_env(tmp_path, monkeypatch)
+    un = tmp_path / "ds" / "_unlabeled"
+    bad = _clip(un, "r__0001_track1_t0.00s")
+    (bad / "03.jpg").write_bytes(b"not a jpeg")
+    good = _clip(un, "r__0002_track1_t1.00s")
+    cli._perception_gesture_label(cfg, _args())
+    assert sent == [["r__0002_track1_t1.00s"]]
+    assert load_guess(good).label == "wave" and load_guess(bad) is None
+    out = capsys.readouterr().out
+    assert "读不了 1 段" in out and "r__0001_track1_t0.00s" in out
