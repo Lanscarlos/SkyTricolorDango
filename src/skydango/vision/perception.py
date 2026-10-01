@@ -1329,18 +1329,20 @@ class PerceptionWatcher:
             if now - d.get("disk_check", float("-inf")) >= DISK_EVERY:
                 d["disk_check"] = now
                 d.setdefault("disk_since", now)  # 第一次扫圆盘的时间：替身候选要扫满 DISK_GAP 才敢说"圆盘没了"
-                disk = find_disk(frame, p.box, self.flame, cfg.disk_min_score, cfg.disk_dark)
+                disk = find_disk(frame, p.box, self.flame, cfg.disk_min_score)
                 if disk is not None:
                     if now - d.get("disk_last", float("-inf")) > DISK_GAP:
-                        d["disk_first"] = now
+                        d["disk_first"], d["disk_best"] = now, 0.0
                     d["disk_last"], d["disk_pos"] = now, (disk.x, disk.y)
+                    d["disk_best"] = max(d["disk_best"], disk.score)
             if p.id in tried:
                 with self._lock:
                     if p.id in self._lit_mem:
                         self._lit_mem[p.id][1] = d.get("disk_last", float("-inf"))
             if p.id in tried or p.cls != UNLIT:  # 举过蜡烛的 / 替身候选：只更新圆盘还在不在（lit() 用），不参与挑请求
                 continue
-            if now - d.get("disk_last", float("-inf")) <= DISK_GAP and now - d["disk_first"] >= cfg.light_after:
+            if (now - d.get("disk_last", float("-inf")) <= DISK_GAP and now - d["disk_first"] >= cfg.light_after
+                    and d["disk_best"] >= cfg.disk_sure):
                 if best is None or d["disk_first"] < best.data["disk_first"]:
                     best = p
         if best is None:

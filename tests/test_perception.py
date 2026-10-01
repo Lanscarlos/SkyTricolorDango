@@ -1600,7 +1600,7 @@ def unlit(x, y=400, w=90, h=220):
 def light_watcher(monkeypatch, disks):
     """disks：每次 find_disk 依次返回什么（用完了一直返回最后一个）。"""
     seq = list(disks)
-    monkeypatch.setattr(perception_mod, "find_disk", lambda frame, box, flame, s, d: seq.pop(0) if len(seq) > 1 else seq[0])
+    monkeypatch.setattr(perception_mod, "find_disk", lambda frame, box, flame, s: seq.pop(0) if len(seq) > 1 else seq[0])
     det, clock = FakeDetector(), Clock()
     w = watcher(det, clock=clock)
     w.light_cfg, w.flame = SocialConfig(), np.ones((4, 4), np.uint8)
@@ -1624,6 +1624,31 @@ def test_light_request_after_disk_seen_long_enough(monkeypatch):
     run(w, 3.1, clock)
     req = w.requests[LIGHT_KEY]
     assert req.kind == "light" and req.pos == (1045, 480) and req.track is not None
+
+
+def test_light_request_needs_one_sure_disk(monkeypatch):
+    """单帧 ≥ disk_min_score 就算看到，但这一段里至少要有一帧 ≥ disk_sure 才出请求（灯笼菱形最高 0.78，真圆盘常到 0.9 以上）。"""
+    weak = Disk(1045, 480, 20.0, 0.75)
+    w, det, clock = light_watcher(monkeypatch, [weak])
+    det.frames = [[unlit(1000)]]
+    for t in (0.0, 1.0, 2.0, 2.5, 3.1, 3.5):
+        run(w, t, clock)
+    assert LIGHT_KEY not in w.requests
+    w2, det2, clock2 = light_watcher(monkeypatch, [weak, weak, DISK, weak, weak, weak])
+    det2.frames = [[unlit(1000)]]
+    for t in (0.0, 1.0, 2.0, 2.5, 3.1):
+        run(w2, t, clock2)
+    assert LIGHT_KEY in w2.requests
+
+
+def test_sure_disk_forgotten_after_long_gap(monkeypatch):
+    """断开超过 DISK_GAP 重新计时：之前那一帧 ≥ disk_sure 也不算了。"""
+    weak = Disk(1045, 480, 20.0, 0.75)
+    w, det, clock = light_watcher(monkeypatch, [DISK, None, None, weak, weak, weak, weak, weak])
+    det.frames = [[unlit(1000)]]
+    for t in (0.0, 0.5, 1.2, 1.5, 2.5, 3.5, 4.5, 5.0):
+        run(w, t, clock)
+    assert LIGHT_KEY not in w.requests
 
 
 def test_short_gap_keeps_timer_long_gap_resets(monkeypatch):
