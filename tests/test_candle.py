@@ -1,11 +1,15 @@
-"""火焰圆盘（spec 2026-10-01-light-unlit-stranger §3）：黑影身上深色实心圆 + 火焰、没有白圈。"""
+"""火焰圆盘（spec 2026-10-01-light-unlit-stranger §3）：黑影身上的火焰（深色实心圆 + 火焰，他举蜡烛时外面多一圈白圈）。"""
+
+from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
+from skydango.config import SocialConfig
 from skydango.game.social import cream, load_icons
 from skydango.vision.bubbles import Rect
-from skydango.vision.candle import dark_ring, find_disk, load_flame
+from skydango.vision.candle import find_disk, load_flame
 
 FLAME = load_flame()
 STRANGER = load_icons("assets/social")["stranger"]
@@ -38,8 +42,9 @@ def test_finds_dark_disk_with_flame():
     assert d is not None and abs(d.x - 990) <= 6 and abs(d.y - 620) <= 6 and d.score >= 0.9
 
 
-def test_white_ring_candle_is_not_a_disk():
-    assert find_disk(figure(ring=True), BOX, FLAME) is None
+def test_white_ring_still_counts():
+    """白圈 = 这个黑影在举蜡烛（10-01 真机：白圈一闪一闪），他照样站在能点火的距离里，按 3 举蜡烛也安全。"""
+    assert find_disk(figure(ring=True), BOX, FLAME) is not None
 
 
 def test_stranger_icon_is_not_a_disk():
@@ -62,14 +67,26 @@ def test_disk_near_head_above_box_is_found():
     assert d is not None and abs(d.y - 470) <= 6
 
 
-def test_dark_ring():
-    f = figure()
-    assert dark_ring(f, 990, 620, 32, 48, dark=80.0)
-    assert not dark_ring(figure(ring=True), 990, 620, 32, 48, dark=80.0)
+# ---- 10-01 晚真机抓的帧（200×200，火焰在正中）：find_disk 不看外环亮度、不看白圈 ----
+DISKS = Path(__file__).parent / "data" / "candle_disks"
+CROP_BOX = Rect(50, 80, 100, 120)  # 搜索区域盖住整张小图
+SURE = SocialConfig().disk_sure
+
+
+@pytest.mark.parametrize("name", ["disk-plain-2206.png", "disk-white-2206.png", "disk-bright-2206.png"])
+def test_real_disks_are_found_and_sure(name):
+    """white：他在举蜡烛（白圈）；bright：半透明圆盘透出后面亮的火光，外环亮度 141（旧的"够暗"判断刷掉了）。"""
+    d = find_disk(cv2.imread(str(DISKS / name)), CROP_BOX, FLAME)
+    assert d is not None and abs(d.x - 100) <= 6 and abs(d.y - 100) <= 6 and d.score >= SURE, (name, d)
+
+
+def test_lantern_is_never_sure():
+    """场景里灯笼上的菱形（中间也是个黑洞）能匹配到 0.77：单帧可能算，但到不了 disk_sure，不会出请求。"""
+    d = find_disk(cv2.imread(str(DISKS / "lantern-2202.png")), CROP_BOX, FLAME)
+    assert d is None or d.score < SURE
 
 
 # ---- 孤儿圆圈：有没有白圈（最终审查 #1：半透明圆盘透出亮背景，不能看亮度） ----
-from pathlib import Path  # noqa: E402
 
 from skydango.vision.candle import ring_fraction, white_ring  # noqa: E402
 

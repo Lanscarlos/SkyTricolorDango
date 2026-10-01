@@ -258,7 +258,7 @@ class SocialConfig:
     bow_delay: float = 2.5  # 看到他亮起来 / 接受点火后等这么久再鞠躬（等闪光动画）
     candle_slot: int = 3  # 轮盘上"举蜡烛"在第几格：按一下举起、再按一下放下（用户 2026-10-01）
     disk_min_score: float = 0.68  # 火焰圆盘的模板匹配分
-    disk_dark: float = 90.0  # 圆盘外环亮度均值低于这个才算深色圆盘（有白圈的是举蜡烛的请求）
+    disk_sure: float = 0.85  # 连着看到火焰的这一段里至少一帧匹配到这么高才出请求（10-01 晚真机：真圆盘常到 0.86~0.99，灯笼菱形最高 0.78）
     flame: str = "assets/candle/flame.png"  # 圆盘里的火焰模板
 
 

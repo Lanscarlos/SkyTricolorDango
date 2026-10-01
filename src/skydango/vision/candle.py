@@ -1,8 +1,10 @@
-"""火焰圆盘：没点火的黑影站到团子身边时，他身上出现深色实心圆 + 白色空心火焰（没有白圈）。
+"""火焰圆盘：没点火的黑影站到团子身边时，他身上出现深色实心圆 + 白色空心火焰；他举蜡烛时外面多一圈白圈（一闪一闪）。
 
-只用来判断"这个黑影站在能点火的距离里"（spec 2026-10-01-light-unlit-stranger）。**绝不点它**：
-点了团子会一直跟着那个陌生人走，点火靠按 3 号键举蜡烛。
-白圈 + 火焰是陌生人举蜡烛要给团子点火（social 的 candle），外环是亮的，这里不算。
+`find_disk` 只用来判断"这个黑影站在能点火的距离里"（spec 2026-10-01-light-unlit-stranger），有没有白圈都算：
+团子按 3 号键举蜡烛，不碰圆圈。**绝不点圆盘**：点了团子会一直跟着那个陌生人走。
+外环的亮度不看：半透明圆盘透出后面亮的东西时并不暗（10-01 晚真机外环亮度 128~150，白圈帧又整圈是亮的，两样都刷掉后凑不满 3 秒）。
+误匹配（场景里灯笼上的菱形能到 0.77）靠 `[social] disk_sure` 挡：一段里至少要有一帧匹配得够好。
+孤儿圆圈要不要点（social 的 candle）还是看有没有白圈（`white_ring`）。
 """
 
 from __future__ import annotations
@@ -20,10 +22,8 @@ from .icons import best_match, trim
 
 FLAME = "assets/candle/flame.png"  # 录像 candle-20260930-d 第 16 秒截的，只有火焰
 SCALES = [0.6, 0.7, 0.8, 0.9, 1.0, 1.15, 1.3, 1.5]  # 人远近不同，圆盘大小跟着变
-RING_IN, RING_OUT = 1.2, 2.3  # 火焰半高的这么多倍之间是圆盘的外环（录像里白圈在 1.35~2 倍，随火焰大小变）
 BLUR = 2.0  # 火焰会抖（大小、形状每帧不同），模板和画面都先糊一下再比，真火焰的分数高一截
 SECTORS = 24  # 外环分成这么多扇形；白圈是一整圈亮的，旁边玩家的白衣服只占几个扇形
-RING_SECTORS = 0.5  # 亮的扇形占比超过这个 = 有白圈
 SECTOR_PIXELS = 3  # 一个扇形里至少这么多米白像素才算亮
 # 孤儿圆圈（头顶没名字的）里是火焰时：白圈占一圈扇形的这么多以上 = 陌生人举蜡烛要给团子点火（social 的 candle），
 # 不到 = 深色火焰圆盘（点了会跟着他走）。环带取圆圈半径的 0.7~1.1 倍。不看亮度：半透明圆盘会透出后面亮的东西
@@ -75,18 +75,6 @@ def white_ring(frame: np.ndarray, cx: int, cy: int, r: float) -> bool:
     return ring_fraction(frame, cx, cy, RING_BAND[0] * r, RING_BAND[1] * r) >= RING_WHITE
 
 
-def dark_ring(frame: np.ndarray, cx: int, cy: int, r_in: float, r_out: float, dark: float) -> bool:
-    """(cx, cy) 周围 r_in~r_out 的环带够暗、没有白色描边。"""
-    band = _band(frame, cx, cy, r_in, r_out)
-    if band is None:
-        return False
-    patch, ring, sector = band
-    value = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)[:, :, 2]
-    if float(value[ring].mean()) >= dark:
-        return False
-    return _lit_fraction(patch, ring, sector) <= RING_SECTORS
-
-
 def _region(box: Rect, width: int, height: int) -> tuple[int, int, int, int] | None:
     """黑影框左右各扩 0.5 倍框宽、往上扩 0.6 倍框高、下到框底（圆盘在胸口或头顶附近）。"""
     x1, x2 = max(0, round(box.x - 0.5 * box.w)), min(width, round(box.x2 + 0.5 * box.w))
@@ -96,8 +84,8 @@ def _region(box: Rect, width: int, height: int) -> tuple[int, int, int, int] | N
     return x1, y1, x2, y2
 
 
-def find_disk(frame: np.ndarray, box: Rect, flame: np.ndarray, min_score: float = 0.68, dark: float = 90.0) -> Disk | None:
-    """在这个黑影身上 / 头顶找火焰圆盘；没有（或者是白圈的举蜡烛请求）返回 None。"""
+def find_disk(frame: np.ndarray, box: Rect, flame: np.ndarray, min_score: float = 0.68) -> Disk | None:
+    """在这个黑影身上 / 头顶找火焰（有没有白圈都算）；没有返回 None。分数够不够确定由调用方按 disk_sure 看。"""
     area = _region(box, frame.shape[1], frame.shape[0])
     if area is None:
         return None
@@ -111,7 +99,4 @@ def find_disk(frame: np.ndarray, box: Rect, flame: np.ndarray, min_score: float 
             best, scale = m, s
     if best is None or best.score < min_score:
         return None
-    cx, cy, r = x1 + best.x, y1 + best.y, flame.shape[0] * scale / 2
-    if not dark_ring(frame, cx, cy, RING_IN * r, RING_OUT * r, dark):
-        return None
-    return Disk(cx, cy, r, best.score)
+    return Disk(x1 + best.x, y1 + best.y, flame.shape[0] * scale / 2, best.score)
