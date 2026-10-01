@@ -31,6 +31,9 @@ class Lull:
     said: list[str] = field(default_factory=list)  # 冷场中团子又说的
     ending: str = ""  # 怎么结束的（给反思材料的总结用）
     ended_at: float | None = None
+    created: float = float("-inf")  # 墙钟：开始追踪的时间（“心里：”只挂到大脑这一轮开始之前就有的冷场上）
+    announced: bool = True  # left 先等 leave_grace 秒才叫醒（名字标签闪一下不算走开）；还没叫醒的不进状态、不挂想法
+    opening: str = ""  # left 叫醒时的那一句
 
 
 @dataclass(frozen=True)
@@ -75,8 +78,21 @@ class LullTracker:
         if silent is None:
             self._start_silent(wall, nearby, chat)
         else:
-            self._update_silent(silent, nearby, chat)
-        return [cue for lull in self._lulls if (cue := self._advance(lull, wall)) is not None]
+            self._update_silent(silent, nearby, chat, wall)
+        stages, cues = self.cfg.stages, []
+        for lull in list(self._lulls):
+            if not lull.announced:
+                if wall - lull.t0 >= self.cfg.leave_grace:
+                    lull.announced = True
+                    cues.append(Cue(lull.opening, False))
+                continue
+            cue = self._advance(lull, wall)
+            if cue is not None:
+                cues.append(cue)
+            elif lull.stage == len(stages) - 1 and wall - lull.t0 >= stages[-1] + stages[0]:
+                # 最后一个节点之后再过一阵：冷场变成普通的安静（spec §1），留下总结
+                self._end(lull, wall, "一直没回来" if lull.kind == "left" else "后来就一直安静着")
+        return cues
 
     def _silent(self) -> Lull | None:
         return next((lull for lull in self._lulls if lull.kind == "silent"), None)
@@ -94,24 +110,23 @@ class LullTracker:
                 if name is not None:
                     spoke[name] = max(spoke.get(name, ct), ct)
         if spoke:
-            self._lulls.append(Lull("silent", tuple(sorted(spoke, key=spoke.get)), t, (who, text)))
+            self._lulls.append(Lull("silent", tuple(sorted(spoke, key=spoke.get)), t, (who, text), created=wall))
 
-    def _update_silent(self, lull: Lull, nearby: Sequence[str], chat: Chat) -> None:
+    def _update_silent(self, lull: Lull, nearby: Sequence[str], chat: Chat, wall: float) -> None:
         still = tuple(n for n in lull.who if n in nearby)
-        if not still:  # 对象都走了：静静结束（走开的交给情况②）
-            self._lulls.remove(lull)
-            self._done_t0 = max(self._done_t0, lull.t0)
+        if not still:  # 对象都走了（冷了很久才走、或镜头转开）：结束，留下总结；聊着聊着走的已经在 left() 里交给情况②
+            self._end(lull, wall, "后来他走开了")
             return
         lull.who = still
         lull.said = [text for t, who, text in chat if t > lull.t0 and who == ME]
 
     # ---- 情况②：聊着聊着走了 ----
-    def left(self, name: str, wall: float, chat: Chat) -> str | None:
-        """好友走开时调：他刚说过话、或团子刚说过话，就开始一个“走开”的冷场、返回事件文字；否则 None。"""
+    def left(self, name: str, wall: float, chat: Chat) -> bool:
+        """好友走开时调：他刚说过话、或团子刚说过话，就开始一个“走开”的冷场（leave_grace 秒后才叫醒），返回 True。"""
         spoke = any(t >= wall - self.cfg.leave_spoke and similar(who, name, 0.75) for t, who, _ in chat)
         said = any(t >= wall - self.cfg.leave_said and who == ME for t, who, _ in chat)
         if not (spoke or said) or not chat:
-            return None
+            return False
         musings: list[tuple[float, float, str]] = []
         silent = self._silent()
         if silent is not None and name in silent.who:
@@ -122,18 +137,30 @@ class LullTracker:
                 musings = silent.musings
         self._lulls = [lull for lull in self._lulls if not (lull.kind == "left" and lull.who == (name,))]
         _, who, text = chat[-1]
-        self._lulls.append(Lull("left", (name,), wall, (who, text), stage=0, musings=musings))
         said_by = "你" if who == ME else "他" if similar(who, name, 0.75) else (who or "（看不出是谁）")
-        return f"冷场  {name} 聊着聊着走开了。走之前最后是{said_by}说的「{_q(text)}」。"
+        opening = f"冷场  {name} 聊着聊着走开了。走之前最后是{said_by}说的「{_q(text)}」。"
+        self._lulls.append(Lull("left", (name,), wall, (who, text), stage=0, musings=musings, created=wall,
+                                announced=False, opening=opening))
+        return True
 
     def returned(self, name: str, wall: float) -> str | None:
-        """好友回来：有他“走开”的冷场就结束、返回附注；否则 None。"""
+        """好友回来：有他“走开”的冷场就结束、返回附注；还没叫醒过（闪了一下）就悄悄结束、返回 None。"""
         lull = next((x for x in self._lulls if x.kind == "left" and x.who == (name,)), None)
         if lull is None:
+            return None
+        if not lull.announced:
+            self._quiet_end(lull, wall, "很快就回来了")
             return None
         note = self._left_note(lull, wall)
         self._end(lull, wall, "后来他回来了")
         return note
+
+    def _quiet_end(self, lull: Lull, wall: float, ending: str) -> None:
+        """还没叫醒过的“走开”：没想过就当没发生；带着从情况①转来的想法时照样留下总结。"""
+        if lull.musings:
+            self._end(lull, wall, ending)
+        else:
+            self._lulls.remove(lull)
 
     def _left_note(self, lull: Lull, wall: float) -> str:
         thought = self._thought(lull)
@@ -168,7 +195,7 @@ class LullTracker:
 
     def status(self, wall: float) -> str:
         parts = []
-        for lull in self._lulls:
+        for lull in self._live():
             if lull.kind == "left":
                 head = f"{lull.who[0]} 走开 {_dur(wall - lull.t0)}了 "
                 head += f"· 在想：{self._thought(lull)}（{_dur(lull.musings[-1][1])}时）" if lull.musings else "· 在想：（还没想过）"
@@ -212,6 +239,9 @@ class LullTracker:
             note = f"（冷场了 {_dur(wall - silent.t0)}" + (f"，你刚才在想：{thought}）" if thought else "）")
             self._end(silent, wall, f"后来{speaker}说「{_q(text)}」")
         for lull in [x for x in self._lulls if x.kind == "left" and similar(speaker, x.who[0], 0.75)]:
+            if not lull.announced:
+                self._quiet_end(lull, wall, f"后来他说「{_q(text)}」")
+                continue
             note = note or self._left_note(lull, wall)
             self._end(lull, wall, f"后来他说「{_q(text)}」")
         return note
@@ -223,13 +253,16 @@ class LullTracker:
         if lull.kind == "silent":
             self._done_t0 = max(self._done_t0, lull.t0)
 
-    def muse(self, text: str, wall: float) -> bool:
-        """把大脑心里想的挂到所有活着的冷场上；没有冷场返回 False（这句丢掉）。"""
-        if not self._lulls:
-            return False
-        for lull in self._lulls:
+    def muse(self, text: str, wall: float, since: float | None = None) -> bool:
+        """把大脑心里想的挂到活着的冷场上；since（墙钟，大脑这一轮开始的时间）之后才开始的不挂。没有可挂的返回 False（这句丢掉）。"""
+        targets = [lull for lull in self._live() if since is None or lull.created <= since]
+        for lull in targets:
             lull.musings.append((wall, wall - lull.t0, text))
-        return True
+        return bool(targets)
+
+    def _live(self) -> list[Lull]:
+        """已经叫醒过大脑的冷场（还在宽限里的“走开”不算）。"""
+        return [lull for lull in self._lulls if lull.announced]
 
     # ---- 取出 ----
     def active(self) -> list[Lull]:
@@ -256,7 +289,7 @@ class LullTracker:
                 "last": list(lull.last) if lull.last else None,
                 "musings": [{"t": t, "text": m} for t, _, m in lull.musings],
             }
-            for lull in self._lulls
+            for lull in self._live()
         ]
 
 

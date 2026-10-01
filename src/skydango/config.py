@@ -590,6 +590,7 @@ class LullConfig:
     stages: list[float] = field(default_factory=lambda: [60.0, 180.0, 360.0])  # 冷场多少秒时各叫醒一次（走开的用后两个）
     leave_spoke: float = 120.0  # 好友走开时他多少秒内说过话，算聊着聊着走了
     leave_said: float = 60.0  # 好友走开时团子多少秒内说过话，算聊着聊着走了
+    leave_grace: float = 15.0  # 聊着聊着走开后多少秒还没回来才叫醒（名字标签闪一下不算）
     musing_max: int = 60  # “心里：”一行最多几个字
 
 

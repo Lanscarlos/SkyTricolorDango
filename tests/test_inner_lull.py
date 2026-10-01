@@ -123,10 +123,40 @@ def test_paused_does_not_advance():
     assert len(cues) == 1 and "3 分钟" in cues[0].text
 
 
-def test_objects_left_silent_end():
+def test_objects_left_ends_with_summary():  # 评审 #1：对象走了也要留下总结
     t, chat = started()
+    t.muse("他是不是去忙了", T0 + 66)
     assert t.tick(T0 + 70, [], chat) == []
-    assert t.active() == [] and t.pop_finished() == []
+    assert t.active() == []
+    done = t.pop_finished()
+    assert len(done) == 1 and t.summary(done[0], T0 + 70).endswith("你心里想过：他是不是去忙了。后来他走开了")
+
+
+def test_long_lull_friend_walks_off():  # 评审 #1 路径 A：冷了很久才走，不算“聊着聊着走了”，冷场照样留下总结
+    t, chat = started()
+    t.muse("他是不是去忙了", T0 + 70)
+    t.tick(T0 + 200, NEAR, chat)
+    assert t.left("懒洋洋大王", T0 + 400, chat) is False
+    t.tick(T0 + 401, [], chat)
+    done = t.pop_finished()
+    assert len(done) == 1 and done[0].musings[0][2] == "他是不是去忙了"
+
+
+def test_expire_after_last_stage():  # 评审 #2：最后一个节点之后再过 stages[0] 秒就结束
+    t, chat = started()
+    t.tick(T0 + 365, NEAR, chat)
+    assert t.tick(T0 + 424, NEAR, chat) == [] and len(t.active()) == 1
+    assert t.tick(T0 + 425, NEAR, chat) == []
+    assert t.active() == [] and t.status(T0 + 425) == ""
+    assert t.pop_finished()[0].ending == "后来就一直安静着"
+    assert t.tick(T0 + 900, NEAR, chat) == []  # 同一句最后一句不重新开始
+
+
+def test_musing_only_for_lulls_before_turn():  # 评审 #3：这一轮开始之后才有的冷场不挂
+    t, chat = started()  # T0+65 开始
+    assert t.muse("嗯", T0 + 100, since=T0 + 60) is False
+    assert t.active()[0].musings == []
+    assert t.muse("嗯", T0 + 100, since=T0 + 70) is True
 
 
 def test_muse_without_lull():
@@ -165,34 +195,51 @@ def test_snapshot():
     assert snap[0]["last"] == ["我", "在呢"] and snap[0]["musings"][0]["text"] == "他是不是去忙了"
 
 
-# ---- 情况②：聊着聊着走了（spec §1） ----
+# ---- 情况②：聊着聊着走了（spec §1；走开先等 leave_grace 秒再叫醒，评审 #4） ----
 LEFT_AT = T0 + 100
+GRACE = LEFT_AT + 15
+
+
+def opening(t, chat_left):
+    assert t.left("懒洋洋大王", LEFT_AT, chat_left)
+    assert t.tick(LEFT_AT + 14, [], []) == []
+    cues = t.tick(GRACE, [], [])
+    assert len(cues) == 1 and not cues[0].final
+    return cues[0].text
 
 
 def test_left_after_he_spoke():
     t = tracker()
-    chat = [(T0, "懒洋洋大王", "我去拿个东西")]
-    assert t.left("懒洋洋大王", LEFT_AT, chat) == "冷场  懒洋洋大王 聊着聊着走开了。走之前最后是他说的「我去拿个东西」。"
+    text = opening(t, [(T0, "懒洋洋大王", "我去拿个东西")])
+    assert text == "冷场  懒洋洋大王 聊着聊着走开了。走之前最后是他说的「我去拿个东西」。"
 
 
 def test_left_after_i_spoke():
     t = tracker()
-    chat = [(T0 - 200, "懒洋洋大王", "哈哈"), (T0 + 50, "我", "你要牵好我哦")]
-    assert "走之前最后是你说的「你要牵好我哦」" in t.left("懒洋洋大王", LEFT_AT, chat)
+    assert "走之前最后是你说的「你要牵好我哦」" in opening(t, [(T0 - 200, "懒洋洋大王", "哈哈"), (T0 + 50, "我", "你要牵好我哦")])
 
 
 def test_left_not_chatting():
     t = tracker()
     chat = [(LEFT_AT - 121, "懒洋洋大王", "哈哈"), (LEFT_AT - 61, "我", "嗯")]
-    assert t.left("懒洋洋大王", LEFT_AT, chat) is None
-    assert t.left("懒洋洋大王", LEFT_AT, [(LEFT_AT - 30, "懒洋洋大玉", "拜")]) is not None  # OCR 错字照样算
+    assert t.left("懒洋洋大王", LEFT_AT, chat) is False
+    assert t.left("懒洋洋大王", LEFT_AT, [(LEFT_AT - 30, "懒洋洋大玉", "拜")]) is True  # OCR 错字照样算
+
+
+def test_flicker_within_grace_is_nothing():  # 评审 #4：名字标签闪一下
+    t = tracker()
+    assert t.left("懒洋洋大王", LEFT_AT, [(T0, "懒洋洋大王", "我去拿个东西")])
+    assert t.status(LEFT_AT + 5) == ""
+    assert t.returned("懒洋洋大王", LEFT_AT + 5) is None
+    assert t.active() == [] and t.pop_finished() == []
+    assert t.tick(GRACE, [], []) == []
 
 
 def left_one(musing=None):
     t = tracker()
-    t.left("懒洋洋大王", LEFT_AT, [(T0, "懒洋洋大王", "我去拿个东西")])
+    opening(t, [(T0, "懒洋洋大王", "我去拿个东西")])
     if musing:
-        assert t.muse(musing, LEFT_AT + 10)
+        assert t.muse(musing, GRACE + 10)
     return t
 
 
@@ -202,6 +249,9 @@ def test_left_stages():
     assert t.tick(LEFT_AT + 180, [], []) == [Cue("冷场  懒洋洋大王 走开 3 分钟了，还没回来。", False)]
     cues = t.tick(LEFT_AT + 360, [], [])
     assert len(cues) == 1 and cues[0].final
+    t.tick(LEFT_AT + 420, [], [])
+    assert t.active() == [] and t.pop_finished()[0].ending == "一直没回来"  # 评审 #2
+    assert t.returned("懒洋洋大王", LEFT_AT + 3600) is None
 
 
 def test_returned():
@@ -222,7 +272,7 @@ def test_left_heard_ends():
 def test_left_takes_over_silent():
     t, chat = started()
     t.muse("他是不是去忙了", T0 + 70)
-    assert t.left("懒洋洋大王", T0 + 80, chat) is not None
+    assert t.left("懒洋洋大王", T0 + 80, chat) is True
     lulls = t.active()
     assert len(lulls) == 1 and lulls[0].kind == "left"
     assert lulls[0].musings[0][2] == "他是不是去忙了"

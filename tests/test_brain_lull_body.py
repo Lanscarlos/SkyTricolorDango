@@ -79,8 +79,35 @@ def test_leave_becomes_lull(clock):
     events.drain()
     env.near = []
     b.step()
-    kinds = [e.kind for e in events.drain()]
-    assert "lull" in kinds and "leave" not in kinds
+    assert [e.kind for e in events.drain()] == ["leave"]  # 先等一会儿：可能只是名字标签闪了一下
+    clock.advance(15)
+    b.step()
+    assert [e.kind for e in events.drain()] == ["lull"]
+
+
+def test_leave_flicker_stays_background(clock):  # 评审 #4
+    b, env, reader, events = lb(clock)
+    reader.batches = [[msg("我去拿个东西")]]
+    b.step()
+    events.drain()
+    env.near = []
+    b.step()
+    clock.advance(5)
+    env.near = ["懒洋洋大王"]
+    b.step()
+    assert events.drain() == []  # 走开和回来在队列里互相抵消
+
+
+def test_musing_from_turn_before_lull_dropped(clock):  # 评审 #3
+    b, env, reader, events = lb(clock)
+    began = clock()
+    chat_then_quiet(b, reader, events, clock)
+    got = []
+    b.on_musing = got.append
+    b.mused("心里：嗯", began)
+    assert got == []
+    b.mused("心里：嗯", clock())
+    assert got == ["嗯"]
 
 
 def test_quiet_friend_leave_stays_background(clock):
@@ -95,6 +122,8 @@ def test_return_becomes_lull(clock):
     reader.batches = [[msg("我去拿个东西")]]
     b.step()
     env.near = []
+    b.step()
+    clock.advance(15)
     b.step()
     events.drain()
     clock.advance(30)

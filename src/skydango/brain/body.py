@@ -179,6 +179,7 @@ class Body:
             LullTracker(cfg.lull, lambda who: is_friend_fn(self.friend_names())(who)) if cfg.lull.enabled else None
         )
         self.on_musing: Callable[[str], None] | None = None  # 记下心里想的一句时调；沙盒记进聊天记录
+        self._lull_near: list[str] | None = None  # 这一圈人来人走用的身边名单：冷场追踪用同一份（别在圈尾再取，名字刚好过期会对不上）
         self._news: queue.Queue[str] = queue.Queue()  # 眼睛线程交来的新鲜事，身体线程里过滤后变成 notice
         self._place_seen = ""  # 上次认出的（非空）地名：换了地方就发 notice
         self._notice_at = float("-inf")
@@ -846,6 +847,7 @@ class Body:
 
     def _watch_people(self, now: float) -> None:
         near = self.env.nearby(now)  # 只取一次：账本和人来人走看的是同一份名单
+        self._lull_near = list(near)
         self._arrive_notes.update(self._ledger_call("present", near, self.wall(), default={}) or {})  # 跟踪中也照记
         if getattr(self.skills.active, "quiet_people", False):
             # 跟踪中转镜头：人进出画面是自己转的，不是人来了 / 走了。不发人来人走的事件、不更新比较基准，技能结束后下一圈照常比较。
@@ -876,7 +878,7 @@ class Body:
         if self.lulls is None:
             return
         wall = self.wall()
-        near = self.env.nearby(now) if self.env is not None else []
+        near = self._lull_near if self._lull_near is not None else (self.env.nearby(now) if self.env is not None else [])
         cues = self._lull_call(lambda: self.lulls.tick(wall, near, list(self.chat), paused=self.blackout), []) or []
         for cue in cues:
             self.events.put("lull", cue.text)
@@ -896,18 +898,21 @@ class Body:
         self._session_chat.clear()
         self._session_chat.extend(session)
 
-    def mused(self, text: str) -> None:
-        """大脑一轮最后的文字（身体线程里调）：有“心里：”且正在冷场，就记下来。"""
+    def mused(self, text: str, began: float | None = None) -> None:
+        """大脑一轮最后的文字（身体线程里调）：有“心里：”且正在冷场，就记下来。
+        began：这一轮开始的时间（clock）；这之后才开始的冷场不挂（大脑想的不是它）。"""
         if self.lulls is None:
             return
         thought = parse_musing(text, self.cfg.lull.musing_max)
         wall = self.wall()
-        if not thought or not self._lull_call(lambda: self.lulls.muse(thought, wall), False):
+        since = None if began is None else wall - (self.clock() - began)
+        if not thought or not self._lull_call(lambda: self.lulls.muse(thought, wall, since), False):
             return
         log.info("心里：%s", thought)
         if self.mind_log is not None:
             for lull in self.lulls.active():
-                self._inner_call(lambda lull=lull: self.mind_log.musing(wall, list(lull.who), lull.kind, thought))
+                if lull.musings and lull.musings[-1][2] == thought and lull.musings[-1][0] == wall:  # 这次挂上的
+                    self._inner_call(lambda lull=lull: self.mind_log.musing(wall, list(lull.who), lull.kind, thought))
         if self.on_musing is not None:
             try:
                 self.on_musing(thought)
@@ -936,11 +941,8 @@ class Body:
                 self._reflect_note(f"{name} 来到身边")
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
-            gone = self._lull_call(lambda: self.lulls.left(name, self.wall(), list(self.chat)))  # 聊着聊着走了：立刻叫醒
-            if gone:
-                self.events.put("lull", gone, who=name)
-            else:
-                self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
+            self._lull_call(lambda: self.lulls.left(name, self.wall(), list(self.chat)))  # 聊着聊着走了：过 leave_grace 秒还没回来才叫醒
+            self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
             self._arrive_notes.pop(name, None)
             self._reflect_note(f"{name} 走开了")
             self._left_at[name] = now
