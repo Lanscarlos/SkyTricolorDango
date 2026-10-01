@@ -182,3 +182,84 @@ def test_policy_tool_accepts_stranger_light(clock):
     b, dev, env, emotes, events = lb(clock)
     b.set_policy("stranger", "light", False)
     assert b.social.policy_calls == [("stranger", "light", False)]
+
+
+def test_no_second_candle_while_bow_pending(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    env.lit_result = True
+    b.step()  # 点亮了，鞠躬排上，蜡烛还举着
+    env.lit_result = False
+    offer(env, clock, track=8)
+    b.step()
+    assert presses(dev) == 1  # 不能再按 3（那会把蜡烛放下）
+    clock.advance(2.6)
+    b.step()
+    assert emotes.done == [("鞠躬", True)] and presses(dev) == 1
+
+
+def test_shutdown_lowers_candle_when_bow_pending(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    env.lit_result = True
+    b.step()  # 点亮了，鞠躬还没做
+    b.shutdown()
+    assert presses(dev) == 2
+
+
+def test_shutdown_lowers_candle_when_raised_not_lit(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    b.shutdown()
+    assert presses(dev) == 2
+
+
+def test_schedule_bow_keeps_pending_raised_at(clock):
+    social = AllowAll()
+    b, dev, env, emotes, events = lb(clock, social=social)
+    offer(env, clock)
+    b.step()
+    env.lit_result = True
+    b.step()  # 排上鞠躬，带着要兜底放下的蜡烛
+    env.requests["陌生人"] = Request("陌生人", "candle", (990, 400), clock())
+    social.to_handle = ["陌生人:candle"]
+    b.step()  # 接受别人点火又要排鞠躬：不能把上一个覆盖掉
+    b._reflex_emote = lambda *a: False
+    clock.advance(2.6)
+    b.step()
+    clock.advance(5.1)
+    b.step()
+    assert emotes.done == [] and presses(dev) == 2
+
+
+def test_emote_while_raised_clears_state(clock):
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    clock.advance(1.0)
+    emotes.perform("挥手")
+    b.step()
+    assert "正在举蜡烛" not in b.status() and presses(dev) == 1
+    env.lit_result = True
+    b.step()
+    assert presses(dev) == 1 and b._bow is None  # 不鞠躬、不按 3
+
+
+def test_min_gap_before_raising(clock):
+    b, dev, env, emotes, events = lb(clock)
+    emotes.perform("挥手")
+    offer(env, clock)
+    b.step()
+    assert presses(dev) == 0
+    clock.advance(b.cfg.reflex.min_gap)
+    b.step()
+    assert presses(dev) == 1
+
+
+def test_dry_run_lower_candle_presses_nothing(clock):
+    b, dev, env, emotes, events = lb(clock, live=False)
+    b._lower_candle(clock() - 1)
+    assert presses(dev) == 0

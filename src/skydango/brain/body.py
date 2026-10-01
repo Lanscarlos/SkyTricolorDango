@@ -336,6 +336,9 @@ class Body:
         if self._raised is not None:  # 退出时还举着蜡烛：放下
             self._lower_candle(self._raised[2])
             self._raised = None
+        if self._bow is not None and self._bow[2] is not None:  # 点亮了、鞠躬还没做：蜡烛还举着，放下
+            self._lower_candle(self._bow[2])
+        self._bow = None
         if self.emotes is not None:  # 轮盘先恢复：镜头闭环复位可能要好几秒，被强杀时轮盘更要紧
             try:
                 self.emotes.restore()
@@ -930,6 +933,8 @@ class Body:
         if self._raised is not None:
             self._check_lit(now)
             return
+        if self._bow is not None:  # 鞠躬还在排队：蜡烛还举着，再按 3 会把它放下，之后兜底放下又举起来
+            return
         if self.env is None:
             return
         req = dict(self.env.requests).get(LIGHT_KEY)
@@ -938,6 +943,8 @@ class Body:
         if not self.social.allowed(req):
             return
         if self.skills.active is not None or self.holding or self._bubble_blocked():
+            return
+        if now - self.emotes.last_any < self.cfg.reflex.min_gap:  # 刚做完动作就按 3 可能被动画吞掉
             return
         try:
             self.clear_view("emote")
@@ -959,6 +966,10 @@ class Body:
 
     def _check_lit(self, now: float) -> None:
         track, pos, raised_at = self._raised
+        if self.emotes is not None and self.emotes.last_any > raised_at:  # 做动作已经把蜡烛放下了
+            self._raised = None
+            log.info("举蜡烛时做了别的动作，蜡烛已经放下，不再等他亮起来")
+            return
         if self.env.lit(track, pos, raised_at):
             self._raised = None
             self._lit_at = now
@@ -972,6 +983,8 @@ class Body:
 
     def _schedule_bow(self, now: float, raised_at: float | None) -> None:
         """点亮了别人（raised_at = 举蜡烛的时间）/ 接受了别人点火（None）：过 bow_delay 鞠躬；做不了鞠躬时把自己举的蜡烛放下。"""
+        if self._bow is not None:  # 已经排了一个鞠躬，一个就够（保留它要兜底放下的蜡烛）
+            return
         name = self.cfg.social.after_light
         if not name or name not in self._wheel() or self.holding:
             if raised_at is not None:
