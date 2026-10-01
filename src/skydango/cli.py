@@ -297,6 +297,23 @@ def _env_watcher(cfg: Config, background: bool = True, icons=None):
     )
 
 
+def _appearance_parts(cfg: Config, run: RunDir | None = None) -> dict:
+    """认装扮（spec 2026-10-01-appearance）：给 PerceptionWatcher 的关键字参数（记忆簿、特征模型、配置、存训练数据）。
+    [appearance] 没开时是空的；没有运行目录（view、perception detect）或 save = false 时不存训练数据。描述器由 _run_brain 挂。"""
+    a = cfg.appearance
+    if not a.enabled:
+        return {}
+    from .vision.appearance import AppearanceBook, CropSaver, make_embedder
+
+    embedder = make_embedder(a)
+    saver = CropSaver(run.path / "appearance", a.save_every, a.save_max) if run is not None and a.save else None
+    log.info("认装扮：特征 %s%s", embedder.key, f"，训练数据存进 {saver.folder}" if saver is not None else "")
+    return {
+        "appearance": AppearanceBook(a, embedder.key, keep=cfg.perception.keep),
+        "embedder": embedder, "appearance_cfg": a, "saver": saver,
+    }
+
+
 def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, run: RunDir | None = None):
     """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。
 
@@ -305,6 +322,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
     if not cfg.perception.enabled:
         if cfg.places.enabled:
             log.warning("[places] 要配合 [perception] 用（YOLO 感知层里认地图），现在没打开，不认地图")
+        if cfg.appearance.enabled:
+            log.warning("[appearance] 要配合 [perception] 用，现在没打开，不认装扮")
         return _env_watcher(cfg, background=background, icons=icons)
     from .vision.detect import make_detector
     from .vision.ocr import make_ocr
@@ -331,7 +350,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
         scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
         places=places, place_interval=cfg.places.place_interval,
-        gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
+        gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture, **_appearance_parts(cfg, run),
     )
 
 
@@ -626,6 +645,7 @@ def _perception(cfg: Config, args, dev=None):
     watcher = PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=False, capture=dev.screenshot if dev is not None else None,
+        **_appearance_parts(cfg),  # 只挂记忆簿：不存训练数据、不描述
     )
     return detector, watcher
 
@@ -1669,6 +1689,7 @@ def _run_brain(
         # recall 只读，dry-run 也给
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
                           sandbox=world.name == "sandbox")
+        wardrobe = _wardrobe(cfg, env, ledger, world, base, claude_vars, work, clock)
         server = SkyServer(toolbox)
         server.start()
     except BaseException:
@@ -1682,6 +1703,7 @@ def _run_brain(
             now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
             days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
             persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
+            appearance=getattr(env, "appearance", None) is not None,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
@@ -1705,6 +1727,9 @@ def _run_brain(
     stop = threading.Event()
     brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
+    wardrobe_thread = (
+        threading.Thread(target=wardrobe.run, args=(stop,), name="wardrobe", daemon=True) if wardrobe is not None else None
+    )
     body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
     body.brain_busy = lambda: brain.chat_turn
     body.brain_turn = lambda: brain.last_turn  # 替大脑开的输入框：开框之后的那一轮结束了没说话就关
@@ -1718,6 +1743,8 @@ def _run_brain(
             log.exception("on_ready 出错")
     brain_thread.start()
     eyes_thread.start()
+    if wardrobe_thread is not None:
+        wardrobe_thread.start()
     try:
         body.run(duration, stop)
     except KeyboardInterrupt:
@@ -1749,6 +1776,33 @@ def _run_brain(
         server.stop()
 
 
+def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock):
+    """认装扮（spec 2026-10-01-appearance）：关系卡里的旧外观载入记忆簿；[appearance] describe 开着、不是沙盒时建描述器挂到感知层上。
+    感知层没挂记忆簿时什么都不做、返回 None。描述器的钟和感知层的帧时间同一个（world.clock）。"""
+    book = getattr(env, "appearance", None)
+    if book is None:
+        return None
+    if ledger is not None:
+        try:
+            book.load_cards(ledger.all_outfits())
+        except Exception:
+            log.exception("关系卡里的装扮载入出错，这次从头认")
+    a = cfg.appearance
+    if not a.describe or world.name == "sandbox":
+        return None
+    from .brain.claude import one_shot
+    from .vision.wardrobe import Wardrobe, wardrobe_command
+
+    cmd = wardrobe_command(base, a.describe_model)
+    wardrobe = Wardrobe(
+        a, describe=lambda content: one_shot(cmd, claude_vars, work / "wardrobe", content, a.describe_timeout),
+        on_done=env.on_described, clock=clock,
+    )
+    env.wardrobe = wardrobe
+    log.info("描述装扮：%s，每小时最多 %d 次", a.describe_model, a.describe_max)
+    return wardrobe
+
+
 def _inner_ledger(cfg: Config, store, now: float | None = None):
     """内心账本（spec 2026-09-30-inner-phase1）：[inner] enabled 且有记忆目录才有；出错就不记（团子照常跑）。"""
     if not cfg.inner.enabled or store is None:
@@ -1758,7 +1812,7 @@ def _inner_ledger(cfg: Config, store, now: float | None = None):
     try:
         return open_ledger(
             cfg.inner, store.dir / "inner", _friend_names(cfg), store.history.all, persist=not cfg.reply.dry_run,
-            now=time.time() if now is None else now,
+            now=time.time() if now is None else now, outfit_keep=cfg.appearance.outfit_keep,
         )
     except Exception:
         log.exception("内心账本打不开，这次不记")

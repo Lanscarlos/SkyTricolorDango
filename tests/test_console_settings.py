@@ -29,8 +29,19 @@ def test_every_spec_field_is_listed():
         "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model",
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
         "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "env.enabled", "perception.enabled",
-        "perception.model", "places.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
+        "perception.model", "places.enabled", "appearance.enabled", "appearance.describe", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
+
+
+def test_console_has_appearance_switches():
+    from skydango.console.settings import KNOWN
+
+    on = KNOWN["appearance.enabled"]
+    assert (on.label, on.help, on.kind, on.group) == (
+        "认装扮", "按外观接回没读到名字的好友、认回来的陌生人；要配合 YOLO 感知层", "bool", "features")
+    desc = KNOWN["appearance.describe"]
+    assert (desc.label, desc.help, desc.kind, desc.group) == (
+        "描述装扮", "让 Haiku 把团子和身边人的装扮写成一句话（花额度）", "bool", "features")
 
 
 def test_mask():
