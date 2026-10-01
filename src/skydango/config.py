@@ -248,12 +248,16 @@ class SocialConfig:
     remember: float = 120.0  # 接受之后多久内在提示词里提一句
     error_backoff: float = 10.0  # adb 出错（比如查输入框失败）后这么久不处理请求，免得每 0.15 s 起一个 adb 进程
     # 点亮没点火的陌生人（spec 2026-10-01-light-unlit-stranger，都**未在真机验证**）
-    light_after: float = 3.0  # 黑影身上的火焰圆盘连续看到这么久才举蜡烛（别点路过的）
-    light_timeout: float = 8.0  # 举着蜡烛最多等这么久看他亮起来（YOLO player_unlit → player）
-    lit_frames: int = 3  # YOLO 连续几帧认成 player 才算点亮
+    light_after: float = 3.0  # 团子身边的火焰连续看到这么久才举蜡烛（别点路过的）
+    light_timeout: float = 8.0  # 举着蜡烛最多等这么久看他亮起来
     lit_min: float = 2.0  # 举蜡烛后至少这么久才可能算点亮（YOLO 近处会把还黑着的人认成 player；未在真机验证）
-    lit_iou: float = 0.3  # lit()：替身 player 和原轨迹最后的框至少重叠这么多才算同一个人（未在真机验证）
-    lit_stale: float = 0.5  # lit()：原轨迹这么久没接上检测就当冻住了（闪光时出现重复轨迹、原轨迹框冻住；未在真机验证）
+    light_area_x: float = 1.2  # 在团子周围找火焰：左右各多少倍团子框高（spec 2026-10-01-light-flame-around-self §9 量）
+    light_area_up: float = 0.6  # 从团子框上沿往上多少倍框高（下到框底）
+    light_jump: float = 0.5  # 相邻两次火焰位置差多少倍团子框高以内算同一个人
+    light_cooldown: float = 60.0  # 没点亮（走了 / 超时 / 被打断）之后多久不再举：认不出是谁，只能按时间
+    lit_v: int = 50  # 判点亮：HSV 的 V 低于这个算"很暗"的像素
+    lit_black: float = 0.35  # 判点亮：人物框里很暗的像素占比低于这个……
+    lit_drop: float = 0.25  # ……而且比举蜡烛时降了这么多以上，才算点亮
     after_light: str = "鞠躬"  # 点亮别人 / 接受别人点火后做的动作（轮盘上要有；鞠躬顺带放下蜡烛），空 = 不做
     bow_delay: float = 2.5  # 看到他亮起来 / 接受点火后等这么久再鞠躬（等闪光动画）
     candle_slot: int = 3  # 轮盘上"举蜡烛"在第几格：按一下举起、再按一下放下（用户 2026-10-01）
