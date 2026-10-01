@@ -81,6 +81,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/objlabel.py` | 物品模式（`perception label <数据集> --objects`）：提示词、解析、写回（人物行不动、物品行整体替换、人改先祖）、预览、清单 |
 | `src/skydango/vision/sweep.py` | 感知层二期：环绕扫描的纯计算（方位角、8 方位、多帧合并、转圈认团子、远近分档） |
 | `src/skydango/vision/places.py` `unknownnames.py` `gesture.py` | 感知层三期：认地图（参考截图匹配）、没认出的名字清单、别人对团子做的动作（研究性质：切片段、评估、ONNX 接口） |
+| `src/skydango/vision/gesture_label.py` | 动作片段的 Claude 初分（`perception gesture-label`）：16 帧拼成 4×4 一张图、提示词、解析，结果写进片段目录的 `claude.json`（复用 `assist.Reviewer`） |
+| `src/skydango/vision/gesture_train.py` | 动作模型训练（`perception gesture-train`）：读确认过的片段、按录像切训练 / 验证集（`_split.json`）、DINOv2-small 冻住提特征（缓存 `_features/`）+ 时序头、导出 ONNX、报告；torch 延迟导入 |
+| `src/skydango/console/labeling.py` | 「标注」页的后端（`/api/gesture/*`）：片段状态、取帧、确认 / 改类别 / 丢弃 = 挪文件夹、撤销，记在 `_labels.jsonl` |
 | `src/skydango/vision/embed.py` `onnxrt.py` | 特征模型的公共部分：`OnnxEmbedder`、`unit` / `cosine`（认地图、认装扮共用）；`onnxrt.py` 按 device（cuda / dml / cpu）选 onnxruntime 后端、建会话（YOLO、特征模型、动作模型共用） |
 | `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己、关系卡旧特征、`assign_friends`、换装判定）、攒训练数据 `CropSaver` |
 | `src/skydango/vision/wardrobe.py` | 装扮描述器：排队、优先级、每小时额度，一次性 `claude -p --model haiku` 把人物裁图写成一句话 |
@@ -202,7 +205,10 @@ dir = "private/sandbox"
   新类别 `typing`（头顶气泡）→ 陌生人的消息加注"说话的可能是右边远处那个陌生人"（恰好一个候选才加）；远近按团子框高分档，新事件 `approach`（有人朝团子走过来，`approach_strangers` 可关）
 - **三期（代码已完成，见 `…-phase3-design.md`）**：远处的小人（框高 < `far_height`）没挂上名字标签时在它头顶裁一块再检测一次（`far_crops`）；
   认地图（`[places]`，要配合 `[perception]`）：`places/<地名>/*.jpg` 图库（不进 git）+ 图像特征模型，每 30 秒 / 画面大变后认一次，写进提示词"看起来在：…"；
-  读得清楚但不在好友名单里的名字记进 `runs/<…>/unknown_names/`；别人对团子挥手 / 鞠躬（`[gesture]`，研究性质、**没有模型、默认关**）→ 身体发 `gesture` 事件，大脑可以用 `emote` 回礼；
+  读得清楚但不在好友名单里的名字记进 `runs/<…>/unknown_names/`；别人对团子挥手 / 鞠躬 / 欢呼 / 害羞（`[gesture]` 四个动作 wave / bow / cheer / shy + none，研究性质、默认关）→ 身体发 `gesture` 事件，大脑可以用 `emote` 回礼。
+  数据和训练（设计 `docs/superpowers/specs/2026-10-01-gesture-labeling-training-design.md`）：`perception clips` 切片段 → `perception gesture-label` Claude 初分 → 管理面板「标注」页人工确认 →
+  `perception gesture-train`（DINOv2-small 冻住 + 时序头，导出 `models/gesture-<日期>.onnx`、不覆盖 `gesture.onnx`，报告 `tmp/gesture-train/<时间>/report.md`）→ `perception gesture-eval`（有 `_split.json` 时只评验证集）；
+  **还没有真数据和模型**（每类至少 20 段才训练）；
   跟随只做了第 1 步：提示词里说想跟谁走就请他牵手（视觉伺服 `follow` 要等 `move` 工具接好、标定）
 - **物品识别（代码已完成，见 `2026-09-29-object-recognition-design.md`；还没有数据和模型）**：类别末尾追加 `bench` 座位 / `bonfire` 篝火 / `instrument` 乐器 / `spirit` 先祖（编号 6~9，旧编号不变；用 v4 时自然为空）。
   `objects()` 给出方位和远近（按框底边，`object_near` / `object_far` **未标定**，连续 `object_min_hits` 帧才算）；状态里"画面里的东西：座位（左边·近）"、眼睛的位置说明、网页"附近的东西"都有；
@@ -282,6 +288,7 @@ dir = "private/sandbox"
 - **原生 `confirm` / `prompt` / `alert` 全换成页内对话框和提示条**（`ask()` / `toast()`；Claude 桌面版内嵌浏览器里原生弹窗用不了），测试禁止再出现。
 - **预检**：大脑模式下也查 LLM Key；每个问题带 `setting` 跳转目标，「去设置 →」跳到设置页并高亮那一行（樱花底闪一下）。
 - **剧本和报告页**：报告在页内直接读（`console/reports.py`，`GET /api/sandbox/reports[/<name>]`），不用再去翻 `sandbox/reports/`。
+- **「标注」页**（`#labeling`，左栏「数据」组；后端 `console/labeling.py`）：逐段看动作片段的动图和 Claude 的猜测，按键确认（回车 = 同意 Claude、1~9 = 类别、0 = 丢弃、Z = 撤销），片段挪进 `datasets/gesture/<动作>/`，然后 `perception gesture-train`。
 - **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
   加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
   `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程
@@ -493,7 +500,9 @@ python -m skydango perception compare <录像目录> [--model 模型] [--far-cro
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
 python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
 python -m skydango perception clips <录像目录>  # 动作识别的数据：按人物轨迹切 16 帧片段 → datasets/gesture/_unlabeled
-python -m skydango perception gesture-eval datasets/gesture --model 模型  # 动作模型的精确率 / 召回率
+python -m skydango perception gesture-label [片段目录]  # Claude 初分动作片段（默认 datasets/gesture/_unlabeled），再去管理面板「标注」页确认
+python -m skydango perception gesture-train [数据目录] [--epochs 60] [--out 路径] [--device cuda|cpu]  # 训练动作模型 → models/gesture-<日期>.onnx + tmp/gesture-train/<时间>/report.md
+python -m skydango perception gesture-eval datasets/gesture --model 模型 [--all]  # 动作模型的精确率 / 召回率（有 _split.json 时只评验证集）
 python -m skydango places add <地名> [--image 图]  # 认地图：截当前画面（遮掉人和 UI）存进 places/<地名>/
 python -m skydango places test [目录] | places bench --model A --model B  # 逐张认地图 / 图库上留一法比较特征模型
 python -m skydango emotes scan            # 截下动作列表所有图标 → emotes/scan/，总览图 _sheet.png
