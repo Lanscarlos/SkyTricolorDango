@@ -983,7 +983,9 @@ class Body:
 
     def _schedule_bow(self, now: float, raised_at: float | None) -> None:
         """点亮了别人（raised_at = 举蜡烛的时间）/ 接受了别人点火（None）：过 bow_delay 鞠躬；做不了鞠躬时把自己举的蜡烛放下。"""
-        if self._bow is not None:  # 已经排了一个鞠躬，一个就够（保留它要兜底放下的蜡烛）
+        if self._bow is not None:  # 已经排了一个鞠躬，一个就够：保留时间，只把还缺的 raised_at 补上（先于下面的"立刻放下"，鞠躬排着说明能做）
+            due, give_up, old = self._bow
+            self._bow = (due, give_up, old if old is not None else raised_at)
             return
         name = self.cfg.social.after_light
         if not name or name not in self._wheel() or self.holding:

@@ -197,6 +197,9 @@ def test_no_second_candle_while_bow_pending(clock):
     clock.advance(2.6)
     b.step()
     assert emotes.done == [("鞠躬", True)] and presses(dev) == 1
+    clock.advance(b.cfg.reflex.min_gap)
+    b.step()
+    assert presses(dev) == 2 and env.tried[-1] == 8  # 请求只是被推迟，没丢
 
 
 def test_shutdown_lowers_candle_when_bow_pending(clock):
@@ -263,3 +266,23 @@ def test_dry_run_lower_candle_presses_nothing(clock):
     b, dev, env, emotes, events = lb(clock, live=False)
     b._lower_candle(clock() - 1)
     assert presses(dev) == 0
+
+
+def test_bow_from_accepted_candle_then_lit_keeps_raised_at(clock):
+    social = AllowAll()
+    b, dev, env, emotes, events = lb(clock, social=social)
+    offer(env, clock)
+    b.step()  # 举起蜡烛
+    env.requests["陌生人"] = Request("陌生人", "candle", (990, 400), clock())
+    social.to_handle = ["陌生人:candle"]
+    b.step()  # 接受别人点火：先排上一个没有 raised_at 的鞠躬
+    env.requests.pop("陌生人")
+    social.to_handle = []
+    env.lit_result = True
+    b.step()  # 自己点亮了别人：要把 raised_at 并进已有的鞠躬
+    b._reflex_emote = lambda *a: False
+    clock.advance(2.6)
+    b.step()
+    clock.advance(5.1)
+    b.step()
+    assert emotes.done == [] and presses(dev) == 2
