@@ -693,6 +693,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_gesture_train(cfg, args)
     elif args.action == "gesture-label":
         _perception_gesture_label(cfg, args)
+    elif args.action == "crops":
+        _perception_crops(cfg, args)
     elif args.action == "appearance-eval":
         _perception_appearance_eval(cfg, args)
     elif args.action == "halo-eval":
@@ -746,6 +748,45 @@ def _perception_clips(cfg: Config, args) -> None:
           + (f"；数据目录里已有的 {len(names)} 段同名片段没重切" if names else ""))
     print(f"人工看一遍，把片段目录挪进 <数据目录>/<动作>/（{' / '.join(cfg.gesture.labels)}；none = 站着、走路、别的动作），"
           "再用 perception gesture-eval 评估")
+
+
+def _perception_crops(cfg: Config, args) -> None:
+    """第二层外形头的数据：从数据集 / 录像 / 难例目录裁人物图，--writeback 把标注页确认过的人物写回数据集，见 vision/attrs_data.py。"""
+    import glob
+    from datetime import datetime
+
+    from .vision import attrs_data as ad
+
+    sources: list[Path] = []
+    for s in args.source:  # runs/*/hard 可能被 shell 展开了，也可能原样传进来
+        hits = sorted(glob.glob(s)) if any(c in s for c in "*?[") else [s]
+        if not hits:
+            raise SystemExit(f"{s} 没有匹配到任何目录")
+        sources += [Path(h) for h in hits]
+    for src in sources:
+        if not src.is_dir():
+            raise SystemExit(f"{src} 不是目录")
+    out = Path(args.out)
+    is_dataset = lambda d: (d / "images").is_dir() and (d / "labels").is_dir()  # noqa: E731
+    if args.writeback:
+        datasets = [d for d in sources if is_dataset(d)]
+        if not datasets:
+            raise SystemExit("--writeback 要给数据集目录（含 images/ 和 labels/）")
+        for d in datasets:
+            res = ad.writeback(d, out, datetime.now())
+            print(f"{d}: 写回 {res['boxes']} 个框（{res['frames']} 帧）" + ("，原 labels/ 备份在 _backup/" if res["boxes"] else ""))
+        return
+    from .vision.detect import make_detector
+
+    p = cfg.perception
+    detector = make_detector(args.model or p.model, p.classes, p.imgsz, args.conf, p.iou, p.device)
+    for src in sources:
+        if is_dataset(src):
+            counts = ad.crops_from_dataset(src, detector, out, args.conf)
+        else:
+            counts = ad.crops_from_images(src, detector, out, args.conf)
+        print(f"{src}: " + "，".join(f"{k} {v}" for k, v in counts.items()))
+    print(f"裁图在 {out}（_unlabeled/ 等 Claude 初分、标注页确认）")
 
 
 def _perception_gesture_label(cfg: Config, args) -> None:
@@ -2634,6 +2675,13 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
     q.add_argument("--force", action="store_true",
                    help="这段录像切过也接着切：数据目录里哪儿都还没有的片段才写（已标过、挪走的不会再造一份）")
+    q = psub.add_parser("crops", help="第二层外形头的数据：从数据集 / 录像 / 难例目录裁人物图到 datasets/attrs；--writeback 把标注页确认的人物写回数据集")
+    q.add_argument("source", nargs="+", help="来源目录：含 images/ 和 labels/ 的是数据集，其余当图片目录（支持 runs/*/hard 这样的通配）")
+    q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q.add_argument("--conf", type=float, default=0.2, help="检测置信度下限")
+    q.add_argument("--out", default="datasets/attrs", help="输出目录")
+    q.add_argument("--writeback", action="store_true",
+                   help="不裁图：把 form/<人形类>/ 里确认过的数据集人物框写回 labels/（先备份到 <数据集>/_backup/）")
     q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
     q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的片段也重新初分")
