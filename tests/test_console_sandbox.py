@@ -33,7 +33,7 @@ def make(tmp_path, upstream, sandbox_port=None):
         f'[sandbox]\ndir = "{(tmp_path / "sandbox").as_posix()}"\nport = {port}\n'
         f'[reply]\nmemory_dir = "{(tmp_path / "memory").as_posix()}"\n'
         '[brain]\nowner_name = "卡洛"\n', encoding="utf-8")
-    srv = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n', child_port=free_port())
+    srv = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n', child_port=free_port())
     srv.runner = srv.fake_runner = KindRunner()
     srv.sandbox_port_value = port
     return srv
@@ -54,17 +54,17 @@ def post(srv, path, body):
 def test_sandbox_start_refused_while_dango_runs(srv):
     srv.runner.state = "running"
     status, res = post(srv, "api/sandbox/start", {"start": "resume"})
-    assert status == 409 and any("先停团子" in p for p in res["problems"])
+    assert status == 409 and any("先停团子" in p["text"] for p in res["problems"])
     assert srv.runner.started == []
 
 
 def test_dango_start_refused_while_sandbox_runs(srv):
     srv.runner.state, srv.runner.kind = "running", "sandbox"
     status, res = post(srv, "api/run/start", OPTS)
-    assert status == 409 and any("先在「沙盒」页下线沙盒" in p for p in res["problems"])
-    assert not any("团子已经在运行" in p for p in res["problems"])
+    assert status == 409 and any("先在「沙盒」页下线沙盒" in p["text"] for p in res["problems"])
+    assert not any("团子已经在运行" in p["text"] for p in res["problems"])
     assert srv.runner.started == []
-    assert request(srv.url + "api/state")[1]["problems"][0].startswith("沙盒在运行")
+    assert request(srv.url + "api/state")[1]["problems"][0]["text"].startswith("沙盒在运行")
     assert post(srv, "api/run/stop", {}) == (200, {"ok": True}) and srv.runner.stopped == 0  # 总览的停止不动沙盒
 
 

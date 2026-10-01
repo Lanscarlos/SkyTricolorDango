@@ -29,7 +29,7 @@ from ..vision.viewer import is_local_host, post_guard, static_asset
 from . import probes
 from .devicecheck import run_checks
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
-from .preflight import preflight
+from .preflight import preflight, problem
 from .replay import KEEP_NOTE, Recorder, Replayer, safe_name
 from .runner import LOCAL, LaunchOptions, Runner, build_command, build_sandbox_command, child_env, probe_status, send_shutdown
 from .settings import SettingsStore
@@ -129,11 +129,11 @@ class ConsoleServer:
         c = self.store._fallback().console
         return LaunchOptions(c.brain, c.live, c.emotes, c.duration)
 
-    def _run_problems(self, opts: LaunchOptions) -> list[str]:
+    def _run_problems(self, opts: LaunchOptions) -> list[dict]:
         """叫醒团子前的问题：沙盒占着槽时说"先下线沙盒"，不说"团子已经在运行"。"""
         other = self._other_busy("dango")
         if other:
-            return [other, *preflight(self.store, opts, False, self.find_spec)]
+            return [problem(other), *preflight(self.store, opts, False, self.find_spec)]
         return preflight(self.store, opts, self._busy(), self.find_spec)
 
     def state(self) -> dict:
@@ -153,23 +153,23 @@ class ConsoleServer:
         with self._device_lock:  # 和设备检测互斥：检查完到真的起进程之间，检测不能插进来
             problems = self._run_problems(opts)
             if self._checking:
-                problems.append("正在检测设备，等检测完再叫醒")
+                problems.append(problem("正在检测设备，等检测完再叫醒"))
             if not self._busy() and probe_status(self.child_port):  # 上次留下的团子还占着端口：再起一个会有两个团子
                 self.orphan = True
-                problems.append(f"{self.child_port} 端口上有上次留下的团子，先点「让它退出」")
+                problems.append(problem(f"{self.child_port} 端口上有上次留下的团子，先点「让它退出」"))
             if not self._busy() and probe_status(self.sandbox_port()):  # 上次留下的沙盒：共用令牌，也别同时在线
-                problems.append(f"{self.sandbox_port()} 端口上有上次留下的沙盒，先在「沙盒」页让它退出")
+                problems.append(problem(f"{self.sandbox_port()} 端口上有上次留下的沙盒，先在「沙盒」页让它退出"))
             try:
                 secrets = read_secrets(console_paths(self.config_path)[1])
             except ValueError as exc:
-                problems.append(str(exc))
+                problems.append(problem(str(exc)))
             if problems:
                 return 409, {"ok": False, "problems": problems}
             cmd = build_command(opts, self.config_path, self.child_port, self.parent_pid)
             try:
                 self.runner.start(cmd, child_env(os.environ, secrets), opts)
             except (RuntimeError, OSError) as exc:
-                return 409, {"ok": False, "problems": [str(exc)]}
+                return 409, {"ok": False, "problems": [problem(str(exc))]}
         self.orphan = False
         return 200, {"ok": True}
 
@@ -249,42 +249,49 @@ class ConsoleServer:
         except ValueError as exc:
             return 400, {"ok": False, "text": str(exc)}
         if self.replaying():
-            return 409, {"ok": False, "problems": ["正在回放剧本，先停止回放"]}
+            return 409, {"ok": False, "problems": [problem("正在回放剧本，先停止回放")]}
         code, res = self.launch_sandbox(start)
         if code == 200:
             self.recorder.started(start)  # 第一次启动是剧本的 [start]，之后记成 online
         return code, res
 
+    def sandbox_problems(self) -> tuple[list[dict], bool]:
+        """起沙盒前的问题 + 沙盒端口上有没有孤儿（不加锁，要一致的调用方自己拿 _device_lock）。"""
+        port = self.sandbox_port()
+        problems: list[dict] = []
+        other = self._other_busy("sandbox")
+        if other:
+            problems.append(problem(other))
+        elif self._busy():
+            problems.append(problem("沙盒已经在运行"))
+        # 沙盒不碰设备：预检只看配置、令牌、mcp（和团子的大脑模式一样）
+        problems += preflight(self.store, LaunchOptions(brain=True), False, self.find_spec)
+        orphan = False
+        if not self._busy() and probe_status(port):
+            orphan = True
+            problems.append(problem(f"{port} 端口上有上次留下的沙盒，先点「让它退出」"))
+        if not self._busy() and probe_status(self.child_port):  # 上次留下的团子：共用令牌，别两个大脑同时在线
+            self.orphan = True
+            problems.append(problem(f"{self.child_port} 端口上有上次留下的团子，先在总览让它退出"))
+        try:
+            read_secrets(console_paths(self.config_path)[1])
+        except ValueError as exc:
+            problems.append(problem(str(exc)))
+        return problems, orphan
+
     def launch_sandbox(self, start: str) -> tuple[int, dict]:
         """起沙盒子进程（页面启动和回放共用；只有页面启动才记进录制）。"""
         port = self.sandbox_port()
         with self._device_lock:
-            problems: list[str] = []
-            other = self._other_busy("sandbox")
-            if other:
-                problems.append(other)
-            elif self._busy():
-                problems.append("沙盒已经在运行")
-            # 沙盒不碰设备：预检只看配置、令牌、mcp（和团子的大脑模式一样）
-            problems += preflight(self.store, LaunchOptions(brain=True), False, self.find_spec)
-            orphan = False
-            if not self._busy() and probe_status(port):
-                orphan = True
-                problems.append(f"{port} 端口上有上次留下的沙盒，先点「让它退出」")
-            if not self._busy() and probe_status(self.child_port):  # 上次留下的团子：共用令牌，别两个大脑同时在线
-                self.orphan = True
-                problems.append(f"{self.child_port} 端口上有上次留下的团子，先在总览让它退出")
-            try:
-                secrets = read_secrets(console_paths(self.config_path)[1])
-            except ValueError as exc:
-                problems.append(str(exc))
+            problems, orphan = self.sandbox_problems()
             if problems:
                 return 409, {"ok": False, "problems": problems, "orphan": orphan}
+            secrets = read_secrets(console_paths(self.config_path)[1])  # 坏了的话 sandbox_problems 已经拦下
             cmd = build_sandbox_command(self.config_path, port, self.parent_pid, start)
             try:
                 self.runner.start(cmd, child_env(os.environ, secrets), {"start": start}, kind="sandbox", port=port)
             except (RuntimeError, OSError) as exc:
-                return 409, {"ok": False, "problems": [str(exc)]}
+                return 409, {"ok": False, "problems": [problem(str(exc))]}
         return 200, {"ok": True}
 
     def stop_sandbox(self) -> tuple[int, dict]:
@@ -325,8 +332,10 @@ class ConsoleServer:
 
         cfg = self.store._fallback()
         root = self.sandbox_dir()
+        state = self._state_of("sandbox")
+        problems = [] if state in BUSY else self.sandbox_problems()[0]
         return {**start_info(root, time.time()), "friends": _safe_list(lambda: friends(root)), "owner_name": cfg.brain.owner_name,
-                "dir": str(root), "state": self._state_of("sandbox")}
+                "dir": str(root), "state": state, "problems": problems}
 
     def sandbox_proxy(self, method: str, rest: str, query: str, body: bytes | None = None) -> tuple[int, str, bytes]:
         """转发到沙盒子进程；槽被团子占着 / 沙盒没在跑 / 连不上都是 503。"""
@@ -727,7 +736,7 @@ class _SandboxApi:
     def start(self, choice: str) -> None:
         code, res = self.c.launch_sandbox(choice or "resume")
         if code != 200:
-            raise RuntimeError("沙盒起不来：" + "；".join(res.get("problems") or [res.get("text", "")]))
+            raise RuntimeError("沙盒起不来：" + "；".join([p["text"] for p in res.get("problems") or []] or [res.get("text", "")]))
 
     def stop(self) -> None:
         if _kind(self.c.runner.status()) == "sandbox":

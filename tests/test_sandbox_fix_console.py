@@ -23,7 +23,7 @@ def test_sandbox_start_refused_while_orphan_dango_holds_child_port(tmp_path, ups
     try:
         s.child_port = upstream.server_address[1]
         status, res = post(s, "api/sandbox/start", {"start": "resume"})
-        assert status == 409 and any("先在总览让它退出" in p for p in res["problems"])
+        assert status == 409 and any("先在总览让它退出" in p["text"] for p in res["problems"])
         assert s.runner.started == []
     finally:
         s.stop()

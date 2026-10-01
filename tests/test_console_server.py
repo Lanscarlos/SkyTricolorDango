@@ -129,7 +129,7 @@ def srv(tmp_path, upstream):
 
 @pytest.fixture
 def srv_with_token(tmp_path, upstream):
-    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n', child_port=free_port())
+    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n', child_port=free_port())
     yield s
     s.stop()
 
@@ -154,7 +154,7 @@ def test_post_needs_header_and_json(srv):
 def test_state_and_logs(srv):
     status, state = request(srv.url + "api/state")
     assert status == 200 and state["run"]["state"] == "idle" and state["launch"] == OPTS | {"duration": 0.0}
-    assert state["problems"] == ["大脑模式要 Claude 令牌：去设置页填"] and state["orphan"] is True  # 假上游占着 child_port
+    assert [p["text"] for p in state["problems"]] == ["大脑模式要 Claude 令牌：去设置页填", "大脑离线时的备用回复要大模型的 API Key：去设置页填"] and state["orphan"] is True  # 假上游占着 child_port
     assert request(srv.url + "api/logs?after=1") == (200, {"next": 2, "lines": ["b"]})
 
 
@@ -170,7 +170,7 @@ def test_start_rejects_bad_options(srv, body):  # Review Focus 5
 
 def test_start_reports_preflight_problems(srv):  # 没有 Claude 令牌
     status, res = request(srv.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
-    assert status == 409 and "Claude 令牌" in res["problems"][0] and srv.fake_runner.started == []
+    assert status == 409 and "Claude 令牌" in res["problems"][0]["text"] and srv.fake_runner.started == []
 
 
 def test_start_remembers_options_and_injects_secrets(srv_with_token):
@@ -312,10 +312,10 @@ def test_serves_shared_brain_trace_assets(srv):  # 沙盒页的大脑时间线�
 
 
 def test_start_refused_while_orphan_holds_port(tmp_path, upstream):  # 终审 Important 3：别起第二个团子
-    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n')
+    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n')
     try:
         status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
-        assert status == 409 and "上次留下的团子" in res["problems"][0] and s.fake_runner.started == []
+        assert status == 409 and "上次留下的团子" in res["problems"][0]["text"] and s.fake_runner.started == []
         assert request(s.url + "api/state")[1]["orphan"] is True
     finally:
         s.stop()
@@ -344,13 +344,13 @@ def test_start_refused_while_checking_device(tmp_path, upstream):  # 检测和�
         release.wait(5)
         return []
 
-    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\n', checks=slow_checks, child_port=free_port())
+    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n', checks=slow_checks, child_port=free_port())
     try:
         t = threading.Thread(target=request, args=(s.url + "api/device", b"{}", GOOD))
         t.start()
         assert started.wait(5)
         status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
-        assert status == 409 and "正在检测设备" in res["problems"][0] and s.fake_runner.started == []
+        assert status == 409 and "正在检测设备" in res["problems"][0]["text"] and s.fake_runner.started == []
         assert request(s.url + "api/device", b"{}", GOOD)[0] == 409
         release.set()
         t.join(5)
@@ -393,3 +393,9 @@ def test_page_has_scenario_controls():  # 沙盒计划 Task 11：剧本区
     for api in ("api/sandbox/scenarios", "api/sandbox/save", "api/sandbox/replay", "api/sandbox/replay/stop", "api/sandbox/record/new"):
         assert api in page
     assert "（录制、回放下一步做）" not in page
+
+
+def test_sandbox_info_has_problems(srv):  # 没有 Claude 令牌
+    info = request(srv.url + "api/sandbox/info")[1]
+    assert any(p["setting"] == "secret.claude" for p in info["problems"])
+    assert all(set(p) == {"text", "setting"} for p in info["problems"])
