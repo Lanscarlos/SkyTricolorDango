@@ -14,8 +14,8 @@
   --soft:#fbf8f1;--bubble:#f3ece0;--track:#ece4d5;--hover:#f7f1e6;--white:#fff;
   --refl-line:#d7c7a8;--refl-bg:#fbf6ea;--refl-ink:#7a6847;
   --shadow:0 1px 0 #efe6d6;--lift:0 10px 30px rgba(80,60,30,.14);--shade:rgba(59,51,43,.28);--ball-shade:rgba(0,0,0,.12);
-  /* 沙盒页的大脑控制台：浅色纸底 + 等宽字，靠一点暖灰底色和终端排版和别的栏区分 */
-  --term-bg:#f8f3ea;--term-head:#f1eadd;--term-line:#e2d8c6;--term-fg:#3b332b;--term-dim:#968a76;
+  /* 沙盒页的大脑控制台：底色和左右两栏一样，靠等宽字和终端排版区分 */
+  --term-bg:var(--card);--term-head:var(--card);--term-line:var(--line);--term-fg:#3b332b;--term-dim:#968a76;
   --term-sakura:#b54e77;--term-matcha:#4d7b4a;--term-amber:#a26b1d;--term-red:#b0412c;--term-indigo:#3f6593;
   --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
   --mono:"Cascadia Mono",Consolas,monospace;
