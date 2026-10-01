@@ -54,7 +54,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   `yolo` 不在 PATH 上，用 `.pydeps\bin\yolo.exe`。ultralytics 设置（`.cache/ultralytics/Ultralytics/settings.json`）的 datasets / weights / runs 指到仓库的 `datasets/`、`models/`、`runs/`
 - 往 `.pydeps/` 加包：`python -m pip install --no-deps --target .pydeps <包>`（`--target` 不看已装的包，不加 `--no-deps` 会把 numpy 等再装一份、还可能装上 CPU 版 torch；
   缺哪个依赖就显式列出来，装完 `python -m pip check`）。torch 要加 `--index-url https://download.pytorch.org/whl/cu128`
-- `config.toml` 是本机配置（gitignore），模板是 `config.example.toml`
+- `config.toml` 是本机配置（gitignore），模板是 `config.example.toml`；记忆在私有仓库，新电脑先按「记忆」一节克隆到 `private/`
 - 模拟器里装了 ADBKeyboard 并设为当前输入法（输中文用）；用户自己要打字时 `python -m skydango ime off`
 - 在 Git Bash 里调 `adb shell` 带 `/dev/...` 路径时要 `export MSYS_NO_PATHCONV=1`，否则路径会被改写
 
@@ -88,6 +88,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/viewer.py` | 识别可视化网页（`view` / `run --view`）：标准库 HTTP 服务，画面 + 识别框 + 状态放在同一份快照里，框和中文标签由浏览器画 |
 | `src/skydango/vision/panels.py` `game/panels.py` `assets/panels/` | 面板识别：特征卡快看 + OCR 细读 + 通用兜底认出开着哪些面板（`vision`）；按卡片关面板、点按钮（`game`）；六张特征卡（见「面板识别」） |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
+| `src/skydango/vision/candle.py` | 火焰圆盘（没点火的黑影站到身边时他身上的深色圆 + 火焰）：只用来判断黑影在能点火的距离里，**绝不点**；`white_ring` 分孤儿圆圈是举蜡烛请求（有白圈）还是圆盘 |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析 |
@@ -96,7 +97,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
 
-## 记忆（`memory/`，不进 git）
+## 记忆（`memory/`，不进 git；两台电脑用私有仓库同步，见本节末尾）
 
 | 文件 | 内容 | 谁写 |
 |---|---|---|
@@ -115,6 +116,29 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 `memory init` 用配置生成 profile / friends，`memory show` 查看，`memory update` 立刻整理。
 随手记和整理（`NotesKeeper`）在大脑模式和 `memory update` 里走 Claude Code（`[brain] memory_model`，默认 sonnet，一次性 `claude -p`、令牌同大脑、不给工具，`brain/claude.py` 的 `ClaudeLlm`）；
 只有 `run --no-brain` 的普通 Agent 还用 `[llm]`（DeepSeek）。
+
+### 两台电脑共用记忆（私有仓库）
+
+本仓库是公开的，记忆和沙盒数据放在**私有仓库** `git@github.com:Lanscarlos/SkyTricolorDango-Memory.git`（2026-10-01 建），
+克隆到本仓库根目录的 `private/`（gitignore）：`private/memory/` 是上面那张表里的记忆，`private/sandbox/` 是沙盒目录（记忆、`clock.json`、剧本、报告）。
+用户白天在单位电脑、晚上在个人电脑：真机 `run --live` 只在个人电脑跑，单位电脑主要跑大脑沙盒。
+
+新电脑第一次：
+```bash
+git clone git@github.com:Lanscarlos/SkyTricolorDango-Memory.git private
+```
+然后在本机 `config.toml` 里加（不加就还是用 `memory/`、`sandbox/`，读不到这份记忆）：
+```toml
+[reply]
+memory_dir = "private/memory"
+
+[sandbox]
+dir = "private/sandbox"
+```
+- **用之前** `git -C private pull`，**团子 / 沙盒下线后**在 `private/` 里提交并推送（`history.jsonl`、`inner/` 是一直追加的，两台电脑别同时跑，不然会冲突）
+- `private/` 里的 `.gitattributes` 是 `* -text`：文件原样保存，不转换换行符
+- 沙盒的记忆目录不能在记忆目录里面（`check_separate` 会拒绝），所以是 `private/` 下并列两个目录，而不是直接把私有仓库克隆成 `memory/`
+- **私有仓库别改成公开**，内容也别往本仓库里贴：里面有好友昵称、本名和聊天原话（好友里可能有未成年人）
 
 ## 运行目录（`runs/`，不进 git）
 
@@ -157,8 +181,12 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 不改的话模型会无视环境信息。`python -m skydango env` 对当前画面识别一次，看它认出了什么。
 
 扫描时顺带看好友名字下方的圆圈（`[social]`）：图标变成牵手 / 拥抱 / 击掌就记为请求，主循环里去点圆圈接受
-（原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受点火（图标还没录到）；
+（原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受举蜡烛给团子点火（头顶没名字的圆圈要有白圈才算，深色火焰圆盘绝不点，见 game-ops §6）；
 输入框开着时不点；dry-run 只打印。`python -m skydango record` 连续截图，用来观察新的界面变化。
+没点火的黑影站到团子身边 `light_after` 秒（他身上出现深色圆盘 + 火焰，`vision/candle.py` 认；只有大脑模式找，普通 Agent 不管 light 请求），大脑模式下身体按 3 号键举蜡烛（**绝不点那个圆盘**：会跟着人走），
+举满 `lit_min`（2 秒）后 YOLO 认成 `player` 满 `lit_frames` 帧、且他身上的圆盘消失超过 1 秒才算点亮（近处还黑着的人 YOLO 常直接认成 `player`；闪光时会冒出重复轨迹、原轨迹冻住——按最近处理的一帧算 `lit_stale` 秒没接上就换和它最后的框重叠的新 `player`，这条路要原来那个人和替身自己的圆盘都消失超过 1 秒、替身还要被扫满 1 秒；感知暂停 / 没在跑时一律不算）、过 `bow_delay` 鞠躬（顺带放下蜡烛）；`light_timeout` 秒没亮就按 3 放下、这个人不再点；鞠躬没做完不再举第二次、举之前先查 `reflex.min_gap`、身体替大脑开着输入框时不举；
+放下前先关替大脑开的框（按数字键会关掉它）；举着时接受了别的互动（点圆圈会放下蜡烛）或黑过屏（切场景、状态不明）就不再按 3 放下。接受别人点火后也鞠躬。
+大脑能用 `set_request_policy("stranger", "light", false)` 关掉；**未在真机验证**（spec `docs/superpowers/specs/2026-10-01-light-unlit-stranger-design.md` §9；录像 c / d 上的核对见 game-ops §6）
 
 ## YOLO 感知层（`[perception]`，开发中）
 
@@ -312,7 +340,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   背景事件（陌生人来去、好友走开 / `return` 回来、互动请求和已接受、牵手 / 松手、画面变化）不单独叫醒，攒够 `brain.background_wait`（20 秒）才兜底叫醒一次。
   同一个人攒着的"走开"和"回来"互相抵消，陌生人事件只留最新的。好友走开后 `brain.rejoin`（60 秒）内又出现发 `return`，不再打招呼。
   2026-09-29 真机 v4 感知层 dry-run：改之前 5 分钟醒 42 次，41 次是背景事件
-- 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火
+- 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火（他举蜡烛给团子点）和点亮（light：团子按 3 举蜡烛给没点火的黑影点）
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒或额度用完：聊天交给 `[llm]`（DeepSeek）备用回复，额度用完 10 分钟后再试
 - 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；额度用完时这一笔跳过，notes 下次再整理
 - 退出：身体先恢复轮盘、再复原镜头（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code

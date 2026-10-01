@@ -52,6 +52,7 @@ disclosure_prefix = "【AI】"   # 让对方知道是 AI，建议保留
 max_chars = 40
 min_interval = 3.0
 max_per_minute = 8
+# memory_dir = "private/memory"  # 默认 "memory"；记忆放私有仓库时指过去（见 CLAUDE.md「两台电脑共用记忆」）
 persona = """
 你叫三彩团子，是光遇里一个很可爱的女孩子，玩了挺久了。
 最喜欢樱花发型，特意把自己的光之子调成了小个子，平时爱穿可爱风的衣服，看到好看的斗篷和发型会走不动路。
@@ -393,7 +394,7 @@ close_with_back = true         # 发完按 BACK 关掉输入框，否则头顶�
 
 [sandbox]
 # 大脑沙盒（管理面板「沙盒」页）：不开 MuMu，假世界 + 真大脑 / 内心层；只写 <dir>/memory/，永远不写 memory/
-dir = "sandbox"          # 沙盒目录（memory/、scenarios/、reports/、clock.json），不进 git
+dir = "sandbox"          # 沙盒目录（memory/、scenarios/、reports/、clock.json），不进 git；放私有仓库时写 "private/sandbox"
 port = 19392             # 沙盒子进程的接口端口
 step_timeout = 180.0     # 回放时每步最多等多久安静（秒，真实时间）
 wake_hour = 9            # "睡一晚" / "到明早" 拨到几点

@@ -238,7 +238,7 @@ class SocialConfig:
     enabled: bool = True
     icons_dir: str = "assets/social"  # 圆圈图标模板，文件名就是类型
     accept_friends: list[str] = field(default_factory=lambda: ["hand", "hug", "highfive", "piggyback", "candle"])  # 好友举蜡烛也回应（2026-09-30 用户）
-    accept_strangers: list[str] = field(default_factory=lambda: ["candle"])  # 陌生人只接受点火（图标还没录到）
+    accept_strangers: list[str] = field(default_factory=lambda: ["candle", "light"])  # 陌生人：接受点火；light = 团子举蜡烛点亮没点火的陌生人（2026-10-01）
     icon_offset: float = 2.23  # 圆圈中心在名字标签上沿往下 这么多倍标签高度（实测标签 44 px 高、圆圈在下方 98 px）
     max_age: float = 10.0  # 请求是多久之内看到的才处理（后台每 env.interval 秒扫一次）
     cooldown: float = 15.0  # 同一个人的同一种请求处理完后隔多久才再处理
@@ -247,6 +247,19 @@ class SocialConfig:
     check_delay: float = 0.6  # 每次点完等多久再看
     remember: float = 120.0  # 接受之后多久内在提示词里提一句
     error_backoff: float = 10.0  # adb 出错（比如查输入框失败）后这么久不处理请求，免得每 0.15 s 起一个 adb 进程
+    # 点亮没点火的陌生人（spec 2026-10-01-light-unlit-stranger，都**未在真机验证**）
+    light_after: float = 3.0  # 黑影身上的火焰圆盘连续看到这么久才举蜡烛（别点路过的）
+    light_timeout: float = 8.0  # 举着蜡烛最多等这么久看他亮起来（YOLO player_unlit → player）
+    lit_frames: int = 3  # YOLO 连续几帧认成 player 才算点亮
+    lit_min: float = 2.0  # 举蜡烛后至少这么久才可能算点亮（YOLO 近处会把还黑着的人认成 player；未在真机验证）
+    lit_iou: float = 0.3  # lit()：替身 player 和原轨迹最后的框至少重叠这么多才算同一个人（未在真机验证）
+    lit_stale: float = 0.5  # lit()：原轨迹这么久没接上检测就当冻住了（闪光时出现重复轨迹、原轨迹框冻住；未在真机验证）
+    after_light: str = "鞠躬"  # 点亮别人 / 接受别人点火后做的动作（轮盘上要有；鞠躬顺带放下蜡烛），空 = 不做
+    bow_delay: float = 2.5  # 看到他亮起来 / 接受点火后等这么久再鞠躬（等闪光动画）
+    candle_slot: int = 3  # 轮盘上"举蜡烛"在第几格：按一下举起、再按一下放下（用户 2026-10-01）
+    disk_min_score: float = 0.68  # 火焰圆盘的模板匹配分
+    disk_dark: float = 90.0  # 圆盘外环亮度均值低于这个才算深色圆盘（有白圈的是举蜡烛的请求）
+    flame: str = "assets/candle/flame.png"  # 圆盘里的火焰模板
 
 
 @dataclass

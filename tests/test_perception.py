@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import pytest
 
@@ -120,6 +121,13 @@ def tag(x, w, y=330, h=44):
 def ring(cx, tag_y=330, tag_h=44):
     cy = tag_y + round(2.23 * tag_h)
     return Detection("social_ring", Rect(cx - 50, cy - 50, 100, 100), 0.9)
+
+
+def ringed(cx=1400, cy=428):
+    """画面上 ring(cx) 那个位置画一圈白圈：头顶没名字的圆圈要有白圈才算陌生人的请求（没有 = 深色火焰圆盘）。"""
+    f = frame()
+    cv2.circle(f, (cx, cy), 48, (240, 245, 245), 3)
+    return f
 
 
 def watcher(detector, ocr=None, icons=None, clock=None, **cfg):
@@ -252,10 +260,10 @@ def test_ring_without_tag_is_a_stranger_request():
     det = FakeDetector()
     det.frames = [[ring(1400)]]
     w = watcher(det, icons=FakeIcons({"next": "candle"}))
-    w.process(frame(), 0.0, panel_visible=False)
+    w.process(ringed(), 0.0, panel_visible=False)
     assert w.requests[STRANGER].kind == "candle"
     det.frames = [[]]
-    w.process(frame(), 0.1, panel_visible=False)
+    w.process(ringed(), 0.1, panel_visible=False)
     assert STRANGER not in w.requests
 
 
@@ -266,16 +274,16 @@ def test_stranger_request_survives_a_frame_where_the_icon_is_unclear():
     det.frames = [[ring(1400)]]
     icons = FakeIcons({"next": "candle"})
     w = watcher(det, icons=icons)
-    w.process(frame(), 0.0, panel_visible=False)
+    w.process(ringed(), 0.0, panel_visible=False)
     icons.kinds["next"] = None  # 这一帧没认出
-    w.process(frame(), 0.3, panel_visible=False)
+    w.process(ringed(), 0.3, panel_visible=False)
     assert w.requests[STRANGER].kind == "candle"
-    w.process(frame(), 2.0, panel_visible=False)  # 一直认不出：过了 1.5 秒就撤
+    w.process(ringed(), 2.0, panel_visible=False)  # 一直认不出：过了 1.5 秒就撤
     assert STRANGER not in w.requests
     icons.kinds["next"] = "candle"
-    w.process(frame(), 2.1, panel_visible=False)
+    w.process(ringed(), 2.1, panel_visible=False)
     icons.kinds["next"] = "stranger"  # 放下蜡烛了：图标换成了别的
-    w.process(frame(), 2.2, panel_visible=False)
+    w.process(ringed(), 2.2, panel_visible=False)
     assert STRANGER not in w.requests
 
 
@@ -1576,3 +1584,328 @@ def test_recent_approaches_follow_current_position():  # 整分支评审 2：走
     for i in range(30):  # 人走没了（轨迹过期）
         w.process(frame(), 1.9 + i * 0.1, panel_visible=False)
     assert w.recent_approaches(4.9) == []
+
+
+# ---- 点亮陌生人（spec 2026-10-01-light-unlit-stranger §3） ----
+from skydango.config import SocialConfig
+from skydango.vision import perception as perception_mod
+from skydango.vision.candle import Disk
+from skydango.game.social import LIGHT_KEY
+
+
+def unlit(x, y=400, w=90, h=220):
+    return Detection("player_unlit", Rect(x, y, w, h), 0.9)
+
+
+def light_watcher(monkeypatch, disks):
+    """disks：每次 find_disk 依次返回什么（用完了一直返回最后一个）。"""
+    seq = list(disks)
+    monkeypatch.setattr(perception_mod, "find_disk", lambda frame, box, flame, s, d: seq.pop(0) if len(seq) > 1 else seq[0])
+    det, clock = FakeDetector(), Clock()
+    w = watcher(det, clock=clock)
+    w.light_cfg, w.flame = SocialConfig(), np.ones((4, 4), np.uint8)
+    return w, det, clock
+
+
+DISK = Disk(1045, 480, 20.0, 0.9)
+
+
+def run(w, t, clock):
+    clock.t = t
+    w.process(frame(), t, panel_visible=False)
+
+
+def test_light_request_after_disk_seen_long_enough(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    for t in (0.0, 1.0, 2.0, 2.5):  # 帧间隔别超过 track_buffer（1 s），否则轨迹断了重新计时
+        run(w, t, clock)
+        assert LIGHT_KEY not in w.requests
+    run(w, 3.1, clock)
+    req = w.requests[LIGHT_KEY]
+    assert req.kind == "light" and req.pos == (1045, 480) and req.track is not None
+
+
+def test_short_gap_keeps_timer_long_gap_resets(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK, DISK, None, DISK, DISK])
+    det.frames = [[unlit(1000)]]
+    for t in (0.0, 1.0, 1.5, 2.0, 2.5, 3.1):  # 1.5 s 那次没看到，但离上次 0.5 s
+        run(w, t, clock)
+    assert LIGHT_KEY in w.requests
+    w2, det2, clock2 = light_watcher(monkeypatch, [DISK, None, None, DISK, DISK])
+    det2.frames = [[unlit(1000)]]
+    for t in (0.0, 0.5, 1.2, 2.5, 3.1):  # 0 s 之后 2.5 s 才又看到：重新计时
+        run(w2, t, clock2)
+    assert LIGHT_KEY not in w2.requests
+
+
+def test_mark_tried_stops_requests(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    for t in (0.0, 1.0, 2.0, 2.5, 3.1):
+        run(w, t, clock)
+    w.mark_tried(w.requests[LIGHT_KEY].track)
+    assert LIGHT_KEY not in w.requests
+    run(w, 4.0, clock)
+    assert LIGHT_KEY not in w.requests
+
+
+def test_far_or_lit_people_get_no_disk_check(monkeypatch):
+    calls = []
+    monkeypatch.setattr(perception_mod, "find_disk", lambda *a: calls.append(a) or DISK)
+    det, clock = FakeDetector(), Clock()
+    w = watcher(det, clock=clock)
+    w.light_cfg, w.flame = SocialConfig(), np.ones((4, 4), np.uint8)
+    det.frames = [[unlit(1000, h=40), player(300)]]  # 远处的小黑影（< stranger_min_height）、亮着的人
+    run(w, 0.0, clock)
+    assert calls == []
+
+
+def lit_track(monkeypatch, disks):
+    """黑影站着、圆盘看到了，身体举蜡烛（mark_tried）；返回 (w, det, clock, 轨迹 id)。"""
+    w, det, clock = light_watcher(monkeypatch, disks)
+    det.frames = [[unlit(1000)]]
+    run(w, 0.0, clock)
+    tid = w.last_tracks[0].id
+    w.mark_tried(tid)
+    return w, det, clock, tid
+
+
+def run_frames(w, clock, start, end, step=0.1):
+    """每 step 秒一帧，从 start 到 end（含）。"""
+    k = 0
+    while start + k * step <= end + 1e-9:
+        run(w, round(start + k * step, 3), clock)
+        k += 1
+
+
+def test_lit_when_same_track_turns_player(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [None])  # 身上没有圆盘
+    assert w.lit(tid, (1045, 480), -5.0) is False
+    det.frames = [[player(1000)]]  # 同一个位置翻成 player：cross 组保证 id 不变
+    run_frames(w, clock, 0.1, 0.2)
+    assert w.lit(tid, (1045, 480), -5.0) is False  # 才 2 帧
+    run(w, 0.3, clock)
+    assert w.lit(tid, (1045, 480), -5.0) is True
+
+
+def test_lit_needs_lit_min_after_raising(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [None])
+    det.frames = [[player(1000)]]
+    run_frames(w, clock, 0.1, 1.9)
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 举了才 1.9 秒：YOLO 近处会把还黑着的人认成 player
+    run_frames(w, clock, 2.0, 2.1)
+    assert w.lit(tid, (1045, 480), 0.0) is True
+
+
+def test_lit_false_while_disk_still_seen(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [DISK])
+    monkeypatch.setattr(perception_mod, "find_disk", lambda *a: DISK if clock.t < 3.0 else None)  # 3 秒后圆盘才没
+    det.frames = [[player(1000)]]
+    run_frames(w, clock, 0.1, 3.5)  # _tried 的黑影翻成 player 后照样找圆盘
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 圆盘 0.5 秒前还看到过
+    run_frames(w, clock, 3.6, 4.2)
+    assert w.lit(tid, (1045, 480), 0.0) is True  # 圆盘断开超过 DISK_GAP
+
+
+def test_lit_fallback_when_track_breaks(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [DISK, None])
+    det.frames = [[]]
+    run(w, 1.5, clock)  # 闪光：一帧都没认出来，轨迹过了 track_buffer 被删
+    assert w.lit(tid, (1045, 480), 0.0) is None
+    det.frames = [[player(1010)]]  # 原地冒出一个亮着的人，没有名字标签
+    for t in (1.6, 1.7, 1.8):
+        run(w, t, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 举了才 1.8 秒，替身也才扫了 0.2 秒
+    run_frames(w, clock, 1.9, 2.8)
+    assert w.lit(tid, (1045, 480), 0.0) is True
+
+
+def dup_setup(monkeypatch, orig_disk_until=0.0, dup_from=0.1, orig_until=0.5):
+    """原黑影（举了蜡烛）和重叠的重复 player 从 dup_from 起同时被认出来，orig_until 之后原轨迹不再有检测（框冻住）。
+    find_disk：orig_disk_until 之前都扫得到圆盘，之后都扫不到。lit_min 降到 0.3。"""
+    w, det, clock = light_watcher(monkeypatch, [None])
+    monkeypatch.setattr(perception_mod, "find_disk", lambda f, box, *a: DISK if clock.t <= orig_disk_until and box.y < 450 else None)  # 圆盘只在原黑影（y=400）身上
+    w.light_cfg.lit_min = 0.3
+    det.frames = [[unlit(1000)]]
+    run(w, 0.0, clock)
+    tid = w.last_tracks[0].id
+    w.mark_tried(tid)
+    t = 0.1
+    while t <= orig_until + 1e-9:
+        det.frames = [[unlit(1000), player(1000, y=500)]] if t >= dup_from else [[unlit(1000)]]
+        run(w, round(t, 3), clock)
+        t += 0.1
+    det.frames = [[player(1000, y=500)]]  # 之后只剩重复轨迹
+    return w, det, clock, tid
+
+
+def test_lit_fallback_when_old_track_frozen(monkeypatch):
+    """闪光时出现重复轨迹：原轨迹框冻住（没有检测接上它），不用等它超时。since 取"刚举完蜡烛"。"""
+    w, det, clock, tid = dup_setup(monkeypatch)
+    run_frames(w, clock, 0.6, 1.1)
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 替身才扫了 1.0 秒、原轨迹刚冻住
+    run(w, 1.2, clock)
+    assert tid in w.tracker.tracks and w.tracker.tracks[tid].last == 0.5  # 原轨迹还没超时（track_buffer 1 秒）
+    assert w.lit(tid, (1045, 480), 0.0) is True  # 0.7 > lit_stale：当冻住；圆盘早没了、替身扫满 1 秒
+
+
+def test_lit_flickering_disk_after_freeze_is_not_lit(monkeypatch):
+    """评审复现：原黑影圆盘看到 2.4 秒，2.5 秒起只剩重叠的 player，find_disk 漏扫 2.5~3.1 秒（火焰晃）：还黑着，不能判亮。"""
+    w, det, clock, tid = dup_setup(monkeypatch, orig_disk_until=2.4, dup_from=2.5, orig_until=2.4)
+    run_frames(w, clock, 2.5, 3.1)
+    assert w.lit(tid, (1045, 480), 0.0) is False
+    run_frames(w, clock, 3.2, 3.6)  # 原圆盘最后一次 2.4 秒，到 3.6 已 > DISK_GAP；替身从 2.5 起扫了 > 1 秒
+    assert w.lit(tid, (1045, 480), 0.0) is True
+
+
+def test_lit_fallback_needs_original_disk_gone(monkeypatch):
+    w, det, clock, tid = dup_setup(monkeypatch, orig_disk_until=2.4, dup_from=0.1, orig_until=2.4)
+    run_frames(w, clock, 2.5, 3.1)  # 替身早就扫满了，但原来那个人的圆盘 2.4 秒还在
+    assert w.lit(tid, (1045, 480), 0.0) is False
+
+
+def test_lit_fallback_candidate_scan_history(monkeypatch):
+    w, det, clock, tid = dup_setup(monkeypatch)
+    run_frames(w, clock, 0.6, 1.2)
+    cand = [t for t in w.tracker.tracks.values() if t.id != tid][0]
+    cand.data["disk_since"] = 1.0  # 替身才扫了 0.2 秒
+    assert w.lit(tid, (1045, 480), 0.0) is False
+
+
+def test_lit_not_true_when_process_stalled(monkeypatch):
+    w, det, clock, tid = dup_setup(monkeypatch)
+    run_frames(w, clock, 0.6, 1.2)
+    assert w.lit(tid, (1045, 480), 0.0) is True  # 前提：正常跑着时这就是"亮了"
+    clock.t = 2.0  # 之后 0.8 秒没有 process()（卡了 / 被挡）：不能因为"原轨迹看着冻住"就判亮
+    assert w.lit(tid, (1045, 480), 0.0) is False
+
+
+def test_lit_false_while_paused(monkeypatch):
+    w, det, clock, tid = dup_setup(monkeypatch)
+    run_frames(w, clock, 0.6, 1.2)
+    w.hold("panel")
+    assert w.lit(tid, (1045, 480), 0.0) is False
+    w.release("panel")
+
+
+def test_lit_resume_shifts_disk_times(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    run_frames(w, clock, 0.1, 0.9)
+    before = w.tracker.tracks[tid].data["disk_last"]
+    clock.t = 0.9
+    w.hold("blackout")
+    clock.t = 3.9
+    w.release("blackout")  # 暂停了 3 秒
+    d = w.tracker.tracks[tid].data
+    assert d["disk_last"] == before + 3.0 and d["disk_check"] >= before + 3.0 and d["disk_first"] >= 3.0
+
+
+def test_lit_fallback_needs_disk_gone_on_candidate(monkeypatch):
+    w, det, clock, tid = dup_setup(monkeypatch)
+    monkeypatch.setattr(perception_mod, "find_disk", lambda *a: DISK if clock.t <= 1.5 else None)  # 替身身上圆盘 1.5 秒前还看得到
+    run_frames(w, clock, 0.6, 1.6)
+    assert w.lit(tid, (1045, 480), 0.0) is False  # 圆盘刚消失，没过 DISK_GAP
+    run_frames(w, clock, 1.7, 2.7)
+    assert w.lit(tid, (1045, 480), 0.0) is True
+
+
+def test_lit_fallback_candidate_never_scanned_is_not_gone(monkeypatch):
+    w, det, clock, tid = dup_setup(monkeypatch)
+    run_frames(w, clock, 0.6, 1.2)
+    cand = [t for t in w.tracker.tracks.values() if t.id != tid][0]
+    cand.data.pop("disk_check")  # 没扫过圆盘：不能当作"消失"
+    cand.data.pop("disk_since")
+    assert w.lit(tid, (1045, 480), 0.0) is False
+
+
+def test_lit_frozen_track_ignores_passer_by(monkeypatch):
+    """原轨迹冻住后，旁边走过来的别人（框不重叠）不能算他点亮了。"""
+    w, det, clock, tid = lit_track(monkeypatch, [None])
+    det.frames = [[player(1000, y=700)]]  # x 同、但在原框下方不重叠
+    run_frames(w, clock, 0.1, 0.8)
+    assert w.lit(tid, (1045, 480), -5.0) is None
+
+
+def test_lit_mem_pruned_after_light_timeout(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [None])
+    assert tid in w._lit_mem
+    det.frames = [[]]
+    run_frames(w, clock, 0.5, 1.2)  # 轨迹超过 track_buffer 被删
+    assert tid in w._lit_mem  # 删了还留着（替身要找）
+    run_frames(w, clock, 9.0, 9.2)  # 超过 light_timeout（8 秒）
+    assert tid not in w._lit_mem
+
+
+def test_lit_fallback_distance_is_tight(monkeypatch):
+    w, det, clock, tid = lit_track(monkeypatch, [DISK])
+    det.frames = [[]]
+    run(w, 1.5, clock)
+    det.frames = [[player(1000 + 63)]]  # 框宽 90：中心比 pos 偏了 0.7 倍框宽
+    for t in (1.6, 1.7, 1.8, 2.5):
+        run(w, t, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is None
+
+
+def test_lit_fallback_ignores_friend(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [DISK])
+    det.frames = [[unlit(1000)]]
+    run(w, 0.0, clock)
+    tid = w.last_tracks[0].id
+    det.frames = [[]]
+    run(w, 1.5, clock)
+    w.ocr = FakeOcr({110: "懒洋洋大王"})
+    det.frames = [[player(1010), tag(1000, 110)]]  # 冒出来的是挂着好友名字的
+    for t in (1.6, 1.7, 1.8, 2.5):
+        run(w, t, clock)
+    assert w.lit(tid, (1045, 480), 0.0) is None
+
+
+# ---- 孤儿圆圈：深色火焰圆盘不是举蜡烛请求（最终审查 #1） ----
+from pathlib import Path  # noqa: E402
+
+RINGS = Path(__file__).parent / "data" / "candle_rings"
+
+
+def ring_frame(name, cx=1400, cy=428):
+    """录像 c 截的圆圈小图（140×140，圆心在正中）贴进整张画面，圆心对准 ring(1400) 的框中心。"""
+    f = frame()
+    f[cy - 70 : cy + 70, cx - 70 : cx + 70] = cv2.imread(str(RINGS / name))
+    return f
+
+
+@pytest.mark.parametrize("name", ["disk-c-05.3s.png", "disk-c-28.4s.png"])
+def test_orphan_dark_disk_is_not_a_candle_request_even_over_bright_background(name):
+    """录像 c：半透明圆盘透出后面亮的塔（外环亮度 97~109），以前按"够暗"判断漏过 → 当成陌生人举蜡烛 → 点了圆盘团子跟着他走。
+    现在只看有没有白圈；也不管点亮陌生人开没开（没开时以前直接不查）。"""
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}))
+    w.process(ring_frame(name), 0.0, panel_visible=False)
+    assert STRANGER not in w.requests
+
+
+@pytest.mark.parametrize("name", ["ring-c-22.5s.png", "ring-c-25.0s.png"])
+def test_orphan_white_ring_is_still_a_candle_request(name):
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}))
+    w.process(ring_frame(name), 0.0, panel_visible=False)
+    assert w.requests[STRANGER].kind == "candle"
+
+
+def test_scene_watcher_loads_flame_only_for_brain(monkeypatch):
+    """只有大脑模式的身体会举蜡烛：普通 Agent 不找火焰圆盘（否则 light 请求一直挂着）。"""
+    from skydango import cli
+    from skydango.config import Config
+    import skydango.vision.detect as detect
+    import skydango.vision.ocr as ocr
+
+    monkeypatch.setattr(detect, "make_detector", lambda *a, **k: object())
+    monkeypatch.setattr(ocr, "make_ocr", lambda *a, **k: FakeOcr({}))
+    cfg = Config()
+    cfg.perception.enabled = True
+    assert "light" in cfg.social.accept_strangers
+    assert cli._scene_watcher(cfg).flame is None
+    assert cli._scene_watcher(cfg, light=True).flame is not None

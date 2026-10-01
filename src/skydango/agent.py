@@ -20,6 +20,7 @@ from .config import Config
 from .device.base import Device
 from .brain.images import is_black
 from .game.emotes import EmotePlayer
+from .game.social import LIGHT
 from .runlog import RunDir
 
 log = logging.getLogger(__name__)
@@ -135,10 +136,14 @@ class Agent:
                 self._watch_panel_triggers(now)
             if self.viewer is not None:
                 self._show(frame, now, fresh)
-            if self.social is not None and self.env is not None and self.env.requests:
+            # light（团子举蜡烛点亮陌生人）只有大脑模式的身体会做：这里不管，不然它一直挂着、每圈都进 held("social")
+            requests = {}
+            if self.social is not None and self.env is not None:
+                requests = {k: r for k, r in dict(self.env.requests).items() if r.kind != LIGHT}
+            if requests:
                 try:
                     with self._held("social"):
-                        self.social.handle(self.env.requests, now)
+                        self.social.handle(requests, now)
                 except Exception:
                     log.exception("处理互动请求出错")
         commands: list[Message] = []

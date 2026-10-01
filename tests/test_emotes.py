@@ -180,3 +180,10 @@ def test_reflex_emote_does_not_start_brain_cooldown(library):
     t[0] = 105.0
     player.perform("鞠躬")
     assert player.available() == [] and player.last_any == 105.0
+
+
+def test_press_slot_is_not_an_emote(library):
+    player, device, _, _ = make_player(library, shown=True)
+    player.press_slot(3)
+    assert device.calls[-1] == ("hw_key", 4)  # 先 BACK 关输入框，再按 KEY_3
+    assert player.last_any == float("-inf") and player.last_emote == float("-inf")

@@ -109,3 +109,15 @@ def test_victim_limited_to_candidates(library):
     assert wheel._victim([7, 3]) == 7  # 3 被锁定
     with pytest.raises(WheelError, match="锁定"):
         wheel._victim([3])
+
+
+def test_press_slot_sends_its_digit_key(library):
+    wheel, device, _ = make_wheel(library)
+    wheel.press(3)  # 3 号格是锁定格（举蜡烛），也能按
+    assert device.calls == [("hw_key", 4)]  # KEY_3
+
+
+def test_press_refuses_when_input_box_open(library):
+    wheel, device, _ = make_wheel(library, shown=True)
+    with pytest.raises(WheelError, match="输入框"):
+        wheel.press(3)
