@@ -47,6 +47,7 @@ def is_request(kind: str | None) -> bool:
 SCALES = [0.8, 0.9, 1.0, 1.1, 1.2]
 MARGIN_MIN, MARGIN = 0.65, 0.15  # 不到 min_score 时：不低于 MARGIN_MIN 且领先第二种 MARGIN 以上也算认出
 RETRY = 2.0  # 去点之前那一帧没认出图标：隔这么久再试（不进整段冷却）
+RING_RADIUS = 50  # 头顶圆圈的半径（1920×1080，感知层的 social_ring 框宽约 100）
 
 
 def cream(img: np.ndarray) -> np.ndarray:
@@ -236,6 +237,8 @@ class SocialHandler:
         if pos is None:
             log.info("%s 的%s请求已经没了（这一帧没认出图标，%.0f 秒后再看）", req.name, what, RETRY)
             return None
+        if self._dark_disk(frame, req, pos):
+            return None
         with self.panel.borrow("social", close=False) if self.panel is not None else nullcontext():
             if not touch_mode(frame):
                 self.device.tap(*pos)  # 只切到触屏模式
@@ -245,9 +248,23 @@ class SocialHandler:
                 if found is None or not touch_mode(frame) or _moved(found, pos):
                     # 这一下其实已经生效了（或者请求没了）：别再点
                     return self._wait_done(req, found, what)
+                if self._dark_disk(frame, req, found):
+                    return None
                 pos = found
             self.device.tap(*pos)
             return self._wait_done(req, pos, what)
+
+    def _dark_disk(self, frame: np.ndarray, req: Request, pos: tuple[int, int]) -> bool:
+        """陌生人的点火：要点的这一帧再看一次火焰外面有没有白圈。没有 = 黑影身上的深色火焰圆盘，点了团子会一直跟着他走，绝不点
+        （感知层已经按同样的规矩筛过，这里兜底；spec 2026-10-01-light-unlit-stranger）。"""
+        if req.kind != "candle" or req.name in self.friends():
+            return False
+        from ..vision.candle import white_ring  # candle 要用这里的 cream，放顶上会循环导入
+
+        if white_ring(frame, pos[0], pos[1], RING_RADIUS * frame.shape[0] / 1080):
+            return False
+        log.warning("陌生人身上的是深色火焰圆盘（点了会跟着他走），不点")
+        return True
 
     def _wait_done(self, req: Request, pos: tuple[int, int] | None, what: str) -> bool:
         deadline = self.clock() + self.cfg.accept_timeout

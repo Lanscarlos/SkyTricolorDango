@@ -297,3 +297,35 @@ def test_light_policy_can_turn_it_off():
     h = SocialHandler(FakeDevice([np.zeros((10, 10, 3), np.uint8)]), SocialConfig(), IconClassifier(ICONS), lambda: [])
     h.set_policy("stranger", LIGHT, False)
     assert not h.allowed(Request("陌生人", LIGHT, (0, 0), 0.0, track=1))
+
+
+# ---- 纵深防御：陌生人身上的深色火焰圆盘绝不点（最终审查 #1） ----
+from pathlib import Path  # noqa: E402
+
+RINGS = Path(__file__).parent / "data" / "candle_rings"  # 录像 candle-20260930-c 截的 140×140，圆心在正中
+
+
+class RingDevice(FakeDevice):
+    """画面上 (1400, 400) 一个真机截的圆圈（触屏模式），点了也不变。"""
+
+    def __init__(self, name):
+        f = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+        f[400 - 70 : 400 + 70, 1400 - 70 : 1400 + 70] = cv2.imread(str(RINGS / name))
+        super().__init__([draw_ring(f)])
+        self.panel = True
+
+
+def test_stranger_dark_disk_is_never_tapped(caplog):
+    """感知层万一把深色圆盘当成了陌生人举蜡烛：去点的那一帧再看一次有没有白圈，没有就不点（点了团子会跟着他走）。"""
+    device = RingDevice("disk-c-05.3s.png")
+    h, _ = handler(device)
+    assert h.accept(Request("陌生人", "candle", (1400, 400), 0.0)) is None
+    assert taps(device) == []
+    assert "深色火焰圆盘" in caplog.text
+
+
+def test_stranger_white_ring_candle_is_tapped():
+    device = RingDevice("ring-c-25.0s.png")
+    h, _ = handler(device)
+    h.accept(Request("陌生人", "candle", (1400, 400), 0.0))
+    assert len(taps(device)) == 1

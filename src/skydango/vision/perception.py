@@ -37,7 +37,7 @@ from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
 from ..config import EnvConfig, GestureConfig, PerceptionConfig, SocialConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_request
-from .candle import dark_ring, find_disk
+from .candle import find_disk, white_ring
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
 from .gesture import ClipBuffer, eligible, person_crop
@@ -957,11 +957,10 @@ class PerceptionWatcher:
 
     # ---- 点亮陌生人（spec 2026-10-01-light-unlit-stranger §3） ----
     def _disk_like(self, frame: np.ndarray, ring: Track) -> bool:
-        if self.light_cfg is None:
-            return False
+        """头顶没名字的圆圈里是火焰：没有白圈 = 深色火焰圆盘（团子能去点亮他，点了圆盘会跟着他走），不是他要给团子点火。
+        只看白圈、不看亮度（半透明圆盘透出后面亮的东西时外环并不暗，见 candle.RING_WHITE），也不管点亮陌生人开没开。"""
         cx, cy = self._ring_center(ring)
-        r = ring.box.w / 2
-        return dark_ring(frame, cx, cy, 0.8 * r, 1.0 * r, self.light_cfg.disk_dark)
+        return not white_ring(frame, cx, cy, ring.box.w / 2)
 
     def _watch_disks(self, frame: np.ndarray, players: list[Track], now: float, height: int) -> None:
         """每条黑影轨迹记火焰圆盘出现了多久；够 light_after 秒出一个 light 请求（一次一个，挑看到最久的）。

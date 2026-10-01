@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import pytest
 
@@ -120,6 +121,13 @@ def tag(x, w, y=330, h=44):
 def ring(cx, tag_y=330, tag_h=44):
     cy = tag_y + round(2.23 * tag_h)
     return Detection("social_ring", Rect(cx - 50, cy - 50, 100, 100), 0.9)
+
+
+def ringed(cx=1400, cy=428):
+    """画面上 ring(cx) 那个位置画一圈白圈：头顶没名字的圆圈要有白圈才算陌生人的请求（没有 = 深色火焰圆盘）。"""
+    f = frame()
+    cv2.circle(f, (cx, cy), 48, (240, 245, 245), 3)
+    return f
 
 
 def watcher(detector, ocr=None, icons=None, clock=None, **cfg):
@@ -252,10 +260,10 @@ def test_ring_without_tag_is_a_stranger_request():
     det = FakeDetector()
     det.frames = [[ring(1400)]]
     w = watcher(det, icons=FakeIcons({"next": "candle"}))
-    w.process(frame(), 0.0, panel_visible=False)
+    w.process(ringed(), 0.0, panel_visible=False)
     assert w.requests[STRANGER].kind == "candle"
     det.frames = [[]]
-    w.process(frame(), 0.1, panel_visible=False)
+    w.process(ringed(), 0.1, panel_visible=False)
     assert STRANGER not in w.requests
 
 
@@ -266,16 +274,16 @@ def test_stranger_request_survives_a_frame_where_the_icon_is_unclear():
     det.frames = [[ring(1400)]]
     icons = FakeIcons({"next": "candle"})
     w = watcher(det, icons=icons)
-    w.process(frame(), 0.0, panel_visible=False)
+    w.process(ringed(), 0.0, panel_visible=False)
     icons.kinds["next"] = None  # 这一帧没认出
-    w.process(frame(), 0.3, panel_visible=False)
+    w.process(ringed(), 0.3, panel_visible=False)
     assert w.requests[STRANGER].kind == "candle"
-    w.process(frame(), 2.0, panel_visible=False)  # 一直认不出：过了 1.5 秒就撤
+    w.process(ringed(), 2.0, panel_visible=False)  # 一直认不出：过了 1.5 秒就撤
     assert STRANGER not in w.requests
     icons.kinds["next"] = "candle"
-    w.process(frame(), 2.1, panel_visible=False)
+    w.process(ringed(), 2.1, panel_visible=False)
     icons.kinds["next"] = "stranger"  # 放下蜡烛了：图标换成了别的
-    w.process(frame(), 2.2, panel_visible=False)
+    w.process(ringed(), 2.2, panel_visible=False)
     assert STRANGER not in w.requests
 
 
@@ -1852,3 +1860,36 @@ def test_lit_fallback_ignores_friend(monkeypatch):
     for t in (1.6, 1.7, 1.8, 2.5):
         run(w, t, clock)
     assert w.lit(tid, (1045, 480), 0.0) is None
+
+
+# ---- 孤儿圆圈：深色火焰圆盘不是举蜡烛请求（最终审查 #1） ----
+from pathlib import Path  # noqa: E402
+
+RINGS = Path(__file__).parent / "data" / "candle_rings"
+
+
+def ring_frame(name, cx=1400, cy=428):
+    """录像 c 截的圆圈小图（140×140，圆心在正中）贴进整张画面，圆心对准 ring(1400) 的框中心。"""
+    f = frame()
+    f[cy - 70 : cy + 70, cx - 70 : cx + 70] = cv2.imread(str(RINGS / name))
+    return f
+
+
+@pytest.mark.parametrize("name", ["disk-c-05.3s.png", "disk-c-28.4s.png"])
+def test_orphan_dark_disk_is_not_a_candle_request_even_over_bright_background(name):
+    """录像 c：半透明圆盘透出后面亮的塔（外环亮度 97~109），以前按"够暗"判断漏过 → 当成陌生人举蜡烛 → 点了圆盘团子跟着他走。
+    现在只看有没有白圈；也不管点亮陌生人开没开（没开时以前直接不查）。"""
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}))
+    w.process(ring_frame(name), 0.0, panel_visible=False)
+    assert STRANGER not in w.requests
+
+
+@pytest.mark.parametrize("name", ["ring-c-22.5s.png", "ring-c-25.0s.png"])
+def test_orphan_white_ring_is_still_a_candle_request(name):
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}))
+    w.process(ring_frame(name), 0.0, panel_visible=False)
+    assert w.requests[STRANGER].kind == "candle"

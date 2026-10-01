@@ -66,3 +66,35 @@ def test_dark_ring():
     f = figure()
     assert dark_ring(f, 990, 620, 32, 48, dark=80.0)
     assert not dark_ring(figure(ring=True), 990, 620, 32, 48, dark=80.0)
+
+
+# ---- 孤儿圆圈：有没有白圈（最终审查 #1：半透明圆盘透出亮背景，不能看亮度） ----
+from pathlib import Path  # noqa: E402
+
+from skydango.vision.candle import ring_fraction, white_ring  # noqa: E402
+
+RINGS = Path(__file__).parent / "data" / "candle_rings"  # 录像 candle-20260930-c 截的 140×140，圆心在 (70, 70)、圆圈半径约 50
+
+
+def crop(name):
+    return cv2.imread(str(RINGS / name))
+
+
+def white(img, r=50):
+    return white_ring(img, 70, 70, r)
+
+
+def test_translucent_disk_over_bright_tower_has_no_white_ring():
+    """5.3 s：圆盘透出后面亮的塔，外环亮度 97~109，旧的"够暗"判断过不了 → 被当成举蜡烛请求去点 → 团子跟着人走。"""
+    for name in ("disk-c-05.3s.png", "disk-c-28.4s.png"):
+        assert not white(crop(name)), name
+
+
+def test_white_ring_candle_request_has_white_ring():
+    for name in ("ring-c-22.5s.png", "ring-c-25.0s.png"):
+        assert white(crop(name)), name
+
+
+def test_ring_fraction_synthetic():
+    assert ring_fraction(figure(ring=True), 990, 620, 32, 48) == 1.0
+    assert ring_fraction(figure(), 990, 620, 32, 48) <= 0.2

@@ -25,6 +25,11 @@ BLUR = 2.0  # 火焰会抖（大小、形状每帧不同），模板和画面都
 SECTORS = 24  # 外环分成这么多扇形；白圈是一整圈亮的，旁边玩家的白衣服只占几个扇形
 RING_SECTORS = 0.5  # 亮的扇形占比超过这个 = 有白圈
 SECTOR_PIXELS = 3  # 一个扇形里至少这么多米白像素才算亮
+# 孤儿圆圈（头顶没名字的）里是火焰时：白圈占一圈扇形的这么多以上 = 陌生人举蜡烛要给团子点火（social 的 candle），
+# 不到 = 深色火焰圆盘（点了会跟着他走）。环带取圆圈半径的 0.7~1.1 倍。不看亮度：半透明圆盘会透出后面亮的东西
+# （最终审查在录像 candle-20260930-c 上量的：圆盘 0.17~0.33、白圈 1.00；白圈刚冒出来那一帧太淡会是 0，那一帧不点也没关系）
+RING_WHITE = 0.5
+RING_BAND = (0.7, 1.1)
 
 
 @dataclass(frozen=True)
@@ -39,24 +44,47 @@ def load_flame(path: str | Path = FLAME) -> np.ndarray:
     return trim(cream(imread(path)))
 
 
-def dark_ring(frame: np.ndarray, cx: int, cy: int, r_in: float, r_out: float, dark: float) -> bool:
-    """(cx, cy) 周围 r_in~r_out 的环带够暗、没有白色描边。"""
+def _band(frame: np.ndarray, cx: int, cy: int, r_in: float, r_out: float):
+    """(cx, cy) 周围 r_in~r_out 的环带：(那一小块画面, 环带掩码, 每个像素在第几个扇形)；出了画面 / 空的返回 None。"""
     x1, y1 = max(0, int(cx - r_out)), max(0, int(cy - r_out))
     patch = frame[y1 : int(cy + r_out) + 1, x1 : int(cx + r_out) + 1]
     if patch.size == 0:
-        return False
+        return None
     yy, xx = np.mgrid[0 : patch.shape[0], 0 : patch.shape[1]]
     d = np.hypot(xx - (cx - x1), yy - (cy - y1))
     ring = (d >= r_in) & (d <= r_out)
     if not ring.any():
+        return None
+    sector = (np.arctan2(yy - (cy - y1), xx - (cx - x1)) + np.pi) / (2 * np.pi) * SECTORS
+    return patch, ring, np.minimum(sector.astype(int), SECTORS - 1)
+
+
+def _lit_fraction(patch: np.ndarray, ring: np.ndarray, sector: np.ndarray) -> float:
+    bright = (cream(patch) > 0) & ring
+    return float((np.bincount(sector[bright], minlength=SECTORS) >= SECTOR_PIXELS).mean())
+
+
+def ring_fraction(frame: np.ndarray, cx: int, cy: int, r_in: float, r_out: float) -> float:
+    """(cx, cy) 周围 r_in~r_out 的环带里，有米白像素（白圈）的扇形占几成：一整圈白圈 ≈ 1，旁边白衣服只占几个扇形。"""
+    band = _band(frame, cx, cy, r_in, r_out)
+    return 0.0 if band is None else _lit_fraction(*band)
+
+
+def white_ring(frame: np.ndarray, cx: int, cy: int, r: float) -> bool:
+    """以 (cx, cy) 为圆心、半径约 r 的圆圈有没有白圈：有 = 举蜡烛请求（可以点），没有 = 深色火焰圆盘（绝不点）。"""
+    return ring_fraction(frame, cx, cy, RING_BAND[0] * r, RING_BAND[1] * r) >= RING_WHITE
+
+
+def dark_ring(frame: np.ndarray, cx: int, cy: int, r_in: float, r_out: float, dark: float) -> bool:
+    """(cx, cy) 周围 r_in~r_out 的环带够暗、没有白色描边。"""
+    band = _band(frame, cx, cy, r_in, r_out)
+    if band is None:
         return False
+    patch, ring, sector = band
     value = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)[:, :, 2]
     if float(value[ring].mean()) >= dark:
         return False
-    bright = (cream(patch) > 0) & ring
-    sector = (np.arctan2(yy - (cy - y1), xx - (cx - x1)) + np.pi) / (2 * np.pi) * SECTORS
-    lit = np.bincount(np.minimum(sector[bright].astype(int), SECTORS - 1), minlength=SECTORS) >= SECTOR_PIXELS
-    return float(lit.mean()) <= RING_SECTORS
+    return _lit_fraction(patch, ring, sector) <= RING_SECTORS
 
 
 def _region(box: Rect, width: int, height: int) -> tuple[int, int, int, int] | None:
