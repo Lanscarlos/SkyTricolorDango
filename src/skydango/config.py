@@ -402,10 +402,12 @@ class GestureConfig:
 
     enabled: bool = False
     model: str = "models/gesture.onnx"  # 输入 1×frames×3×size×size（RGB，0~1），输出每个标签的分数（logits 或概率）
-    labels: list[str] = field(default_factory=lambda: ["none", "wave", "bow"])  # 模型输出的顺序；none = 没做这几个动作
-    names: dict[str, str] = field(default_factory=lambda: {"wave": "挥手", "bow": "鞠躬"})  # 事件里的中文名
+    labels: list[str] = field(default_factory=lambda: ["none", "wave", "bow", "cheer", "shy"])  # 模型输出的顺序；none = 没做这几个动作
+    names: dict[str, str] = field(default_factory=lambda: {"wave": "挥手", "bow": "鞠躬", "cheer": "欢呼", "shy": "害羞"})  # 事件里的中文名
     frames: int = 16  # 一段几帧（2 s）
     fps: float = 8.0  # 每秒取几帧
+    stride: int = 8  # 切片段时每隔几帧起一段（16 帧一段、8 帧起一段 = 半重叠）
+    dataset: str = "datasets/gesture"  # 动作数据目录：_unlabeled/ 是刚切的，<动作>/ 是分好类的
     size: int = 112  # 人物裁剪缩放到的边长
     interval: float = 2.0  # 同一个人隔这么久判一次
     min_prob: float = 0.9  # 概率到这个才报（报错动作很尴尬，宁可不报）

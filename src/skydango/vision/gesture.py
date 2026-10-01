@@ -1,8 +1,8 @@
 """别人对团子做的动作（感知层三期 §3，**研究性质**）：好友对着团子挥手、鞠躬时认出来，发事件给大脑，由它决定回不回礼。
 
 还没有模型，这里是数据工具和运行时接口：
-- `extract_clips`（`perception clips`）：录像（`record --fps 8`）→ 按人物轨迹切成 16 帧（2 s）的片段，存成
-  `<输出>/<序号>_track<轨迹>_t<开始秒>s/00.jpg…15.jpg`，人工把片段目录挪进 `<数据目录>/<动作>/`（`none` = 站着、走路、别的动作）
+- `extract_clips`（`perception clips`）：录像（`record --fps 8`）→ 按人物轨迹切成 16 帧（2 s）的片段（每 stride 帧起一段），存成
+  `<输出>/<录像名>__<序号>_track<轨迹>_t<开始秒>s/00.jpg…15.jpg`，人工把片段目录挪进 `<数据目录>/<动作>/`（`none` = 站着、走路、别的动作）
 - `evaluate`（`perception gesture-eval`）：在分好类的片段上算每个动作的精确率 / 召回率（目标：精确率 ≥ 90%、召回率 ≥ 60%）
 - `OnnxGestureClassifier`：模型约定——输入 `1×T×3×S×S`（RGB，0~1，T = frames、S = size），输出 `1×len(labels)` 的分数
   （logits 或概率，这里统一做 softmax），标签顺序同 `[gesture] labels`
@@ -74,14 +74,27 @@ class ClipBuffer:
         return list(self.items)
 
 
-def eligible(name: str | None, box: Rect, width: int, ref_h: float, near: float, far: float) -> bool:
-    """要不要判这个人：认出是哪个好友、离得近 / 中（二期 §4）、在画面中间一半（大致正对着团子）。"""
-    if not name:
-        return False
+def near_center(box: Rect, width: int, ref_h: float, near: float, far: float) -> bool:
+    """离得近 / 中（二期 §4）、框中心在画面中间一半（大致正对着团子）。"""
     if distance(box.h, ref_h, near, far) == "远":
         return False
     cx = box.x + box.w / 2
     return width / 4 <= cx <= width * 3 / 4
+
+
+def eligible(name: str | None, box: Rect, width: int, ref_h: float, near: float, far: float) -> bool:
+    """要不要判这个人：认出是哪个好友 + near_center。"""
+    return bool(name) and near_center(box, width, ref_h, near, far)
+
+
+def clip_name(recording: str, n: int, track: int, start: float) -> str:
+    """片段目录名：带上录像名，后面的标注、训练按它找回是哪段录像切的。"""
+    return f"{recording}__{n:04d}_track{track}_t{start:.2f}s"
+
+
+def recording_of(clip: str) -> str:
+    """片段目录名里 `__` 前面的录像名；没有 `__`（老格式）返回空串。"""
+    return clip.split("__", 1)[0] if "__" in clip else ""
 
 
 class OnnxGestureClassifier:
@@ -116,31 +129,45 @@ def load_clip(folder: Path) -> list[np.ndarray]:
 
 
 def extract_clips(
-    frames: Iterable[tuple[float, np.ndarray]], detector, out: Path, cfg: GestureConfig, conf: float
+    frames: Iterable[tuple[float, np.ndarray]], detector, out: Path, cfg: GestureConfig, conf: float,
+    recording: str, ref_h: float | None = None, near: float = 0.8, far: float = 0.4,
 ) -> int:
-    """录像 [(秒, 图)]（可以是生成器，录像长了不用全读进内存）→ 每条 player 轨迹按 fps 取帧，切成不重叠的 frames 张一段存起来，返回段数。"""
+    """录像 [(秒, 图)]（可以是生成器）→ 每条 player 轨迹按 fps 取帧，切成 frames 张一段存起来（每 stride 帧起一段，半重叠），返回段数。
+
+    只收近处、画面中间的人（`near_center`；远处的人太小、边上的人不是对着团子的）。ref_h 是团子的框高：
+    不给就用这一帧检测到的 `self` 框高，也没有就按 0.2 × 帧高。"""
     tracker = Tracker(buffer=1.0, min_iou=0.3)
-    buffers: dict[int, tuple[float, list[np.ndarray]]] = {}  # 轨迹 → (这一段开始的秒数, 裁剪)
+    buffers: dict[int, list[tuple[float, np.ndarray]]] = {}  # 轨迹 → [(秒, 裁剪)]
     last: dict[int, float] = {}
     gap = 0.9 / max(cfg.fps, 0.1)
+    keep = max(cfg.frames - cfg.stride, 0)  # 存完一段后留下的帧数
     n = 0
     out.mkdir(parents=True, exist_ok=True)
     for t, img in frames:
-        dets: list[Detection] = [d for d in detector.detect(img) if d.cls == "player" and d.score >= conf]
+        height, width = img.shape[:2]
+        found = [d for d in detector.detect(img) if d.score >= conf]
+        ref = ref_h
+        if ref is None:
+            selves = [d for d in found if d.cls == "self"]
+            ref = max(selves, key=lambda d: d.score).box.h if selves else 0.2 * height
+        dets: list[Detection] = [d for d in found if d.cls == "player"]
         for track in tracker.update(dets, t):
+            if not near_center(track.box, width, ref, near, far):
+                buffers.pop(track.id, None)  # 走远了 / 走到边上：片段必须是连续的一段
+                continue
             if t - last.get(track.id, float("-inf")) < gap:
                 continue
             last[track.id] = t
-            start, crops = buffers.setdefault(track.id, (t, []))
-            crops.append(person_crop(img, track.box, cfg.size))
+            crops = buffers.setdefault(track.id, [])
+            crops.append((t, person_crop(img, track.box, cfg.size)))
             if len(crops) < cfg.frames:
                 continue
-            folder = out / f"{n:04d}_track{track.id}_t{start:.2f}s"
+            folder = out / clip_name(recording, n, track.id, crops[0][0])
             folder.mkdir(parents=True, exist_ok=True)
-            for i, crop in enumerate(crops):
+            for i, (_, crop) in enumerate(crops):
                 imwrite(folder / f"{i:02d}.jpg", crop)
             n += 1
-            del buffers[track.id]
+            buffers[track.id] = crops[len(crops) - keep:] if keep else []
     return n
 
 

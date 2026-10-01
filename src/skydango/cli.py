@@ -701,8 +701,10 @@ def _perception_clips(cfg: Config, args) -> None:
     if skipped:
         print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
     detector = make_detector(p.model, p.classes, p.imgsz, p.conf, p.iou, p.device)
-    out = Path(args.output)
-    n = extract_clips(((t, imread(path)) for t, path in timed), detector, out, cfg.gesture, p.conf)
+    out = Path(args.output) if args.output else Path(cfg.gesture.dataset) / "_unlabeled"
+    recording = Path(args.source).resolve().name  # 片段名带录像名，后面标注 / 训练按它找回来源
+    n = extract_clips(((t, imread(path)) for t, path in timed), detector, out, cfg.gesture, p.conf, recording,
+                      near=p.near, far=p.far)
     print(f"切出 {n} 段（每段 {cfg.gesture.frames} 张、{cfg.gesture.fps:g} 张/秒）→ {out}")
     print(f"人工看一遍，把片段目录挪进 <数据目录>/<动作>/（{' / '.join(cfg.gesture.labels)}；none = 站着、走路、别的动作），"
           "再用 perception gesture-eval 评估")
@@ -2266,7 +2268,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--last", type=int, default=5, help="看最近几次运行")
     q = psub.add_parser("clips", help="动作识别的数据：录像按人物轨迹切成 16 帧的片段（人工再分到 <动作>/ 目录）")
     q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
-    q.add_argument("-o", "--output", default="datasets/gesture/_unlabeled")
+    q.add_argument("-o", "--output", help="输出目录（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
     q = psub.add_parser("gesture-eval", help="在分好类的片段（<数据目录>/<动作>/<片段>/）上评估动作模型的精确率 / 召回率")
     q.add_argument("data", help="数据目录，比如 datasets/gesture")
