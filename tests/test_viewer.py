@@ -758,3 +758,31 @@ def test_describe_env_lists_things():
     env.things = [Thing(1, "bonfire", Rect(0, 0, 1, 1), "右边", "中")]
     assert describe_env(env, 0.0)["附近的东西"] == "篝火（右边·中）"
     assert 'bench:"#1d4ed8"' in PAGE and 'spirit:"先祖"' in PAGE
+
+
+def test_describe_env_shows_own_look_after_nearby():
+    class Env:
+        requests: dict = {}
+
+        def nearby(self, now):
+            return ["小明"]
+
+        def my_look(self):
+            return "红斗篷"
+
+    info = describe_env(Env(), 1.0)
+    keys = list(info)
+    assert info["团子穿着"] == "红斗篷"
+    assert keys.index("团子穿着") == keys.index("身边的好友") + 1
+
+    Env.my_look = lambda self: ""
+    assert "团子穿着" not in describe_env(Env(), 1.0)
+    del Env.my_look
+    assert "团子穿着" not in describe_env(Env(), 1.0)
+
+
+def test_page_has_maybe_style_and_hover():
+    assert 'maybe:"#86efac"' in PAGE
+    assert 'maybe:"按外观认的好友"' in PAGE
+    assert "[6,4]" in PAGE
+    assert "mousemove" in PAGE and "mouseleave" in PAGE

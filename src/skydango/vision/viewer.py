@@ -397,6 +397,9 @@ def describe_env(env, now: float) -> dict:
     ocr = f"整图 OCR（每 {interval:g} 秒一次）" if isinstance(interval, (int, float)) else "整图 OCR"
     out: dict = {"识别": "YOLO 感知层" if yolo else ocr}
     out["身边的好友"] = env.nearby(now) or "没看到"
+    look = env.my_look() if hasattr(env, "my_look") else ""
+    if look:
+        out["团子穿着"] = look
     if yolo:
         n = env.strangers(now)
         dark = env.unlit(now) if hasattr(env, "unlit") else 0
@@ -459,11 +462,11 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 <section id="brain" hidden></section></div>
 <aside><h1>团子看到的</h1><dl id="info"></dl><div class="legend" id="legend"></div></aside>
 </main><script>
-const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",
+const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",maybe:"#86efac",
 ring:"#22d3ee",request:"#f43f5e",panel:"#6b7280",message:"#f472b6",typing:"#e879f9",
 bench:"#1d4ed8",bonfire:"#ea580c",instrument:"#fda4af",spirit:"#ffffff",
 panel_ok:"#3b82f6",panel_new:"#facc15",panel_unknown:"#ef4444",button_ok:"#22c55e",button_ask:"#9ca3af",button_never:"#dc2626"};
-const NAMES={friend:"好友",tag:"没认出的名字",stranger:"陌生人",unlit:"没点火",player:"没判定的人",self:"团子",ring:"互动圆圈",
+const NAMES={friend:"好友",tag:"没认出的名字",stranger:"陌生人",unlit:"没点火",player:"没判定的人",self:"团子",maybe:"按外观认的好友",ring:"互动圆圈",
 request:"互动请求",panel:"聊天面板",message:"新消息",typing:"正在输入",
 bench:"座位",bonfire:"篝火",instrument:"乐器",spirit:"先祖",
 panel_ok:"面板（已核对）",panel_new:"面板（未核对）",panel_unknown:"不认识的面板",button_ok:"能按",button_ask:"要放行",button_never:"不能按"};
@@ -479,11 +482,20 @@ function draw(s){
   if(!showBoxes)return;const k=c.width/s.width,fs=Math.max(12,Math.round(c.width/80));
   ctx.font=`${fs}px system-ui,"Microsoft YaHei",sans-serif`;ctx.textBaseline="middle";
   for(const b of s.boxes){const col=COLORS[b.kind]||"#fff",x=b.x*k,y=b.y*k,w=b.w*k,h=b.h*k;
-    ctx.strokeStyle=col;ctx.lineWidth=b.kind==="request"?4:2;ctx.setLineDash(b.kind.startsWith("panel")?[8,5]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
+    ctx.strokeStyle=col;ctx.lineWidth=b.kind==="request"?4:2;ctx.setLineDash(b.kind.startsWith("panel")?[8,5]:b.kind==="maybe"?[6,4]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
     const t=(b.label||"")+(b.score!==undefined?` ${b.score.toFixed(2)}`:"");if(!t)continue;
     const below=b.kind==="ring"||b.kind==="request",tw=ctx.measureText(t).width+8,th=fs+6,ty=(below||y-th<0)?y+h:y-th;
     ctx.fillStyle=col;ctx.fillRect(x,ty,tw,th);ctx.fillStyle="#0b0d12";ctx.fillText(t,x+4,ty+th/2);}
+  drawHover(s,k,fs);
 }
+// 鼠标悬停：落在有 desc 的框里时，在框下方画一行描述（只用 fillText，desc 来自模型）
+let hover=null;
+function drawHover(s,k,fs){if(!hover)return;let hit=null;
+  for(const b of s.boxes){if(!b.desc)continue;const x=b.x*k,y=b.y*k;if(hover[0]>=x&&hover[0]<=x+b.w*k&&hover[1]>=y&&hover[1]<=y+b.h*k)hit=b}
+  if(!hit)return;const t=String(hit.desc),tw=ctx.measureText(t).width+8,th=fs+6,x=Math.min(hit.x*k,c.width-tw),y=Math.min((hit.y+hit.h)*k,c.height-th);
+  ctx.fillStyle="rgba(11,13,18,.85)";ctx.fillRect(x,y,tw,th);ctx.fillStyle="#e6e8ee";ctx.fillText(t,x+4,y+th/2)}
+c.addEventListener("mousemove",e=>{const r=c.getBoundingClientRect();hover=[(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height];if(last)draw(last)});
+c.addEventListener("mouseleave",()=>{hover=null;if(last)draw(last)});
 function info(s){const dl=$("info");dl.innerHTML="";
   for(const [k,v] of Object.entries(s.info)){const dt=document.createElement("dt"),dd=document.createElement("dd");dt.textContent=k;
     if(Array.isArray(v)&&v.length>1){const ul=document.createElement("ul");for(const x of v){const li=document.createElement("li");li.textContent=x;ul.append(li)}dd.append(ul)}
