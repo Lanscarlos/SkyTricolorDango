@@ -24,6 +24,7 @@ from ..config import GestureConfig
 from ..imageio import imread, imwrite
 from .bubbles import Rect
 from .detect import Detection
+from .onnxrt import open_session
 from .sweep import distance
 from .track import Tracker
 
@@ -88,12 +89,10 @@ class OnnxGestureClassifier:
         if not Path(path).exists():
             raise FileNotFoundError(f"找不到动作识别模型：{path}（[gesture] model；还没训练就先别打开 [gesture]）")
         try:
-            import onnxruntime as ort
+            import onnxruntime  # noqa: F401 - 缺包时给出提示
         except ImportError as exc:
             raise ImportError("动作识别模型要 onnxruntime：pip install onnxruntime") from exc
-        wanted = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device == "cuda" else ["CPUExecutionProvider"]
-        providers = [p for p in wanted if p in ort.get_available_providers()] or ["CPUExecutionProvider"]
-        self.session = ort.InferenceSession(str(path), providers=providers)
+        self.session = open_session(path, device, "perception.device")
         self.input = self.session.get_inputs()[0].name
         self.labels = labels
         size = self.session.get_outputs()[0].shape[-1]  # 启动时就对上类别数，别等到运行时每次判都报错

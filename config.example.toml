@@ -93,8 +93,8 @@ swap_min_interval = 120.0     # 两次换轮盘至少隔几秒（换一次要关
 # YOLO 感知层（还在开发，模型要自己训练）：持续检测人物 / 名字标签 / 互动圆圈，替代 [env] 的定时整图 OCR，还能认出陌生人
 # 测速：python -m skydango perception bench --model yolo11n.pt（没训练前先用官方模型看硬件够不够）
 enabled = false
-model = "models/sky-yolo.onnx"  # .onnx 用 onnxruntime（N 卡装 onnxruntime-gpu）；.pt / .engine 用 ultralytics
-device = "cuda"
+model = "models/sky-yolo.onnx"  # .onnx 用 onnxruntime；.pt / .engine 用 ultralytics（要 torch，核显机器上别用）
+device = "cuda"                 # cuda（N 卡，装 onnxruntime-gpu）/ dml（核显、A 卡，装 onnxruntime-directml，只对 .onnx 有用）/ cpu
 imgsz = 960                     # 要和训练时一致
 fps = 15.0
 capture = "body"                # "own"：感知线程自己截图，才能到 15 fps
@@ -136,7 +136,7 @@ enabled = false
 model = "color"                 # "color" = 内置颜色直方图；或 .onnx 特征模型路径
 size = 224                      # 同 [places]
 norm = "imagenet"
-device = "cpu"
+device = "cpu"                  # cuda / dml / cpu，同 [perception]
 every = 3                       # 每条轨迹每几帧算一次特征
 max_per_frame = 4               # 一帧最多算几个
 min_height = 0.10               # 好样本的框高（相对截图高度）

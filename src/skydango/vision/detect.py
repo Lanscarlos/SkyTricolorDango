@@ -1,7 +1,7 @@
 """YOLO 检测器：视觉的第一道关卡，只回答"画面里有什么、在哪"（设计见 docs/superpowers/specs/…-v0.2.md）。
 
 两种后端，按模型文件的扩展名选：
-- `.onnx` → onnxruntime（有 onnxruntime-gpu 就用 CUDA，没有退回 CPU；不需要 torch）
+- `.onnx` → onnxruntime（device = cuda / dml / cpu，见 onnxrt.py；要的 GPU 后端没装就退回 CPU；不需要 torch）
 - `.pt` / `.engine` → ultralytics（训练时本来就装了 torch；`.engine` 是 TensorRT）
 
 类别名优先从模型里读（ultralytics 导出的 ONNX 元数据里带 names），读不到用配置里的 `perception.classes`。
@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import ast
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -19,8 +18,7 @@ import cv2
 import numpy as np
 
 from .bubbles import Rect
-
-log = logging.getLogger(__name__)
+from .onnxrt import open_session, torch_device
 
 
 @dataclass(frozen=True)
@@ -122,15 +120,11 @@ class OnnxYoloDetector:
     def __init__(self, path: str | Path, classes: list[str], imgsz: int = 640, conf: float = 0.35, iou: float = 0.5,
                  device: str = "cuda") -> None:
         try:
-            import onnxruntime as ort
+            import onnxruntime  # noqa: F401 - 缺包时给出提示
         except ImportError as exc:
-            raise ImportError('没有安装 onnxruntime：pip install onnxruntime（N 卡用 onnxruntime-gpu）') from exc
-        wanted = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device == "cuda" else ["CPUExecutionProvider"]
-        providers = [p for p in wanted if p in ort.get_available_providers()] or ["CPUExecutionProvider"]
-        self.session = ort.InferenceSession(str(path), providers=providers)
+            raise ImportError('没有安装 onnxruntime：pip install onnxruntime（N 卡用 onnxruntime-gpu，核显用 onnxruntime-directml）') from exc
+        self.session = open_session(path, device, "perception.device")
         self.providers = self.session.get_providers()
-        if device == "cuda" and "CUDAExecutionProvider" not in self.providers:
-            log.warning("要求用 GPU，但 onnxruntime 没有 CUDA（装的是 CPU 版，或者 CUDA 版本不对）：现在在 CPU 上跑")
         meta = self.session.get_modelmeta().custom_metadata_map
         self.names = _parse_names(meta.get("names")) or list(classes)
         inp = self.session.get_inputs()[0]
@@ -154,7 +148,7 @@ class UltralyticsDetector:
             raise ImportError('没有安装 ultralytics：pip install "skydango[yolo]"（50 系显卡要先装 cu128 的 torch）') from exc
         self.model = YOLO(str(path), task="detect")
         self.imgsz, self.conf, self.iou = imgsz, conf, iou
-        self.device = 0 if device == "cuda" else "cpu"
+        self.device = torch_device(device)
         self.providers = [f"ultralytics:{device}"]
         names = self.model.names
         self.names = [names[k] for k in sorted(names)] if isinstance(names, dict) else list(names)

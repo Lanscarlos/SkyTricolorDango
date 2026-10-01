@@ -10,6 +10,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .onnxrt import open_session
+
 NORMS = {
     "imagenet": ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     "clip": ((0.4815, 0.4578, 0.4082), (0.2686, 0.2613, 0.2758)),
@@ -42,12 +44,10 @@ class OnnxEmbedder:
         if not Path(path).exists():
             raise FileNotFoundError(f"找不到特征模型：{path}（{what}；先用 \"thumb\" 基线也行）")
         try:
-            import onnxruntime as ort
+            import onnxruntime  # noqa: F401 - 缺包时给出提示
         except ImportError as exc:
             raise ImportError(f"{what} 要 onnxruntime：pip install onnxruntime") from exc
-        wanted = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device == "cuda" else ["CPUExecutionProvider"]
-        providers = [p for p in wanted if p in ort.get_available_providers()] or ["CPUExecutionProvider"]
-        self.session = ort.InferenceSession(str(path), providers=providers)
+        self.session = open_session(path, device, what)
         self.input = self.session.get_inputs()[0]
         shape = self.input.shape
         self.size = shape[-1] if isinstance(shape[-1], int) and shape[-1] > 0 else size

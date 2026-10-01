@@ -2219,7 +2219,7 @@ def main(argv: list[str] | None = None) -> None:
     for name, text in (("bench", "测速：检测和整个感知每帧多久、够不够 perception.fps"), ("detect", "对一张图 / 当前画面跑一遍感知，画框")):
         q = psub.add_parser(name, help=text)
         q.add_argument("--model", help="模型文件（默认 perception.model）；还没训练时可以先用 yolo11n.pt 测速")
-        q.add_argument("--device", choices=["cuda", "cpu"])
+        q.add_argument("--device", choices=["cuda", "dml", "cpu"])
         q.add_argument("--imgsz", type=int)
         if name == "bench":
             q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关）")
@@ -2250,7 +2250,7 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("compare", help="同一批录像上对比现有的整图 OCR 和 YOLO（认出率、请求延迟、陌生人 / 走开事件、耗时）")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="模型文件（默认 perception.model）")
-    q.add_argument("--device", choices=["cuda", "cpu"])
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"])
     q.add_argument("--imgsz", type=int)
     q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
     q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关；开关各跑一次对比）")
@@ -2258,7 +2258,7 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("appearance-eval", help="认装扮的离线标定：录像上统计同一个人 / 不同人的外观相似度，给出建议的门槛，藏标签重放")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
-    q.add_argument("--device", choices=["cuda", "cpu"])
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"])
     q.add_argument("--embed", help="外观特征：color 或 .onnx 路径（默认 appearance.model）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/appearance-eval/<时间>）")
     q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")

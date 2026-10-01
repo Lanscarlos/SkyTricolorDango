@@ -272,7 +272,9 @@ class PerceptionConfig:
 
     enabled: bool = False
     model: str = "models/sky-yolo.onnx"  # .onnx 用 onnxruntime；.pt / .engine 用 ultralytics
-    device: str = "cuda"  # cuda / cpu；要 cuda 但装的是 CPU 版 onnxruntime 时会退回 CPU 并警告
+    # cuda（N 卡，onnxruntime-gpu）/ dml（DirectML：核显、A 卡，onnxruntime-directml，只对 .onnx 有用）/ cpu；
+    # 要的 GPU 后端没装就退回 CPU 并警告（vision/onnxrt.py）。动作模型也用这个
+    device: str = "cuda"
     # 模型里读不到类别名时用。player_unlit = 没点火的陌生人（黑色剪影）；点过火的陌生人外观和好友一样，标 player
     classes: list[str] = field(default_factory=lambda: [  # 新类别只能追加在末尾：标注文件存的是编号
         "player", "name_tag", "social_ring", "self", "player_unlit", "typing", "bench", "bonfire", "instrument", "spirit",
@@ -347,7 +349,7 @@ class PlacesConfig:
     model: str = "models/places.onnx"  # 图像特征模型（ONNX，候选 MobileCLIP-S0 / DINOv2-small，places bench 比了再定）；"thumb" = 内置缩略图基线
     size: int = 224  # 输入尺寸（模型固定了尺寸时以模型为准）
     norm: str = "imagenet"  # 输入归一化：imagenet / clip / none（MobileCLIP 用 none）
-    device: str = "cpu"
+    device: str = "cpu"  # cuda / dml / cpu，同 [perception] device
     place_min: float = 0.8  # 最像的余弦相似度至少这么高（待标定）
     place_margin: float = 0.05  # 且比第二像的"别的地方"高这么多（宁可不说，不能说错）
     place_interval: float = 30.0  # 每隔这么久认一次；画面大变后也认一次
@@ -361,7 +363,7 @@ class AppearanceConfig:
     model: str = "color"  # "color" = 内置颜色直方图；或 .onnx 特征模型路径
     size: int = 224  # 同 [places]
     norm: str = "imagenet"
-    device: str = "cpu"
+    device: str = "cpu"  # cuda / dml / cpu，同 [perception] device
     every: int = 3  # 每条轨迹每几帧算一次特征
     max_per_frame: int = 4  # 一帧最多算几个
     min_height: float = 0.10  # 好样本的框高（相对截图高度）
