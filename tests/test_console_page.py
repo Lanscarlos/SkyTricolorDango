@@ -257,3 +257,25 @@ def test_live_control_line():  # 操作记录一行：做了什么 → 结果
           "C.controlLine('track',{name:'ming',seconds:30},{text:'ok'}),C.controlLine('check_friend',{x:1,y:2},{text:'ok'})]))")
     out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
     assert out == ["说「hi」 → ok", "左转 ×2 → ok", "盯着ming（30 秒） → ok", "看人 (1, 2) → ok"]
+
+
+def _fn_body(js: str, head: str) -> str:  # 取 live.js 里某个函数的函数体（到下一个顶层 function 为止）
+    return js.split(head, 1)[1].split("\nfunction ", 1)[0]
+
+
+def test_live_agent_mode_has_no_manual_control():  # 普通 Agent 不挂 control：别一直写「身体还没准备好」、每 3 秒白问
+    live = (STATIC / "live.js").read_text(encoding="utf-8")
+    ctl = (STATIC / "livectl.js").read_text(encoding="utf-8")
+    assert "LiveCtl.start(brain)" in _fn_body(live, "function begin(")
+    assert "普通 Agent 没有手动控制" in ctl
+
+
+def test_live_wake_resets_pause():  # 上次暂停着停下的：下次叫醒画面照常拉
+    begin = _fn_body((STATIC / "live.js").read_text(encoding="utf-8"), "function begin(")
+    assert "L.paused = false" in begin and '$("lv-pause").textContent = "暂停"' in begin
+
+
+def test_live_crash_drawer_loads_log():  # 打开页面时已经出错停下：抽屉自动打开时把日志也拉一次（不然是空的）
+    live = (STATIC / "live.js").read_text(encoding="utf-8")
+    assert "pullLogs(true)" in _fn_body(live, "function render(")
+    assert "force" in _fn_body(live, "async function pullLogs(")

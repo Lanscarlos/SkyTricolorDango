@@ -43,7 +43,9 @@ function render() {
     run.uptime != null ? `已运行 ${fmtUptime(run.uptime)}` : ""].filter(Boolean).join(" · ");
   $("rundir").textContent = mine && run.run_dir ? run.run_dir : "";
   renderBanners(st, run, busy, isSb);
-  if (!isSb && run.state === "crashed" && L.state !== "crashed") openDrawer(true);  // 出错停下：日志自己打开
+  if (!isSb && run.state === "crashed" && L.state !== "crashed") {  // 出错停下：日志自己打开；页面是停下之后才打开的，日志还没拉过，拉一次
+    openDrawer(true); if (!L.logNext) pullLogs(true);
+  }
   L.state = isSb ? "" : run.state;
   const on = !isSb && (run.state === "running" || run.state === "stopping");
   if (on && !L.on) begin(o.brain !== false);
@@ -65,7 +67,7 @@ function renderBanners(st, run, busy, isSb) {
 
 /* ---- 进入 / 离开运行：清空上一次的内容、挂大脑、开手动控制 ---- */
 function begin(brain) {
-  L.on = true; L.brain = brain; L.gen++; L.seq = 0; L.snap = null; L.chatV = 0; L.info = null; L.mark = null; L.times = [];
+  L.on = true; L.brain = brain; L.gen++; L.seq = 0; L.paused = false; $("lv-pause").textContent = "暂停"; L.snap = null; L.chatV = 0; L.info = null; L.mark = null; L.times = [];
   const chat = $("lv-chat"); chat.textContent = ""; chat.append(el("p", "none", "还没有聊天"));
   $("lv-stage-none").hidden = false; $("lv-stage-none").textContent = "画面出来之后显示在这里";
   const ctx = $("lv-canvas").getContext("2d"); ctx.clearRect(0, 0, $("lv-canvas").width, $("lv-canvas").height);
@@ -74,7 +76,7 @@ function begin(brain) {
   const box = $("lv-brain"), none = $("lv-brain-none"); box.textContent = ""; box.hidden = true;
   if (brain && typeof mountBrainConsole === "function") { none.hidden = true; L.trace = mountBrainConsole(box, "live/brain"); }
   else { none.hidden = false; none.textContent = "普通 Agent 没有大脑"; }
-  if (globalThis.LiveCtl) LiveCtl.start();
+  if (globalThis.LiveCtl) LiveCtl.start(brain);
   if (L.shown) loops();
 }
 function end() {  // 停下：内容留着，只停掉拉取
@@ -170,10 +172,11 @@ function openDrawer(open) {
   $("lv-drawer").classList.toggle("open", open); $("lv-log-btn").setAttribute("aria-expanded", String(open));
   if (open) { const b = $("log"); b.scrollTop = b.scrollHeight; }
 }
-async function pullLogs() {
+async function pullLogs(force) {  // force：没在跑也拉一次（出错停下后才打开页面）
   const run = S.state && S.state.run;
   if (!run || run.kind === "sandbox") return;
-  if (!BUSY.includes(run.state)) { if (!L.drain) return; L.drain = false; }  // 刚停下：再拉最后一次，把收尾 / traceback 读进来
+  if (force) L.drain = false;
+  else if (!BUSY.includes(run.state)) { if (!L.drain) return; L.drain = false; }  // 刚停下：再拉最后一次，把收尾 / traceback 读进来
   else L.drain = true;
   try {
     const r = await getJSON(`api/logs?after=${L.logNext}`), box = $("log");

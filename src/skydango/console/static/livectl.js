@@ -133,7 +133,8 @@ function bind() {
 }
 
 globalThis.LiveCtl = {
-  start() {
+  start(brain) {  // brain = false：普通 Agent 不挂手动控制（viewer 只在大脑模式挂 control）
+    if (brain === false) { $("lc-none").textContent = "普通 Agent 没有手动控制（只有统管大脑有）"; return; }
     if (K.on) return;
     K.on = true; $("lc-none").textContent = "连接身体…"; options(true);
     K.timer = setInterval(() => { if (K.on && K.opts && !K.busy) options(false); }, 5000);  // 动作冷却后列表会变：定时刷新
