@@ -65,6 +65,10 @@ UNKNOWN_MIN_SCORE = 0.9  # 没认出的名字：OCR 至少这么有把握才记�
 REQUEST_HOLD = 1.5  # 陌生人的圆圈还在原地、只是这一帧没认出图标（火焰会晃）：请求再留这么久，免得一闪就没、身体来不及点
 PEOPLE_STALE = 1.0  # people()：最近一帧比这更旧（被挡住、没跑检测）就不再报里面的人
 OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开了全屏界面（地图、商店……），暂停计时但检测照跑
+# 认装扮开着时，没标签的人要攒够 min_samples 个好样本、先和好友比过外观才判陌生人（默认 every=3 要 9 帧，
+# 比 stranger_after 长，不等的话标签被挡住的好友会先冒一次 stranger 事件）；一直攒不到好样本的（太远、被挡）
+# 最多再多等这么久照样判
+STRANGER_GRACE = 1.5
 
 
 def detector_conf(cfg: PerceptionConfig) -> float:
@@ -497,13 +501,14 @@ class PerceptionWatcher:
                 and not maybe
                 and now - player.first >= self.cfg.stranger_after
                 and player.box.h >= self.cfg.stranger_min_height * height
+                and self._looks_checked(player, now)
             )
             player.data["stranger"] = is_stranger
             strangers += is_stranger
             if maybe and now - self.last_seen.get(maybe, float("-inf")) <= self.cfg.keep:
                 self.last_seen[maybe] = now  # 好友还在身边、只是名字标签被挡住：别冒出"走开了"（已经走开的不靠外观接回来）
             if is_stranger and self.appearance is not None:
-                self._appearance_stranger(frame, player, fresh.get(player.id), now)
+                self._appearance_stranger(frame, player, players, fresh.get(player.id), now)
         if self.appearance is not None:
             self.appearance.forget(now)
         self._watch_typing(bubbles, players, selfs, now, width, height)
@@ -672,14 +677,23 @@ class PerceptionWatcher:
             d.pop("sid", None)
             log.info("轨迹 %d 没看到名字，按外观像 %s", tid, name)
 
-    def _appearance_stranger(self, frame: np.ndarray, player: Track, sample, now: float) -> None:
+    def _looks_checked(self, player: Track, now: float) -> bool:
+        """能不能判陌生人了：没开认装扮、已经攒够好样本和好友比过外观、或者多等了 STRANGER_GRACE 还攒不够。"""
+        return (
+            self.appearance is None
+            or player.data.get("samples", 0) >= self.appearance_cfg.min_samples
+            or now - player.first >= self.cfg.stranger_after + STRANGER_GRACE
+        )
+
+    def _appearance_stranger(self, frame: np.ndarray, player: Track, players: list[Track], sample, now: float) -> None:
         """判成陌生人的轨迹：好样本够了就编号（认回以前的、或新编号），之后接着学他的外观。"""
         d = player.data
         sid = d.get("sid")
         if sid is None:
             if d.get("samples", 0) < self.appearance_cfg.min_samples:
                 return
-            sid, back = self.appearance.stranger_id(d["feat"], now)
+            held = {v for o in players if o is not player and (v := o.data.get("sid"))}  # 此刻别的轨迹占着的编号
+            sid, back = self.appearance.stranger_id(d["feat"], now, exclude=held)
             d["sid"] = sid
             log.debug("轨迹 %d 是 %s", player.id, sid)
             if back:

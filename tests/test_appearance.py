@@ -185,6 +185,14 @@ def test_stranger_ids_reuse_new_back_and_forget():
     assert b.stranger_id(V_WHITE, 2000.0)[0] == "陌生人C"  # 字母不复用
 
 
+def test_stranger_id_skips_ids_held_by_other_tracks():
+    b = book(keep=5.0)
+    assert b.stranger_id(V_WHITE, 0.0) == ("陌生人A", False)
+    b.stranger_id(V_BLUE, 0.5)  # 陌生人B：第二像的候选也不该被拿来顶替
+    assert b.stranger_id(near(V_WHITE), 1.0, exclude={"陌生人A"}) == ("陌生人C", False)  # 最像的被占着：新编号
+    assert b.stranger_id(near(V_WHITE), 2.0, exclude={"陌生人B"})[0] in ("陌生人A", "陌生人C")
+
+
 def test_stranger_letters_roll_over_after_z():
     b = book()
     ids = [b.stranger_id(np.eye(40, dtype=np.float32)[i], float(i))[0] for i in range(28)]

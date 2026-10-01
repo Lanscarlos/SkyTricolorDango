@@ -217,11 +217,13 @@ class AppearanceBook:
             f = self.card_feats.get(name)
             return f is not None and cosine(track_feat, f) >= self.cfg.card_match
 
-    def stranger_id(self, feat, now: float) -> tuple[str, bool]:
-        """陌生人编号：认回已有的（第二项 = 离开超过 keep 秒又回来了），否则新编号。"""
+    def stranger_id(self, feat, now: float, exclude: frozenset[str] | set[str] = frozenset()) -> tuple[str, bool]:
+        """陌生人编号：认回已有的（第二项 = 离开超过 keep 秒又回来了），否则新编号。
+        exclude = 此刻别的轨迹正占着的编号：最像的被占着就起新编号（不退而求其次认第二像的）。"""
         with self._lock:
             scored = sorted(((cosine(feat, p.feat), k) for k, p in self.strangers.items()), reverse=True)
-            if scored and scored[0][0] >= self.cfg.match and (len(scored) == 1 or scored[0][0] - scored[1][0] >= self.cfg.margin):
+            if (scored and scored[0][1] not in exclude and scored[0][0] >= self.cfg.match
+                    and (len(scored) == 1 or scored[0][0] - scored[1][0] >= self.cfg.margin)):
                 p = self.strangers[scored[0][1]]
                 back = now - p.seen > self.keep
                 p.seen = now

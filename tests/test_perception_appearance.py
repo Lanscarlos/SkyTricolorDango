@@ -40,11 +40,11 @@ def paint(*items):
     return img
 
 
-def make(appearance=True, hardcases=None, **cfg):
+def make(appearance=True, hardcases=None, acfg_kw=None, **cfg):
     cfg.setdefault("stranger_after", 1.0)
     cfg.setdefault("keep", 5.0)
     det = FakeDetector()
-    acfg = AppearanceConfig(enabled=True, every=1, min_samples=3)
+    acfg = AppearanceConfig(enabled=True, **(acfg_kw if acfg_kw is not None else {"every": 1, "min_samples": 3}))
     extra = {}
     if appearance:
         emb = ColorEmbedder()
@@ -132,6 +132,37 @@ def test_lit_stranger_gets_id_and_comes_back():
     assert players(w)[0].data["sid"] == "陌生人A"
     assert w.pop_stranger_backs() == ["陌生人A"]
     assert w.pop_stranger_backs() == []
+
+
+def test_default_sampling_friend_never_counted_as_stranger():
+    # 默认 every=3、min_samples=3，0.15 秒一帧：攒够样本要 ~1.2 秒，比 stranger_after 长，期间不能先算成陌生人
+    w, det = make(acfg_kw={})
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 2.1, step=0.15)
+    assert w.appearance.friends[XIAOMING].n >= 3
+    run(w, det, [], 2.25, 3.6, step=0.15)
+    det.frames = [[player(400)]]
+    img = paint((player(400), PINK))
+    for i in range(20):  # 3.75 ~ 6.6 秒
+        t = round(3.75 + i * 0.15, 3)
+        w.process(img, t, panel_visible=False)
+        assert w.strangers(t) == 0, t
+    assert players(w)[0].data["maybe"] == XIAOMING
+
+
+def test_track_without_good_samples_still_becomes_stranger_after_grace():
+    # 框太小（不到 min_height）攒不到好样本：多等 STRANGER_GRACE 秒后照样算陌生人
+    w, det = make()
+    small = player(1500, h=95)  # 高于 stranger_min_height（86 px），低于 min_height（108 px）
+    run(w, det, [(small, WHITE)], 0.0, 2.4)
+    assert w.strangers(2.4) == 0
+    run(w, det, [(small, WHITE)], 2.5, 2.7)
+    assert w.strangers(2.7) == 1 and "sid" not in players(w)[0].data
+
+
+def test_two_similar_strangers_get_different_ids():
+    w, det = make()
+    run(w, det, [(player(1200), WHITE), (player(1600), WHITE)], 0.0, 2.0)
+    assert sorted(p.data["sid"] for p in players(w)) == ["陌生人A", "陌生人B"]
 
 
 def test_overlapping_self_is_not_learned_as_friend():
