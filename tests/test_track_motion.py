@@ -208,3 +208,34 @@ def test_shift_rejects_unrelated_images_with_strict_threshold():
     a, b = _texture(seed=11), _texture(seed=12)
     assert estimate_shift(a, b, None, min_response=0.4) is None
     assert estimate_shift(a, np.roll(a, 9, axis=1), None, min_response=0.4) is not None
+
+
+def test_open_low_creates_provisional_track():
+    t = Tracker(open_low=frozenset({"player", "player_unlit"}))
+    out = t.update([], 1.0, low=[P(100, s=0.3)])
+    assert len(out) == 1
+    assert out[0].strong_last == float("-inf")
+    tid = out[0].id
+    out = t.update([P(100)], 1.1)
+    assert [x.id for x in out] == [tid]
+    assert out[0].strong_last == 1.1
+
+
+def test_open_low_ignores_other_classes():
+    t = Tracker(open_low=frozenset({"player", "player_unlit"}))
+    assert t.update([], 1.0, low=[P(100, s=0.3, cls="name_tag")]) == []
+    assert t.tracks == {}
+
+
+def test_default_still_only_extends():
+    t = Tracker()
+    assert t.update([], 1.0, low=[P(100, s=0.3)]) == []
+    assert t.tracks == {}
+
+
+def test_open_low_order_extended_before_opened():
+    t = Tracker(open_low=frozenset({"player"}))
+    t.update([P(100)], 1.0)
+    out = t.update([], 1.1, low=[P(600, s=0.3), P(100, s=0.3)])
+    assert [x.box.x for x in out] == [100, 600]
+    assert out[0].strong_last == 1.0 and out[1].strong_last == float("-inf")
