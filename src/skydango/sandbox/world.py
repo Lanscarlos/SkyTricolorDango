@@ -22,7 +22,7 @@ from ..brain.world import World
 from ..chat.reader import Message
 from ..chat.tracker import SelfFilter
 from ..vision.bubbles import Rect
-from .transcript import Transcript
+from ..brain.transcript import Transcript
 
 log = logging.getLogger(__name__)
 

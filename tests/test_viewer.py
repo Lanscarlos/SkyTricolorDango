@@ -396,9 +396,14 @@ def test_view_command_is_registered():
 
 
 def test_page_has_typing_colour_and_legend():
-    from skydango.vision.viewer import PAGE
+    stage = _stage_path().read_text(encoding="utf-8")
+    assert 'typing:"#e879f9"' in stage and 'typing:"正在输入"' in stage
 
-    assert 'typing:"#e879f9"' in PAGE and 'typing:"正在输入"' in PAGE
+
+def _stage_path():
+    import importlib.resources
+
+    return importlib.resources.files("skydango.vision") / "static" / "stage.js"
 
 
 def _trace_js() -> str:
@@ -606,10 +611,8 @@ def test_control_script_never_uses_innerhtml():
 
 def test_click_maps_to_frame_pixels():
     # 画布被 CSS 缩放显示：按显示尺寸换算回原图像素
-    from skydango.vision.viewer import PAGE
-
-    [fn] = [line for line in PAGE.splitlines() if line.startswith("function toFrame(")]
-    out = _node(fn + "\nconsole.log(JSON.stringify(toFrame(650, 400, {left:50, top:100, width:960, height:540}, 1920, 1080)));")
+    out = _node(f"const S=require({json.dumps(str(_stage_path()))});"
+                "console.log(JSON.stringify(S.toFrame(650, 400, {left:50, top:100, width:960, height:540}, 1920, 1080)));")
     assert json.loads(out) == [1200, 600]
 
 
@@ -625,16 +628,14 @@ def test_page_has_track_controls():
 
 def test_click_picks_friend_name():
     # 盯人：在画面上点人，按快照里的框找名字（好友框，或名字标签往下一块）
-    from skydango.vision.viewer import PAGE
-
-    [fn] = [line for line in PAGE.splitlines() if line.startswith("function nameAt(")]
     boxes = [  # 好友框、互动圆圈（不算）、名字标签（往下一块也算）、陌生人（不算）
         {"x": 100, "y": 100, "w": 200, "h": 500, "kind": "friend", "label": "ming"},
         {"x": 120, "y": 150, "w": 60, "h": 60, "kind": "ring", "label": "✦"},
         {"x": 900, "y": 300, "w": 160, "h": 40, "kind": "name", "label": "bai"},
         {"x": 1500, "y": 300, "w": 100, "h": 300, "kind": "stranger", "label": "陌生人"},
     ]
-    script = fn + f"\nconst B={json.dumps(boxes, ensure_ascii=False)};" + \
+    script = f"const S=require({json.dumps(str(_stage_path()))});const nameAt=S.nameAt;" + \
+        f"const B={json.dumps(boxes, ensure_ascii=False)};" + \
         "console.log(JSON.stringify([nameAt(B,150,300),nameAt(B,980,450),nameAt(B,1550,400),nameAt(B,600,600)]));"
     assert json.loads(_node(script)) == ["ming", "bai", None, None]  # 标签用英文：node 输出在 Windows 上按 GBK 解码
 
@@ -694,7 +695,8 @@ def test_update_without_panels_says_nothing_open():
 def test_page_has_panel_colors_and_buttons():
     from skydango.vision.viewer import PAGE
 
-    assert "panel_unknown" in PAGE and "button_never" in PAGE and 'id="ctl-panel-close"' in PAGE and 'id="ctl-panel-read"' in PAGE
+    stage = _stage_path().read_text(encoding="utf-8")  # 颜色表在共用的 stage.js 里
+    assert "panel_unknown" in stage and "button_never" in stage and 'id="ctl-panel-close"' in PAGE and 'id="ctl-panel-read"' in PAGE
 
 
 # ---- 管理面板用：/status、/shutdown、相对路径 ----
@@ -757,7 +759,8 @@ def test_describe_env_lists_things():
     assert describe_env(env, 0.0)["附近的东西"] == "没有"
     env.things = [Thing(1, "bonfire", Rect(0, 0, 1, 1), "右边", "中")]
     assert describe_env(env, 0.0)["附近的东西"] == "篝火（右边·中）"
-    assert 'bench:"#1d4ed8"' in PAGE and 'spirit:"先祖"' in PAGE
+    stage = _stage_path().read_text(encoding="utf-8")
+    assert 'bench:"#1d4ed8"' in stage and 'spirit:"先祖"' in stage
 
 
 def test_describe_env_shows_own_look_after_nearby():
@@ -782,7 +785,56 @@ def test_describe_env_shows_own_look_after_nearby():
 
 
 def test_page_has_maybe_style_and_hover():
-    assert 'maybe:"#86efac"' in PAGE
-    assert 'maybe:"按外观认的好友"' in PAGE
-    assert "[6,4]" in PAGE
+    stage = _stage_path().read_text(encoding="utf-8")
+    assert 'maybe:"#86efac"' in stage
+    assert 'maybe:"按外观认的好友"' in stage
+    assert "[6,4]" in stage
     assert "mousemove" in PAGE and "mouseleave" in PAGE
+
+
+# ---- 真机聊天记录（spec 2026-10-01-console-live-page §3.2）----
+def test_chat_endpoint_404_without_transcript():
+    v = viewer()
+    url = v.start()
+    try:
+        assert request(url + "chat?after=0")[0] == 404
+    finally:
+        v.stop()
+
+
+def test_chat_endpoint_long_polls():
+    from types import SimpleNamespace
+
+    from skydango.brain.transcript import Transcript
+
+    v = viewer()
+    v.chat = Transcript(SimpleNamespace(wall=lambda: 1_790_000_000.0))
+    v.chat.add("heard", "在吗", "小明")
+    url = v.start()
+    port = url.rstrip("/").rsplit(":", 1)[1]
+    try:
+        status, body = request(url + "chat?after=0&wait=2")
+        assert status == 200 and body["v"] == 1 and body["lines"][0]["text"] == "在吗"
+        status, body = request(url + "chat?after=1&wait=0.1")  # 没有新的：等一下回空
+        assert status == 200 and body == {"v": 1, "lines": []}
+        status, body = request(url + "chat?after=9&wait=0")  # 浏览器记的比这边大：从头给
+        assert len(body["lines"]) == 1
+        assert request(url + "chat?after=0", None, {"Host": f"evil.example:{port}"})[0] == 403
+    finally:
+        v.stop()
+
+
+def test_page_uses_shared_stage_script():
+    assert 'src="stage.js"' in PAGE and "Stage.draw(" in PAGE
+    for inline in ("function nameAt(", "function toFrame(", "function drawHover(", "const COLORS="):
+        assert inline not in PAGE  # 不再内联一份
+
+
+def test_viewer_serves_stage_script():
+    v = viewer()
+    url = v.start()
+    try:
+        with urllib.request.urlopen(url + "stage.js", timeout=5) as r:
+            assert r.status == 200 and "javascript" in r.headers["Content-Type"] and "function nameAt" in r.read().decode("utf-8")
+    finally:
+        v.stop()

@@ -114,37 +114,82 @@
     </div>
   </section>
   <section id="page-live" class="page" hidden>
-    <div class="page-title"><h1>真机团子</h1><span class="chip" id="live-chip"></span><span class="grow"></span><span class="note" id="rundir"></span></div>
-    <div id="banners"></div>
-    <div class="cols" id="idle-cols">
-    <form class="pane" id="launch">
-      <h3>这次怎么跑</h3>
-      <div class="pane-body launch-body">
-        <fieldset><legend>模式</legend>
-          <label class="choice"><input type="radio" name="mode" value="brain"> 统管大脑</label>
-          <label class="choice"><input type="radio" name="mode" value="agent"> 普通 Agent <small>调试用</small></label>
-        </fieldset>
-        <fieldset><legend>发言</legend>
-          <label class="choice"><input type="checkbox" id="opt-live"> 真的发送</label>
-          <div class="live-warn" id="live-warn" hidden>会在游戏里真的说话、做动作</div>
-          <label class="choice"><input type="checkbox" id="opt-emotes"> 聊天时做动作 <small id="emotes-note"></small></label>
-        </fieldset>
-        <fieldset><legend>运行时长</legend>
-          <label class="choice"><input type="number" id="opt-duration" min="0" step="60" placeholder="一直跑"> 秒</label>
-        </fieldset>
-        <div class="launch-go"><button class="btn go" id="start" type="submit">叫醒团子</button></div>
+    <header class="sb-head lv-head">
+      <form class="lv-start" id="launch" autocomplete="off">
+        <div class="lv-opts">
+          <span class="lv-group" role="radiogroup" aria-label="模式">
+            <label><input type="radio" name="mode" value="brain"> 统管大脑</label>
+            <label><input type="radio" name="mode" value="agent"> 普通 Agent <small>调试用</small></label>
+          </span>
+          <span class="lv-sep" aria-hidden="true"></span>
+          <label><input type="checkbox" id="opt-live"> 真的发送</label>
+          <span class="live-warn" id="live-warn" hidden>会在游戏里真的说话、做动作</span>
+          <label><input type="checkbox" id="opt-emotes"> 聊天时做动作 <small id="emotes-note"></small></label>
+          <span class="lv-sep" aria-hidden="true"></span>
+          <label>时长 <input type="number" id="opt-duration" min="0" step="60" placeholder="一直跑" aria-label="运行时长（秒）"> 秒</label>
+          <button class="btn go" id="start" type="submit">叫醒团子</button>
+        </div>
         <div id="problems" hidden></div>
+      </form>
+      <div class="lv-run" id="lv-run" hidden>
+        <span class="chip" id="live-chip"></span>
+        <span id="lv-mode"></span>
+        <span class="note lv-dir" id="rundir"></span>
       </div>
-    </form>
-    <div class="pane placeholder" id="launch-ph"><p class="note">叫醒之后这里显示实时画面、状态卡片和日志。</p></div>
+      <span class="grow"></span>
+      <button class="btn sm" type="button" id="lv-log-btn" aria-expanded="false" aria-controls="lv-drawer">日志</button>
+    </header>
+    <div class="lv-banners" id="banners"></div>
+    <div class="cols sb-cols lv-cols">
+      <section class="pane sb-right lv-left" aria-label="团子">
+        <div id="lv-now"></div>
+        <div class="sb-sec"><h4>身边和状态</h4><dl class="lv-facts" id="cards"></dl></div>
+        <div class="sb-sec lc" id="lv-ctl">
+          <h4>手动控制<span class="grow"></span><span class="lc-busy" id="lc-busy"></span></h4>
+          <p class="lc-warn" id="lc-warn" hidden>大脑是 dry-run，手动操作照样会真的在游戏里执行</p>
+          <p class="none" id="lc-none">叫醒之后能在这里手动让团子说话、做动作、转视角</p>
+          <div class="lc-row"><span class="sb-label">说话</span><input type="text" id="lc-say-text" placeholder="让团子说一句…" aria-label="让团子说的话"><span class="lc-count" id="lc-count"></span><button class="btn sm" type="button" id="lc-say-go">说</button></div>
+          <div class="lc-row"><span class="sb-label">动作</span><select id="lc-emote-name" aria-label="动作"></select><button class="btn sm" type="button" id="lc-emote-go">做</button></div>
+          <div class="lc-row" id="lc-camera"><span class="sb-label">视角</span>
+            <span class="lc-btns"><button class="btn sm" type="button" data-cam="left">左转</button><button class="btn sm" type="button" data-cam="right">右转</button><button class="btn sm" type="button" data-cam="up">抬头</button><button class="btn sm" type="button" data-cam="down">低头</button><button class="btn sm" type="button" data-cam="zoom_in">拉近</button><button class="btn sm" type="button" data-cam="zoom_out">拉远</button></span>
+          </div>
+          <div class="lc-row"><span class="sb-label"></span><label class="lc-num">步数 <input type="number" id="lc-steps" value="1" min="1"></label><button class="btn sm" type="button" id="lc-reset">复位</button><button class="btn sm" type="button" id="lc-around">环视一圈</button></div>
+          <div class="lc-row"><span class="sb-label">看人</span><button class="btn sm" type="button" id="lc-pick">在画面上选人</button><span class="lc-tip" id="lc-pick-tip"></span></div>
+          <div class="lc-row"><span class="sb-label">盯人</span><input type="text" id="lc-track-name" placeholder="好友名字" aria-label="盯谁"><button class="btn sm" type="button" id="lc-track-pick">在画面上选</button></div>
+          <div class="lc-row"><span class="sb-label"></span><label class="lc-num"><input type="number" id="lc-track-sec" value="30" min="1"> 秒</label><button class="btn sm" type="button" id="lc-track-go">盯</button><button class="btn sm" type="button" id="lc-stop">停下</button><span class="lc-tip" id="lc-track-tip"></span></div>
+          <div class="lc-row" id="lc-panels" hidden><span class="sb-label">面板</span><button class="btn sm" type="button" id="lc-panel-read">读面板</button><button class="btn sm" type="button" id="lc-panel-close">关面板</button></div>
+          <ul class="lc-log" id="lc-log"></ul>
+        </div>
+      </section>
+      <section class="pane lv-mid" aria-label="画面和大脑">
+        <div class="lv-stage">
+          <div class="lv-bar">
+            <button class="btn sm" type="button" id="lv-pause">暂停</button>
+            <button class="btn sm" type="button" id="lv-boxes">隐藏框</button>
+            <button class="btn sm" type="button" id="lv-save">存图</button>
+            <button class="btn sm" type="button" id="lv-legend-btn" aria-expanded="false" aria-controls="lv-legend">图例</button>
+            <span class="lv-fps" id="lv-fps"></span>
+          </div>
+          <div class="lv-screen">
+            <canvas id="lv-canvas" aria-label="游戏画面和识别框"></canvas>
+            <p class="none" id="lv-stage-none">叫醒之后这里是游戏画面</p>
+            <div class="lv-legend" id="lv-legend" hidden></div>
+          </div>
+        </div>
+        <div class="lv-brain">
+          <p class="none" id="lv-brain-none">叫醒之后这里是大脑在想什么</p>
+          <div id="lv-brain" hidden></div>
+        </div>
+      </section>
+      <section class="pane sb-chatpane" aria-label="聊天记录">
+        <h3>聊天记录</h3>
+        <div class="scroll sb-chat" id="lv-chat" aria-live="polite"><p class="none">叫醒之后这里是聊天记录</p></div>
+      </section>
     </div>
-    <div class="cols" id="watch" hidden>
-      <div class="pane live-view"><iframe id="live-frame" title="实时识别画面"></iframe><p class="note" id="live-wait" hidden>团子还在启动，画面出来之后显示在这里。</p></div>
-      <div class="live-side">
-        <dl class="cards" id="cards"></dl>
-        <details class="pane logbox" open><summary>日志</summary><pre id="log" tabindex="0"></pre></details>
-      </div>
-    </div>
+    <aside class="lv-drawer" id="lv-drawer" aria-label="日志">
+      <header><span>日志</span><span class="grow"></span><button class="btn sm" type="button" id="lv-log-close">收起</button></header>
+      <pre id="log" tabindex="0"></pre>
+    </aside>
   </section>
   <section id="page-inner" class="page" hidden>
     <div class="page-title">
@@ -246,11 +291,14 @@
 <div id="dialog" hidden></div>
 <div id="toasts" aria-live="polite"></div>
 
+<script src="static/stage.js"></script>
 <script src="console/static/common.js"></script>
 <script src="console/static/markdown.js"></script>
 <script src="console/static/inner.js"></script>
 <script src="console/static/brainlog.js"></script>
+<script src="console/static/chatlog.js"></script>
 <script src="console/static/sandbox.js"></script>
+<script src="console/static/livectl.js"></script>
 <script src="console/static/live.js"></script>
 <script src="console/static/scenarios.js"></script>
 <script src="console/static/labeling.js"></script>

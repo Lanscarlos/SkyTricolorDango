@@ -14,7 +14,7 @@ from skydango.config import Config
 from skydango.inner.ledger import Ledger
 from skydango.inner.store import InnerStore
 from skydango.sandbox.clock import SimClock
-from skydango.sandbox.transcript import Transcript
+from skydango.brain.transcript import Transcript
 from skydango.sandbox.world import (
     GRAY,
     SandboxDevice,

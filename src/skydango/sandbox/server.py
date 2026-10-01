@@ -19,7 +19,7 @@ import logging
 import threading
 from collections.abc import Callable
 from http.server import ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from ..vision.viewer import JsonHandler, _Server, brain_body, forget_response, inner_response, post_guard
 
@@ -111,13 +111,6 @@ class SandboxServer:
                     self._json(503, {"ok": False, "text": f"沙盒没做成：{exc}"})
                     return
                 self._json(200, result)
-
-            def _wait(self, url, cap: float = 2.0) -> float:
-                try:
-                    value = float(parse_qs(url.query).get("wait", [cap])[0])
-                except ValueError:
-                    return cap
-                return max(0.0, min(cap, value)) if value == value else cap
 
         self._server = _Server((self.host, self.port), Handler)
         self._server.daemon_threads = True

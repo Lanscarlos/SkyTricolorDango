@@ -1,5 +1,7 @@
 # 管理面板「真机团子」页改版（照沙盒三栏）
 
+状态：**代码已完成**（计划 `docs/superpowers/plans/2026-10-01-console-live-page.md`），待真机验证（§6 第 4 步）
+
 2026-10-01。改的是 `python -m skydango console` 的 `#live` 页，外加 viewer 和身体的少量后端。上一版设计见 `2026-10-01-console-redesign-design.md` §4.2。
 
 ## 1. 为什么改

@@ -2,10 +2,10 @@
  * 左：现在（Inner.renderNow）+ 身边 / 团子看到的（/sandbox/op）；中：大脑控制台（brainlog.js）；右：/sandbox/state 长轮询的聊天记录 + 冒充（团子在左、别人在右）。
  * 给别处用：window.sandboxSummary()（左栏卡片）、window.sandboxClock()（内心页）、
  *   S.replay + onReplay(fn) + pullReplay()（api/sandbox/replay 的进度和录制状态，剧本页共用）、document 上的 "scenarios-changed" 事件（另存为之后）。
- * 顶层不碰 document：node 里 require 它能测 Sandbox.lineKind / summaryText（tests/test_console_page.py）。 */
+ * 顶层不碰 document：node 里 require 它能测 Sandbox.summaryText（tests/test_console_page.py）。 */
 (function () {
 "use strict";
-const SB = {v: 0, gen: 0, state: null, recv: 0, info: null, trace: null, running: false, rows: 0, sig: "",
+const SB = {v: 0, gen: 0, state: null, recv: 0, info: null, trace: null, running: false, sig: "",
   inner: null, whoPicked: false, sceneDirty: false, starting: false, wasPlaying: false};
 const STRANGER = "__stranger";
 const STATUS = {starting: "正在启动…", stopping: "正在下线（最终反思、写日记）…"};
@@ -13,13 +13,6 @@ const replayListeners = [];
 S.replay = null;
 
 /* ---- 纯函数（node 里测） ---- */
-function lineKind(r) {  // 聊天行用哪种样式
-  if (r.kind === "event") return /^──\s*反思/.test(r.text || "") ? "refl" : "ev";
-  if (r.kind === "act") return "act";
-  if (r.kind === "said") return "msg me";
-  if (r.kind === "blocked") return r.who === "团子" ? "msg me blocked" : "msg blocked";
-  return "msg";
-}
 function sbDate(t) { const d = new Date(t * 1000); return `${d.getMonth() + 1}月${d.getDate()}日 周${"日一二三四五六"[d.getDay()]}`; }
 function summaryText(t, mood, energy) { return [dayTime(t), mood, energy].filter(Boolean).join(" · "); }
 
@@ -83,31 +76,12 @@ function renderStartButton() {
 function sbWho() { const f = $("sb-say").elements; f.name.hidden = f.who.value !== STRANGER; }
 
 /* ---- 聊天记录 ---- */
-function sbLine(r) {
-  const k = lineKind(r), time = el("time", "", hhmm(r.t));
-  if (k === "ev") { const d = el("div", "sb-ev"); d.append(time, " ", (r.text || "").replace(/^──\s*|\s*──$/g, "")); return d; }
-  if (k === "refl") { const d = el("div", "sb-refl"); d.append(time, " ", r.text || ""); return d; }
-  if (k === "act") { const d = el("div", "sb-act", r.text || ""); d.title = dayTime(r.t); return d; }
-  const d = el("div", "sb-" + k.split(" ").join(" sb-")), who = el("div", "who");
-  who.append(r.kind === "heard" ? r.who || "（不知道是谁）" : r.kind === "said" ? "团子" : r.who === "团子" ? "团子（没说出去）" : "（被拦下）", " ", time);
-  d.append(who, el("div", "b", r.text || ""));
-  if (r.kind === "blocked" && r.why) d.append(el("div", "why", r.why));
-  return d;
-}
-function sbAppend(lines) {
-  const box = $("sb-chat"); if (!lines.length) return;
-  const follow = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;  // 原本就在底部才跟到底
-  if (!SB.rows) box.textContent = "";
-  for (const r of lines) { box.append(sbLine(r)); SB.rows++; }
-  while (box.childNodes.length > 500) box.firstChild.remove();
-  if (follow) box.scrollTop = box.scrollHeight;
-}
-function clearChat() { SB.v = 0; SB.rows = 0; $("sb-chat").textContent = ""; }
+function clearChat() { SB.v = 0; $("sb-chat").textContent = ""; }
 
 /* ---- /sandbox/state：时钟、身边、场景 ---- */
 function sbApply(d) {
   if (d.version < SB.v) clearChat();  // 沙盒重启过：从头来
-  SB.state = d; SB.recv = Date.now() / 1000; SB.v = d.version; sbAppend(d.lines || []);
+  SB.state = d; SB.recv = Date.now() / 1000; SB.v = d.version; Chat.append($("sb-chat"), d.lines || []);
   renderClock();
   const e = d.energy || {}, en = $("sb-energy"); en.textContent = "";
   if (e.level) { en.append(el("small", "", "精力"), el("b", "", e.level)); if (e.note && e.note !== e.level) en.title = e.note; }
@@ -308,7 +282,7 @@ function sandboxSummary() {
 }
 function sandboxClock() { return SB.running && SB.state ? sbNow() : Math.max(Date.now() / 1000, (SB.info && SB.info.floor) || 0); }
 
-Object.assign(globalThis, {Sandbox: {lineKind, summaryText}, sandboxSummary, sandboxClock, onReplay, pullReplay});
+Object.assign(globalThis, {Sandbox: {summaryText}, sandboxSummary, sandboxClock, onReplay, pullReplay});
 Pages.sandbox = {
   init() {
     bind(); renderSbNow();

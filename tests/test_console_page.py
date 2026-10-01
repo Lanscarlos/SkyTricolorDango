@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "sandbox.js", "live.js", "scenarios.js", "labeling.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "live.js", "scenarios.js", "labeling.js", "settings.js", "device.js"]
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做
@@ -23,6 +23,9 @@ def test_skeleton():
     for n in JS:
         assert f'src="console/static/{n}"' in page
     assert page.index('src="console/static/common.js"') < page.index('src="console/static/brainlog.js"') < page.index('src="console/static/sandbox.js"')
+    assert page.index('src="console/static/chatlog.js"') < page.index('src="console/static/sandbox.js"')
+    assert 'src="static/stage.js"' in page and page.index('src="static/stage.js"') < page.index('src="console/static/live.js"')
+    assert page.index('src="console/static/chatlog.js"') < page.index('src="console/static/live.js"')
     assert "brain_trace" not in page  # 沙盒页换成 brainlog.js 的控制台；brain_trace.* 只给 viewer 用
 
 
@@ -123,16 +126,22 @@ def test_sandbox_page():
 
 def _sandbox_js(expr: str):  # 在 node 里载入 common.js + sandbox.js（没有 document），算 expr
     node = shutil.which("node") or pytest.skip("没有 node")
-    js = (f"require({json.dumps(str(STATIC / 'common.js'))});require({json.dumps(str(STATIC / 'sandbox.js'))});"
-          f"console.log(JSON.stringify({expr}))")
+    js = (f"require({json.dumps(str(STATIC / 'common.js'))});require({json.dumps(str(STATIC / 'chatlog.js'))});"
+          f"require({json.dumps(str(STATIC / 'sandbox.js'))});console.log(JSON.stringify({expr}))")
     return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
 
 
-def test_sandbox_line_kinds():  # 聊天行的样式：反思 = 虚线框，别的事件 = 分隔线；团子说的（sb-me）靠左；被拦的删除线
+def _chatlog_js(expr: str):  # 在 node 里载入 chatlog.js（没有 document），算 expr
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = f"const C=require({json.dumps(str(STATIC / 'chatlog.js'))});console.log(JSON.stringify({expr}))"
+    return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+
+
+def test_chat_line_kinds():  # 聊天行的样式：反思 = 虚线框，别的事件 = 分隔线；团子说的（sb-me）靠左；被拦的删除线
     rows = [{"kind": "event", "text": "── 反思：心情 平常 → 开心 ──"}, {"kind": "event", "text": "── 开始反思 ──"},
             {"kind": "event", "text": "── 小明来了 ──"}, {"kind": "heard", "who": "小明"}, {"kind": "said", "who": "团子"},
             {"kind": "act", "who": "团子"}, {"kind": "blocked", "who": "团子"}, {"kind": "blocked", "who": ""}]
-    assert _sandbox_js(f"{json.dumps(rows, ensure_ascii=False)}.map(Sandbox.lineKind)") == [
+    assert _chatlog_js(f"{json.dumps(rows, ensure_ascii=False)}.map(C.lineKind)") == [
         "refl", "ev", "ev", "msg", "msg me", "act", "msg me blocked", "msg blocked"]
 
 
@@ -152,15 +161,21 @@ def test_scenarios_page():
     assert "回放时每一步会真的调 Claude，花额度" in b and "renderMarkdown(" in b and "Pages.scenarios" in b
 
 
-def test_live_page():
+def test_live_page():  # spec 2026-10-01-console-live-page：顶栏 + 三栏（团子 / 画面 + 大脑 / 聊天记录）+ 日志抽屉，不再用 iframe
     b = bundle()
-    for id_ in ("launch", "opt-live", "opt-emotes", "opt-duration", "start", "problems", "live-frame", "cards", "log", "banners"):
-        assert f'id="{id_}"' in b, id_
-    for api in ("api/run/start", "api/run/stop", "api/logs", "live/status", "api/orphan/stop"):
-        assert api in b
-    line = next(l for l in b.splitlines() if l.strip().startswith("const CARDS="))
-    assert '"心情"' in line and '"精力"' in line
-    assert "emotes_allowed" in b and "沙盒在跑，先下线" in b and "Pages.live" in b
+    page = (STATIC / "console.html").read_text(encoding="utf-8")
+    live = page.split('id="page-live"', 1)[1].split('id="page-inner"', 1)[0]
+    for id_ in ("launch", "opt-live", "opt-emotes", "opt-duration", "start", "problems", "banners", "lv-run", "live-chip", "rundir",
+                "lv-log-btn", "lv-now", "cards", "lv-ctl", "lv-canvas", "lv-stage-none", "lv-legend", "lv-brain", "lv-brain-none",
+                "lv-chat", "lv-drawer", "log"):
+        assert f'id="{id_}"' in live, id_
+    assert "<iframe" not in live and "live-frame" not in b
+    assert live.index('id="lv-now"') < live.index('id="lv-canvas"') < live.index('id="lv-brain"') < live.index('id="lv-chat"')
+    for api in ("api/run/start", "api/logs", "live/status", "live/snapshot", "live/chat", "live/brain", "api/inner", "api/orphan/stop"):
+        assert api in b, api
+    line = next(l for l in b.splitlines() if re.match(r"\s*const FACTS\s*=", l))
+    assert '"身边的好友"' in line and '"心情"' in line
+    assert "emotes_allowed" in b and "沙盒在跑，先下线" in b and "Pages.live" in b and "globalThis.LiveView" in b
 
 
 def test_settings_and_device_pages():
@@ -219,3 +234,48 @@ def test_brainlog_turn_head_and_idle():  # 轮头：时间 · 原因 · 做了�
 def test_brainlog_text_only():  # 大脑的话、工具返回可能带尖括号：只用 textContent，不拼 HTML
     src = (STATIC / "brainlog.js").read_text(encoding="utf-8")
     assert "innerHTML" not in src and "insertAdjacentHTML" not in src
+
+
+def test_live_manual_control():
+    page = (STATIC / "console.html").read_text(encoding="utf-8")
+    ctl = page.split('id="lv-ctl"', 1)[1].split("</section>", 1)[0]
+    for id_ in ("lc-warn", "lc-none", "lc-busy", "lc-say-text", "lc-count", "lc-say-go", "lc-emote-name", "lc-emote-go", "lc-camera",
+                "lc-steps", "lc-reset", "lc-around", "lc-pick", "lc-pick-tip", "lc-track-name", "lc-track-pick", "lc-track-sec",
+                "lc-track-go", "lc-stop", "lc-track-tip", "lc-panels", "lc-panel-read", "lc-panel-close", "lc-log"):
+        assert f'id="{id_}"' in ctl, id_
+    assert page.index('src="console/static/livectl.js"') < page.index('src="console/static/live.js"')
+    js = (STATIC / "livectl.js").read_text(encoding="utf-8")
+    for part in ("live/control/options", 'post("live/control"', "404", "3000", "5000", "ask(", "Stage.nameAt(", "LiveView.pick(", "globalThis.LiveCtl"):
+        assert part in js, part
+    assert "innerHTML" not in js
+
+
+def test_live_control_line():  # 操作记录一行：做了什么 → 结果
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = (f"const C=require({json.dumps(str(STATIC / 'livectl.js'))});console.log(JSON.stringify(["
+          "C.controlLine('say',{text:'hi'},{text:'ok'}),C.controlLine('camera',{action:'left',steps:2},{text:'ok'}),"
+          "C.controlLine('track',{name:'ming',seconds:30},{text:'ok'}),C.controlLine('check_friend',{x:1,y:2},{text:'ok'})]))")
+    out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+    assert out == ["说「hi」 → ok", "左转 ×2 → ok", "盯着ming（30 秒） → ok", "看人 (1, 2) → ok"]
+
+
+def _fn_body(js: str, head: str) -> str:  # 取 live.js 里某个函数的函数体（到下一个顶层 function 为止）
+    return js.split(head, 1)[1].split("\nfunction ", 1)[0]
+
+
+def test_live_agent_mode_has_no_manual_control():  # 普通 Agent 不挂 control：别一直写「身体还没准备好」、每 3 秒白问
+    live = (STATIC / "live.js").read_text(encoding="utf-8")
+    ctl = (STATIC / "livectl.js").read_text(encoding="utf-8")
+    assert "LiveCtl.start(brain)" in _fn_body(live, "function begin(")
+    assert "普通 Agent 没有手动控制" in ctl
+
+
+def test_live_wake_resets_pause():  # 上次暂停着停下的：下次叫醒画面照常拉
+    begin = _fn_body((STATIC / "live.js").read_text(encoding="utf-8"), "function begin(")
+    assert "L.paused = false" in begin and '$("lv-pause").textContent = "暂停"' in begin
+
+
+def test_live_crash_drawer_loads_log():  # 打开页面时已经出错停下：抽屉自动打开时把日志也拉一次（不然是空的）
+    live = (STATIC / "live.js").read_text(encoding="utf-8")
+    assert "pullLogs(true)" in _fn_body(live, "function render(")
+    assert "force" in _fn_body(live, "async function pullLogs(")

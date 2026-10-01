@@ -68,7 +68,7 @@ def post_guard(headers, port: int, max_body: int) -> tuple[int, str] | None:
     return None
 
 
-STATIC = ("brain_trace.js", "brain_trace.css")  # vision/static/ 里给页面用的共用文件（大脑时间线）
+STATIC = ("brain_trace.js", "brain_trace.css", "stage.js")  # vision/static/ 里给页面用的共用文件（大脑时间线、画框）
 _STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
 
 
@@ -137,6 +137,14 @@ class JsonHandler(BaseHTTPRequestHandler):
         except ValueError:
             return 0
 
+    def _wait(self, url, cap: float = 2.0) -> float:
+        """长轮询最多等几秒：query 里的 wait，夹到 [0, cap]；坏值用 cap。"""
+        try:
+            value = float(parse_qs(url.query).get("wait", [cap])[0])
+        except ValueError:
+            return cap
+        return max(0.0, min(cap, value)) if value == value else cap
+
     def _send(self, code: int, ctype: str, body: bytes) -> None:
         try:
             self.send_response(code)
@@ -188,6 +196,7 @@ class Viewer:
         self._server: ThreadingHTTPServer | None = None
         self.brain = None  # brain.trace.BrainTrace：有它网页才显示大脑时间线
         self.control = None  # brain.manual.ManualControl：有它网页才显示手动控制栏（只在本机模式挂）
+        self.chat = None  # brain.transcript.Transcript：真机聊天记录（管理面板真机页用），只在大脑真机模式挂
         self.on_shutdown: Callable[[], None] | None = None  # POST /shutdown 时调（cli 里设成 interrupt_main，走 Ctrl+C 的收尾）
         # 内心页（spec 2026-09-30-inner-viewer §2）：cli 在 run --view 时经 body.call 挂上；None 时 /inner、/inner/forget 回 404
         self.inner: Callable[[], dict] | None = None
@@ -322,6 +331,12 @@ class Viewer:
                         self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
                         return
                     self._json(*inner_response(viewer.inner))
+                elif url.path == "/chat" and viewer.chat is not None:
+                    if not self._local_host():
+                        self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                    else:
+                        version, lines = viewer.chat.wait_since(self._after(url), self._wait(url, WAIT))
+                        self._json(200, {"v": version, "lines": lines})
                 elif url.path == "/brain" and viewer.brain is not None:
                     self._send(200, "application/json; charset=utf-8", brain_body(viewer.brain, self._after(url)))
                 else:
@@ -418,7 +433,7 @@ def describe_env(env, now: float) -> dict:
 PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>团子看到的</title>
-<link rel="stylesheet" href="brain_trace.css"><script src="brain_trace.js"></script>
+<link rel="stylesheet" href="brain_trace.css"><script src="brain_trace.js"></script><script src="stage.js"></script>
 <style>
 :root{--bg:#0f1115;--panel:#171a21;--text:#e6e8ee;--muted:#8b93a7;--line:#2a2f3a}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
@@ -462,38 +477,15 @@ button{background:#232833;color:var(--text);border:1px solid var(--line);border-
 <section id="brain" hidden></section></div>
 <aside><h1>团子看到的</h1><dl id="info"></dl><div class="legend" id="legend"></div></aside>
 </main><script>
-const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",maybe:"#86efac",
-ring:"#22d3ee",request:"#f43f5e",panel:"#6b7280",message:"#f472b6",typing:"#e879f9",
-bench:"#1d4ed8",bonfire:"#ea580c",instrument:"#fda4af",spirit:"#ffffff",
-panel_ok:"#3b82f6",panel_new:"#facc15",panel_unknown:"#ef4444",button_ok:"#22c55e",button_ask:"#9ca3af",button_never:"#dc2626"};
-const NAMES={friend:"好友",tag:"没认出的名字",stranger:"陌生人",unlit:"没点火",player:"没判定的人",self:"团子",maybe:"按外观认的好友",ring:"互动圆圈",
-request:"互动请求",panel:"聊天面板",message:"新消息",typing:"正在输入",
-bench:"座位",bonfire:"篝火",instrument:"乐器",spirit:"先祖",
-panel_ok:"面板（已核对）",panel_new:"面板（未核对）",panel_unknown:"不认识的面板",button_ok:"能按",button_ask:"要放行",button_never:"不能按"};
 const $=id=>document.getElementById(id),c=$("c"),ctx=c.getContext("2d"),img=new Image();
 let seq=0,paused=false,running=false,showBoxes=true,last=null,times=[];
-$("legend").innerHTML=Object.entries(NAMES).map(([k,v])=>`<span><i style="background:${COLORS[k]}"></i>${v}</span>`).join("");
+$("legend").innerHTML=Object.entries(Stage.NAMES).map(([k,v])=>`<span><i style="background:${Stage.COLORS[k]}"></i>${v}</span>`).join("");
 $("pause").onclick=e=>{paused=!paused;e.target.textContent=paused?"继续":"暂停";if(!paused)loop()};
 $("boxes").onclick=e=>{showBoxes=!showBoxes;e.target.textContent=showBoxes?"隐藏框":"显示框";if(last)draw(last)};
 $("save").onclick=()=>{if(!last)return;const a=document.createElement("a");
   a.download=`dango-${new Date().toISOString().replace(/[-:T]/g,"").slice(0,14)}.png`;a.href=c.toDataURL("image/png");a.click()};
-function draw(s){
-  c.width=img.naturalWidth;c.height=img.naturalHeight;ctx.drawImage(img,0,0);drawMark(s);
-  if(!showBoxes)return;const k=c.width/s.width,fs=Math.max(12,Math.round(c.width/80));
-  ctx.font=`${fs}px system-ui,"Microsoft YaHei",sans-serif`;ctx.textBaseline="middle";
-  for(const b of s.boxes){const col=COLORS[b.kind]||"#fff",x=b.x*k,y=b.y*k,w=b.w*k,h=b.h*k;
-    ctx.strokeStyle=col;ctx.lineWidth=b.kind==="request"?4:2;ctx.setLineDash(b.kind.startsWith("panel")?[8,5]:b.kind==="maybe"?[6,4]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
-    const t=(b.label||"")+(b.score!==undefined?` ${b.score.toFixed(2)}`:"");if(!t)continue;
-    const below=b.kind==="ring"||b.kind==="request",tw=ctx.measureText(t).width+8,th=fs+6,ty=(below||y-th<0)?y+h:y-th;
-    ctx.fillStyle=col;ctx.fillRect(x,ty,tw,th);ctx.fillStyle="#0b0d12";ctx.fillText(t,x+4,ty+th/2);}
-  drawHover(s,k,fs);
-}
-// 鼠标悬停：落在有 desc 的框里时，在框下方画一行描述（只用 fillText，desc 来自模型）
-let hover=null;
-function drawHover(s,k,fs){if(!hover)return;let hit=null;
-  for(const b of s.boxes){if(!b.desc)continue;const x=b.x*k,y=b.y*k;if(hover[0]>=x&&hover[0]<=x+b.w*k&&hover[1]>=y&&hover[1]<=y+b.h*k)hit=b}
-  if(!hit)return;const t=String(hit.desc),tw=ctx.measureText(t).width+8,th=fs+6,x=Math.min(hit.x*k,c.width-tw),y=Math.min((hit.y+hit.h)*k,c.height-th);
-  ctx.fillStyle="rgba(11,13,18,.85)";ctx.fillRect(x,y,tw,th);ctx.fillStyle="#e6e8ee";ctx.fillText(t,x+4,y+th/2)}
+let hover=null;  // 鼠标在画布上的位置（画布像素）：落在有 desc 的框里时写一行装扮描述
+function draw(s){Stage.draw(c,img,s,{boxes:showBoxes,mark:K.mark,hover})}
 c.addEventListener("mousemove",e=>{const r=c.getBoundingClientRect();hover=[(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height];if(last)draw(last)});
 c.addEventListener("mouseleave",()=>{hover=null;if(last)draw(last)});
 function info(s){const dl=$("info");dl.innerHTML="";
@@ -519,16 +511,12 @@ loop();
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
 const CAM={left:"左转",right:"右转",up:"抬头",down:"低头",zoom_in:"拉近",zoom_out:"拉远"};
 const K={opts:null,busy:false,picking:false,trackPick:false,mark:null};
-function nameAt(boxes,x,y){let best=null,area=Infinity;for(const b of boxes){if(!b.label||(b.kind!=="friend"&&b.kind!=="name"))continue;const tag=b.kind==="name",x1=tag?b.x-b.w:b.x,w=tag?b.w*3:b.w,h=tag?b.h*7:b.h;/* 名字标签：人在它正下方（宽 3 倍、连标签 7 倍高，同身体 _below_tag） */if(x<x1||x>=x1+w||y<b.y||y>=b.y+h)continue;if(w*h<area){best=b.label;area=w*h}}return best}
-function toFrame(clientX,clientY,rect,width,height){return [Math.round((clientX-rect.left)*width/rect.width),Math.round((clientY-rect.top)*height/rect.height)]}
 function controlLine(action,args,res){const a=args||{};let what;
   if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」`;
   else if(action==="camera")what=`${CAM[a.action]||a.action} ×${a.steps}`;else if(action==="camera_reset")what="复位";
   else if(action==="look_around")what="环视一圈";else if(action==="panel_read")what="读面板";else if(action==="panel_close")what="关面板";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;
   else if(action==="track")what=`盯着${a.name}（${a.seconds} 秒）`;else if(action==="stop_task")what="停下";else what=action;
   return `${what} → ${res.text}`}
-function drawMark(s){if(!K.mark||!s)return;const k=c.width/s.width,x=K.mark[0]*k,y=K.mark[1]*k,r=Math.max(12,c.width/60);
-  ctx.strokeStyle="#f472b6";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-r,y);ctx.lineTo(x+r,y);ctx.moveTo(x,y-r);ctx.lineTo(x,y+r);ctx.stroke()}
 function ctlApply(){const o=K.opts;if(!o)return;
   $("ctl-warn").hidden=!o.dry_run;
   const sel=$("ctl-emote-name"),keep=sel.value;
@@ -584,11 +572,11 @@ $("ctl-track-go").onclick=()=>{const name=$("ctl-track-name").value.trim();if(!n
   $("ctl-track-sec").value=n;ctlSend("track",{name,seconds:n})};
 $("ctl-stop").onclick=()=>ctlSend("stop_task",{});
 c.addEventListener("click",e=>{if(!K.trackPick||!last)return;  // 盯人：按快照里的框认出点的是谁，填进名字
-  const [x,y]=toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height),name=nameAt(last.boxes||[],x,y);
+  const [x,y]=Stage.toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height),name=Stage.nameAt(last.boxes||[],x,y);
   K.trackPick=false;$("ctl-track-tip").textContent=name?"":"那里没认出好友的名字，换个地方点，或者直接输入";
   if(name)$("ctl-track-name").value=name;ctlLock()});
 c.addEventListener("click",e=>{if(!K.picking||!last)return;
-  const [x,y]=toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height);K.mark=[x,y];draw(last);
+  const [x,y]=Stage.toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height);K.mark=[x,y];draw(last);
   setTimeout(async()=>{const go=confirm(`点 (${x}, ${y}) 这个人？`);K.picking=false;ctlLock();
     if(go)await ctlSend("check_friend",{x,y});K.mark=null;if(last)draw(last)},30)});
 ctlOptions(true);

@@ -156,6 +156,7 @@ class Body:
         self.brain_offline: Callable[[float], bool] = lambda now: False
         self.brain_turn: Callable[[], tuple[float, float]] = lambda: (float("-inf"), float("-inf"))  # 大脑最近一轮的 (开始, 结束)，cli 设
         self.on_blocked: Callable[[str, str], None] | None = None  # say 被过滤 / 主动护栏拦下时调 (原话, 原因)；沙盒记进聊天记录
+        self.on_line: Callable[[str, str, str, str], None] | None = None  # 真机聊天记录：(kind, text, who, why)；沙盒不接（沙盒在 world / control 里记）
         self._bubble_at: float | None = None  # 身体替大脑开输入框（冒“正在输入”）的时间；None = 没开（spec 2026-09-30-body-reflex §2）
         self.rng = rng or random.Random()
         self.reflexes = Reflexes(cfg.reflex, self.rng, clock())
@@ -429,6 +430,8 @@ class Body:
         if self.persona is not None:
             self._inner_call(lambda: self._watch_upset(fresh))
         self.heard = (self.heard + fresh)[-20:]
+        for m in fresh:
+            self._line("heard", m.text, m.speaker or "（看不出是谁）")
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
         notes = [self._lull_call(lambda m=m: self.lulls.heard(self.wall(), m.speaker, m.text), "") or "" for m in fresh]
@@ -519,6 +522,7 @@ class Body:
         except Exception:
             log.warning("反射「%s」没做成", name, exc_info=True)
             return False
+        self._line("act", f"（团子下意识地 {name}）", "团子")
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]
         self.reflexes.done(now, why, scale=self.effects().idle)
@@ -565,6 +569,7 @@ class Body:
         if opened:
             self._bubble_at = self.clock()  # 按下 Enter 之后（晚于这批消息进事件队列）：取事件更早的那一轮结束时不会关它
             log.info("有人在跟团子说话：先冒输入气泡")
+            self._line("act", "（团子头顶冒出输入气泡）", "团子")
         return opened
 
     def _close_bubble(self, why: str) -> None:
@@ -910,6 +915,7 @@ class Body:
         if not thought or not self._lull_call(lambda: self.lulls.muse(thought, wall, since), False):
             return
         log.info("心里：%s", thought)
+        self._line("event", f"── 心里：{thought} ──")
         if self.mind_log is not None:
             for lull in self.lulls.active():
                 if lull.musings and lull.musings[-1][2] == thought and lull.musings[-1][0] == wall:  # 这次挂上的
@@ -1670,20 +1676,32 @@ class Body:
         if self._dry(live):
             log.info("[dry-run] 将会发送: %s", full)
             self._remember(body, full, sent=False)
+            self._line("said", full + "（dry-run，没真的发）", "团子")
             return f"dry-run：没真的发，“{full}”{note}"
         self.panel.before_speak(now)  # 先开面板再按 Enter：说完对方的回复马上读得到
         self.sender.send(full)
+        self._line("said", full, "团子")
         self.self_filter.remember(full, self.clock())
         self._remember(body, full, sent=True, manual=live)
         return f"已发送：{full}"
 
     def _blocked(self, text: str, why: str) -> None:
+        self._line("blocked", text, "团子", why)
         if self.on_blocked is None:
             return
         try:
             self.on_blocked(text, why)
         except Exception:
             log.exception("on_blocked 出错")
+
+    def _line(self, kind: str, text: str, who: str = "", why: str = "") -> None:
+        """交给真机聊天记录；出错只记日志。"""
+        if self.on_line is None:
+            return
+        try:
+            self.on_line(kind, text, who, why)
+        except Exception:
+            log.exception("on_line 出错")
 
     def _remember(self, body: str, full: str, sent: bool, manual: bool = False) -> None:
         if manual:  # 主人手动让团子说的：不是 AI 的回复——运行记录里标出来，不写聊天历史 / 记忆（模型会模仿 history），不拿走待回复的消息
@@ -1721,12 +1739,14 @@ class Body:
         self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长
         if self._dry(live):
             self.emotes.pretend(name)
+            self._line("act", f"（团子做了 {name}）", "团子")
             return f"dry-run：没真的做「{name}」{note}"
         try:
             with self._held("wheel"):
                 self.emotes.perform(name)
         except Exception as exc:
             raise ToolError(f"「{name}」没做成：{exc}") from None
+        self._line("act", f"（团子做了 {name}）", "团子")
         return f"做了「{name}」" + (OWNER_NOTE if relaxed else "")
 
     def set_policy(self, who: str, kind: str, accept: bool) -> str:

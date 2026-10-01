@@ -1628,7 +1628,7 @@ def cmd_sandbox(cfg: Config, args) -> None:
     from .sandbox import clock as sandbox_clock
     from .sandbox.control import SandboxControl
     from .sandbox.server import SandboxServer
-    from .sandbox.transcript import Transcript
+    from .brain.transcript import Transcript
     from .sandbox.world import Scene, sandbox_world
 
     sb = cfg.sandbox
@@ -1990,6 +1990,21 @@ def _run_brain(
             # 内心页（spec 2026-09-30-inner-viewer §2）：都在身体线程里做，等 3 秒
             viewer.inner = lambda: body.call(body.inner_snapshot, timeout=3)
             viewer.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
+            if world.name != "sandbox":  # 真机聊天记录（spec 2026-10-01-console-live-page §3.2）：沙盒有自己的
+                from types import SimpleNamespace
+
+                from .brain.transcript import Transcript, event_line
+
+                chat = Transcript(SimpleNamespace(wall=wall))
+                body.on_line = lambda kind, text, who, why: chat.add(kind, text, who, why=why)
+
+                def _event(kind: str, text: str, who: str) -> None:
+                    line = event_line(kind, text, who)
+                    if line is not None:
+                        chat.add("event", line)
+
+                events.tap(_event)
+                viewer.chat = chat
         else:
             log.warning("可视化网页开在局域网（%s）：局域网模式下关掉了手动控制", cfg.viewer.host)
     stop = threading.Event()
