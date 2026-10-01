@@ -78,6 +78,9 @@ OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开�
 # 最多再多等这么久照样判
 STRANGER_GRACE = 1.5
 PAN_SCALE = 8  # 估计画面平移用的缩略图缩小这么多倍
+RELINK_EARLY = 0.2  # 接回的候选轨迹最早可以比失踪记录的"最后看到"早这么久冒出来（同一帧里先删后建）
+RELINK_PREDICT = 1.0  # 接回时按速度最多往前推这么久
+RELINK_AMBIGUOUS = 1.3  # 一条记录的两个候选，近的要比远的近这么多倍才不算歧义
 PAN_KINDS = ("zoom", "move", "spin")  # 这几种镜头事件之后 camera_settle 秒内框高会突变：不更新速度、清走近 / 运动历史
 
 
@@ -149,6 +152,19 @@ def _center(r: Rect) -> tuple[float, float]:
 
 def _inside(point: tuple[float, float], rect: Rect) -> bool:
     return rect.x <= point[0] < rect.x2 and rect.y <= point[1] < rect.y2
+
+
+@dataclass
+class Lost:
+    """断掉的好友轨迹（spec §4.1）：keep 秒内在附近冒出来的没名字的人按位置接回成"像他"。"""
+
+    name: str
+    box: Rect  # 最后的框
+    vx: float
+    vy: float
+    vh: float
+    last: float  # 最后看到的时间
+    pan: tuple[float, float]  # 当时的累计画面平移
 
 
 @dataclass(frozen=True)
@@ -249,6 +265,7 @@ class PerceptionWatcher:
         self._pan = (0.0, 0.0)  # 累计的画面平移（整图像素；失踪记录、运动方向用）
         self._pan_thumb: np.ndarray | None = None  # 上一帧的平移缩略图（暂停恢复后作废）
         self.last_shift: tuple[float, float] | None = None  # 这一帧估出的画面平移（track-eval 用）
+        self._lost: dict[str, Lost] = {}  # 名字 → 断掉的好友轨迹（relink）
         self.requests: dict = {}  # 名字 → game.social.Request
         self.labels: dict[str, tuple[int, int, int, int, float]] = {}
         self.circles: dict[str, tuple[str | None, float]] = {}
@@ -339,6 +356,8 @@ class PerceptionWatcher:
             return
         for name, t in list(self.last_seen.items()):
             self.last_seen[name] = min(t + d, now)
+        for lost in self._lost.values():
+            lost.last = min(lost.last + d, now)
         for name, (x, y, w, h, t) in list(self.labels.items()):
             self.labels[name] = (x, y, w, h, min(t + d, now))
         for name, (kind, t) in list(self.circles.items()):
@@ -496,6 +515,8 @@ class PerceptionWatcher:
         self.last_shift = shift
         tracks = self.tracker.update(dets, now, low=low if self.cfg.track_low else (), shift=shift)
         self._frame_at = now
+        if self.cfg.relink:
+            self._note_lost(now)
         selfs = [t for t in tracks if t.cls == "self"]
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs)]
         tags = [t for t in tracks if t.cls == "name_tag"]
@@ -577,12 +598,21 @@ class PerceptionWatcher:
                 log.debug("轨迹 %d 不是 %s（标签在别处），摘掉名字", player.id, name)
                 for key in ("name", "tagged", "tag_at"):
                     player.data.pop(key, None)
+            relinked = player.data.get("maybe_by") == "relink"
+            if relinked and (player.cls == UNLIT or (player.data.get("maybe") in shown and player.id not in tagged)):
+                player.data.pop("maybe", None)  # 接回的人变成黑影 / 他的标签清清楚楚在别处：不是他
+                player.data.pop("maybe_by", None)
             tag = tagged.get(player.id)
             if player.cls != UNLIT and tag is not None:
                 player.data["tag_at"] = now
                 if tag.data.get("name"):
                     player.data["name"] = tag.data["name"]
+                    if relinked:  # 名字永远说了算（是不是他都一样）
+                        player.data.pop("maybe", None)
+                        player.data.pop("maybe_by", None)
                 player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
+        if self.cfg.relink:
+            self._relink(players, shown, now)
         fresh = {}
         if self.appearance is not None:
             fresh = self._appearance_features(frame, players, selfs, now, width, height, panel_visible)
@@ -863,12 +893,14 @@ class PerceptionWatcher:
             d = p.data
             if p.cls != "player":  # 变成黑影了：没有外观可比
                 d.pop("maybe", None)
+                d.pop("maybe_by", None)
                 d.pop("miss", None)
                 continue
             tag = tagged.get(p.id)
             if tag is not None:  # 名字标签永远说了算
                 name = tag.data.get("name")
                 maybe = d.pop("maybe", None)
+                d.pop("maybe_by", None)
                 d.pop("miss", None)
                 d.pop("sid", None)
                 if maybe and name and maybe != name:
@@ -880,6 +912,8 @@ class PerceptionWatcher:
             if d.get("tagged") or d.get("name"):
                 continue  # 之前挂过标签、这一帧被挡住：身份照旧
             maybe = d.get("maybe")
+            if maybe and d.get("maybe_by") == "relink":
+                continue  # 按位置接回的：颜色特征不稳，不拿外观否掉位置连续性（标签在别处时 process 里已经摘了）
             if maybe:
                 if maybe in shown:  # 他的名字标签此刻清清楚楚挂在别处：不是他
                     log.debug("轨迹 %d 不像 %s 了（标签在别处）", p.id, maybe)
@@ -903,6 +937,64 @@ class PerceptionWatcher:
             d["maybe"], d["miss"] = name, 0
             d.pop("sid", None)
             log.info("轨迹 %d 没看到名字，按外观像 %s", tid, name)
+
+    # ---- 失踪好友接回（spec §4） ----
+    def _note_lost(self, now: float) -> None:
+        """这一帧被追踪器删掉的好友轨迹记成失踪记录（同名只留最新）；过了 keep 的作废。"""
+        for t in self.tracker.dropped:
+            if t.cls != "player":
+                continue
+            d = t.data
+            name = d.get("name") if d.get("tagged") else (d.get("maybe") if d.get("maybe_by") == "relink" else None)
+            if name:
+                self._lost[name] = Lost(name, t.box, t.vx, t.vy, t.vh, t.last, d.get("pan_at", self._pan))
+        for name in [n for n, lost in self._lost.items() if now - lost.last > self.cfg.keep]:
+            del self._lost[name]
+
+    def _relink(self, players: list[Track], shown: set[str], now: float) -> None:
+        """没名字的新轨迹冒在失踪好友的预测位置附近：接成"像他"（maybe，maybe_by = relink）。有歧义不接。"""
+        if not self._lost:
+            return
+        held = shown | {v for p in players for k in ("name", "maybe") if (v := p.data.get(k))}
+        for name in [n for n in self._lost if n in held]:
+            del self._lost[name]  # 他的标签此刻在别处 / 已经在别的轨迹上：这条记录没用了
+        cands = [
+            p for p in players
+            if p.cls == "player" and not any(p.data.get(k) for k in ("tagged", "name", "maybe"))
+        ]
+        pairs: list[tuple[float, str, Track]] = []
+        for lost in self._lost.values():
+            dt = now - lost.last
+            if dt > self.cfg.keep:
+                continue
+            ahead = min(max(dt, 0.0), RELINK_PREDICT)
+            cx, cy = lost.box.x + lost.box.w / 2 + lost.vx * ahead, lost.box.y + lost.box.h / 2 + lost.vy * ahead
+            px, py = self._pan[0] - lost.pan[0], self._pan[1] - lost.pan[1]
+            gate = min(0.6 + 0.5 * dt, 2.5) * lost.box.h
+            for p in cands:
+                if p.first < lost.last - RELINK_EARLY or not lost.box.h:
+                    continue
+                if not 0.5 <= p.box.h / lost.box.h <= 2.0:
+                    continue
+                qx, qy = p.box.x + p.box.w / 2, p.box.y + p.box.h / 2
+                dist = min(float(np.hypot(qx - cx - ox, qy - cy - oy)) for ox, oy in ((px, py), (0.0, 0.0)))
+                if dist <= gate:
+                    pairs.append((dist, lost.name, p))
+        per_cand = Counter(p.id for _, _, p in pairs)
+        for name in {n for _, n, _ in pairs}:
+            mine = sorted((dist, p.id, p) for dist, n, p in pairs if n == name)
+            if len(mine) >= 2 and mine[0][0] * RELINK_AMBIGUOUS > mine[1][0]:
+                log.debug("%s 断了，附近冒出两个人、分不清是哪个，不接", name)
+                continue
+            dist, _, p = mine[0]
+            if per_cand[p.id] > 1:
+                log.debug("轨迹 %d 对得上好几个断掉的好友，不接", p.id)
+                continue
+            lost = self._lost.pop(name)
+            p.data["maybe"], p.data["maybe_by"] = name, "relink"
+            for key in ("sid", "miss"):
+                p.data.pop(key, None)
+            log.info("轨迹 %d 像是 %s（断了 %.1f 秒，按位置接回）", p.id, name, now - lost.last)
 
     def _looks_checked(self, player: Track, now: float) -> bool:
         """能不能判陌生人了：没开认装扮、已经攒够好样本和好友比过外观、或者多等了 STRANGER_GRACE 还攒不够。"""

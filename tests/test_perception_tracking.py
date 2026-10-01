@@ -185,3 +185,124 @@ def test_sticky_ignores_maybe():
     body(w).data["maybe"] = NAME  # 只有 maybe、没挂过标签：不靠续命
     t = run(w, det, [player(800)], 0.5, 1.0)
     assert NAME not in w.nearby(t)
+
+
+# ---- Task 5：失踪好友接回 ----
+def lose(w, det, x=800, name_w=70):
+    """好友带标签站 1 秒（最后看到 0.9）→ 1.3 秒什么都看不到（2.0 时轨迹被删）。"""
+    run(w, det, [player(x), tag(x, name_w)], 0.0, 1.0)
+    run(w, det, [], 1.0, 2.2)
+
+
+def test_relink_within_gate():
+    w, det = make()
+    lose(w, det)
+    t = run(w, det, [player(830)], 2.2, 4.0)
+    p = body(w)
+    assert p.data["maybe"] == NAME and p.data["maybe_by"] == "relink"
+    assert not p.data.get("stranger") and not p.data.get("name")
+    assert [(q.name, q.sure) for q in w.people(t)] == [(NAME, False)]
+    t = run(w, det, [player(830)], 4.0, 8.0)
+    assert NAME in w.nearby(t)  # 一直没冒"走开了"
+    assert w.strangers(t) == 0
+
+
+@pytest.mark.parametrize("dets,start", [
+    ([player(1600)], 2.2),  # 离得太远
+    ([player(830)], 6.2),  # 超过 keep（最后看到 0.9）才冒出来
+    ([player(830, cls="player_unlit")], 2.2),  # 黑影不接
+])
+def test_relink_rejects_far_or_late_or_unlit(dets, start):
+    w, det = make()
+    lose(w, det)
+    if start > 2.2:
+        run(w, det, [], 2.2, start)
+    run(w, det, dets, start, start + 1.5)
+    assert not body(w).data.get("maybe")
+
+
+def test_relink_cancelled_when_tag_shown_elsewhere():
+    w, det = make()
+    lose(w, det)
+    run(w, det, [player(830), player(300), tag(300)], 2.2, 3.0)
+    by_x = {t.box.x: t for t in w.last_tracks if t.cls == "player"}
+    assert by_x[300].data.get("name") == NAME
+    assert not by_x[830].data.get("maybe")
+    assert NAME not in w._lost
+
+
+def test_relink_ambiguous_two_lost_one_candidate():
+    w, det = make()
+    run(w, det, [player(800), tag(800), player(1100), tag(1100, 80)], 0.0, 1.0)
+    run(w, det, [], 1.0, 2.2)
+    run(w, det, [player(950)], 2.2, 3.5)  # 两个人中间：对得上两条记录
+    assert not body(w).data.get("maybe")
+
+
+def test_relink_ambiguous_two_candidates():
+    w, det = make()
+    lose(w, det)
+    run(w, det, [player(830), player(770)], 2.2, 3.5)  # 一样近：不知道是哪个
+    assert not any(t.data.get("maybe") for t in w.last_tracks)
+
+
+@pytest.mark.parametrize("name_w,expect", [(70, NAME), (80, OTHER)])
+def test_relinked_track_confirmed_or_renamed_by_tag(name_w, expect):
+    w, det = make()
+    lose(w, det)
+    run(w, det, [player(830)], 2.2, 3.0)
+    assert body(w).data["maybe"] == NAME
+    run(w, det, [player(830), tag(830, name_w)], 3.0, 3.5)
+    d = body(w).data
+    assert d["name"] == expect and "maybe" not in d and "maybe_by" not in d
+
+
+def test_relinked_track_can_relink_again():
+    w, det = make()
+    lose(w, det)
+    run(w, det, [player(830)], 2.2, 3.0)  # 最后看到 2.9
+    run(w, det, [], 3.0, 4.2)  # 4.0 删掉
+    run(w, det, [player(860)], 4.2, 5.0)
+    assert body(w).data.get("maybe") == NAME
+
+
+def test_relink_survives_pause():
+    now = [0.0]
+    w, det = make(clock=lambda: now[0])
+
+    def go(dets, a, b):
+        t = a
+        while t < b - 1e-9:
+            now[0] = t
+            det.frames = [dets]
+            w.process(frame(), t, False)
+            t = round(t + 0.1, 3)
+
+    go([player(800), tag(800)], 0.0, 1.0)
+    go([], 1.0, 2.2)
+    w.hold("blackout")
+    now[0] = 12.2
+    w.release("blackout")  # 暂停了 10 秒：失踪记录跟着往后挪
+    go([player(830)], 12.2, 13.0)
+    assert body(w).data.get("maybe") == NAME
+
+
+def test_relink_off():
+    w, det = make(relink=False)
+    lose(w, det)
+    run(w, det, [player(830)], 2.2, 4.0)
+    assert not body(w).data.get("maybe") and body(w).data.get("stranger")
+
+
+def test_appearance_does_not_drop_relinked():
+    import test_perception_appearance as ta
+
+    w, det = ta.make()
+    ta.friend_then_gone(w, det)  # 小明（粉）在 1000，最后看到 1.0
+    ta.run(w, det, [], 1.1, 2.4)
+    body_ = ta.player(1020)
+    ta.run(w, det, [(body_, ta.PINK)], 2.5, 3.0)
+    (p,) = ta.players(w)
+    assert p.data["maybe"] == ta.XIAOMING and p.data["maybe_by"] == "relink"
+    ta.run(w, det, [(body_, ta.GREEN)], 3.1, 5.0)  # 颜色全变了：位置连续性说了算，不摘
+    assert ta.players(w)[0].data.get("maybe") == ta.XIAOMING
