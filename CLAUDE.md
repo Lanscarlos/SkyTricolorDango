@@ -81,6 +81,10 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/objlabel.py` | 物品模式（`perception label <数据集> --objects`）：提示词、解析、写回（人物行不动、物品行整体替换、人改先祖）、预览、清单 |
 | `src/skydango/vision/sweep.py` | 感知层二期：环绕扫描的纯计算（方位角、8 方位、多帧合并、转圈认团子、远近分档） |
 | `src/skydango/vision/places.py` `unknownnames.py` `gesture.py` | 感知层三期：认地图（参考截图匹配）、没认出的名字清单、别人对团子做的动作（研究性质：切片段、评估、ONNX 接口） |
+| `src/skydango/vision/embed.py` | 特征模型的公共部分：`OnnxEmbedder`、`unit` / `cosine`（认地图、认装扮共用） |
+| `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己、关系卡旧特征、`assign_friends`、换装判定）、攒训练数据 `CropSaver` |
+| `src/skydango/vision/wardrobe.py` | 装扮描述器：排队、优先级、每小时额度，一次性 `claude -p --model haiku` 把人物裁图写成一句话 |
+| `src/skydango/vision/appearance_eval.py` | 认装扮的离线标定（`perception appearance-eval`）：收集轨迹特征、相似度分布、建议门槛、藏标签重放、报告 |
 | `src/skydango/vision/viewer.py` | 识别可视化网页（`view` / `run --view`）：标准库 HTTP 服务，画面 + 识别框 + 状态放在同一份快照里，框和中文标签由浏览器画 |
 | `src/skydango/vision/panels.py` `game/panels.py` `assets/panels/` | 面板识别：特征卡快看 + OCR 细读 + 通用兜底认出开着哪些面板（`vision`）；按卡片关面板、点按钮（`game`）；六张特征卡（见「面板识别」） |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
@@ -127,6 +131,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `hard/*.jpg`、`hard.jsonl` | YOLO 感知层可能认错的画面（难例）和原因、检测框（`[perception] hardcases`，每次最多 200 张）；要用的及时 `perception label runs --from-runs` 收进数据集 |
 | `spin/<时间>/` | 主人 `#spin` 转一圈的截图：转前 / 转完 / 每帧（文件名带按住后第几秒）和 `summary.json` |
 | `unknown_names/` | YOLO 感知层读得清楚、但不在 friends.md 里的名字（`names.jsonl` + 每个名字一张裁剪图）；`perception unknown-names` 汇总，**只列出，不自动写 friends.md** |
+| `appearance/` | 认装扮攒的训练数据：`crops/<身份>/*.jpg`（好友名，或 `t<轨迹>`）+ `appearance.jsonl`（`[appearance] save`，每条轨迹 2 秒一张、每次最多 2000 张） |
 | `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有 `--brain`）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
 
 ## 聊天面板（`[panel]`，`chat/panel.py`）
@@ -181,6 +186,25 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **本机在用 `models/sky-yolo-v7.pt`**（2026-09-30，539 帧，能认头顶气泡 `typing`；v4 在 run 里真机用过、v5 / v6 没上线），进度、数据、标注规则、各版对比和待办见 `docs/progress/2026-09-28-yolo-training.md`；
   **标气泡别只靠 Claude**：它标不出好友名字下方叠着的文字气泡，要 OCR 兜底（做法见进度文档 09-30 一节）；
   **还没在 `run` 里打开过感知层，所有阈值都没在真机验证**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
+
+## 认装扮（`[appearance]`，要配合 `[perception]`）
+
+设计见 `docs/superpowers/specs/2026-10-01-appearance-design.md`，计划 `docs/superpowers/plans/2026-10-01-appearance.md`。
+名字标签挡住 / 太远读不到时靠外观把人认回来，认得出走开又回来的陌生人，说得出谁穿的什么。**还没在真机上跑过，数字都是估的**：
+先用 `perception appearance-eval` 在录像上标定 `match` / `changed`（spec §10），再按 spec「真机验证」五步（`view` 看"像小明?"、陌生人走开再回来还是同一个编号、dry-run 的 status 和描述额度、`--live` 换装和关系卡、`runs/<…>/appearance/` 的图）。
+- **特征**：YOLO 人物框（点过火的人和团子）每 `every` 帧裁一次好样本（框够高、不被别的框 / 聊天面板压住），默认内置颜色直方图（`model = "color"`，头 / 身体各一份色相饱和度），也能换 `.onnx`；平滑进轨迹 `data["feat"]`
+- **好友**（`maybe`）：只从这一帧挂着名字标签的样本学；没标签的轨迹攒够 `min_samples` 个好样本后和这次见过的好友（`match`）/ 关系卡旧特征（`card_match`，更严）比，过门槛且领先第二像的 `margin` → "像小明"。
+  名字标签永远说了算；标签挂在别处的不参加；一个名字一帧只给一条轨迹；连续 `recheck` 个样本不像就摘。**后果保守**：不算陌生人、好友还在身边时刷新在场（标签被挡不冒"走开了"），但不发 `arrive` / `return`、不打招呼；`people()` 里 `sure = False`
+- **陌生人**：认装扮开着时好样本不够先不判陌生人，最多多等 1.5 秒（`STRANGER_GRACE`）；判成陌生人后编号"陌生人A / B…"（这次上线不复用），走开超过 `keep` 又被认回来发 `stranger_back` 背景事件（"刚才那个陌生人A（白斗篷）又回来了"）；
+  同屏两个陌生人不会共用编号；`stranger_forget`（30 分钟）没见就忘
+- **装扮描述**（`describe`，默认开）：描述器排队用 Haiku 把裁图写成一句话（团子自己优先、好友其次、近处陌生人最后；每小时 `describe_max` 次、同一人一次上线最多重新描述 `redescribe_max` 次，额度用完等 `quota_wait`）；
+  status 多一行"你自己：…"，"身边的好友：小明（粉色长斗篷·…）"，"画面里：…、像小红（没看到名字，…）、陌生人A（白斗篷，…）"；`look_person` 也接受"陌生人A"；提示词多一段装扮的规矩（`enabled` 时才加）。沙盒里不描述
+- **关系卡**：`Card.outfits` 每个好友留最近 `outfit_keep`（3）套（描述、特征、特征模型 key、第一次 / 最后一次的日期），启动时载入记忆簿；第一次靠标签认出好友、和卡里最近一套比：< `changed` 算换了装、排描述，
+  新描述回来后放 `outfit` 背景事件（"小明换了装扮：上次是「…」，现在「…」"，arrive 文字不变）；同一套直接用卡里的描述、不花额度。只在 live 写盘；管理面板「内心」页关系卡显示装扮
+- **攒数据**（`save`，默认开）：好样本存进 `runs/<…>/appearance/`（见「运行目录」），以后训认人模型用（spec §8，这一期不做）
+- **识别可视化**：按外观认的好友画浅绿虚线、标"像小明?"，陌生人标编号，鼠标悬停看装扮
+- **已知限制**：颜色直方图不看亮度，白 / 灰 / 黑发色、同色深浅分不开；不同地图、白天晚上光照差得多，跨天靠关系卡认人弱（所以 `card_match` 更严）；撞衫（季节装扮、默认斗篷）会认错；身高没做；没点火的黑影没有外观
+- `enabled = false` 完全照旧（提示词、事件、status 逐字一样）；管理面板有 `appearance.enabled`、`appearance.describe` 两个开关
 
 ## 识别可视化（`[viewer]`，`view` / `run --view`）
 
@@ -425,6 +449,7 @@ python -m skydango perception label datasets/sky --objects [--model 模型] [--o
 python -m skydango perception augment datasets/sky  # 训练集加运动模糊 / 压暗样本（只动 train）
 python -m skydango perception compare <录像目录> [--model 模型] [--far-crops 0]  # 同一批录像对比 YOLO 和整图 OCR → tmp/compare/<时间>/report.md（含远处认出率）
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
+python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
 python -m skydango perception clips <录像目录>  # 动作识别的数据：按人物轨迹切 16 帧片段 → datasets/gesture/_unlabeled
 python -m skydango perception gesture-eval datasets/gesture --model 模型  # 动作模型的精确率 / 召回率
 python -m skydango places add <地名> [--image 图]  # 认地图：截当前画面（遮掉人和 UI）存进 places/<地名>/

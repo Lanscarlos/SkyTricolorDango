@@ -82,8 +82,10 @@
 
    轨迹好样本数 ≥ `min_samples`（3），和最像的好友相似度 ≥ 门槛、且比第二像的高 ≥ `margin` → `data["maybe"] = 名字`、`stranger = False`。
    门槛：这次上线学到的特征用 `match`；只有关系卡里旧特征的用 `card_match`（更严：光照、地图不同时颜色会偏）
-2. **比不上**：走原来的陌生人判断（`stranger_after`、`stranger_min_height`）。判成陌生人且好样本够了，再比 `book.strangers`：
-   最像的 ≥ `match` 且领先 ≥ `margin` → 接上那个编号；否则起新编号。`data["sid"] = "陌生人A"`
+2. **比不上**：走原来的陌生人判断（`stranger_after`、`stranger_min_height`）；认装扮开着时好样本还不够 `min_samples` 就先不判，
+   最多多等 1.5 秒（`STRANGER_GRACE`，免得好友名字标签被挡时先冒一下"陌生人"）。判成陌生人且好样本够了，再比 `book.strangers`：
+   最像的 ≥ `match` 且领先 ≥ `margin` → 接上那个编号；否则起新编号。`data["sid"] = "陌生人A"`。
+   最像的编号此刻正被画面里别的轨迹占着 → 起新编号（同时在画面里的两个陌生人永远不会是同一个编号）
 3. **名字标签永远说了算**：轨迹后来挂上标签，`maybe` / `sid` 摘掉，按标签走；`maybe` 和标签名字对不上时记难例（`hard/`，原因 `appearance`）
 4. `maybe` 一旦给了，在这条轨迹上保留，除非：标签证明不是他；或者连续 `recheck` 个新样本都低于门槛（摘掉，重新判断）
 5. 陌生人编号 `stranger_forget`（30 分钟）没出现就从记忆簿删掉
@@ -125,8 +127,8 @@
   - 新一行"你自己：白色樱花发型、粉色长斗篷"（`book.me` 有描述时）
   - "身边的好友：小明（粉色长斗篷·今天一起 40 分钟·…）"：装扮放在交情前面，没描述不写
   - "画面里：小明（左边·近）、像小红（没看到名字，右边·远）、陌生人A（白斗篷，前面·中）"
-- **arrive**：只在 §4.4 判定换了装、且两套都有描述时多一句"他换了装扮：上次是「…」，现在「…」"；没换不写。
-  描述还没回来时不等，这句话放弃（避免拖住 arrive）
+- **背景事件** `outfit`：§4.4 判定换了装的好友，新一套的描述回来、且关系卡里有上一套的描述时，身体放"小明换了装扮：上次是「…」，现在「…」"；
+  不单独叫醒大脑（进 `BACKGROUND`）；没换不发。arrive 文字不变（实现时改的：描述要几秒才回来，挂在 arrive 上会被拖住或放弃）
 - **背景事件** `stranger_back`："刚才那个陌生人A（白斗篷）又回来了"：编号离开超过 `keep` 后被认回来；不单独叫醒大脑（进 `BACKGROUND`）
 - **`look_person`**：也接受"陌生人A"（按 `sid` 找框）；"像小明"的框在找不到带名字的框时也用，结果里写"（没看到名字，按外观认的）"
 - **提示词**（「说话」一节，`enabled` 时才加）：
@@ -189,7 +191,8 @@
 2. 统计"同一个人"（同名字 / 同轨迹）和"不同人"的相似度分布，按"接错率 ≤ 2%"给出建议的 `match` / `margin` / `changed`
 3. **假装看不到名字标签**：把带名字的轨迹每隔一段藏掉标签，按 §4 重放，统计接回对了 / 接错 / 漏接（接错比漏接严重）
 
-报告 `tmp/appearance-eval/<时间>/report.md`。默认值以它为准再改。
+报告 `tmp/appearance-eval/<时间>/report.md`（+ `summary.json`）。默认值以它为准再改。
+跑的时候强制打开认装扮（`--embed` 覆盖 `appearance.model`），不存训练数据、不描述；感知层的规则照运行时一样（包括陌生人多等 1.5 秒、同屏两个陌生人不共用编号）。
 
 ### 单元测试（`python -m pytest -q`）
 
@@ -198,7 +201,7 @@
   `card_match` 比 `match` 严；`recheck` 摘掉；陌生人编号接上 / 新建 / 遗忘；换装判定；特征 `key` 不同不比
 - 描述器（假 `claude`）：JSON 解析、`clear: false` 重试、额度、排队去重和优先级、额度用完等待
 - 关系卡：旧 `people.json` 能读；只在 live 写；最多 3 套
-- 身体 / 大脑文字：status 三处、arrive 换装、`stranger_back`、`look_person("陌生人A")`
+- 身体 / 大脑文字：status 三处、`outfit` 换装事件、`stranger_back`、`look_person("陌生人A")`
 - **`enabled = false` 时提示词、事件、status 逐字照旧**
 
 ### 真机验证（晚上；没做完之前只在 `view` 和 dry-run 用）
@@ -206,7 +209,7 @@
 1. `view` 打开外观识别：好友走到远处 / 背后、名字标签消失后，框上是"像小明?"而不是"陌生人"
 2. 点过火的陌生人走开再回来，还是同一个"陌生人X"
 3. `run --view` dry-run：status 有"你自己"和好友的装扮；描述器调用次数在额度内
-4. `--live`：好友换一套装扮再来，arrive 里有换装那句、关系卡里写了新的一套
+4. `--live`：好友换一套装扮再来，描述回来后有 `outfit` 事件（换装那句）、关系卡里写了新的一套
 5. `runs/<…>/appearance/` 里的图数量、身份对
 
 ## 11. 改动范围
@@ -219,7 +222,7 @@
 | `vision/perception.py` | `process` 里算特征、判 `maybe` / `sid`、刷新在场；`people()` / `overlay()` / `nearest()`；攒数据；`appearance` 难例 |
 | `vision/people.py` | `Person.sure`；`describe_people` 写"像小明（没看到名字…）"、"陌生人A" |
 | `inner/ledger.py` `inner/store.py` | `Card.outfits` 读写、换装判定的入口 |
-| `brain/body.py` `brain/events.py` `brain/tools.py` | status、arrive、`stranger_back`（`BACKGROUND`）、`look_person` 认"陌生人A" |
+| `brain/body.py` `brain/events.py` `brain/tools.py` | status、`outfit` / `stranger_back`（`BACKGROUND`）、`look_person` 认"陌生人A" |
 | `brain/prompt.py` | §6 那段（`APPEARANCE_RULES`，`enabled` 时才拼进去，同 `INNER_RULES` 的做法） |
 | `vision/viewer.py` `console/` | 浅绿虚线框、悬停描述；内心页关系卡显示装扮；两个开关 |
 | `config.py` `config.example.toml` | `[appearance]` |
