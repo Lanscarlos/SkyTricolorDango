@@ -350,9 +350,9 @@ class ConsoleServer:
         cfg = self.store._fallback()
         root = self.sandbox_dir()
         state = self._state_of("sandbox")
-        problems = [] if state in BUSY else self.sandbox_problems()[0]
+        problems, orphan = ([], False) if state in BUSY else self.sandbox_problems()
         return {**start_info(root, time.time()), "friends": _safe_list(lambda: friends(root)), "owner_name": cfg.brain.owner_name,
-                "dir": str(root), "state": state, "problems": problems}
+                "dir": str(root), "state": state, "problems": problems, "orphan": orphan}  # orphan：页面在问题旁给「让它退出」
 
     def sandbox_proxy(self, method: str, rest: str, query: str, body: bytes | None = None) -> tuple[int, str, bytes]:
         """转发到沙盒子进程；槽被团子占着 / 沙盒没在跑 / 连不上都是 503。"""

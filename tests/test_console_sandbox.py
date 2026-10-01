@@ -89,6 +89,8 @@ def test_sandbox_start_refused_with_orphan(tmp_path, upstream):
     try:
         status, res = post(s, "api/sandbox/start", {"start": "resume"})
         assert status == 409 and res["orphan"] is True and s.runner.started == []
+        info = request(s.url + "api/sandbox/info")[1]  # 沙盒页停着时也要能给「让它退出」（有问题时启动按钮是灰的）
+        assert info["orphan"] is True and any("上次留下的沙盒" in p["text"] for p in info["problems"])
         assert post(s, "api/orphan/stop", {"kind": "sandbox"}) == (200, {"ok": True})
         assert upstream.posts[-1] == "/shutdown"
     finally:

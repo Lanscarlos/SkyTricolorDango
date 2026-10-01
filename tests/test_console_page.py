@@ -104,3 +104,36 @@ def test_inner_reload_decision():  # onState 每秒都来：连续相同的 runn
     )
     out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
     assert out == [False, True, False, True, True, False]
+
+
+def test_sandbox_page():
+    b = bundle()
+    for id_ in ("sb-head", "sb-start", "sb-problems", "sb-clock", "sb-replay-bar", "sb-chat", "sb-say", "sb-brain", "sb-now", "sb-nearby", "sb-scene", "sb-rec", "sb-save", "sb-reset"):
+        assert f'id="{id_}"' in b, id_
+    assert 'mountBrainTrace($("sb-brain"),"sandbox/brain")' in b.replace(" ", "")
+    for api in ("api/sandbox/start", "api/sandbox/stop", "api/sandbox/reset", "api/sandbox/info", "sandbox/state", "sandbox/op", "api/sandbox/save", "api/sandbox/record/new", "api/sandbox/replay"):
+        assert api in b
+    assert "会用 memory/ 覆盖沙盒记忆" in b and "Pages.sandbox" in b and "sandboxSummary" in b
+    assert "1.15fr 1.1fr .85fr" in (STATIC / "console.css").read_text(encoding="utf-8")
+
+
+def _sandbox_js(expr: str):  # 在 node 里载入 common.js + sandbox.js（没有 document），算 expr
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = (f"require({json.dumps(str(STATIC / 'common.js'))});require({json.dumps(str(STATIC / 'sandbox.js'))});"
+          f"console.log(JSON.stringify({expr}))")
+    return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+
+
+def test_sandbox_line_kinds():  # 聊天行的样式：反思 = 虚线框，别的事件 = 分隔线；团子说的靠右；被拦的删除线
+    rows = [{"kind": "event", "text": "── 反思：心情 平常 → 开心 ──"}, {"kind": "event", "text": "── 开始反思 ──"},
+            {"kind": "event", "text": "── 小明来了 ──"}, {"kind": "heard", "who": "小明"}, {"kind": "said", "who": "团子"},
+            {"kind": "act", "who": "团子"}, {"kind": "blocked", "who": "团子"}, {"kind": "blocked", "who": ""}]
+    assert _sandbox_js(f"{json.dumps(rows, ensure_ascii=False)}.map(Sandbox.lineKind)") == [
+        "refl", "ev", "ev", "msg", "msg me", "act", "msg me blocked", "msg blocked"]
+
+
+def test_sandbox_summary_text():  # 左栏卡片：「10月1日 11:28 · 开心 · 精神」，缺哪样就不写哪样
+    t = "new Date(2026,9,1,11,28).getTime()/1000"
+    assert _sandbox_js(f"[Sandbox.summaryText({t},'开心','精神'),Sandbox.summaryText({t},'',''),Sandbox.summaryText({t},null,'困')]") == [
+        "10月1日 11:28 · 开心 · 精神", "10月1日 11:28", "10月1日 11:28 · 困"]
+    assert _sandbox_js("[sandboxSummary(),typeof sandboxClock]") == [None, "function"]  # 沙盒没在跑：没有摘要

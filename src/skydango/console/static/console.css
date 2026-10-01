@@ -12,6 +12,7 @@
   --m-happy:var(--sakura);--m-plain:#cbbfa8;--m-low:#8ea3b8;--m-cross:#d98c78;--blue-bg:#e4ecf5;--blue-ink:#34507a;--flash:#fbf0d9;
   --rice:#fbf7ef;--rice-line:#e5dccd;--stick:#a08664;--ash:#d9cfbe;--ash-ink:#b3a68f;
   --soft:#fbf8f1;--bubble:#f3ece0;--track:#ece4d5;--hover:#f7f1e6;--white:#fff;
+  --refl-line:#d7c7a8;--refl-bg:#fbf6ea;--refl-ink:#7a6847;
   --shadow:0 1px 0 #efe6d6;--lift:0 10px 30px rgba(80,60,30,.14);--shade:rgba(59,51,43,.28);--ball-shade:rgba(0,0,0,.12);
   --text:var(--ink);  /* brain_trace.css 用 --text / --muted / --line */
   --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
@@ -288,3 +289,99 @@ h4.note{margin:0 0 4px;font-weight:500}
 .diary{margin:0;padding:8px 0 8px 14px;border-left:2px solid var(--sakura-bg);line-height:1.8}
 .diary+.diary{margin-top:10px}
 .diary b{display:block;font-size:12px;font-weight:500;color:var(--muted)}
+
+/* ---- 沙盒 ---- */
+/* 页面本身不滚、高度占满视口：顶栏（+ 回放条）固定，三栏各自在 .scroll 里滚 */
+#page-sandbox{height:100vh;display:flex;flex-direction:column;padding:0}
+:where(#page-sandbox) fieldset{border:0;margin:0;padding:0;min-width:0}
+.sb-head{flex:none;display:flex;align-items:center;gap:10px 18px;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid var(--line);background:linear-gradient(var(--soft),var(--paper))}
+.sb-label{font-size:12px;color:var(--muted);letter-spacing:.06em;white-space:nowrap}
+.sb-start{display:flex;flex-direction:column;gap:6px;min-width:0}
+.sb-start-row{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap}
+.sb-when{display:inline-flex;align-items:center;gap:4px 14px;flex-wrap:wrap}
+.sb-when label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
+#sb-when-at{width:210px}
+.sb-floor{margin:0}
+#sb-problems .problems{margin:0}
+.sb-orphan{margin-top:6px}
+.sb-clock{display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap}
+.sb-time>small{display:block;font-size:11.5px;color:var(--muted);letter-spacing:.1em;line-height:1.3}
+.sb-time b{font-size:26px;font-weight:600;letter-spacing:.02em;line-height:1.2}
+.sb-time div small{font-size:14px;color:var(--muted);margin-left:6px}
+.sb-energy{display:flex;flex-direction:column;line-height:1.35}
+.sb-energy:empty{display:none}
+.sb-energy small{font-size:11.5px;color:var(--muted);letter-spacing:.1em}
+.sb-energy b{font-weight:600}
+.sb-ff{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+#sb-at{width:110px}
+.sb-limit{margin:0;padding:1px 10px;border:1px solid var(--amber-line);background:var(--amber-bg);color:var(--amber-ink);border-radius:999px;font-size:12.5px}
+.sb-status{color:var(--amber-ink)}
+.sb-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sb-replay-bar{flex:none;display:flex;align-items:center;gap:12px;padding:7px 20px;background:var(--amber-bg);border-bottom:1px solid var(--amber-line);color:var(--amber-ink)}
+.sb-reel{width:160px;height:6px;border-radius:3px;background:var(--track);overflow:hidden}
+.sb-reel i{display:block;height:100%;width:0;background:var(--amber);transition:width .4s}
+
+.sb-cols{flex:1;grid-template-columns:1.15fr 1.1fr .85fr;padding:14px 20px;min-height:0}
+.sb-cols>.pane{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.sb-cols .scroll{flex:1;min-height:0;overflow:auto;padding:4px 14px 12px;scrollbar-width:thin;scrollbar-color:var(--ash) transparent}
+.sb-quiet{letter-spacing:0;font-weight:400}
+
+/* 左：聊天记录。团子靠右樱花底、别人靠左米色底、事件 = 居中分隔线、反思 = 虚线框、动作斜体、被拦删除线 + 原因 */
+.sb-ev{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;margin:10px 0;text-align:center}
+.sb-ev::before,.sb-ev::after{content:"";flex:1;min-width:16px;height:1px;background:var(--line)}
+.sb-msg{max-width:82%;margin:6px 0}
+.sb-msg .who{font-size:11.5px;color:var(--muted)}
+.sb-msg .b{display:inline-block;background:var(--bubble);border-radius:4px 12px 12px 12px;padding:6px 11px;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}
+.sb-msg.sb-me{margin-left:auto;text-align:right}
+.sb-me .b{background:var(--sakura-bg);color:var(--sakura-ink);border-radius:12px 4px 12px 12px}
+.sb-blocked .b{text-decoration:line-through;opacity:.6}
+.sb-blocked .why{font-size:11.5px;color:var(--brick-ink)}
+.sb-act{font-size:12.5px;color:var(--muted);font-style:italic;margin:4px 0;text-align:right}
+.sb-refl{border:1px dashed var(--refl-line);background:var(--refl-bg);border-radius:8px;padding:6px 10px;font-size:12.5px;margin:10px 0;color:var(--refl-ink);overflow-wrap:anywhere}
+.sb-refl time{color:var(--muted)}
+.sb-say{flex:none;border-top:1px solid var(--line);padding:10px 12px;background:var(--soft)}
+.sb-say fieldset{display:flex;gap:8px;align-items:center}
+.sb-say select{max-width:38%}
+.sb-say input[name=name]{width:110px}
+.sb-say input[name=text]{flex:1}
+
+/* 中：大脑时间线。brain_trace 自己的头（大脑 · 模型 · 已醒 N 轮 · 在线 · 只看做了事的）当作栏标题，钉在顶上 */
+.sb-brainpane:has(#sb-brain:not([hidden]))>h3{display:none}
+#sb-brain-scroll{padding-top:0}
+#sb-brain-scroll>.none{padding-top:4px}
+#sb-brain .bt-head{position:sticky;top:0;z-index:1;margin:0 -14px 4px;padding:10px 14px 6px;background:var(--card);border-bottom:1px solid var(--line);font-size:12.5px}
+#sb-brain .bt-head b{font-size:12px;letter-spacing:.12em;color:var(--muted)}
+#sb-brain .turn>summary{align-items:baseline}
+#sb-brain .turn>summary>span:nth-of-type(2){background:var(--matcha-bg);color:var(--matcha-ink);border-radius:5px;padding:0 6px;font-size:11.5px}
+#sb-brain .turn.err>summary>span:nth-of-type(2){background:var(--brick-bg);color:var(--brick-ink)}
+#sb-brain .turn>summary>span:nth-of-type(4){margin-left:auto}
+#sb-brain .turn>summary>.n{font-family:var(--mono);font-size:11.5px}
+
+/* 右：现在 + 世界（身边、团子看到的） */
+.sb-cols>.sb-right{overflow:auto;scrollbar-width:thin;scrollbar-color:var(--ash) transparent}
+#sb-now>h3{margin:0;padding:10px 14px 6px;font-size:12px;letter-spacing:.12em;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:8px}
+#sb-now .now-rows{grid-template-columns:52px minmax(0,1fr)}
+.sb-inner-link{letter-spacing:0;font-weight:400;font-size:12.5px;text-decoration:none}
+.sb-inner-link:hover{text-decoration:underline}
+.sb-sec{margin:0 14px;padding:10px 0 12px;border-top:1px solid var(--line)}
+.sb-sec h4{margin:0 0 6px;font-size:12px;letter-spacing:.12em;color:var(--muted);font-weight:600}
+.sb-friends{display:flex;flex-wrap:wrap;gap:4px}
+.sb-friend{display:inline-flex;align-items:center;gap:2px;background:var(--matcha-bg);color:var(--matcha-ink);border-radius:999px;padding:1px 3px 1px 10px;font-size:13px}
+.sb-friend button{background:none;border:0;padding:0 5px;cursor:pointer;color:inherit;opacity:.6;font-size:14px;line-height:1.2}
+.sb-friend button:hover:not(:disabled){opacity:1}
+.sb-row{display:flex;gap:6px;align-items:center;margin-top:6px}
+.sb-row input{flex:1;min-width:0}
+.sb-row .sb-label{min-width:3.4em}
+.sb-stepper{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
+.sb-stepper button{border:0;background:var(--card);padding:2px 10px;cursor:pointer}
+.sb-stepper button:hover:not(:disabled){background:var(--hover)}
+.sb-stepper button:disabled{opacity:.45;cursor:not-allowed}
+.sb-stepper span{min-width:2.6em;padding:0 8px;text-align:center;border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.sb-sec:disabled .sb-friend{opacity:.6}
+
+@media (max-width:999px){  /* 窄屏：三栏上下排（#work .cols 变单列），页面恢复整页滚，每栏给个高度 */
+  #page-sandbox{height:auto}
+  .sb-head,.sb-replay-bar{padding-left:12px;padding-right:12px}
+  .sb-cols{padding:12px}
+  .sb-cols>.pane{height:70vh}
+}

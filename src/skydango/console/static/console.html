@@ -32,7 +32,89 @@
 </aside>
 
 <main id="work">
-  <section id="page-sandbox" class="page" hidden><p class="placeholder">（沙盒页还在搬家）</p></section>
+  <section id="page-sandbox" class="page" hidden>
+    <header class="sb-head" id="sb-head">
+      <form class="sb-start" id="sb-start" autocomplete="off">
+        <div class="sb-start-row">
+          <span class="sb-label">沙盒时间从</span>
+          <span class="sb-when" role="radiogroup" aria-label="沙盒时间从哪开始">
+            <label><input type="radio" name="sb-when" value="resume" checked> 接着上次</label>
+            <label><input type="radio" name="sb-when" value="sleep"> 睡一晚到第二天 9 点</label>
+            <label><input type="radio" name="sb-when" value="custom"> 自定义</label>
+            <input type="text" id="sb-when-at" placeholder="HH:MM 或 YYYY-MM-DD HH:MM" aria-label="自定义起始时间">
+          </span>
+          <button class="btn go" id="sb-go" type="submit">启动沙盒</button>
+        </div>
+        <p class="note sb-floor" id="sb-floor" hidden></p>
+        <div id="sb-problems" hidden></div>
+      </form>
+      <div class="sb-clock" id="sb-clock" hidden>
+        <div class="sb-time"><small>沙盒时间</small><div><b id="sb-time">—</b><small id="sb-date"></small></div></div>
+        <div class="sb-energy" id="sb-energy"></div>
+        <fieldset class="sb-ff" id="sb-ff">
+          <button class="btn sm" type="button" data-skip="600">+10 分钟</button>
+          <button class="btn sm" type="button" data-skip="3600">+1 小时</button>
+          <button class="btn sm" type="button" data-at="09:00">到明早 9 点</button>
+          <input type="text" id="sb-at" placeholder="拨到 23:30" aria-label="把沙盒时间拨到">
+          <button class="btn sm" type="button" id="sb-at-go">设成</button>
+        </fieldset>
+        <p class="sb-limit" id="sb-limit" hidden></p>
+      </div>
+      <span class="note sb-status" id="sb-status" hidden></span>
+      <span class="grow"></span>
+      <div class="sb-tools">
+        <span class="chip" id="sb-rec">没在录</span>
+        <button class="btn sm" type="button" id="sb-rec-new">新录制</button>
+        <button class="btn sm" type="button" id="sb-save">另存为剧本…</button>
+        <button class="btn sm" type="button" id="sb-reset">重置记忆</button>
+      </div>
+    </header>
+    <div class="sb-replay-bar" id="sb-replay-bar" role="status" hidden>
+      <span id="sb-replay-text"></span>
+      <span class="sb-reel" aria-hidden="true"><i id="sb-replay-fill"></i></span>
+      <span class="grow"></span>
+      <button class="btn sm halt" type="button" id="sb-replay-stop">停止回放</button>
+    </div>
+    <div class="cols sb-cols" id="sb-cols">
+      <section class="pane sb-chatpane" aria-label="聊天记录">
+        <h3>聊天记录<span class="grow"></span><span class="sb-quiet" id="sb-quiet"></span></h3>
+        <div class="scroll sb-chat" id="sb-chat" aria-live="polite"><p class="none">启动沙盒之后，冒充好友说句话试试。</p></div>
+        <form class="sb-say" id="sb-say" autocomplete="off">
+          <fieldset id="sb-say-set">
+            <select name="who" aria-label="谁说"></select>
+            <input name="name" placeholder="陌生人名字" aria-label="陌生人名字" hidden>
+            <input name="text" placeholder="冒充他说点什么，回车发送" aria-label="说的话">
+            <button class="btn go" type="submit">发送</button>
+          </fieldset>
+        </form>
+      </section>
+      <section class="pane sb-brainpane" aria-label="大脑时间线">
+        <h3>大脑</h3>
+        <div class="scroll" id="sb-brain-scroll">
+          <p class="none" id="sb-brain-none">（沙盒跑起来之后这里是大脑时间线）</p>
+          <div id="sb-brain" hidden></div>
+        </div>
+      </section>
+      <section class="pane sb-right" aria-label="现在和世界">
+        <div id="sb-now"></div>
+        <fieldset class="sb-sec" id="sb-nearby">
+          <h4>身边</h4>
+          <div class="sb-friends" id="sb-friends"></div>
+          <div class="sb-row"><input list="sb-friend-list" id="sb-come-name" placeholder="谁来了（好友名）" aria-label="来了的好友">
+            <datalist id="sb-friend-list"></datalist><button class="btn sm" type="button" id="sb-come">来了</button></div>
+          <div class="sb-row"><span class="sb-label">陌生人</span>
+            <span class="sb-stepper"><button type="button" data-strangers="-1" aria-label="少一个">−</button><span id="sb-strangers">0</span><button type="button" data-strangers="1" aria-label="多一个">+</button></span></div>
+          <div class="sb-row"><span class="sb-label">地名</span><input id="sb-place" placeholder="云野" aria-label="地名"><button class="btn sm" type="button" id="sb-place-go">改</button></div>
+        </fieldset>
+        <fieldset class="sb-sec" id="sb-scene">
+          <h4>团子看到的</h4>
+          <textarea id="sb-scene-text" placeholder="场景：空着 = 看不清" aria-label="场景"></textarea>
+          <div class="sb-row"><button class="btn sm" type="button" id="sb-scene-go">改场景</button></div>
+          <div class="sb-row"><input id="sb-notice" placeholder="新鲜事：天黑了" aria-label="新鲜事"><button class="btn sm" type="button" id="sb-notice-go">放</button></div>
+        </fieldset>
+      </section>
+    </div>
+  </section>
   <section id="page-live" class="page" hidden><p class="placeholder">（真机团子页还在搬家）</p></section>
   <section id="page-inner" class="page" hidden>
     <div class="page-title">
