@@ -10,6 +10,7 @@ import logging
 import math
 import queue
 import random
+import re
 import threading
 import time
 from collections import deque
@@ -37,7 +38,7 @@ from .images import crop_view, difference, fit, image_block, is_black, label_not
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
 from .reflex import Reflexes, addressed
 from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
-from ..inner.energy import Energy, awake_minutes, energy as inner_energy
+from ..inner.energy import Energy, awake_minutes, energy as inner_energy, energy_parts, format_parts
 from ..inner.ledger import card_line, match_friend
 from ..inner.ledger import ago
 from ..inner.log import ENERGY_EVERY, diff as diff_inner
@@ -1957,6 +1958,10 @@ class Body:
             return NEUTRAL
 
     def energy_now(self) -> Energy:
+        return inner_energy(*self._energy_args())
+
+    def _energy_args(self) -> tuple[float, float, bool, float]:
+        """(几点, 连着挂了几分钟, 最近有没有好友跟团子说话, 最近一小时热闹了几分钟)：精力和 introspect 共用。"""
         wall = self.wall()
         t = time.localtime(wall)
         if self.ledger is not None:
@@ -1964,7 +1969,62 @@ class Body:
         else:
             awake = max(0.0, wall - self._born_wall) / 60
         busy = sum(sec for at, sec in self._busy_log if wall - at <= 3600) / 60
-        return inner_energy(t.tm_hour + t.tm_min / 60, awake, wall - self._cheered_at < 600, busy)
+        return t.tm_hour + t.tm_min / 60, awake, wall - self._cheered_at < 600, busy
+
+    # ---- 幕后：introspect（spec 2026-10-01-backstage §2；只读、身体线程）----
+    def introspect(self, topic: str) -> str:
+        owner = self.cfg.brain.owner_name or "卡洛"
+        off = f"{topic}没开（{owner}没打开这个）"
+        wall = self.wall()
+        if topic == "精力":
+            args = self._energy_args()
+            return "精力：" + format_parts(energy_parts(*args), inner_energy(*args))
+        if topic == "反思":
+            if self.reflector is None:
+                return off
+            rows = [r for r in (self.mind_log.recent() if self.mind_log is not None else []) if r.get("kind") == "reflect"][-3:]
+            lines = [self._reflect_line(r, wall) for r in rows] or ["这次上线还没反思过"]
+            nxt = self.reflector.next_in(self.clock())
+            if nxt is not None:
+                lines.append(f"下次大概 {max(1, round(nxt / 60))} 分钟后（有动静才反思）")
+            return "\n".join(lines)
+        if topic == "性格":
+            if self.persona is None:
+                return off
+            return self._persona_lines(wall)
+        if topic == "日记":
+            if self.ledger is None or not self.cfg.inner.reflect:
+                return off
+            diaries = self.ledger.store.last_diaries(1)
+            if not diaries:
+                return "还没写过日记"
+            m = re.match(r"(\d+月\d+日：)?(.*)", diaries[-1], re.S)  # 日期不算进 600 字
+            return "最近一篇日记：" + (m.group(1) or "") + m.group(2)[:600]
+        raise ToolError("topic 只能是 精力 / 反思 / 性格 / 日记 / 眼睛")
+
+    @staticmethod
+    def _reflect_line(r: dict, wall: float) -> str:
+        mood = r.get("mood") or {}
+        text = f"{ago(wall - r['t'])}前{'（下线那次）' if r.get('final') else ''}：心情{mood.get('level', '')}（{mood.get('text', '')}）"
+        if r.get("changes"):
+            text += "；改了：" + "、".join(r["changes"])
+        if r.get("dropped"):
+            text += "；没收下：" + "、".join(r["dropped"])
+        return text
+
+    def _persona_lines(self, wall: float) -> str:
+        fade = self.cfg.inner.fade_days
+
+        def line(t, label: str) -> str:
+            left = max(0, int(fade - (wall - max(t.last_used, t.since)) / 86400))
+            used = f"{ago(wall - t.last_used)}前用过" if t.last_used else "还没用过"
+            return f"- {label}：用过 {t.hits} 次，{used}，再过 {left} 天不用就淡出"
+
+        p = self.persona
+        lines = [line(t, f"口头禅「{t.text}」") for t in p.catchphrases]
+        lines += [line(t, f"和{t.who}的老梗「{t.text}」") for t in p.jokes]
+        lines += [line(t, f"对{t.topic}的看法「{t.text}」") for t in p.opinions]
+        return "\n".join(lines) if lines else "还没攒下什么口头禅、老梗和看法"
 
     def _safe_friends(self) -> list[str]:
         try:
