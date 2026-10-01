@@ -233,11 +233,13 @@ function renderDays(container, days, diaries) {
 }
 
 function pageActive() { return !$("page-inner").hidden; }
-function pullInner(state) {  // 团子醒着时每 5 秒；状态一变（开始停止、停完了）也重读一次；别的时候只在打开和点「刷新」时读
-  const r = state && state.run, st = r ? r.state : null, changed = st !== IN.lastState;
+// 纯判断：状态变了要重读；5 秒的定时器在团子（这页在看的那个）醒着时也重读。onState 每秒都来，不带 periodic，所以只在变化时读。
+function innerShouldReload(prevState, state, periodic, mine) { return state !== prevState || (!!periodic && state === "running" && !!mine); }
+function pullInner(state, periodic) {
+  const r = state && state.run, st = r ? r.state : null, prev = IN.lastState;
   IN.lastState = st;
   if (!pageActive() || !r) return;
-  if ((st === "running" && innerMine(r)) || changed) loadInner(IN.source);
+  if (innerShouldReload(prev, st, periodic, innerMine(r))) loadInner(IN.source);
 }
 let ticker = null;
 function bind() {
@@ -252,12 +254,12 @@ function bind() {
   for (const b of $("inner-source-toggle").querySelectorAll("button")) b.onclick = () => { setSource(b.dataset.src); loadInner(IN.source); };
 }
 
-globalThis.Inner = {renderNow, setSource};  // 沙盒页右栏调 Inner.renderNow(容器, now, d)
+globalThis.Inner = {renderNow, setSource, innerShouldReload};  // 沙盒页右栏调 Inner.renderNow(容器, now, d)
 Pages.inner = {
   init() { bind(); },
   show() {  // 可能被重复调用（点当前导航项）：只重读，定时器不重复建
     loadInner(IN.source);
-    if (!ticker) ticker = setInterval(() => { if (pageActive()) pullInner(S.state); }, 5000);
+    if (!ticker) ticker = setInterval(() => { if (pageActive()) pullInner(S.state, true); }, 5000);
   },
   hide() { if (ticker) { clearInterval(ticker); ticker = null; } },
 };

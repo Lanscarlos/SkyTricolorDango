@@ -91,3 +91,16 @@ def test_inner_page():
         assert s in b
     for text in ("（没开反思）", "实时取不到，显示的是上次保存的", "团子正在启动 / 停止，稍等再删", "只看有改动的", "删了团子就不会再用它（不能撤销）"):
         assert text in b
+
+
+def test_inner_reload_decision():  # onState 每秒都来：连续相同的 running 不重读；5 秒定时器才重读
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = (
+        "globalThis.Pages={};globalThis.onState=()=>{};"
+        f"require({json.dumps(str(STATIC / 'inner.js'))});"
+        "const f=Inner.innerShouldReload;"
+        "console.log(JSON.stringify([f('running','running',false,true),f('running','running',true,true),"
+        "f('running','running',true,false),f('idle','running',false,true),f(null,'idle',false,false),f('idle','idle',true,true)]))"
+    )
+    out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+    assert out == [False, True, False, True, True, False]
