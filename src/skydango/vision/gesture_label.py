@@ -9,6 +9,7 @@ TODO（2026-10-01 晚）：`GESTURE_SYSTEM` 里四个动作的样子是按印象
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -83,7 +84,7 @@ def recording_hint(recording: str) -> str:
 
 def build_gesture_message(frames: list[FrameInput], cfg: AssistConfig, hint: bool = True) -> list[dict]:
     """一批片段的内容块：规则在 --system-prompt 里，这里每个片段一行文字（名字 + 录像提示）加一张拼图。
-    hint = False：不写录像提示（片段名照样给，它是回答的键）。"""
+    hint = False：不写录像提示（片段名本身也带录像名，`--blind` 时 stem 换成 `blind_key` 的代号）。"""
     from .gesture import recording_of
 
     content: list[dict] = []
@@ -92,6 +93,11 @@ def build_gesture_message(frames: list[FrameInput], cfg: AssistConfig, hint: boo
         content.append({"type": "text", "text": f"片段 {f.stem}：{note}"})
         content.append(image_block(f.image, 85))
     return content
+
+
+def blind_key(clip: str) -> str:
+    """`--blind` 时给 Claude 看的片段代号：片段名的哈希，看不出录像名，同一段每次一样（缓存认它）。"""
+    return "c" + hashlib.sha1(clip.encode("utf-8")).hexdigest()[:10]
 
 
 def parse_gesture_review(text: str, frames: list[FrameInput]) -> dict[str, Guess]:

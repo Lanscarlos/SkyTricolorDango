@@ -764,6 +764,7 @@ def _perception_gesture_label(cfg: Config, args) -> None:
     blind = args.blind
     name = gl.BLIND_FILE if blind else gl.GUESS_FILE
     protocol = gl.GESTURE_BLIND_PROTOCOL if blind else gl.GESTURE_PROTOCOL
+    key = gl.blind_key if blind else (lambda clip: clip)  # 给 Claude 看的片段名（盲分时连录像名也藏起来）
     incomplete, done, todo = [], 0, []
     for d in clips:
         if sum(1 for p in d.iterdir() if p.suffix.lower() in SUFFIXES) != 16:
@@ -782,7 +783,7 @@ def _perception_gesture_label(cfg: Config, args) -> None:
     cache = dataset / "_assist" / ("blind" if blind else "")  # 两种初分的缓存键一样，分开放
     if args.recheck:  # 重做：Reviewer 的缓存也清掉，不然直接命中
         for d in todo:
-            (cache / f"{d.name}.json").unlink(missing_ok=True)
+            (cache / f"{key(d.name)}.json").unlink(missing_ok=True)
     cmd = assist.assist_command(base, a, system=protocol.system)
     work = assist.assist_workdir()
     reviewer = assist.Reviewer(
@@ -799,7 +800,7 @@ def _perception_gesture_label(cfg: Config, args) -> None:
         chunk, frames = [], []
         for d in todo[c0 : c0 + _ASSIST_CHUNK]:
             try:  # 片段可能刚在标注页被挪走，或者有张图坏了：跳过这一段，别让整次初分停下
-                frames.append(assist.FrameInput(d.name, gl.contact_sheet(load_clip(d)), []))
+                frames.append(assist.FrameInput(key(d.name), gl.contact_sheet(load_clip(d)), []))
             except (OSError, RuntimeError, ValueError):
                 unreadable.append(d.name)
                 continue
@@ -809,7 +810,7 @@ def _perception_gesture_label(cfg: Config, args) -> None:
         except assist.AssistLimit:
             raise SystemExit(f"订阅额度用完了：已初分的片段存好了，额度恢复后重跑同一条命令会接着做（缓存 {cache}）") from None
         for d in chunk:
-            g = guesses.get(d.name)
+            g = guesses.get(key(d.name))
             if g is None:
                 failed += 1
                 continue
