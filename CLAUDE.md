@@ -75,7 +75,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/env.py` | 识别环境：每隔几秒在后台 OCR 3D 画面，认好友头顶的名字（身边有谁）和地名，写进提示词 |
 | `src/skydango/vision/envdiff.py` | 两轮聊天之间环境变了什么（谁来了 / 走了、陌生人数、到了哪），写进那一轮的用户消息、跟着历史走 |
 | `src/skydango/vision/people.py` | `Person`（track_id、好友 / 陌生人 / 黑影、框、左 / 前 / 右、近 / 中 / 远）：感知层的 `people()` 给身体、技能、大脑用 |
-| `src/skydango/vision/detect.py` `track.py` `perception.py` `weaklabel.py` | YOLO 感知层（开发中，默认关）：检测器（ONNX / ultralytics）、IoU 追踪、`PerceptionWatcher`（接口同 env，多认陌生人；画面被挡时暂停计时）、弱标注，见下 |
+| `src/skydango/vision/detect.py` `track.py` `perception.py` `weaklabel.py` | YOLO 感知层（开发中，默认关）：检测器（ONNX / ultralytics）、追踪（IoU + 低分框续命 + 速度预测 + 画面平移 `estimate_shift`）、`PerceptionWatcher`（接口同 env，多认陌生人；画面被挡时暂停计时；续命、失踪好友接回、运动方向）、弱标注，见下 |
+| `src/skydango/vision/trackeval.py` | 追踪和接回的离线评估（`perception track-eval`）：基线（升级开关全关）vs 当前配置，断开原因、假走开、确认冤枉、接回对错、运动方向 |
 | `src/skydango/vision/hardcases.py` `compare.py` `augment.py` | 感知层一期工具：运行时收集难例、离线对比 YOLO 和整图 OCR（`perception compare`）、训练集增强（`perception augment`） |
 | `src/skydango/vision/assist.py` | Claude 辅助标注（`perception label --assist`）：挑帧、人物候选框、`claude -p` 核对（分批并发、缓存、额度用完可续跑）、合并成标注 + 预览 + 待核对清单；`Protocol` 让物品模式复用 |
 | `src/skydango/vision/objlabel.py` | 物品模式（`perception label <数据集> --objects`）：提示词、解析、写回（人物行不动、物品行整体替换、人改先祖）、预览、清单 |
@@ -220,7 +221,14 @@ dir = "private/sandbox"
 - 普通模式主人命令 `#spin [圈数]`：转一圈、截图存 `runs/<…>/spin/<时间>/`，打开感知层时回复带扫描结果；大脑模式不加
 - **本机在用 `models/sky-yolo-v7.pt`**（2026-09-30，539 帧，能认头顶气泡 `typing`；v4 在 run 里真机用过、v5 / v6 没上线），进度、数据、标注规则、各版对比和待办见 `docs/progress/2026-09-28-yolo-training.md`；
   **标气泡别只靠 Claude**：它标不出好友名字下方叠着的文字气泡，要 OCR 兜底（做法见进度文档 09-30 一节）；
-  感知层已在真机 `run` 里用过多次（好友走远、标签淡掉后轨迹断开被判成陌生人，见 `docs/superpowers/specs/2026-10-01-tracking-relink-motion-design.md`）；**下面这些阈值还没在真机标定**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
+  感知层已在真机 `run` 里用过多次（好友走远、标签淡掉后轨迹断开被判成陌生人，下面「追踪和接回」修的就是它）；**下面这些阈值还没在真机标定**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
+- **追踪和接回**（spec `docs/superpowers/specs/2026-10-01-tracking-relink-motion-design.md`，计划 `docs/superpowers/plans/2026-10-01-tracking-relink-motion.md`；**代码已完成，还没在录像 / 真机上标定**，spec §8 真机验证四步）：
+  追踪器两段匹配（`low_conf ~ conf` 的低分框只续旧轨迹、不开新的；`track_low` 时检测器按 `low_conf` 出框）+ 速度预测 + 中心距离兜底（`track_center_gate`，永远排在 IoU 候选之后）+ 画面平移补偿（1/8 灰度缩略图上半、去掉人物框和面板，`cv2.phaseCorrelate`）；
+  **续命**（`sticky_names`）：挂过名字的轨迹没断就一直刷新 `last_seen`，断了才开始算 `keep`；
+  **失踪好友接回**（`relink`）：挂着名字的轨迹被删 → 失踪记录，`keep` 秒内在预测位置附近冒出来的没名字的人接成 `maybe`（`maybe_by = "relink"`，"像小明"，后果同认装扮的 maybe：不判陌生人、刷新在场、不发 arrive / return），有歧义（一人对两条记录 / 两人一样近）不接，标签亮出来名字说了算，认装扮不拿外观否掉它；
+  **运动方向**（`motion`）：`motion_hist` 存补偿过平移的中心 x，`motion_of` 出 走近 / 走远 / 往左走 / 往右走 / 站着（防抖 `motion_hold`），`Person.motion`、status"小明（左边·中，正在走远）"、网页悬停；只给数据，track / 注意力 / 冷场还没用它；
+  身体动镜头调 `env.camera_moved(at, kind)`（turn / zoom / move / spin；缩放、走路、转圈后 `[track] settle` 秒内不攒走近 / 运动历史、速度清零；注意力自己的 nudge 和 `move` 只通知、不设 `_camera_moved_at`）；
+  开关全关逐字是原来的行为。定阈值：`perception track-eval <录像目录> [--fps 6.5]` → `tmp/track-eval/<时间>/report.md`（基线 vs 当前配置；目标接回证实错 = 0、确认冤枉明显下降）
 - **核显 / 没有 N 卡的机器**（`device = "dml"`，`vision/onnxrt.py`，**未在 Windows 核显上验证**）：在 GPU 机器上导出 `.onnx`（`.pydeps\bin\yolo.exe export model=models/sky-yolo-v7.pt format=onnx imgsz=960`）拷过去，
   `pip uninstall onnxruntime` 再 `pip install onnxruntime-directml`（两个包都叫 `onnxruntime` 模块，只能装一个；以后 `pip install -e ".[ocr]"` 会把 onnxruntime 装回来盖掉，要重装 directml；`pip check` 报 skydango 缺 onnxruntime 是正常的）。
   先 `perception bench --model models/sky-yolo.onnx --images <录像目录>` 看后端是不是 `DmlExecutionProvider`、每帧多少 ms，再按实测把 `fps` 降下来（估计 2~3）。
@@ -531,6 +539,7 @@ python -m skydango perception label <spin 目录> --spin --model 模型  # 转�
 python -m skydango perception label datasets/sky --objects [--model 模型] [--only 通配]  # 物品模式：给已标好人的数据集补标座位 / 篝火 / 乐器 / 先祖和头顶气泡 typing（先备份 labels/），清单在 _assist/objects.md；--only 只做文件名匹配的帧
 python -m skydango perception augment datasets/sky  # 训练集加运动模糊 / 压暗样本（只动 train）
 python -m skydango perception compare <录像目录> [--model 模型] [--far-crops 0]  # 同一批录像对比 YOLO 和整图 OCR → tmp/compare/<时间>/report.md（含远处认出率）
+python -m skydango perception track-eval <录像目录> [--model 模型] [--fps 6.5]  # 追踪升级前后对比：断开和原因、假走开、确认冤枉、接回对错、运动方向 → tmp/track-eval/<时间>/report.md
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
 python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
 python -m skydango perception clips <录像目录> [--force]  # 动作识别的数据：按人物轨迹切 16 帧片段 → datasets/gesture/_unlabeled；这段录像切过就拒绝，--force 只切数据目录里哪儿都还没有的片段
