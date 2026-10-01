@@ -462,6 +462,30 @@ def test_agent_emote_wrapped_in_held(clock):
     assert agent.env.holds == [("hold", "wheel"), ("release", "wheel")]
 
 
+def test_agent_ignores_light_request(clock):
+    """普通 Agent 不举蜡烛：感知层的 light 请求（团子点亮陌生人）不该让它每圈进 held("social")（会清掉集体消失检测）。"""
+    from skydango.game.social import LIGHT, LIGHT_KEY, Request
+
+    class Social:
+        def __init__(self):
+            self.calls = []
+
+        def handle(self, requests, now):
+            self.calls.append(dict(requests))
+            return []
+
+        def describe(self, now):
+            return ""
+
+    cfg = live_config()
+    agent, _ = build(cfg, [scene([(400, 200, 300, 50)])], ["你好"], clock, FixedLlm("嗯"))
+    agent.env = HoldEnv()
+    agent.env.requests = {LIGHT_KEY: Request("陌生人", LIGHT, (990, 620), clock(), track=7)}
+    agent.social = Social()
+    agent.step()
+    assert agent.env.holds == [] and agent.social.calls == []
+
+
 # ---- #spin ----
 class FakeCamera:
     def __init__(self, error=None):

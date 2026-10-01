@@ -297,10 +297,11 @@ def _env_watcher(cfg: Config, background: bool = True, icons=None):
     )
 
 
-def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, run: RunDir | None = None):
+def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, run: RunDir | None = None, light: bool = False):
     """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。
 
     有运行目录（run）且 perception.hardcases 打开时，顺带收集难例到 runs/<这次>/hard/。
+    light：大脑模式（只有它的身体会按 3 举蜡烛）才找黑影身上的火焰圆盘、出 light 请求。
     """
     if not cfg.perception.enabled:
         if cfg.places.enabled:
@@ -327,7 +328,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
 
         unknown = UnknownNames(run.path / "unknown_names", _friend_names(cfg))
     flame = None
-    if cfg.social.enabled and "light" in cfg.social.accept_strangers:
+    if light and cfg.social.enabled and "light" in cfg.social.accept_strangers:
         from .vision.candle import load_flame
 
         flame = load_flame(cfg.social.flame)
@@ -1565,7 +1566,7 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
     reader.trace_path = run.rows_log
     panel = _panel(cfg, dev, reader)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
+    env = _scene_watcher(cfg, icons, dev, run=run, light=True) if cfg.env.enabled else None
     social = None
     if env and icons:
         from .game.social import SocialHandler

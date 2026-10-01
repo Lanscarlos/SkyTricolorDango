@@ -1893,3 +1893,19 @@ def test_orphan_white_ring_is_still_a_candle_request(name):
     w = watcher(det, icons=FakeIcons({"next": "candle"}))
     w.process(ring_frame(name), 0.0, panel_visible=False)
     assert w.requests[STRANGER].kind == "candle"
+
+
+def test_scene_watcher_loads_flame_only_for_brain(monkeypatch):
+    """只有大脑模式的身体会举蜡烛：普通 Agent 不找火焰圆盘（否则 light 请求一直挂着）。"""
+    from skydango import cli
+    from skydango.config import Config
+    import skydango.vision.detect as detect
+    import skydango.vision.ocr as ocr
+
+    monkeypatch.setattr(detect, "make_detector", lambda *a, **k: object())
+    monkeypatch.setattr(ocr, "make_ocr", lambda *a, **k: FakeOcr({}))
+    cfg = Config()
+    cfg.perception.enabled = True
+    assert "light" in cfg.social.accept_strangers
+    assert cli._scene_watcher(cfg).flame is None
+    assert cli._scene_watcher(cfg, light=True).flame is not None
