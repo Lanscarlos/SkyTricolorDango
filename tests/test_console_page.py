@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "sandbox.js", "live.js", "scenarios.js", "labeling.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "live.js", "scenarios.js", "labeling.js", "settings.js", "device.js"]
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做
@@ -23,6 +23,7 @@ def test_skeleton():
     for n in JS:
         assert f'src="console/static/{n}"' in page
     assert page.index('src="console/static/common.js"') < page.index('src="console/static/brainlog.js"') < page.index('src="console/static/sandbox.js"')
+    assert page.index('src="console/static/chatlog.js"') < page.index('src="console/static/sandbox.js"')
     assert "brain_trace" not in page  # 沙盒页换成 brainlog.js 的控制台；brain_trace.* 只给 viewer 用
 
 
@@ -123,16 +124,22 @@ def test_sandbox_page():
 
 def _sandbox_js(expr: str):  # 在 node 里载入 common.js + sandbox.js（没有 document），算 expr
     node = shutil.which("node") or pytest.skip("没有 node")
-    js = (f"require({json.dumps(str(STATIC / 'common.js'))});require({json.dumps(str(STATIC / 'sandbox.js'))});"
-          f"console.log(JSON.stringify({expr}))")
+    js = (f"require({json.dumps(str(STATIC / 'common.js'))});require({json.dumps(str(STATIC / 'chatlog.js'))});"
+          f"require({json.dumps(str(STATIC / 'sandbox.js'))});console.log(JSON.stringify({expr}))")
     return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
 
 
-def test_sandbox_line_kinds():  # 聊天行的样式：反思 = 虚线框，别的事件 = 分隔线；团子说的（sb-me）靠左；被拦的删除线
+def _chatlog_js(expr: str):  # 在 node 里载入 chatlog.js（没有 document），算 expr
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = f"const C=require({json.dumps(str(STATIC / 'chatlog.js'))});console.log(JSON.stringify({expr}))"
+    return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+
+
+def test_chat_line_kinds():  # 聊天行的样式：反思 = 虚线框，别的事件 = 分隔线；团子说的（sb-me）靠左；被拦的删除线
     rows = [{"kind": "event", "text": "── 反思：心情 平常 → 开心 ──"}, {"kind": "event", "text": "── 开始反思 ──"},
             {"kind": "event", "text": "── 小明来了 ──"}, {"kind": "heard", "who": "小明"}, {"kind": "said", "who": "团子"},
             {"kind": "act", "who": "团子"}, {"kind": "blocked", "who": "团子"}, {"kind": "blocked", "who": ""}]
-    assert _sandbox_js(f"{json.dumps(rows, ensure_ascii=False)}.map(Sandbox.lineKind)") == [
+    assert _chatlog_js(f"{json.dumps(rows, ensure_ascii=False)}.map(C.lineKind)") == [
         "refl", "ev", "ev", "msg", "msg me", "act", "msg me blocked", "msg blocked"]
 
 
