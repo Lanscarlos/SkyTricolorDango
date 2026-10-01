@@ -681,6 +681,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_clips(cfg, args)
     elif args.action == "gesture-eval":
         _perception_gesture_eval(cfg, args)
+    elif args.action == "gesture-label":
+        _perception_gesture_label(cfg, args)
     elif args.action == "appearance-eval":
         _perception_appearance_eval(cfg, args)
 
@@ -708,6 +710,68 @@ def _perception_clips(cfg: Config, args) -> None:
     print(f"切出 {n} 段（每段 {cfg.gesture.frames} 张、{cfg.gesture.fps:g} 张/秒）→ {out}")
     print(f"人工看一遍，把片段目录挪进 <数据目录>/<动作>/（{' / '.join(cfg.gesture.labels)}；none = 站着、走路、别的动作），"
           "再用 perception gesture-eval 评估")
+
+
+def _perception_gesture_label(cfg: Config, args) -> None:
+    """动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json（标注页读它），见 vision/gesture_label.py。"""
+    import dataclasses
+
+    from .brain import claude
+    from .vision import assist, gesture_label as gl
+    from .vision.gesture import SUFFIXES, load_clip
+
+    dataset = Path(cfg.gesture.dataset)
+    root = Path(args.source) if args.source else dataset / "_unlabeled"
+    if not root.is_dir():
+        raise SystemExit(f"{root} 不是目录：先 perception clips 切片段，或者把片段目录当参数传进来")
+    clips = sorted(d for d in root.iterdir() if d.is_dir())
+    incomplete, done, todo = [], 0, []
+    for d in clips:
+        if sum(1 for p in d.iterdir() if p.suffix.lower() in SUFFIXES) != 16:
+            incomplete.append(d.name)
+        elif gl.load_guess(d) is not None and not args.recheck:
+            done += 1
+        else:
+            todo.append(d)
+    if incomplete:
+        print(f"跳过 {len(incomplete)} 段（不是正好 16 张图）：" + "、".join(incomplete))
+    if not todo:
+        print(f"没有要初分的片段（{done} 段已有 claude.json；要重做加 --recheck）")
+        return
+    base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错
+    a = dataclasses.replace(cfg.assist, batch=8)
+    cache = dataset / "_assist"
+    if args.recheck:  # 重做：Reviewer 的缓存也清掉，不然直接命中
+        for d in todo:
+            (cache / f"{d.name}.json").unlink(missing_ok=True)
+    cmd = assist.assist_command(base, a, system=gl.GESTURE_SYSTEM)
+    work = assist.assist_workdir()
+    reviewer = assist.Reviewer(
+        lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), cache, a,
+        "gesture", protocol=gl.GESTURE_PROTOCOL,
+    )
+    print(f"{len(todo)} 段交给 Claude（{a.model}）初分：每批 {a.batch} 段、{a.jobs} 路并发"
+          + (f"；{done} 段已有 claude.json，跳过" if done else ""))
+    counts: dict[str, int] = {}
+    failed = 0
+    for c0 in range(0, len(todo), _ASSIST_CHUNK):
+        chunk = todo[c0 : c0 + _ASSIST_CHUNK]
+        frames = [assist.FrameInput(d.name, gl.contact_sheet(load_clip(d)), []) for d in chunk]
+        try:
+            guesses = reviewer.review(frames)
+        except assist.AssistLimit:
+            raise SystemExit(f"订阅额度用完了：已初分的片段存好了，额度恢复后重跑同一条命令会接着做（缓存 {cache}）") from None
+        for d in chunk:
+            g = guesses.get(d.name)
+            if g is None:
+                failed += 1
+                continue
+            gl.write_guess(d, g, a.model)
+            counts[g.label] = counts.get(g.label, 0) + 1
+        print(f"  {min(c0 + _ASSIST_CHUNK, len(todo))}/{len(todo)} 段")
+    print("初分：" + ("、".join(f"{k}×{v}" for k, v in sorted(counts.items())) or "没有") + f"；没初分成 {failed} 段")
+    u = reviewer.usage
+    print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")
 
 
 def _perception_gesture_eval(cfg: Config, args) -> None:
@@ -2270,6 +2334,9 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
     q.add_argument("-o", "--output", help="输出目录（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
+    q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")
+    q.add_argument("--recheck", action="store_true", help="已有 claude.json 的片段也重新初分")
     q = psub.add_parser("gesture-eval", help="在分好类的片段（<数据目录>/<动作>/<片段>/）上评估动作模型的精确率 / 召回率")
     q.add_argument("data", help="数据目录，比如 datasets/gesture")
     q.add_argument("--model", help="动作模型（默认 gesture.model）")
