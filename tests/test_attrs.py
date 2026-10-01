@@ -254,3 +254,99 @@ def test_cls_hist_records_every_updated_person_track():
         pa.update(FRAME, ts, float(i), None)
     assert ts[1].data["cls_hist"] == ["player", "player_unlit", "player"]
     assert "form_hist" not in ts[1].data or len(ts[1].data["form_hist"]) <= 3
+
+
+# ---- 放行 / 撤下 / 点没点火 ----
+
+
+def _feed(pa, m, t, probs, start=0):
+    """依次给一条轨迹喂 probs（每帧裁一次）。"""
+    m.probs, m.n = [np.array(p, np.float32) for p in probs], 0
+    for i, _ in enumerate(probs):
+        now = float(start + i)
+        t.last = now
+        pa.update(FRAME, [t], now, None)
+    return start + len(probs)
+
+
+def test_strong_track_admitted_until_rejected_and_never_again():
+    m = FakeModel()
+    pa = _pa(m, votes=3, every=0.0)
+    t = _track(1, 200, 0.0)
+    t.data["strong"] = True
+    assert pa.admit(t)
+    nxt = _feed(pa, m, t, [[0.9, 0.05, 0.05]] * 3)
+    assert t.data["rejected"] and not pa.admit(t)
+    _feed(pa, m, t, [[0.01, 0.99, 0.0]] * 5, start=nxt)
+    assert not pa.admit(t)
+
+
+def test_weak_track_needs_two_confident_votes():
+    pa = _pa(FakeModel())
+
+    def mk(label, p, n):
+        t = _track(1, 200, 0.0)
+        t.data["form"], t.data["form_n"] = (label, p), n
+        return t
+
+    assert not pa.admit(mk("lit", 0.9, 1))
+    assert pa.admit(mk("lit", 0.9, 2))
+    assert pa.admit(mk("spirit", 0.7, 2))
+    assert not pa.admit(mk("not_person", 0.9, 2))
+    assert not pa.admit(mk("lit", 0.5, 2))
+    assert not pa.admit(_track(2, 200, 0.0))
+
+
+def test_verified_weak_track_refreshes_strong_last():
+    m = FakeModel()
+    pa = _pa(m, every=0.0, votes=1)
+    t = _track(1, 200, 5.0)
+    m.probs = [np.array([0.9, 0.05, 0.05], np.float32)]
+    pa.update(FRAME, [t], 5.0, None)
+    assert t.strong_last == float("-inf")
+    m.probs, m.n = [np.array([0.05, 0.9, 0.05], np.float32)], 0
+    t.last = 6.0
+    pa.update(FRAME, [t], 6.0, None)
+    assert t.strong_last == 6.0
+
+
+def test_unlit_score_mixes_yolo_and_form():
+    t = _track(1, 200, 0.0)
+    assert attrs.unlit_score(t, 0.5) is None
+    t.data["cls_hist"] = ["player"] * 3
+    t.data["form_n"] = 2
+    t.data["form_mean"] = {"not_person": 0.1, "lit": 0.18, "unlit": 0.72, "shared": 0.0}
+    assert abs(attrs.unlit_score(t, 0.5) - 0.4) < 1e-6
+    t.data["form_n"] = 0
+    assert attrs.unlit_score(t, 0.5) == 0.0
+
+
+def test_unlit_flip_needs_flip_votes_frames():
+    pa = _pa(FakeModel(), votes=1, every=100.0, flip_votes=3, yolo_w=1.0)
+    t = _track(1, 200, 0.0)
+    pa.update(FRAME, [t], 0.0, None)
+    assert t.data["unlit"] is False  # 初始判点过火
+    for i in (1, 2):
+        t.cls, t.last = "player_unlit", float(i)
+        pa.update(FRAME, [t], float(i), None)
+    assert t.data["unlit"] is False
+    t.cls, t.last = "player", 3.0  # 反方向的一帧：计数清零
+    pa.update(FRAME, [t], 3.0, None)
+    assert t.data["unlit_streak"] == 0
+    for i in range(4, 7):
+        t.cls, t.last = "player_unlit", float(i)
+        pa.update(FRAME, [t], float(i), None)
+        assert t.data["unlit"] is (i == 6)
+    assert t.data["unlit_streak"] == 0
+
+
+def test_is_unlit_falls_back_to_yolo_class_when_disabled():
+    pa = _pa(FakeModel())
+    t = _track(1, 200, 0.0, cls="player_unlit")
+    assert pa.is_unlit(t)  # 还没 unlit 键：按 YOLO 类
+    t.data["unlit"] = False
+    assert not pa.is_unlit(t)
+    pa.enabled = False
+    assert pa.is_unlit(t)
+    t.data["strong"] = True
+    assert pa.admit(t)

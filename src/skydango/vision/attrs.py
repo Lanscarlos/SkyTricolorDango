@@ -156,6 +156,22 @@ def _covered(box: Rect, panel: Rect | None) -> float:
     return max(0, w) * max(0, h) / (box.w * box.h)
 
 
+def unlit_score(t: Track, yolo_w: float) -> float | None:
+    """点没点火的综合分（越高越像黑影）：YOLO 侧 = 最近几帧里 player_unlit 的比例，
+    外形侧 = 平均概率里 unlit / (lit + unlit + shared + morph)。cls_hist 空 → None。"""
+    hist = t.data.get("cls_hist")
+    if not hist:
+        return None
+    yolo = sum(1 for c in hist if c == "player_unlit") / len(hist)
+    mean = t.data.get("form_mean")
+    if not mean or t.data.get("form_n", 0) == 0:
+        return yolo
+    den = sum(mean.get(k, 0.0) for k in ("lit", "unlit", "shared", "morph"))
+    if den <= 0:
+        return yolo
+    return yolo_w * yolo + (1 - yolo_w) * mean.get("unlit", 0.0) / den
+
+
 class PersonAttrs:
     """给 YOLO 的人物轨迹挑框裁图、过模型、把最近几次的概率平均起来（投票）。
 
@@ -211,5 +227,46 @@ class PersonAttrs:
             mean = np.mean(fh, axis=0)
             k = int(np.argmax(mean))
             t.data["form"] = (labels[k], float(mean[k]))
+            t.data["form_mean"] = {lb: float(mean[i]) for i, lb in enumerate(labels)}
             t.data["form_n"] = t.data.get("form_n", 0) + 1
             t.data["crop_at"] = now
+            lb, pr = t.data["form"]
+            if t.data.get("strong") and lb == "not_person" and pr >= cfg.reject and t.data["form_n"] >= cfg.reject_n:
+                t.data["rejected"] = True  # 撤下后不再放行（update 也不再裁它）
+            elif lb in PERSON_FORMS and pr >= cfg.accept:
+                t.strong_last = now  # 复核通过：别让只靠低分框续着的轨迹过期
+        for t in people:
+            if t.data.get("rejected"):
+                continue
+            u = unlit_score(t, cfg.yolo_w)
+            if u is None:
+                continue
+            if "unlit" not in t.data:
+                t.data["unlit"] = u >= 0.5
+                t.data["unlit_streak"] = 0
+                continue
+            cur = t.data["unlit"]
+            if (u < 0.4) if cur else (u > 0.6):
+                t.data["unlit_streak"] = t.data.get("unlit_streak", 0) + 1
+                if t.data["unlit_streak"] >= cfg.flip_votes:
+                    t.data["unlit"] = not cur
+                    t.data["unlit_streak"] = 0
+            else:
+                t.data["unlit_streak"] = 0
+
+    def admit(self, t: Track) -> bool:
+        """这条轨迹放不放进 people()：高分框认过的（没被撤下）直接放；低分框要复核认成人形、至少两票。"""
+        if not self.enabled:
+            return bool(t.data.get("strong"))
+        d = t.data
+        if d.get("rejected"):
+            return False
+        if d.get("strong"):
+            return True
+        form = d.get("form")
+        return bool(form and form[0] in PERSON_FORMS and form[1] >= self.cfg.accept and d.get("form_n", 0) >= 2)
+
+    def is_unlit(self, t: Track) -> bool:
+        if self.enabled and "unlit" in t.data:
+            return bool(t.data["unlit"])
+        return t.cls == "player_unlit"
