@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from ..vision.gesture_label import load_guess
 
 UNLABELED, DISCARD, LOG = "_unlabeled", "_discard", "_labels.jsonl"
 FRAMES = 16
+_LOCK = threading.Lock()  # 每个请求现建一个 GestureLabels，所以锁放模块级：label / undo 的 找→挪→记账 整段串行
 
 
 class GestureLabels:
@@ -74,6 +76,15 @@ class GestureLabels:
         with (self.root / LOG).open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    def _logged(self, entry: dict, clip: str, src: str, dst: str) -> bool:
+        """写记录；写不进去就把刚挪的片段挪回 src（记录和目录不能对不上）。"""
+        try:
+            self._log(entry)
+            return True
+        except OSError:
+            self._move(clip, dst, src)
+            return False
+
     def _move(self, clip: str, src: str, dst: str) -> tuple[int, str]:
         if src == dst:
             return 409, "已经在这个类别里了"
@@ -88,6 +99,10 @@ class GestureLabels:
         return 200, ""
 
     def label(self, clip: str, to: str) -> tuple[int, dict]:
+        with _LOCK:
+            return self._label(clip, to)
+
+    def _label(self, clip: str, to: str) -> tuple[int, dict]:
         dst = DISCARD if to == "discard" else to if to in self.labels else None
         if dst is None:
             return 400, {"ok": False, "text": f"不认识的类别：{to}"}
@@ -97,7 +112,8 @@ class GestureLabels:
         code, text = self._move(clip, src, dst)
         if code != 200:
             return code, {"ok": False, "text": text}
-        self._log({"t": time.time(), "clip": clip, "from": src, "to": dst})
+        if not self._logged({"t": time.time(), "clip": clip, "from": src, "to": dst}, clip, src, dst):
+            return 500, {"ok": False, "text": "记录写不进去，已把片段挪回原处"}
         return 200, {"ok": True, **self._item(clip, dst)}
 
     def _entries(self) -> list[dict]:
@@ -116,6 +132,10 @@ class GestureLabels:
         return out
 
     def undo(self) -> tuple[int, dict]:
+        with _LOCK:
+            return self._undo()
+
+    def _undo(self) -> tuple[int, dict]:
         stack: list[dict] = []  # 撤销记录抵消它前面最近一条没被抵消的操作
         for e in self._entries():
             if e.get("undo"):
@@ -132,5 +152,6 @@ class GestureLabels:
         code, text = self._move(clip, src, dst)
         if code != 200:
             return code, {"ok": False, "text": text}
-        self._log({"t": time.time(), "clip": clip, "from": src, "to": dst, "undo": True})
+        if not self._logged({"t": time.time(), "clip": clip, "from": src, "to": dst, "undo": True}, clip, src, dst):
+            return 500, {"ok": False, "text": "记录写不进去，已把片段挪回原处"}
         return 200, {"ok": True, **self._item(clip, dst)}

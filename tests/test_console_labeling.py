@@ -126,3 +126,43 @@ def test_api_requires_local_host_and_post_guard(srv_with_gesture):
     assert request(u + "api/gesture/label", body, GOOD)[0] == 409
     st, d = request(u + "api/gesture/undo", b"{}", GOOD)
     assert st == 200 and d["where"] == "_unlabeled"
+
+
+def test_concurrent_label_exactly_one_wins(tmp_path):
+    import threading
+
+    make_clip(tmp_path)
+    codes = []
+
+    def go():
+        codes.append(GestureLabels(tmp_path, LABELS).label(CLIP, "wave")[0])
+
+    ts = [threading.Thread(target=go) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert sorted(codes) == [200] + [409] * 7 and len(log_lines(tmp_path)) == 1
+
+
+def test_concurrent_label_and_undo_stay_consistent(tmp_path):
+    import threading
+
+    make_clip(tmp_path)
+    GestureLabels(tmp_path, LABELS).label(CLIP, "wave")
+    ts = [threading.Thread(target=lambda: GestureLabels(tmp_path, LABELS).undo()) for _ in range(4)]
+    ts.append(threading.Thread(target=lambda: GestureLabels(tmp_path, LABELS).label(CLIP, "bow")))
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    where = [d for d in ("_unlabeled", "wave", "bow") if (tmp_path / d / CLIP).is_dir()]
+    assert len(where) == 1  # 片段只在一处
+    stack = []
+    for e in log_lines(tmp_path):
+        stack.pop() if e.get("undo") else stack.append(e)
+    assert (stack[-1]["to"] if stack else "_unlabeled") == where[0]  # 记录和目录一致
+
+
+def test_log_failure_moves_clip_back(tmp_path, monkeypatch):
+    make_clip(tmp_path)
+    g = GestureLabels(tmp_path, LABELS)
+    monkeypatch.setattr(g, "_log", lambda e: (_ for _ in ()).throw(OSError("disk")))
+    assert g.label(CLIP, "wave")[0] == 500
+    assert (tmp_path / "_unlabeled" / CLIP).is_dir() and not (tmp_path / "wave" / CLIP).exists()
