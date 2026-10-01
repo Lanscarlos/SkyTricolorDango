@@ -52,7 +52,7 @@ UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 DISK_EVERY = 0.3  # 同一个黑影最多隔这么久找一次火焰圆盘
 DISK_GAP = 1.0  # 圆盘断开不超过这么久不重新计时（火焰会晃）
-LIT_BOX_MAX = 8  # 举过蜡烛的轨迹最后的框最多记几条（每次举蜡烛一条，只是防着无限涨）
+LIT_MEM_MAX = 8  # 举过蜡烛的轨迹最后的框 / 圆盘时间最多记几条（超过 light_timeout 的会先清掉，这个只是兜底）
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
 PLACE_GAP = 3.0  # 画面大变后认地图：离上次至少隔这么久（转镜头时画面一直在变）
 FAR_RETRY = 1.0  # 远处二次检测：同一条轨迹最多隔这么久裁一次（还要比 track_buffer 短）；挂上名字标签后这么久内也不裁
@@ -192,7 +192,7 @@ class PerceptionWatcher:
         self.gesture_cfg = gesture_cfg or GestureConfig()
         self.light_cfg = social_cfg
         self.flame = flame
-        self._lit_box: dict[int, Rect] = {}  # 举过蜡烛的轨迹最后一次的框（lit() 找替身用，self._lock 保护）
+        self._lit_mem: dict[int, list] = {}  # 举过蜡烛的轨迹 id → [最后的框, 最后看到圆盘的时间, 记录时间]（轨迹冻住 / 被删后 lit() 找替身、判圆盘用；self._lock 保护）
         self._frame_at = float("-inf")  # 最近一帧处理完的时间（lit() 判断"冻住"用它，不用 clock：没跑 process 时轨迹不算冻住）
         self._tried: set[int] = set()  # 身体举过蜡烛的黑影轨迹（不管成没成都不再出请求）
         self._gestures: deque[tuple[str, str]] = deque(maxlen=50)  # (好友名, 动作)，身体取走；没人取（普通 Agent）时只留最近的
@@ -294,9 +294,13 @@ class PerceptionWatcher:
             self._strangers = deque((min(t + d, now), n, u) for t, n, u in self._strangers)
         self.tracker.shift(d)
         for track in list(self.tracker.tracks.values()):  # 圆盘的时间戳也跟着挪，否则恢复后"圆盘消失"会短暂为真
-            for key in ("disk_last", "disk_first", "disk_check"):
+            for key in ("disk_last", "disk_first", "disk_check", "disk_since"):
                 if key in track.data:
                     track.data[key] += d
+        with self._lock:
+            for mem in self._lit_mem.values():
+                mem[1] += d  # -inf 加 d 还是 -inf
+                mem[2] += d
 
     def _check_hold_max(self) -> None:
         since = self._held_since
@@ -974,10 +978,12 @@ class PerceptionWatcher:
         with self._lock:
             for p in players:  # 举过蜡烛的人最后在哪（轨迹被删后 lit() 还要用它找替身）
                 if p.id in tried:
-                    self._lit_box[p.id] = p.box
-                    while len(self._lit_box) > LIT_BOX_MAX:
-                        self._lit_box.pop(next(iter(self._lit_box)))
-            boxes = list(self._lit_box.values())
+                    self._lit_mem[p.id] = [p.box, p.data.get("disk_last", float("-inf")), now]
+            for tid in [i for i, m in self._lit_mem.items() if i not in live and now - m[2] > cfg.light_timeout]:
+                del self._lit_mem[tid]  # 轨迹早没了、超过 light_timeout 的不用留
+            while len(self._lit_mem) > LIT_MEM_MAX:
+                self._lit_mem.pop(next(iter(self._lit_mem)))
+            boxes = [m[0] for m in self._lit_mem.values()]
         best: Track | None = None
         for p in players:
             if p.box.h < self.cfg.stranger_min_height * height:
@@ -993,11 +999,16 @@ class PerceptionWatcher:
             d = p.data
             if now - d.get("disk_check", float("-inf")) >= DISK_EVERY:
                 d["disk_check"] = now
+                d.setdefault("disk_since", now)  # 第一次扫圆盘的时间：替身候选要扫满 DISK_GAP 才敢说"圆盘没了"
                 disk = find_disk(frame, p.box, self.flame, cfg.disk_min_score, cfg.disk_dark)
                 if disk is not None:
                     if now - d.get("disk_last", float("-inf")) > DISK_GAP:
                         d["disk_first"] = now
                     d["disk_last"], d["disk_pos"] = now, (disk.x, disk.y)
+            if p.id in tried:
+                with self._lock:
+                    if p.id in self._lit_mem:
+                        self._lit_mem[p.id][1] = d.get("disk_last", float("-inf"))
             if p.id in tried or p.cls != UNLIT:  # 举过蜡烛的 / 替身候选：只更新圆盘还在不在（lit() 用），不参与挑请求
                 continue
             if now - d.get("disk_last", float("-inf")) <= DISK_GAP and now - d["disk_first"] >= cfg.light_after:
@@ -1016,7 +1027,7 @@ class PerceptionWatcher:
         with self._lock:
             self._tried.add(track_id)
             if track is not None:  # 举蜡烛这一刻他在哪（之后这条轨迹冻住、没人再更新它的框时 lit() 也认得出替身）
-                self._lit_box[track_id] = track.box
+                self._lit_mem[track_id] = [track.box, track.data.get("disk_last", float("-inf")), self._frame_at]
         self.requests.pop(LIGHT_KEY, None)
 
     def lit(self, track_id: int, pos: tuple[int, int], since: float) -> bool | None:
@@ -1026,7 +1037,8 @@ class PerceptionWatcher:
         感知暂停中、最近一帧比 lit_stale 还旧（没在跑 process）、举蜡烛不满 lit_min 秒。
         True：同一条轨迹连续 lit_frames 帧是 player；或者轨迹断了 / 冻住了（闪光时出现重复轨迹，原轨迹最近一帧起
         lit_stale 秒没接上检测），since 之后在它最后的框上冒出一条没挂名字标签的 player、也连续够帧；
-        两条路都要求"身上的圆盘消失超过 DISK_GAP"（扫过、且最近没看到；没扫过算没消失）。
+        同轨迹那条要他身上圆盘消失超过 DISK_GAP（扫过、且最近没看到）；兜底那条要原来那个人的圆盘和替身自己的圆盘都消失超过
+        DISK_GAP，替身还得扫满 DISK_GAP 秒（火焰会晃，一两次没扫到不算消失；没扫过算没消失）。
         None：人没了，原地也没冒出亮人。"""
         cfg = self.light_cfg
         need = cfg.lit_frames if cfg is not None else 3
@@ -1042,14 +1054,22 @@ class PerceptionWatcher:
             d = t.data
             return "disk_check" in d and frame_at - d.get("disk_last", float("-inf")) > DISK_GAP
 
+        def candidate_gone(t: Track) -> bool:  # 替身：自己扫满 DISK_GAP 秒、且最近没看到圆盘（火焰会晃，一两次没扫到不算消失）
+            d = t.data
+            return "disk_since" in d and frame_at - d["disk_since"] > DISK_GAP and disk_gone(t)
+
         with self._lock:
-            frozen = self._lit_box.get(track_id)
+            mem = self._lit_mem.get(track_id)
+        frozen = mem[0] if mem is not None else None
+        orig_disk = mem[1] if mem is not None else float("-inf")
         tracks = list(self.tracker.tracks.values())
         for t in tracks:
             if t.id == track_id:
                 if frame_at - t.last <= stale:
                     return not early and t.cls == "player" and t.data.get("player_run", 0) >= need and disk_gone(t)
                 frozen = t.box  # 冻住的原轨迹：替身要和它最后的框重叠（重复轨迹就在原地），别的路人走过来不算
+                orig_disk = t.data.get("disk_last", float("-inf"))
+        orig_gone = frame_at - orig_disk > DISK_GAP  # 原来那个人身上的圆盘也要消失（替身可能是他还黑着的重复轨迹）
         for t in tracks:
             if t.id == track_id or t.cls != "player" or t.first < since or t.data.get("name") or t.data.get("tagged"):
                 continue
@@ -1057,7 +1077,7 @@ class PerceptionWatcher:
                 continue
             near = iou(frozen, t.box) >= lit_iou if frozen is not None else abs(t.box.x + t.box.w / 2 - pos[0]) < 0.5 * t.box.w
             if near:
-                return not early and disk_gone(t)
+                return not early and orig_gone and candidate_gone(t)
         return None
 
     @staticmethod
