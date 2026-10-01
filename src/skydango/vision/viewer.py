@@ -491,8 +491,8 @@ function draw(s){
 // 鼠标悬停：落在有 desc 的框里时，在框下方画一行描述（只用 fillText，desc 来自模型）
 let hover=null;
 function drawHover(s,k,fs){if(!hover)return;let hit=null;
-  for(const b of s.boxes){if(!b.desc)continue;const x=b.x*k,y=b.y*k;if(hover[0]>=x&&hover[0]<=x+b.w*k&&hover[1]>=y&&hover[1]<=y+b.h*k)hit=b}
-  if(!hit)return;const t=String(hit.desc),tw=ctx.measureText(t).width+8,th=fs+6,x=Math.min(hit.x*k,c.width-tw),y=Math.min((hit.y+hit.h)*k,c.height-th);
+  for(const b of s.boxes){if(!b.desc&&!b.motion)continue;const x=b.x*k,y=b.y*k;if(hover[0]>=x&&hover[0]<=x+b.w*k&&hover[1]>=y&&hover[1]<=y+b.h*k)hit=b}
+  if(!hit)return;const t=[hit.desc,hit.motion].filter(Boolean).join(" · "),tw=ctx.measureText(t).width+8,th=fs+6,x=Math.min(hit.x*k,c.width-tw),y=Math.min((hit.y+hit.h)*k,c.height-th);
   ctx.fillStyle="rgba(11,13,18,.85)";ctx.fillRect(x,y,tw,th);ctx.fillStyle="#e6e8ee";ctx.fillText(t,x+4,y+th/2)}
 c.addEventListener("mousemove",e=>{const r=c.getBoundingClientRect();hover=[(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height];if(last)draw(last)});
 c.addEventListener("mouseleave",()=>{hover=null;if(last)draw(last)});

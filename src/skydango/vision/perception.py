@@ -103,6 +103,49 @@ def approaching(hist: list[tuple[float, float, float]], width: int, grow: float)
     return c1 <= c0 or c1 < 0.15 * width
 
 
+def motion_of(hist, now: float, cfg: PerceptionConfig) -> str | None:
+    """(时间, 框高, 补偿过画面平移的中心 x) 的序列 → 走近 / 走远 / 往左走 / 往右走 / 站着；拿不准返回 None。
+
+    只看最近 motion_window 秒，前 1/3 和后 1/3 比：径向 r = 框高比 − 1，横向 s = x 位移 ÷ 平均框高（单位是身高）。
+    "往左 / 往右"是团子画面里的方向，不是地图方位。"""
+    window = cfg.motion_window
+    recent = [x for x in hist if now - x[0] <= window]
+    if len(recent) < 3 or recent[-1][0] - recent[0][0] < 0.6 * window:
+        return None
+    k = max(1, len(recent) // 3)
+    h0 = sum(h for _, h, _ in recent[:k]) / k
+    h1 = sum(h for _, h, _ in recent[-k:]) / k
+    x0 = sum(x for _, _, x in recent[:k]) / k
+    x1 = sum(x for _, _, x in recent[-k:]) / k
+    if h0 <= 0 or h1 <= 0:
+        return None
+    r = h1 / h0 - 1
+    side = (x1 - x0) / ((h0 + h1) / 2)
+    rr, ss = abs(r) / cfg.motion_grow, abs(side) / cfg.motion_side
+    if rr < 1 and ss < 1:
+        return "站着"
+    if rr >= ss:
+        return "走近" if r > 0 else "走远"
+    return "往右走" if side > 0 else "往左走"
+
+
+def settle_motion(data: dict, value: str | None, now: float, hold: float) -> str | None:
+    """防抖：新结论连续 hold 秒才换进 data["motion"]；None（拿不准）立刻生效。返回现在的结论。"""
+    if value is None:
+        data["motion"] = None
+        data.pop("motion_cand", None)
+    elif value == data.get("motion"):
+        data.pop("motion_cand", None)
+    else:
+        cand = data.get("motion_cand")
+        if cand is None or cand[0] != value:
+            data["motion_cand"] = (value, now)
+        elif now - cand[1] >= hold:
+            data["motion"] = value
+            data.pop("motion_cand", None)
+    return data.get("motion")
+
+
 def far_region(p: Rect, width: int, height: int) -> Rect | None:
     """远处小人头顶要再检测一次的区域：宽 3 倍框宽、高 2.5 倍框高（上方 2 个身高到身体上半截），水平居中，夹到画面内。"""
     x1, y1 = round(p.x + p.w / 2 - 1.5 * p.w), round(p.y - 2 * p.h)
@@ -525,8 +568,10 @@ class PerceptionWatcher:
         for p in players:
             p.data["pan_at"] = self._pan  # 这一刻的累计平移（轨迹断了以后失踪记录用）
             if now < self._quiet_until:
-                p.data.pop("hist", None)
-                p.data.pop("motion_hist", None)
+                for key in ("hist", "motion_hist", "motion_cand"):
+                    p.data.pop(key, None)
+                if p.data.get("motion") is not None:
+                    p.data["motion"] = None
         extra = self._far_tags(frame, players, tags, now, width, height, panel_visible)
         if extra:
             tags += [t for t in extra if t.cls == "name_tag"]
@@ -649,6 +694,8 @@ class PerceptionWatcher:
         if not self.paused:
             if now >= self._quiet_until:  # 镜头缩放 / 走路后画面还没稳：框高变化不是人在走
                 self._watch_approach(players, now, width)
+                if self.cfg.motion:
+                    self._watch_motion(players, now)
             if self.gestures is not None:
                 self._watch_gestures(frame, players, now, width, height)
         with self._lock:  # 身体线程会同时读（strangers()）
@@ -1295,6 +1342,16 @@ class PerceptionWatcher:
                     while self._approach_log and now - self._approach_log[0][2] > 30.0:
                         self._approach_log.popleft()
 
+    def _watch_motion(self, players: list[Track], now: float) -> None:
+        """每条人物轨迹（含黑影）记 (时间, 框高, 补偿过画面平移的中心 x)，算运动方向（防抖后放进 data["motion"]）。"""
+        cfg = self.cfg
+        for p in players:
+            hist: deque = p.data.setdefault("motion_hist", deque())
+            hist.append((now, float(p.box.h), p.box.x + p.box.w / 2 - self._pan[0]))
+            while hist and now - hist[0][0] > cfg.motion_window:
+                hist.popleft()
+            settle_motion(p.data, motion_of(hist, now, cfg), now, cfg.motion_hold)
+
     def _watch_gestures(self, frame: np.ndarray, players: list[Track], now: float, width: int, height: int) -> None:
         """三期 §3：认出名字、近 / 中、在画面中间的好友，攒够一段（frames 张）后每 interval 秒判一次动作。"""
         cfg = self.gesture_cfg
@@ -1402,6 +1459,7 @@ class PerceptionWatcher:
             d = t.data
             # 每个键只读一次（不 get 完再 []）：身体线程在读的同时，感知线程可能刚好 pop 掉 maybe / sid
             name, maybe, stranger = d.get("name"), d.get("maybe"), d.get("stranger")
+            motion = d.get("motion") if self.cfg.motion else None
             sure, sid, look = True, None, ""
             if t.cls == UNLIT and stranger:  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
                 kind = "unlit"
@@ -1417,7 +1475,8 @@ class PerceptionWatcher:
                 continue
             side = side_of(t.box.x + t.box.w / 2, self._frame_w)
             out.append(Person(t.id, kind, name if kind == "friend" else None, t.box, side,
-                              distance(t.box.h, ref, self.cfg.near, self.cfg.far), sure=sure, sid=sid, look=look))
+                              distance(t.box.h, ref, self.cfg.near, self.cfg.far), sure=sure, sid=sid, look=look,
+                              motion=motion))
         order = {"左边": 0, "前面": 1, "右边": 2}
         return sorted(out, key=lambda p: (order[p.side], -p.box.h))
 
@@ -1612,6 +1671,8 @@ class PerceptionWatcher:
                 kind, label = t.cls, t.cls
             b = t.box
             entry = {"x": b.x, "y": b.y, "w": b.w, "h": b.h, "kind": kind, "label": label, "score": round(t.score, 2)}
+            if self.cfg.motion and t.cls in ("player", UNLIT) and (motion := d.get("motion")):
+                entry["motion"] = motion
             if self.appearance is not None and (desc := self._desc(kind, who)):
                 entry["desc"] = desc
             out.append(entry)

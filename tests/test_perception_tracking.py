@@ -306,3 +306,36 @@ def test_appearance_does_not_drop_relinked():
     assert p.data["maybe"] == ta.XIAOMING and p.data["maybe_by"] == "relink"
     ta.run(w, det, [(body_, ta.GREEN)], 3.1, 5.0)  # 颜色全变了：位置连续性说了算，不摘
     assert ta.players(w)[0].data.get("maybe") == ta.XIAOMING
+
+
+# ---- Task 6：运动方向 ----
+def test_motion_uses_pan_compensated_x():
+    base = _texture(5)
+    for pan, expect in ((True, "站着"), (False, "往右走")):
+        w, det = make(track_pan=pan)
+        t = run(w, det, lambda t: [player(300 + round(t * 10) * 16)], 0.0, 2.5,
+                img=lambda t: np.roll(base, round(t * 10) * 16, axis=1))
+        assert [p.motion for p in w.people(t)] == [expect]
+
+
+def test_motion_cleared_after_zoom():
+    w, det = make()
+    t = run(w, det, walk, 0.0, 2.5)
+    assert body(w).data.get("motion") is not None
+    w.camera_moved(t, "zoom")
+    run(w, det, walk, t, t + 0.2)
+    assert body(w).data.get("motion") is None
+
+
+def test_motion_off():
+    w, det = make(motion=False)
+    t = run(w, det, walk, 0.0, 2.5)
+    assert [p.motion for p in w.people(t)] == [None]
+    assert "motion_hist" not in body(w).data
+
+
+def test_overlay_carries_motion():
+    w, det = make()
+    t = run(w, det, walk, 0.0, 2.5)
+    (entry,) = [e for e in w.overlay(t) if e["kind"] in ("player", "stranger")]
+    assert entry["motion"] == body(w).data["motion"]
