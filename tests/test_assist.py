@@ -55,8 +55,9 @@ def test_build_message_lists_frames_and_rules():
     texts = [b["text"] for b in msg if b["type"] == "text"]
     assert "头顶有圆圈" in texts[0] and "蓝紫色圆背包" in texts[0] and "duplicate" in texts[0]
     assert "这一帧没显示图标也算" in texts[0] and "只看身体是不是纯黑" in texts[0]
-    assert PROMPT_VERSION == 3
+    assert PROMPT_VERSION == 4
     assert "身体修长" in texts[0] and "三颗星" in texts[0]
+    assert "装扮魔法变身" in texts[0] and "雪人" in texts[0]
     assert "帧 a" in texts[1] and "1=[10,20,40,60]" in texts[1]
     assert "帧 b" in texts[2] and "没有候选框" in texts[2]
     assert [b["type"] for b in msg].count("image") == 2
@@ -535,7 +536,7 @@ def test_build_message_uses_actual_frame_size():
     rules = build_message([("a", small, [])], "背包")[0]["text"]
     assert "原图 1280×720" in rules and "1920×1080" not in rules
     full = build_message([("a", np.zeros((1080, 1920, 3), np.uint8), [])], "背包")[0]["text"]
-    assert "原图 1920×1080" in full and PROMPT_VERSION == 3
+    assert "原图 1920×1080" in full and PROMPT_VERSION == 4
 
 
 def test_perception_label_has_no_unused_imports():
