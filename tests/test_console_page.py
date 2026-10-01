@@ -146,3 +146,14 @@ def test_scenarios_page():
     for api in ("api/sandbox/scenarios", "api/sandbox/replay", "api/sandbox/replay/stop", "api/sandbox/reports"):
         assert api in b
     assert "回放时每一步会真的调 Claude，花额度" in b and "renderMarkdown(" in b and "Pages.scenarios" in b
+
+
+def test_live_page():
+    b = bundle()
+    for id_ in ("launch", "opt-live", "opt-emotes", "opt-duration", "start", "problems", "live-frame", "cards", "log", "banners"):
+        assert f'id="{id_}"' in b, id_
+    for api in ("api/run/start", "api/run/stop", "api/logs", "live/status", "api/orphan/stop"):
+        assert api in b
+    line = next(l for l in b.splitlines() if l.strip().startswith("const CARDS="))
+    assert '"心情"' in line and '"精力"' in line
+    assert "emotes_allowed" in b and "沙盒在跑，先下线" in b and "Pages.live" in b

@@ -115,7 +115,36 @@
       </section>
     </div>
   </section>
-  <section id="page-live" class="page" hidden><p class="placeholder">（真机团子页还在搬家）</p></section>
+  <section id="page-live" class="page" hidden>
+    <div class="page-title"><h1>真机团子</h1><span class="chip" id="live-chip"></span><span class="grow"></span><span class="note" id="rundir"></span></div>
+    <div id="banners"></div>
+    <form class="pane" id="launch">
+      <h3>这次怎么跑</h3>
+      <div class="pane-body launch-body">
+        <fieldset><legend>模式</legend>
+          <label class="choice"><input type="radio" name="mode" value="brain"> 统管大脑</label>
+          <label class="choice"><input type="radio" name="mode" value="agent"> 普通 Agent <small>调试用</small></label>
+        </fieldset>
+        <fieldset><legend>发言</legend>
+          <label class="choice"><input type="checkbox" id="opt-live"> 真的发送</label>
+          <div class="live-warn" id="live-warn" hidden>会在游戏里真的说话、做动作</div>
+          <label class="choice"><input type="checkbox" id="opt-emotes"> 聊天时做动作 <small id="emotes-note"></small></label>
+        </fieldset>
+        <fieldset><legend>运行时长</legend>
+          <label class="choice"><input type="number" id="opt-duration" min="0" step="60" placeholder="一直跑"> 秒</label>
+        </fieldset>
+        <div class="launch-go"><button class="btn go" id="start" type="submit">叫醒团子</button></div>
+        <ul id="problems" class="problems" hidden></ul>
+      </div>
+    </form>
+    <div class="cols" id="watch" hidden>
+      <div class="pane live-view"><iframe id="live-frame" title="实时识别画面"></iframe><p class="note" id="live-wait" hidden>团子还在启动，画面出来之后显示在这里。</p></div>
+      <div class="live-side">
+        <dl class="cards" id="cards"></dl>
+        <details class="pane logbox" open><summary>日志</summary><pre id="log" tabindex="0"></pre></details>
+      </div>
+    </div>
+  </section>
   <section id="page-inner" class="page" hidden>
     <div class="page-title">
       <h1 id="inner-title">团子的内心</h1>

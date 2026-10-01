@@ -419,3 +419,29 @@ h4.note{margin:0 0 4px;font-weight:500}
 #sc-reader code{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;background:var(--hover);border-radius:4px;padding:0 4px}
 #sc-reader pre{background:var(--hover);border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow-x:auto;margin:6px 0}
 #sc-reader pre code{background:none;padding:0}
+
+/* ---- 真机 ---- */
+#launch{max-width:560px}
+.launch-body{display:flex;flex-direction:column;gap:10px}
+#launch fieldset{border:1px solid var(--line);border-radius:8px;margin:0;padding:6px 12px 8px}
+#launch legend{padding:0 6px;color:var(--muted);font-size:12.5px}
+#launch .choice{display:flex;align-items:center;gap:8px;padding:2px 0}
+#launch small{color:var(--muted)}
+.live-warn{color:var(--brick-ink);background:var(--brick-bg);border-radius:6px;padding:2px 10px;font-size:13px;margin:2px 0}
+.launch-go{display:flex}
+#watch{grid-template-columns:minmax(0,3fr) minmax(0,2fr);align-items:start}
+.live-view{padding:0;overflow:hidden}
+#live-frame{display:block;width:100%;aspect-ratio:16/9;border:0;background:var(--bubble)}
+#live-wait{margin:0;padding:40px 20px;text-align:center}
+.live-side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.cards{margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.cards .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 10px;min-width:0}
+.cards .card.lone{grid-column:1/-1}
+.cards dt{font-size:12px;color:var(--muted);letter-spacing:.08em}
+.cards dd{margin:2px 0 0;font-size:13.5px;overflow-wrap:anywhere}
+.cards dd ul{margin:0;padding-left:16px}
+.cards .count{font-size:18px;font-weight:600;margin-right:2px}
+.logbox summary{cursor:pointer;padding:8px 14px;font-size:12px;letter-spacing:.12em;color:var(--muted)}
+.logbox pre{margin:0;padding:6px 14px 12px;max-height:340px;overflow:auto;font:12px/1.5 "Cascadia Mono",Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.logbox pre .e{color:var(--brick-ink)}
+.logbox pre .w{color:var(--amber-ink)}

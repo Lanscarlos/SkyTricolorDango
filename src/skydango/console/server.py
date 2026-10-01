@@ -88,7 +88,7 @@ def _page() -> bytes:
 
 
 def _launch(body: dict) -> LaunchOptions:
-    """校验总览传来的启动选项；不对抛 ValueError（原因给页面看）。"""
+    """校验真机团子页传来的启动选项；不对抛 ValueError（原因给页面看）。"""
     for key in ("brain", "live", "emotes"):
         if not isinstance(body.get(key), bool):
             raise ValueError(f"{key} 要是 true / false")
@@ -244,7 +244,7 @@ class ConsoleServer:
         return 200, {"ok": ok}
 
     def stop_run(self) -> tuple[int, dict]:
-        """总览的「停止」：只停团子（沙盒在跑时不动它）。"""
+        """真机团子的「停止」：只停团子（沙盒在跑时不动它）。"""
         if _kind(self.runner.status()) == "dango":
             self.runner.stop()
         return 200, {"ok": True}
@@ -289,7 +289,7 @@ class ConsoleServer:
             problems.append(problem(f"{port} 端口上有上次留下的沙盒，先点「让它退出」"))
         if not self._busy() and probe_status(self.child_port):  # 上次留下的团子：共用令牌，别两个大脑同时在线
             self.orphan = True
-            problems.append(problem(f"{self.child_port} 端口上有上次留下的团子，先在总览让它退出"))
+            problems.append(problem(f"{self.child_port} 端口上有上次留下的团子，先在「真机团子」页让它退出"))
         try:
             read_secrets(console_paths(self.config_path)[1])
         except ValueError as exc:
@@ -590,7 +590,7 @@ class ConsoleServer:
                     log.exception("dry-run 时顺手改 persona.json 出错")
             return code, data
         if probe_status(self.child_port):  # 上次留下的团子还占着端口：它会把性格档案写回去
-            return 409, {"ok": False, "error": "上次留下的团子还在跑（占着子进程端口），先在总览让它退出再删"}
+            return 409, {"ok": False, "error": "上次留下的团子还在跑（占着子进程端口），先在「真机团子」页让它退出再删"}
         try:
             return 200, forget_offline(inner_dir, body, time.time(), alive)
         except ValueError as exc:

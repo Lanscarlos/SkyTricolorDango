@@ -65,7 +65,7 @@ def test_dango_start_refused_while_sandbox_runs(srv):
     assert not any("团子已经在运行" in p["text"] for p in res["problems"])
     assert srv.runner.started == []
     assert request(srv.url + "api/state")[1]["problems"][0]["text"].startswith("沙盒在运行")
-    assert post(srv, "api/run/stop", {}) == (200, {"ok": True}) and srv.runner.stopped == 0  # 总览的停止不动沙盒
+    assert post(srv, "api/run/stop", {}) == (200, {"ok": True}) and srv.runner.stopped == 0  # 真机的停止不动沙盒
 
 
 def test_sandbox_start_builds_command(srv):

@@ -248,7 +248,7 @@ class Viewer:
 
     # ---- 浏览器这边 ----
     def status(self) -> dict:
-        """只有状态、不带图（管理面板总览每 2 秒拉一次）。age：离最近一帧多少秒，没帧是 None。"""
+        """只有状态、不带图（管理面板真机团子页每 2 秒拉一次）。age：离最近一帧多少秒，没帧是 None。"""
         with self._cond:
             age = None if self._updated is None else max(0.0, time.monotonic() - self._updated)
             return {"seq": self._seq, "age": age, "info": dict(self._info)}
