@@ -1764,7 +1764,7 @@ def _run_brain(
             now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
             days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
             persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
-            appearance=getattr(env, "appearance", None) is not None,
+            appearance=getattr(env, "appearance", None) is not None, lull=cfg.lull.enabled,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
