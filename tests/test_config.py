@@ -197,6 +197,18 @@ def test_example_config_has_persona_keys():
     assert {k: raw[k] for k in keys} == {k: getattr(InnerConfig(), k) for k in keys}
 
 
+def test_example_config_has_appearance():
+    import dataclasses
+    import tomllib
+
+    from skydango.config import AppearanceConfig
+
+    raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))["appearance"]
+    d = AppearanceConfig()
+    assert raw == {f.name: getattr(d, f.name) for f in dataclasses.fields(d)}
+    assert load_config(ROOT / "config.example.toml").appearance.enabled is False
+
+
 def test_example_config_has_sandbox():
     import tomllib
 

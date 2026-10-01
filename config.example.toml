@@ -129,6 +129,38 @@ place_min = 0.8                 # 最像的相似度至少这么高（待标定�
 place_margin = 0.05             # 且比第二像的别的地方高这么多
 place_interval = 30.0           # 每隔这么久认一次（画面大变后也认一次）
 
+[appearance]
+# 认装扮（要先打开 [perception]）：从人物框裁图算外观特征，名字标签看不到时把人认回来；数字多是估的，未在真机验证
+enabled = false
+model = "color"                 # "color" = 内置颜色直方图；或 .onnx 特征模型路径
+size = 224                      # 同 [places]
+norm = "imagenet"
+device = "cpu"
+every = 3                       # 每条轨迹每几帧算一次特征
+max_per_frame = 4               # 一帧最多算几个
+min_height = 0.10               # 好样本的框高（相对截图高度）
+max_overlap = 0.2               # 和别的框 / 面板重叠超过这个比例就不算好样本
+ema = 0.2                       # 平均特征的更新速度
+min_samples = 3                 # 判 maybe / 陌生人编号 / 换装前至少几个好样本
+match = 0.85                    # 相似度门槛（估的，以离线标定为准）
+card_match = 0.92               # 只有关系卡旧特征时的门槛（更严）
+margin = 0.05                   # 最像的要比第二像的高这么多
+recheck = 5                     # maybe 连续这么多个新样本低于门槛就摘掉
+changed = 0.70                  # 低于它算换了装
+stranger_forget = 1800.0        # 陌生人编号这么久没出现就忘掉（秒）
+describe = true                 # 关掉就只认人、不调模型
+describe_model = "haiku"
+describe_min_height = 0.18      # 送去描述的框高
+describe_max = 20               # 每小时最多描述几次
+redescribe_max = 3              # 同一个人一次上线最多重新描述几次
+outfit_keep = 3                 # 关系卡每人留几套
+quota_wait = 600.0              # 额度用完后隔多久再试（秒）
+retry_after = 60.0              # 描述不清楚时隔多久用新样本再试（秒）
+describe_timeout = 60.0
+save = true                     # 攒训练数据
+save_every = 2.0                # 同一条轨迹最多隔几秒存一张
+save_max = 2000                 # 一次运行最多存几张
+
 [assist]
 # Claude 辅助标注：python -m skydango perception label <录像目录> --assist
 # 检测器出人物候选框 → 隔离的 claude -p 核对（令牌、配置目录同 [brain]）→ 和名字标签 / 圆圈弱标注合并写进数据集

@@ -341,6 +341,41 @@ class PlacesConfig:
 
 
 @dataclass
+class AppearanceConfig:
+    """认装扮：从 YOLO 人物框裁图算外观特征，名字标签看不到时靠外观把人认回来（要配合 [perception]）。数字多是估的，以离线标定为准。"""
+
+    enabled: bool = False
+    model: str = "color"  # "color" = 内置颜色直方图；或 .onnx 特征模型路径
+    size: int = 224  # 同 [places]
+    norm: str = "imagenet"
+    device: str = "cpu"
+    every: int = 3  # 每条轨迹每几帧算一次特征
+    max_per_frame: int = 4  # 一帧最多算几个
+    min_height: float = 0.10  # 好样本的框高（相对截图高度）
+    max_overlap: float = 0.2  # 和别的框 / 面板重叠超过这个比例就不是好样本
+    ema: float = 0.2  # 平均特征的更新速度
+    min_samples: int = 3  # 判 maybe / 陌生人编号 / 换装前至少几个好样本
+    match: float = 0.85  # 估的
+    card_match: float = 0.92  # 只有关系卡旧特征时的门槛（更严）
+    margin: float = 0.05  # 最像的要比第二像的高这么多
+    recheck: int = 5  # maybe 连续这么多个新样本低于门槛就摘掉
+    changed: float = 0.70  # 低于它算换了装
+    stranger_forget: float = 1800.0  # 秒
+    describe: bool = True  # 关掉就只认人、不调模型
+    describe_model: str = "haiku"
+    describe_min_height: float = 0.18  # 送去描述的框高
+    describe_max: int = 20  # 每小时最多描述几次
+    redescribe_max: int = 3  # 同一个人一次上线最多重新描述几次
+    outfit_keep: int = 3  # 关系卡每人留几套
+    quota_wait: float = 600.0  # 额度用完后隔多久再试
+    retry_after: float = 60.0  # 描述不清楚时隔多久用新样本再试
+    describe_timeout: float = 60.0
+    save: bool = True  # 攒训练数据
+    save_every: float = 2.0  # 秒
+    save_max: int = 2000  # 一次运行最多存几张
+
+
+@dataclass
 class GestureConfig:
     """别人对团子做的动作（感知层三期 §3，研究性质）：好友对着团子挥手、鞠躬时发 gesture 事件，大脑决定回不回礼。
 
@@ -655,6 +690,7 @@ class Config:
     social: SocialConfig = field(default_factory=SocialConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     places: PlacesConfig = field(default_factory=PlacesConfig)
+    appearance: AppearanceConfig = field(default_factory=AppearanceConfig)
     assist: AssistConfig = field(default_factory=AssistConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
