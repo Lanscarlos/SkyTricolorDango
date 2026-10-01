@@ -64,7 +64,7 @@ def test_whole_frame_brightening_cancels():
 
 def test_peak_outside_window_ignored():
     w = watch()
-    w.add(lit([MID]), 10.05)
+    w.add(lit([MID]), 9.95)  # 按键之前
     w.add(lit([MID]), 10.9)
     w.add(gray(), 10.5)
     assert w.result(W) == ("none", None)
@@ -90,3 +90,15 @@ def test_skipped_flag():
     w.add(lit([MID]), 10.3)
     w.skipped = True
     assert w.result(W) == ("skipped", None)
+
+
+def test_no_boxes_is_skipped_not_none():
+    w = HaloWatch(gray(), {}, 10.0, CallConfig())
+    w.add(lit([MID]), 10.3)
+    assert w.result(W) == ("skipped", None)  # 没有能看的人：说不准，别报"没看到"
+
+
+def test_peak_right_after_press_counts():
+    w = watch()
+    w.add(lit([MID]), 10.05)  # 按下后 0.05 s 就亮了（at 取的是按下之前）
+    assert w.result(W) == ("self", 1)

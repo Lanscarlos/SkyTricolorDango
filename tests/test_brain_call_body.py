@@ -46,16 +46,21 @@ class CallEnv(FakeEnv):
 
 
 class TickingDevice:
-    """截图时让时钟走 0.1 秒（连拍要看时间），截图次数记下来。"""
+    """截图时让时钟走 step 秒（连拍要看时间），截图次数记下来；press：按键本身花的时间（adb 往返）。"""
 
-    def __init__(self, device, clock, frames):
+    def __init__(self, device, clock, frames, step=0.1, press=0.0):
         self.device, self.clock, self.frames, self.shots = device, clock, list(frames), 0
+        self.step, self.press = step, press
 
     def __getattr__(self, name):
         return getattr(self.device, name)
 
+    def hw_key(self, code):
+        self.device.hw_key(code)
+        self.clock.advance(self.press)
+
     def screenshot(self):
-        self.clock.advance(0.1)
+        self.clock.advance(self.step)
         self.shots += 1
         return self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
 
@@ -64,12 +69,12 @@ def track(tid, cls, box, last):
     return SimpleNamespace(id=tid, cls=cls, box=box, last=last, data={})
 
 
-def call_body(clock, live=True, frames=None, tick=True, **kw):
-    env = CallEnv()
+def call_body(clock, live=True, frames=None, tick=True, env=None, step=0.1, press=0.0, **kw):
+    env = env or CallEnv()
     b, device, reader, events = body(clock, live=live, env=env, panel_mode=kw.pop("panel_mode", "always"), **kw)
     device.calls.clear()  # 启动时开面板那一下不算
     if tick:
-        b.device = TickingDevice(device, clock, frames or [gray()])
+        b.device = TickingDevice(device, clock, frames or [gray()], step, press)
     return b, device, env, events
 
 
@@ -131,25 +136,59 @@ def test_call_burst_stops_when_clock_frozen(clock):
 
 
 def test_call_halo_writes_self_box_only_without_yolo_self(clock):
-    b, device, env, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()])
+    # 聊天面板关着（auto 模式平时关着）：感知层的框和画面对得上
+    b, device, env, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()], panel_mode="auto")
     b.cfg.call.halo = True
-    env.last_tracks = [track(1, "player", MID, clock() + 0.1)]
+    env.last_tracks = [track(1, "player", MID, clock())]
     r = b.call_out("brain", live=True)
     assert r.halo == "self" and r.self_box == MID and env.self_box == MID
 
-    b2, device2, env2, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()])
+    b2, device2, env2, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()], panel_mode="auto")
     b2.cfg.call.halo = True
-    yolo_self = track(2, "self", Rect(900, 480, 80, 200), clock() + 0.1)
-    env2.last_tracks = [track(1, "player", MID, clock() + 0.1), yolo_self]
-    r2 = b2.call_out("brain", live=True)
-    assert env2.self_box is None  # YOLO 已经稳稳认出团子：不覆盖
-    assert r2.halo in ("self", "others", "none")
+    env2.last_tracks = [track(1, "player", MID, clock()), track(2, "self", Rect(300, 480, 80, 200), clock())]
+    b2.call_out("brain", live=True)
+    assert env2.self_box is None  # YOLO 已经稳稳认出一个团子：不覆盖
+
+
+def test_call_halo_self_box_overlapping_player_is_one_person(clock):
+    # 团子身上同时有 YOLO 的 self 框和几乎重合的 player 框：是同一个人，不是"别人也在喊"
+    b, device, env, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()], panel_mode="auto")
+    b.cfg.call.halo = True
+    env.last_tracks = [track(1, "player", MID, clock()), track(2, "self", Rect(942, 502, 60, 150), clock())]
+    assert b.call_out("brain", live=True).halo == "self"
+
+
+def test_call_halo_skipped_when_chat_panel_was_open(clock):
+    # 面板开着：借面板关掉时画面横移、感知层这段时间没新帧，框对不上 → 放弃，不报"没看到"
+    b, device, env, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()])
+    b.cfg.call.halo = True
+    env.last_tracks = [track(1, "player", MID, clock())]
+    assert b.call_out("brain", live=True).halo == "skipped" and env.self_box is None
+
+
+def test_call_halo_press_time_taken_before_the_key(clock):
+    # 按键要一次 adb 往返（0.15 s）：光圈最亮那一下离"按完"很近，按完才记时间会把它算到窗口之前
+    b, device, env, _ = call_body(clock, frames=[gray(), lit(), gray()], panel_mode="auto", step=0.05, press=0.15)
+    b.cfg.call.halo = True
+    env.last_tracks = [track(1, "player", MID, clock())]
+    assert b.call_out("brain", live=True).halo == "self"
+
+
+def test_call_refused_without_perception(clock):
+    # 整图 OCR（EnvWatcher）也有 called()，但收不到呼喊窗口：手动直接 POST 也别真的按 Q
+    class OcrEnv(FakeEnv):
+        def called(self, at, *, by_self=True):
+            raise AssertionError("不该开窗口")
+
+    b, device, env, _ = call_body(clock, env=OcrEnv())
+    assert "没开感知层" in b.call_out("manual", live=True).refused
+    assert ("hw_key", LINUX_KEY_Q) not in device.calls
 
 
 def test_call_halo_skipped_when_camera_just_moved(clock):
-    b, device, env, _ = call_body(clock, frames=[gray(), lit(), lit(), gray()])
+    b, device, env, _ = call_body(clock, frames=[gray(), lit(), lit(), gray()], panel_mode="auto")
     b.cfg.call.halo = True
-    env.last_tracks = [track(1, "player", MID, clock() + 0.1)]
+    env.last_tracks = [track(1, "player", MID, clock())]
     b._camera_moved_at = clock()
     assert b.call_out("brain", live=True).halo == "skipped" and env.self_box is None
 
@@ -252,7 +291,9 @@ def test_auto_call_skipped_when_busy(clock):
         elif busy == "bubble":
             b._bubble_at = clock()
         elif busy == "request":
-            env.requests = {"小红": object()}
+            from skydango.game.social import Request
+
+            env.requests = {"小红": Request("小红", "hand", (0, 0), clock())}
         elif busy == "brain":
             b.brain_busy = lambda: True
         elif busy == "ime":
@@ -295,3 +336,19 @@ def test_auto_call_gives_up_waiting(clock):
     clock.advance(b.cfg.call.window + 11)
     b._watch_call(clock())
     assert b._pending_auto is None and not [e for e in events.drain() if e.kind == "call"]
+
+
+def test_auto_call_not_blocked_by_stale_request(clock):
+    # 好友带着请求圈走开了：他的请求留在 env.requests 里不会被清，过了 social.max_age 就别再拦自动喊
+    from skydango.game.social import Request
+
+    b, device, env, _ = call_body(clock)
+    left(b, clock)
+    env.requests = {"小明": Request("小明", "hand", (0, 0), clock() - b.cfg.social.max_age - 1)}
+    b._watch_call(clock())
+    assert pressed(device) == 1
+    b2, device2, env2, _ = call_body(clock)
+    left(b2, clock)
+    env2.requests = {"小明": Request("小明", "hand", (0, 0), clock() - 1)}  # 新鲜的请求照样拦
+    b2._watch_call(clock())
+    assert pressed(device2) == 0

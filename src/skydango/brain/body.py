@@ -32,9 +32,10 @@ from ..imageio import imwrite
 from ..device.base import LINUX_KEY_Q
 from ..vision.bubbles import Rect, roi_rect
 from ..vision.halo import HaloWatch
+from ..vision.track import iou
 from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people, describe_things
-from .calling import CallResult, event_text as call_event_text, status_text as call_status_text
+from .calling import CallResult, call_available, event_text as call_event_text, status_text as call_status_text
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
@@ -2000,7 +2001,7 @@ class Body:
         now = self.clock()
         if not cfg.enabled:
             return CallResult(now, reason, refused="没开")
-        if self.env is None or not hasattr(self.env, "called"):
+        if not call_available(self.cfg, self.env):  # 整图 OCR 也有 called()，但收不到呼喊窗口
             return CallResult(now, reason, refused="没开感知层，喊了也收不到名字")
         if self.blackout:
             return CallResult(now, reason, refused="画面黑着（在切场景），现在喊不了")
@@ -2026,12 +2027,17 @@ class Body:
                 self.sleep(self.cfg.track.settle)  # 面板关掉那一下画面横移：等停稳再拍基准
             base = self.device.screenshot()
             tracks = [t for t in list(getattr(self.env, "last_tracks", ())) if self.clock() - t.last <= CALL_TRACK_STALE]
-            watch = HaloWatch(base, {t.id: t.box for t in tracks if t.cls in ("player", "self")}, 0.0, cfg)
+            selfs = [t for t in tracks if t.cls == "self"]
+            heads = {t.id: t.box for t in selfs}
+            # 和 self 框重叠的 player 框是团子本人（同感知层 _is_self）：别让一个光圈点亮两个区域、判成"别人也在喊"
+            heads.update({t.id: t.box for t in tracks if t.cls == "player" and not any(iou(t.box, s.box) >= 0.5 for s in selfs)})
+            at = self.clock()  # 按键命令发出之前：adb 往返之后才记会把最亮那一下算到窗口之前
+            watch = HaloWatch(base, heads, at, cfg)
             self.device.hw_key(LINUX_KEY_Q)
-            at = self.clock()
-            watch.pressed_at = at
             if at - moved < self.cfg.track.settle:
                 watch.skipped = True  # 镜头刚动过：头顶区域对不上
+            if was_open:
+                watch.skipped = True  # 面板开着：关它时画面横移，感知层这段时间也没新帧，框对不上
             for _ in range(int(cfg.burst * 100) + 1):  # 张数上限：时钟不走（测试、沙盒）也会停
                 if self.clock() - at >= cfg.burst or watch.skipped:
                     break
@@ -2094,7 +2100,10 @@ class Body:
     def _auto_call_blocked(self, now: float) -> bool:
         if self._bubble_at is not None or self.sender.opened or self.skills.active is not None:
             return True
-        if getattr(self.env, "requests", None) or self._raised is not None or self.brain_busy() or self.blackout:
+        if self._raised is not None or self.brain_busy() or self.blackout:
+            return True
+        max_age = self.cfg.social.max_age  # 带着请求圈走开的好友：请求留在 env.requests 里不会被清，过时的不算
+        if any(now - getattr(r, "seen_at", now) <= max_age for r in list(dict(getattr(self.env, "requests", None) or {}).values())):
             return True
         if self.panels is not None and self.panels.state.others():
             return True

@@ -14,7 +14,7 @@ import numpy as np
 from ..config import CallConfig
 from .bubbles import Rect
 
-HALO_FROM = 0.1  # 按键后只看这段时间（秒）：之前光圈还没出来，之后是别人 / 别的东西
+HALO_FROM = 0.0  # 按键后只看这段时间（秒）；起点是按键命令发出之前（adb 往返要 0.1~0.2 s，最亮约在按下后 0.2 s）
 HALO_TO = 0.8
 
 
@@ -59,7 +59,7 @@ class HaloWatch:
 
     def result(self, width: int) -> tuple[str, int | None]:
         """("self", 轨迹 id) / ("others", None) / ("none", None) / ("skipped", None)。"""
-        if self.skipped:
+        if self.skipped or not self.regions:  # 没有能看的人（框都过时了）：说不准，别报"没看到"
             return "skipped", None
         rise = self.cfg.halo_rise
         over = [i for i, v in self.peaks.items() if v >= rise]
