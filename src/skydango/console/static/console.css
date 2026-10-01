@@ -14,9 +14,9 @@
   --soft:#fbf8f1;--bubble:#f3ece0;--track:#ece4d5;--hover:#f7f1e6;--white:#fff;
   --refl-line:#d7c7a8;--refl-bg:#fbf6ea;--refl-ink:#7a6847;
   --shadow:0 1px 0 #efe6d6;--lift:0 10px 30px rgba(80,60,30,.14);--shade:rgba(59,51,43,.28);--ball-shade:rgba(0,0,0,.12);
-  /* 沙盒页的大脑控制台：纸感页面里嵌一块暖墨色终端 */
-  --term-bg:#2b2622;--term-head:#332d28;--term-line:#463e37;--term-fg:#ece4d6;--term-dim:#9c907f;
-  --term-sakura:#f2a9c4;--term-matcha:#a9cf9c;--term-amber:#e9b765;--term-red:#ef8f7c;--term-indigo:#a5bbe3;
+  /* 沙盒页的大脑控制台：浅色纸底 + 等宽字，靠一点暖灰底色和终端排版和别的栏区分 */
+  --term-bg:#f8f3ea;--term-head:#f1eadd;--term-line:#e2d8c6;--term-fg:#3b332b;--term-dim:#968a76;
+  --term-sakura:#b54e77;--term-matcha:#4d7b4a;--term-amber:#a26b1d;--term-red:#b0412c;--term-indigo:#3f6593;
   --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
   --mono:"Cascadia Mono",Consolas,monospace;
 }
@@ -322,7 +322,7 @@ h4.note{margin:0 0 4px;font-weight:500}
 .sb-say input[name=name]{width:110px}
 .sb-say input[name=text]{flex:1}
 
-/* 中：大脑控制台（brainlog.js）：整栏是一块深色终端，日志在 .bc-log 里自己滚 */
+/* 中：大脑控制台（brainlog.js）：整栏一块终端排版的日志，日志在 .bc-log 里自己滚 */
 .sb-cols>.sb-brainpane{background:var(--term-bg);border-color:var(--term-line);position:relative}
 .sb-brainpane>.none{color:var(--term-dim);padding:12px 14px;font-family:var(--mono);font-size:12.5px}
 .brain-console{flex:1;min-height:0;display:flex;flex-direction:column}
