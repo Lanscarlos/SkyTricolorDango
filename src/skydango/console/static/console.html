@@ -22,6 +22,8 @@
     <div class="g">复盘</div>
     <a href="#inner" data-page="inner">内心<small class="mark" id="mark-inner"></small></a>
     <a href="#scenarios" data-page="scenarios">剧本和报告<small class="mark" id="mark-scenarios"></small></a>
+    <div class="g">数据</div>
+    <a href="#labeling" data-page="labeling">标注<small class="mark" id="mark-labeling"></small></a>
     <div class="g">配置</div>
     <a href="#settings" data-page="settings">设置<small class="mark" id="mark-settings"></small></a>
     <a href="#device" data-page="device">设备<small class="mark" id="mark-device"></small></a>
@@ -183,6 +185,38 @@
       </div>
     </div>
   </section>
+  <section id="page-labeling" class="page" hidden>
+    <div class="page-title"><h1>标注</h1><span class="note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
+    <div class="banner warn" id="lb-empty" hidden></div>
+    <div class="cols lb-cols" id="lb-cols">
+      <section class="pane lb-listpane" aria-label="片段列表">
+        <h3>片段<span class="grow"></span><select id="lb-filter" aria-label="筛选片段"></select></h3>
+        <div class="lb-counts" id="lb-counts"></div>
+        <div class="lb-list" id="lb-list"></div>
+      </section>
+      <section class="pane lb-player" aria-label="播放">
+        <h3><span class="lb-title" id="lb-title">—</span><span class="grow"></span><span class="lb-pos" id="lb-pos"></span></h3>
+        <div class="lb-stage"><canvas id="lb-canvas" width="336" height="336" aria-label="动作片段（16 帧循环）"></canvas><p class="lb-stage-note" id="lb-stage-note" hidden></p></div>
+        <div class="lb-ticks" id="lb-ticks" aria-label="跳到第几帧"></div>
+        <div class="lb-ctrl">
+          <button class="btn sm" type="button" id="lb-play">暂停</button>
+          <button class="btn sm" type="button" id="lb-prev" title="上一帧（暂停时）"><kbd class="k">←</kbd></button>
+          <span class="lb-frame" id="lb-frame"></span>
+          <button class="btn sm" type="button" id="lb-next" title="下一帧（暂停时）"><kbd class="k">→</kbd></button>
+          <span class="seg" id="lb-speed" role="group" aria-label="播放速度"><button type="button" data-speed="1" aria-pressed="true">原速</button><button type="button" data-speed="0.5" aria-pressed="false">0.5 倍</button></span>
+        </div>
+      </section>
+      <section class="pane lb-side" aria-label="Claude 的猜测和标注">
+        <h3>Claude 猜</h3>
+        <div class="pane-body" id="lb-guess"></div>
+        <h3>这一段</h3>
+        <div class="pane-body"><dl class="lb-meta" id="lb-meta"></dl></div>
+        <h3>标成</h3>
+        <div class="pane-body lb-actions" id="lb-actions"></div>
+        <p class="note lb-keys">选完自动跳下一段；已确认的再按一次别的类别就是改类别。</p>
+      </section>
+    </div>
+  </section>
   <section id="page-settings" class="page" hidden>
     <div class="page-title"><h1>设置</h1><span class="note">面板改的设置写在 console.toml（叠加在 config.toml 之后，config.toml 不会被改），密钥明文写在本机 secrets.toml，别发给别人。</span></div>
     <div class="banner bad" id="settings-error" hidden></div>
@@ -219,6 +253,7 @@
 <script src="console/static/sandbox.js"></script>
 <script src="console/static/live.js"></script>
 <script src="console/static/scenarios.js"></script>
+<script src="console/static/labeling.js"></script>
 <script src="console/static/settings.js"></script>
 <script src="console/static/device.js"></script>
 </body></html>
