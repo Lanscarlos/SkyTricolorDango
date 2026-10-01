@@ -15,7 +15,7 @@ import uvicorn
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import CallToolResult, TextContent
 
-from .tools import ToolBox, descriptions
+from .tools import INTROSPECT_DESCRIPTION, ToolBox, descriptions
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +124,11 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     @srv.tool(name="panel_close", description=DESCRIPTIONS["panel_close"])
     def panel_close():
         return call("panel_close")
+
+    if toolbox.backstage:  # 幕后：开关打开才有，放最后（TOOL_NAMES 的顺序不变）
+        @srv.tool(name="introspect", description=INTROSPECT_DESCRIPTION)
+        def introspect(topic: str):
+            return call("introspect", topic=topic)
 
     return srv
 

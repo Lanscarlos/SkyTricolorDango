@@ -75,6 +75,7 @@ class SandboxControl:
         self.mono = mono  # 判断"安静了 2 秒"用真实时间
         self._quiet_since: float | None = None
         self.body.on_blocked = lambda text, why: self.transcript.add("blocked", text, "团子", why=why)
+        self.body.on_musing = lambda thought: self._event("心里：" + thought)  # 冷场时心里想的（spec 2026-10-01-lull-musing §3）
         if parts.mind_log is not None:
             parts.mind_log.on_add = self._on_log
 

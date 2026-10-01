@@ -99,3 +99,9 @@ def test_append_after_half_line_starts_new_line(tmp_path):
     p.write_text('{"t": 1, "kind": "energy"}\n{"t": 2, "kind": "ene', encoding="utf-8")
     MindLog(p, persist=True).energy(3.0, None)
     assert [r["t"] for r in read(p, 0)] == [1, 3.0]
+
+
+def test_musing_row():  # 冷场时的心理活动 §3
+    assert MindLog(None, False).musing(1.0, ["懒洋洋大王"], "silent", "嗯") == {
+        "t": 1.0, "kind": "musing", "who": ["懒洋洋大王"], "lull": "silent", "text": "嗯",
+    }

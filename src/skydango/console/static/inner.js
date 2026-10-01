@@ -76,6 +76,12 @@ function renderNow(container, now, d) {
     for (const w of wants) { const x = el("span", "tag"); x.append(el("em", "", (WANT_LABEL[w.kind] || w.kind) + (w.who ? " " + w.who : "")), w.text); tags.append(x); }
     row("心愿", tags);
   } else row("心愿", el("span", "note", "没有"));
+  const musing = now.musing || [];  // 冷场时在想什么（只在冷场期间有）
+  if (musing.length) {
+    const tags = el("div", "tags");
+    for (const l of musing) { const ms = l.musings || []; tags.append(el("span", "tag", `${(l.who || []).join("、")} · 冷了 ${span(t - l.since)}` + (ms.length ? ` ·「${ms[ms.length - 1].text}」` : " · 还没想过"))); }
+    row("在想", tags);
+  }
   body.append(dl);
 }
 
@@ -140,11 +146,15 @@ function jumpToLog(t) {
 function renderLog(container, log) {
   container.textContent = "";
   const only = $("inner-changed").checked;
-  const items = log.filter(r => r.kind === "reflect" || r.kind === "forget").filter(r => !only || r.kind === "forget" || (r.changes || []).length).reverse();
+  const items = log.filter(r => r.kind === "reflect" || r.kind === "forget" || r.kind === "musing").filter(r => !only || r.kind !== "reflect" || (r.changes || []).length).reverse();
   if (!items.length) { container.append(el("p", "none", only ? "（最近没有改动）" : "（还没有反思过）")); return; }
   const ul = el("ul", "tl");
   for (const r of items) {
     const li = el("li"); li.dataset.t = String(r.t); const when = el("div", "when", dayTime(r.t));
+    if (r.kind === "musing") {  // 冷场时心里想的
+      when.append(el("span", "forgot", "冷场"));
+      li.append(when, el("div", "head", `心里：${r.text || ""}（${(r.who || []).join("、")}）`)); ul.append(li); continue;
+    }
     if (r.kind === "forget") {
       when.append(el("span", "forgot", "网页上删的"));
       li.append(when, el("div", "head", `删了${KIND_LABEL[r.what] || r.what || "条目"}：${r.topic ? r.topic + "——" : r.who ? r.who + "——" : ""}${r.text || ""}`)); ul.append(li); continue;

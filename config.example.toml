@@ -272,6 +272,17 @@ min_gap = 60.0                 # 两句主动的话之间至少隔几秒
 cold_after = 3                 # 连续几句主动的话没人接就暂停主动，等有好友说话
 self_names = ["团子", "三彩"]   # 聊天里出现这些字算“叫了你”
 
+[lull]
+# 冷场时的心理活动（大脑模式，spec docs/superpowers/specs/2026-10-01-lull-musing-design.md）：好友在身边不说话了 / 聊着聊着走了，
+# 按节点叫醒大脑、让它在心里想（“心里：…”），冷场结束时带给大脑、进反思。数字都是估的，没在真机验证
+enabled = true                 # false = 完全照旧（不认冷场、走开 / 回来照旧是背景事件）
+talk_window = 300.0            # 最后一句之前多少秒内有好友说过话，才算“刚才在聊”
+stages = [60.0, 180.0, 360.0]  # 冷场多少秒时各叫醒一次（聊着聊着走了的用后两个）
+leave_spoke = 120.0            # 好友走开时他多少秒内说过话，算聊着聊着走了
+leave_said = 60.0              # 好友走开时团子多少秒内说过话，算聊着聊着走了
+leave_grace = 15.0             # 聊着聊着走开后多少秒还没回来才叫醒（名字标签闪一下不算）
+musing_max = 60                # “心里：”一行最多几个字
+
 [attention]
 # 空闲注意力（东张西望，spec docs/superpowers/specs/2026-09-30-idle-attention-design.md）：闲着时按兴趣小步转镜头
 # 看说话 / 走近 / 对团子做动作的人，没什么可看就随意看看；只在 [panel] mode = "auto"、聊天面板关着时动。数字都是估的
@@ -346,6 +357,13 @@ jokes_per_friend = 3           # 每个好友最多几条老梗
 jokes_max = 20                 # 老梗总共最多几条
 opinions_max = 10              # 看法最多几条（一个话题一句）
 soft_minutes = 30.0            # 好友说难过后多久内对他收着点
+
+[backstage]
+# 幕后（大脑模式）：团子知道自己是 AI、主人（[brain] owner_name）做了她，能跟主人聊自己怎么运作、用 introspect 查自己的内心细节，
+# 启动时知道主人上次以来改了她什么（git 提交）。好友要在 friends.md 他那一节写「知道团子是 AI」，团子才会跟他承认。没在真机验证
+enabled = false
+changelog_max = 10             # 「更新记录」最多几条
+changelog_days = 7             # 第一次（没有 inner/backstage.json）往前看几天
 
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉

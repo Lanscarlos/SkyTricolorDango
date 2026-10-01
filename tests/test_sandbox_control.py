@@ -248,3 +248,8 @@ def test_state_returns_new_rows_and_limit(sb):
 
 def test_clock_text():
     assert clock_text(time.mktime((2026, 9, 30, 23, 30, 0, 0, 0, -1))) == "9月30日 周三 23:30"
+
+
+def test_musing_goes_to_transcript(sb):  # 冷场时的心理活动 §3
+    sb.body.call(lambda: sb.body.on_musing("他忙去了吧"))
+    assert rows(sb, "event")[-1]["text"] == "── 心里：他忙去了吧 ──"

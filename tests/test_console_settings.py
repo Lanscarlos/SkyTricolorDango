@@ -28,7 +28,8 @@ def test_every_spec_field_is_listed():
         "device.adb_path", "device.serial", "device.capture", "llm.provider", "llm.base_url", "llm.model", "secret.llm",
         "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model",
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
-        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "env.enabled", "perception.enabled",
+        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "lull.enabled", "backstage.enabled", "env.enabled",
+        "perception.enabled",
         "perception.model", "places.enabled", "appearance.enabled", "appearance.describe", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
 
@@ -148,3 +149,10 @@ def test_quota_help_does_not_hardcode_window():
     helps = {f.key: f.help for f in FIELDS}
     for key in ("proactive.quota_busy", "proactive.quota_quiet"):
         assert "10 分钟" not in helps[key] and "quota_window" in helps[key]
+
+
+def test_console_has_backstage_switch():
+    from skydango.console.settings import KNOWN
+
+    f = KNOWN["backstage.enabled"]
+    assert (f.label, f.kind, f.group) == ("幕后", "bool", "brain") and "知道团子是 AI" in f.help

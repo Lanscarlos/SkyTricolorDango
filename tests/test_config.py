@@ -13,6 +13,7 @@ def test_example_config_loads():
     assert cfg.panel.mode == "auto" and cfg.panel.idle_peek == 30.0  # 2026-09-30 真机验收后默认按需打开
     assert cfg.device.serial.startswith("127.0.0.1")
     assert cfg.proactive.enabled is True and cfg.proactive.quota_quiet == 2
+    assert cfg.lull.enabled is True and cfg.lull.stages == [60.0, 180.0, 360.0]
 
 
 def test_unknown_key_rejected(tmp_path):
@@ -219,3 +220,13 @@ def test_example_config_has_sandbox():
     assert raw == {"dir": d.dir, "port": d.port, "step_timeout": d.step_timeout, "wake_hour": d.wake_hour, "emotes": d.emotes}
     assert (d.dir, d.port, d.step_timeout, d.wake_hour, d.emotes) == ("sandbox", 19392, 180.0, 9, [])
     assert load_config(ROOT / "config.example.toml").sandbox.port == 19392
+
+
+def test_backstage_config(tmp_path):
+    from skydango.config import Config, load_config
+
+    c = Config().backstage
+    assert (c.enabled, c.changelog_max, c.changelog_days) == (False, 10, 7)
+    path = tmp_path / "c.toml"
+    path.write_text("[backstage]\nenabled = true\n", encoding="utf-8")
+    assert load_config(path).backstage.enabled is True

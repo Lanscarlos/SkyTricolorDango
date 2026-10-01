@@ -20,7 +20,7 @@ CANCELS = {"leave": "return", "return": "leave"}  # 同一个人攒着的"走开
 
 @dataclass(frozen=True)
 class Event:
-    kind: str  # chat / owner_command / arrive / return / leave / stranger / approach / gesture / request / accepted / holding / released / scene_change / panel / error / fallback / dropped / task_done / task_failed / notice / stranger_back / outfit
+    kind: str  # chat / owner_command / arrive / return / leave / stranger / approach / gesture / request / accepted / holding / released / scene_change / panel / error / fallback / dropped / task_done / task_failed / notice / stranger_back / outfit / lull
     text: str  # 给大脑看的一行
     t: float
     count: int = 1  # 重复了几次（同一种错误连续出现只占一行；背景事件不挨着也合并）

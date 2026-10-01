@@ -586,6 +586,20 @@ class ProactiveConfig:
 
 
 @dataclass
+class LullConfig:
+    """冷场时的心理活动（docs/superpowers/specs/2026-10-01-lull-musing-design.md）：好友在身边不说话了 / 聊着聊着走了，
+    按节点叫醒大脑、记它心里想的。数字都是估的，没在真机验证；enabled = false 完全照旧。"""
+
+    enabled: bool = True
+    talk_window: float = 300.0  # 最后一句之前多少秒内有好友说过话，才算“刚才在聊”
+    stages: list[float] = field(default_factory=lambda: [60.0, 180.0, 360.0])  # 冷场多少秒时各叫醒一次（走开的用后两个）
+    leave_spoke: float = 120.0  # 好友走开时他多少秒内说过话，算聊着聊着走了
+    leave_said: float = 60.0  # 好友走开时团子多少秒内说过话，算聊着聊着走了
+    leave_grace: float = 15.0  # 聊着聊着走开后多少秒还没回来才叫醒（名字标签闪一下不算）
+    musing_max: int = 60  # “心里：”一行最多几个字
+
+
+@dataclass
 class AttentionConfig:
     """空闲注意力（东张西望，spec 2026-09-30-idle-attention）：闲着时按兴趣小步转镜头看说话 / 走近 / 对团子做事的人，
     没什么可看就随意看看；只在聊天面板 auto 模式、面板关着时动。数字都是估的，真机调。按键长短、settle、转不动沿用 [track]。"""
@@ -631,6 +645,15 @@ class ReflexConfig:
     quota_window: float = 600.0  # 反射动作额度的时间窗口（秒）
     quota: int = 4  # 窗口内反射最多做几个动作
     min_gap: float = 4.0  # 任何两个动作（反射或大脑）之间至少隔几秒，给动画留时间
+
+
+@dataclass
+class BackstageConfig:
+    """幕后（spec 2026-10-01-backstage）：团子知道自己是 AI、主人做了她，能跟主人聊她自己怎么运作。"""
+
+    enabled: bool = False  # 公开仓库：默认不出戏
+    changelog_max: int = 10  # 「更新记录」最多几条
+    changelog_days: int = 7  # 没有标记（或标记不在历史里）时往前看几天
 
 
 @dataclass
@@ -721,9 +744,11 @@ class Config:
     peek: PeekConfig = field(default_factory=PeekConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    lull: LullConfig = field(default_factory=LullConfig)
     reflex: ReflexConfig = field(default_factory=ReflexConfig)
     attention: AttentionConfig = field(default_factory=AttentionConfig)
     inner: InnerConfig = field(default_factory=InnerConfig)
+    backstage: BackstageConfig = field(default_factory=BackstageConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
