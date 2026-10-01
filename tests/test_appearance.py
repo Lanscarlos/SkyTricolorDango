@@ -81,7 +81,8 @@ def test_make_embedder():
 
 def test_config_has_appearance_defaults():
     c = Config().appearance
-    assert (c.enabled, c.model, c.match, c.card_match, c.margin, c.changed) == (False, "color", 0.85, 0.92, 0.05, 0.70)
+    assert (c.enabled, c.model, c.match, c.card_match, c.margin, c.changed) == (False, "color", 0.85, 0.92, 0.05, 0.40)
+    assert c.outfit_change is False  # 颜色特征判换装太不稳（10-01 标定），默认不判
     assert (c.size, c.norm, c.device, c.quota_wait, c.retry_after, c.describe_timeout) == (224, "imagenet", "cpu", 600.0, 60.0, 60.0)
 
 

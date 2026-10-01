@@ -1749,7 +1749,7 @@ def _run_brain(
         events.subscribe(eyes.notice)
         # recall 只读，dry-run 也给
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
-                          sandbox=world.name == "sandbox")
+                          sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled)
         wardrobe = _wardrobe(cfg, env, ledger, world, base, claude_vars, work, clock)
         server = SkyServer(toolbox)
         server.start()
@@ -1764,7 +1764,8 @@ def _run_brain(
             now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
             days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
             persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
-            appearance=getattr(env, "appearance", None) is not None, lull=cfg.lull.enabled,
+            appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
+            lull=cfg.lull.enabled,
         ),
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
@@ -1957,6 +1958,31 @@ def _persona_prompt(persona) -> str:
         return persona.section()
     except Exception:
         log.exception("拼「你攒下的性格」一节出错")
+        return ""
+
+
+def _backstage_prompt(cfg: Config, store, now: float | None = None, run=None, repo=None) -> str:
+    """「幕后」一节（spec 2026-10-01-backstage）：[backstage] enabled 才有；live 时记下看到了哪个提交。拼出错就不写这一节。
+
+    now 默认真实时间：提交时间是真实时间，别用世界的钟（沙盒的 wall() 会超前）。"""
+    if not cfg.backstage.enabled:
+        return ""
+    from .brain.backstage import changelog, git_runner, read_seen, repo_root, section, write_seen
+
+    try:
+        mark = store.dir / "inner" / "backstage.json" if store is not None else None
+        if run is None:
+            repo = repo if repo is not None else repo_root()
+            run = git_runner(repo) if repo is not None else None
+        lines, head = [], None
+        if run is not None:
+            lines, head = changelog(run, read_seen(mark) if mark is not None else None, time.time() if now is None else now,
+                                    cfg.backstage.changelog_max, cfg.backstage.changelog_days)
+        if head and mark is not None and not cfg.reply.dry_run:
+            write_seen(mark, head)
+        return section(cfg.brain.owner_name, cfg.brain.model, cfg.brain.eyes_model, cfg.inner.reflect_model, lines)
+    except Exception:
+        log.exception("拼「幕后」一节出错")
         return ""
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 from ..chat.memory import MemoryStore, format_gap
@@ -156,6 +157,7 @@ APPEARANCE_RULES = """- 状态里的装扮（“你自己”、好友名字后�
 """
 GO_ON_OLD = "接对方的话往下聊；"
 GO_ON_NEW = "接得住就接，不想接也可以吐槽一句或者敷衍两句；"
+IDENTITY_SECTION = re.compile(r"## 身份\n.*?(?=\n\n## )", re.S)  # 「身份」整节（到下一节之前）
 REMEMBER_ANCHOR = "- 记住聊过的内容和对方的名字"  # 交情规矩、按需面板的说明都插在这一条前面
 
 SUMMARY_REQUEST = """（身体）要下线了。用不超过 300 字写一份这次的经过，留给下次的你：在哪、和谁玩了什么、聊了什么、答应过什么、要注意的事。
@@ -227,6 +229,7 @@ def brain_prompt(
     persona_text: str = "",
     temper: bool = False,
     appearance: bool = False,
+    backstage: str = "",
     lull: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
@@ -239,10 +242,13 @@ def brain_prompt(
     days：「日子」一节（内心层，放在「上次聊到哪」之前）；inner：内心层开着（加交情规矩）；mind：反思开着（加心情 / 别扭 / 惦记的规矩）。
     persona_text：「你攒下的性格」（内心层第 3 期，放在「日子」之前）；temper：性格开着（加「脾气」、放开“接对方的话往下聊”）。
     appearance：认装扮开着（[appearance] enabled，加装扮的规矩）。
+    backstage：「幕后」整节（[backstage] enabled，brain/backstage.py 拼好的）；非空时换掉「身份」一节。
     lull：冷场时的心理活动（[lull] enabled，加「冷场的时候」）。"""
     rules = static_prompt(reply, proactive)
-    if lull:
+    if lull:  # 插在「身份」之前；幕后再换「身份」整节时不会碰到它
         rules = rules.replace(LULL_ANCHOR, LULL_POINTER, 1).replace("## 身份", LULL_RULES + "\n\n## 身份", 1)
+    if backstage:  # 在主动开口插进来之后换：主动开口还在它前面
+        rules = IDENTITY_SECTION.sub(lambda _: backstage, rules, count=1)
     if bubble:
         rules = rules.replace(SAY_FIRST, SAY_FIRST + BUBBLE_NOTE, 1)
     if quick_around:

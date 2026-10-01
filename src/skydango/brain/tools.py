@@ -69,6 +69,12 @@ def descriptions(sweep: bool) -> dict[str, str]:
 
 
 TOOL_NAMES = list(DESCRIPTIONS)
+# 幕后（spec 2026-10-01-backstage §2）：[backstage] enabled 时才注册，不进 DESCRIPTIONS / TOOL_NAMES / ACTIONS
+INTROSPECT_TOPICS = ("精力", "反思", "性格", "日记", "眼睛")
+INTROSPECT_DESCRIPTION = (
+    "查你自己现在的内心细节：精力 / 反思 / 性格 / 日记 / 眼睛。别人问你为什么困、心情为什么这样、你怎么记事时先查再答；"
+    "查到的数字别原样念，用自己的话说。"
+)
 ACTIONS = {
     "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task", "panel_press",
     "panel_close",
@@ -112,8 +118,10 @@ def _bool(args: dict, key: str, default=_MISSING) -> bool:
 class ToolBox:
     def __init__(
         self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None, text_only: bool = False, sandbox: bool = False,
+        backstage: bool = False,
     ) -> None:
         self.body = body
+        self.backstage = backstage  # 幕后：有 introspect 工具
         self.eyes = eyes
         self.text_only = text_only  # 沙盒：没有画面，look 只给眼睛的文字、look_person / look_at 只回一句话
         self.sandbox = sandbox  # 沙盒：镜头、好友树、面板、互动请求这些工具回"沙盒里没有这个"
@@ -178,6 +186,8 @@ class ToolBox:
             if self.eyes.latest is not None and now - self.eyes.last_look < b.cfg.brain.look_min_interval:
                 return self.eyes.summary(now)
             return self.eyes.describe_frame(b.call(b.fresh_frame), now)
+        if name == "introspect" and self.backstage:
+            return self._introspect(_str(a, "topic"))
         if name == "recall":  # 只读 memory/ 里的文件，不占身体线程
             if self.memory is None:
                 raise ToolError("这次没开记忆（reply.memory_dir 为空），翻不了以前的聊天")
@@ -262,3 +272,15 @@ class ToolBox:
         if name == "panel_close":
             return b.panel_close
         raise ToolError(f"没有这个工具：{name}")
+
+    def _introspect(self, topic: str) -> str:
+        if topic not in INTROSPECT_TOPICS:
+            raise ToolError("topic 只能是 " + " / ".join(INTROSPECT_TOPICS))
+        b = self.body
+        if topic == "眼睛":
+            latest = getattr(self.eyes, "latest", None)
+            if latest is None:
+                return "眼睛还没看过"
+            text, t = latest
+            return f"眼睛（{b.cfg.brain.eyes_model}）{b.clock() - t:.0f} 秒前写的：\n{text}"
+        return b.call(lambda: b.introspect(topic))

@@ -374,7 +374,10 @@ class AppearanceConfig:
     card_match: float = 0.92  # 只有关系卡旧特征时的门槛（更严）
     margin: float = 0.05  # 最像的要比第二像的高这么多
     recheck: int = 5  # maybe 连续这么多个新样本低于门槛就摘掉
-    changed: float = 0.70  # 低于它算换了装
+    # 判换装（outfit_change 开着时）：低于它算换了装。10-01 标定：颜色特征下同一身衣服常跌到 0.15~0.5，所以默认不判
+    changed: float = 0.40
+    # false：不判换装（不追加新的一套、不发换装事件、上线中途不重新描述），好友 / 团子每次上线描述一次、覆盖最近那一套
+    outfit_change: bool = False
     stranger_forget: float = 1800.0  # 秒
     describe: bool = True  # 关掉就只认人、不调模型
     describe_model: str = "haiku"
@@ -643,6 +646,15 @@ class ReflexConfig:
 
 
 @dataclass
+class BackstageConfig:
+    """幕后（spec 2026-10-01-backstage）：团子知道自己是 AI、主人做了她，能跟主人聊她自己怎么运作。"""
+
+    enabled: bool = False  # 公开仓库：默认不出戏
+    changelog_max: int = 10  # 「更新记录」最多几条
+    changelog_days: int = 7  # 没有标记（或标记不在历史里）时往前看几天
+
+
+@dataclass
 class InnerConfig:
     """内心层第 1 期（见 docs/superpowers/specs/2026-09-30-inner-phase1-design.md）：给好友记关系卡、每次上线记一行，
     写在 memory/inner/，只在 --live 时写盘。数字都是估的"""
@@ -734,6 +746,7 @@ class Config:
     reflex: ReflexConfig = field(default_factory=ReflexConfig)
     attention: AttentionConfig = field(default_factory=AttentionConfig)
     inner: InnerConfig = field(default_factory=InnerConfig)
+    backstage: BackstageConfig = field(default_factory=BackstageConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 

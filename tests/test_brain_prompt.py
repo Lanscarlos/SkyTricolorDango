@@ -297,3 +297,29 @@ def test_lull_off_no_rules():
 def test_lull_without_proactive():
     p = brain_prompt(ReplyConfig(), None, proactive=False, lull=True)
     assert "## 冷场的时候" in p and p.index("## 冷场的时候") < p.index("## 身份")
+
+
+def test_lull_with_backstage():  # 幕后换「身份」整节时冷场那节还在
+    from skydango.brain.backstage import section
+
+    p = brain_prompt(ReplyConfig(), None, lull=True, backstage=section("卡洛", "sonnet", "haiku", "sonnet", []))
+    assert "## 冷场的时候" in p and "## 身份" not in p
+    assert p.index("## 主动开口") < p.index("## 冷场的时候") < p.index("## 幕后")
+
+
+def test_brain_prompt_backstage_replaces_identity():
+    from skydango.brain.backstage import section
+
+    off = brain_prompt(ReplyConfig(), None)
+    on = brain_prompt(ReplyConfig(), None, backstage=section("卡洛", "sonnet", "haiku", "sonnet", []))
+    assert "## 身份" in off and "## 身份" not in on and "## 幕后" in on
+
+    def floor(p):
+        return p.split("## 底线")[1].split("\n## ")[0]
+
+    assert floor(on) == floor(off)
+    assert on.index("## 主动开口") < on.index("## 幕后") < on.index("## 底线")
+
+
+def test_brain_prompt_without_backstage_unchanged():
+    assert brain_prompt(ReplyConfig(), None, backstage="") == brain_prompt(ReplyConfig(), None)
