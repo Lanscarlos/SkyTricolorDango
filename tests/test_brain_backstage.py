@@ -125,3 +125,29 @@ def test_write_then_read_seen(tmp_path):
     write_seen(path, "abc123")
     assert read_seen(path) == "abc123"
     assert [p.name for p in path.parent.iterdir()] == ["backstage.json"]
+
+
+from skydango.brain.backstage import section  # noqa: E402
+
+
+def test_section_with_owner():
+    s = section("卡洛", "sonnet", "haiku", "sonnet", [])
+    assert s.startswith("## 幕后") and "做出你的人是卡洛" in s and "Claude（sonnet）" in s and "（haiku）" in s
+    assert "知道团子是 AI" in s and "introspect" in s and "###" not in s
+    assert "{" not in s
+
+
+def test_section_without_owner():
+    s = section("", "sonnet", "haiku", "sonnet", ["- 昨天 feat: x"])
+    assert "做出你的人是" not in s and "（聊天里名字一字不差）" not in s and "{owner}" not in s
+    assert "上次以来你被改了什么" in s and "- 昨天 feat: x" in s
+    assert "你问" not in s and "跟你聊幕后" not in s
+
+
+def test_section_changelog_heading_with_owner():
+    s = section("卡洛", "sonnet", "haiku", "sonnet", ["- 今天 feat: y"])
+    assert "### 卡洛上次以来改了你什么" in s and s.endswith("- 今天 feat: y")
+
+
+def test_section_keeps_braces_in_changelog():
+    assert "- 今天 feat: {x}" in section("卡洛", "s", "h", "s", ["- 今天 feat: {x}"])
