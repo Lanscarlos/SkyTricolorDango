@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import threading
+from collections import deque
+from dataclasses import dataclass, field
+
 import cv2
 import numpy as np
 
 from ..config import AppearanceConfig
 from .bubbles import Rect
-from .embed import OnnxEmbedder, unit
+from .embed import OnnxEmbedder, cosine, unit
 from .track import iou
 
 
@@ -80,3 +84,182 @@ def make_embedder(cfg: AppearanceConfig):
     if cfg.model.lower().endswith(".onnx"):
         return OnnxEmbedder(cfg.model, cfg.size, cfg.norm, cfg.device, what="appearance.model")
     raise ValueError(f"appearance.model 只能是 \"color\" 或 .onnx 路径：{cfg.model}")
+
+
+@dataclass
+class Profile:
+    """一个人的外观档案（好友 / 陌生人 / 团子自己）。"""
+
+    feat: np.ndarray
+    n: int
+    updated: float
+    seen: float
+    desc: str = ""
+    desc_feat: np.ndarray | None = None
+    crops: deque = field(default_factory=lambda: deque(maxlen=5))  # (框高, 描述用裁图)
+    checked: bool = False  # 好友：这次上线和关系卡比过没有
+    redescribed: int = 0
+
+
+def _letters(i: int) -> str:
+    """0 -> A，25 -> Z，26 -> AA，27 -> AB……"""
+    out = ""
+    i += 1
+    while i > 0:
+        i, r = divmod(i - 1, 26)
+        out = chr(65 + r) + out
+    return out
+
+
+class AppearanceBook:
+    """外观记忆簿：这次上线学到的外观 + 关系卡里的旧外观。纯数据、线程安全（一把锁）：感知线程写、描述器回调写、身体线程读。"""
+
+    def __init__(self, cfg: AppearanceConfig, key: str, keep: float = 5.0) -> None:
+        self.cfg = cfg
+        self.key = key
+        self.keep = keep
+        self._lock = threading.RLock()
+        self.friends: dict[str, Profile] = {}
+        self.strangers: dict[str, Profile] = {}
+        self.me: Profile | None = None
+        self.card_feats: dict[str, np.ndarray] = {}
+        self.card_desc: dict[str, str] = {}
+        self._stranger_count = 0  # 单调增长：陌生人的字母这次上线内不复用
+
+    # ---- 写 ----
+    def _get(self, kind: str, who: str) -> Profile | None:
+        if kind == "friend":
+            return self.friends.get(who)
+        if kind == "stranger":
+            return self.strangers.get(who)
+        return self.me
+
+    def learn(self, kind: str, who: str, feat, now: float, crop: tuple[int, np.ndarray] | None = None) -> Profile:
+        """滑动平均更新（第一次直接用）。kind：friend / stranger / me。"""
+        feat = unit(feat)
+        with self._lock:
+            p = self._get(kind, who)
+            if p is None:
+                p = Profile(feat=feat, n=1, updated=now, seen=now)
+                if kind == "friend":
+                    self.friends[who] = p
+                elif kind == "stranger":
+                    self.strangers[who] = p
+                else:
+                    self.me = p
+            else:
+                e = self.cfg.ema
+                p.feat = unit((1 - e) * p.feat + e * feat)
+                p.n += 1
+                p.updated = now
+                p.seen = now
+            if crop is not None:
+                p.crops.append(crop)
+            return p
+
+    def load_cards(self, outfits: dict[str, list[dict]]) -> None:
+        """启动时从关系卡载入：每个好友取最后一套。key 不同的特征不比（换了特征模型），描述照留。"""
+        with self._lock:
+            self.card_feats.clear()
+            self.card_desc.clear()
+            for name, items in outfits.items():
+                if not items:
+                    continue
+                last = items[-1]
+                if last.get("desc"):
+                    self.card_desc[name] = last["desc"]
+                if last.get("key") == self.key and last.get("feat"):
+                    self.card_feats[name] = unit(np.asarray(last["feat"], np.float32))
+
+    def set_desc(self, kind: str, who: str, desc: str, feat) -> None:
+        with self._lock:
+            p = self._get(kind, who)
+            if p is not None:
+                p.desc = desc
+                p.desc_feat = unit(feat)
+
+    def forget(self, now: float) -> None:
+        """删掉太久没见的陌生人。"""
+        with self._lock:
+            for k in [k for k, p in self.strangers.items() if now - p.seen > self.cfg.stranger_forget]:
+                del self.strangers[k]
+
+    # ---- 认人 ----
+    def _candidates(self, exclude: set[str]) -> list[tuple[str, np.ndarray, float]]:
+        out = [(n, p.feat, self.cfg.match) for n, p in self.friends.items() if n not in exclude]
+        out += [(n, f, self.cfg.card_match) for n, f in self.card_feats.items() if n not in self.friends and n not in exclude]
+        return out
+
+    def assign_friends(self, cands: dict[int, np.ndarray], exclude: set[str]) -> dict[int, str]:
+        """没有名字标签的轨迹 -> 好友名（"maybe"）。要过门槛、比第二像的（任何候选）高 margin；一个名字只给相似度最高的那条轨迹。"""
+        with self._lock:
+            pool = self._candidates(exclude)
+            if not pool:
+                return {}
+            best: dict[str, tuple[float, int]] = {}
+            for tid, feat in cands.items():
+                scored = sorted(((cosine(feat, f), n, th) for n, f, th in pool), reverse=True)
+                top, name, th = scored[0]
+                if top < th:
+                    continue
+                if len(scored) > 1 and top - scored[1][0] < self.cfg.margin:
+                    continue
+                if name not in best or top > best[name][0]:
+                    best[name] = (top, tid)
+            return {tid: name for name, (_, tid) in best.items()}
+
+    def still_like(self, track_feat, name: str) -> bool:
+        """这条轨迹现在还像不像 name（学到的优先，否则卡里的）。"""
+        with self._lock:
+            p = self.friends.get(name)
+            if p is not None:
+                return cosine(track_feat, p.feat) >= self.cfg.match
+            f = self.card_feats.get(name)
+            return f is not None and cosine(track_feat, f) >= self.cfg.card_match
+
+    def stranger_id(self, feat, now: float) -> tuple[str, bool]:
+        """陌生人编号：认回已有的（第二项 = 离开超过 keep 秒又回来了），否则新编号。"""
+        with self._lock:
+            scored = sorted(((cosine(feat, p.feat), k) for k, p in self.strangers.items()), reverse=True)
+            if scored and scored[0][0] >= self.cfg.match and (len(scored) == 1 or scored[0][0] - scored[1][0] >= self.cfg.margin):
+                p = self.strangers[scored[0][1]]
+                back = now - p.seen > self.keep
+                p.seen = now
+                return scored[0][1], back
+            name = "陌生人" + _letters(self._stranger_count)
+            self._stranger_count += 1
+            self.strangers[name] = Profile(feat=unit(feat), n=1, updated=now, seen=now)
+            return name, False
+
+    # ---- 换装 ----
+    def card_state(self, name: str) -> str:
+        """new = 关系卡里没有可比的特征；same / changed = 这次学到的和卡里的比。还没学到时按 same（没有换装的证据）。"""
+        with self._lock:
+            cf = self.card_feats.get(name)
+            if cf is None:
+                return "new"
+            p = self.friends.get(name)
+            if p is None:
+                return "same"
+            return "same" if cosine(p.feat, cf) >= self.cfg.changed else "changed"
+
+    def drifted(self, kind: str, who: str) -> bool:
+        """现在的平均特征和上次描述时差多了（中途换了装）。"""
+        with self._lock:
+            p = self._get(kind, who)
+            return p is not None and p.desc_feat is not None and cosine(p.feat, p.desc_feat) < self.cfg.changed
+
+    # ---- 读 ----
+    def look(self, kind: str, who: str) -> str:
+        with self._lock:
+            p = self._get(kind, who)
+            if p is None:
+                return self.card_desc.get(who, "") if kind == "friend" else ""
+            return p.desc
+
+    def best_crop(self, kind: str, who: str) -> np.ndarray | None:
+        with self._lock:
+            p = self._get(kind, who)
+            if p is None or not p.crops:
+                return None
+            return max(p.crops, key=lambda c: c[0])[1]

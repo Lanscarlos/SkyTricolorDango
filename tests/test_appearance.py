@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from skydango.config import Config
-from skydango.vision.appearance import ColorEmbedder, describe_crop, good_crop, make_embedder
+from skydango.config import AppearanceConfig, Config
+from skydango.vision.appearance import AppearanceBook, ColorEmbedder, describe_crop, good_crop, make_embedder
 from skydango.vision.bubbles import Rect
-from skydango.vision.embed import cosine
+from skydango.vision.embed import cosine, unit
 
 # BGR 颜色
 WHITE = (235, 235, 235)
@@ -81,3 +81,129 @@ def test_config_has_appearance_defaults():
     c = Config().appearance
     assert (c.enabled, c.model, c.match, c.card_match, c.margin, c.changed) == (False, "color", 0.85, 0.92, 0.05, 0.70)
     assert (c.size, c.norm, c.device, c.quota_wait, c.retry_after, c.describe_timeout) == (224, "imagenet", "cpu", 600.0, 60.0, 60.0)
+
+
+# ---- AppearanceBook：特征直接用手写单位向量，不经裁图 ----
+def _basis(i, n=8):
+    v = np.zeros(n, np.float32)
+    v[i] = 1.0
+    return v
+
+
+V_PINK, V_WHITE, V_BLUE = _basis(0), _basis(1), _basis(2)
+
+
+def near(v, s=0.95):
+    """和 v 余弦相似度为 s 的单位向量（垂直分量放在最后一维）。"""
+    perp = _basis(7)
+    return unit(s * v + np.sqrt(1 - s * s) * perp)
+
+
+def book(keep=5.0, **kw):
+    return AppearanceBook(AppearanceConfig(**kw), "color-v1", keep=keep)
+
+
+def outfit(feat, key="color-v1", desc=""):
+    return {"desc": desc, "feat": [float(x) for x in feat], "key": key, "first": "2026-10-01", "last": "2026-10-01"}
+
+
+def test_learn_averages_and_assigns_maybe():
+    b = book(match=0.85, margin=0.05)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    assert b.assign_friends({7: near(V_PINK)}, exclude=set()) == {7: "小明"}
+
+
+def test_learn_moving_average_and_crops():
+    b = book(ema=0.5)
+    p = b.learn("friend", "小明", V_PINK, 0.0, crop=(100, np.zeros((2, 2, 3), np.uint8)))
+    assert p.n == 1 and np.allclose(p.feat, V_PINK)
+    p = b.learn("friend", "小明", V_WHITE, 1.0)
+    assert p.n == 2 and np.allclose(p.feat, unit(0.5 * V_PINK + 0.5 * V_WHITE), atol=1e-5)
+    assert p.updated == 1.0 and len(p.crops) == 1
+    for h in range(10):
+        b.learn("friend", "小明", V_PINK, 2.0, crop=(h, np.zeros((1, 1, 3), np.uint8)))
+    assert len(p.crops) == 5 and b.best_crop("friend", "小明") is not None
+    assert b.best_crop("friend", "没有") is None
+
+
+def test_name_shown_elsewhere_is_excluded():
+    b = book()
+    b.learn("friend", "小明", V_PINK, 0.0)
+    assert b.assign_friends({7: V_PINK}, exclude={"小明"}) == {}
+
+
+def test_two_tracks_one_name_only_best_wins():
+    b = book()
+    b.learn("friend", "小明", V_PINK, 0.0)
+    assert b.assign_friends({1: near(V_PINK, 0.9), 2: near(V_PINK, 0.97)}, set()) == {2: "小明"}
+
+
+def test_no_maybe_when_two_friends_look_alike():
+    b = book()
+    b.learn("friend", "小明", V_PINK, 0.0)
+    b.learn("friend", "小红", near(V_PINK, 0.99), 0.0)
+    assert b.assign_friends({1: V_PINK}, set()) == {}
+
+
+def test_card_only_friend_needs_stricter_threshold():
+    b = book(match=0.85, card_match=0.92)
+    b.load_cards({"小明": [outfit(V_PINK, key="color-v1")]})
+    assert b.assign_friends({1: near(V_PINK, 0.88)}, set()) == {}
+    assert b.assign_friends({1: near(V_PINK, 0.95)}, set()) == {1: "小明"}
+
+
+def test_card_feature_with_other_key_is_ignored():
+    b = book()
+    b.load_cards({"小明": [outfit(V_PINK, key="other", desc="粉斗篷")]})
+    assert b.assign_friends({1: V_PINK}, set()) == {} and b.card_state("小明") == "new"
+    assert b.look("friend", "小明") == "粉斗篷"
+
+
+def test_load_cards_takes_last_outfit():
+    b = book()
+    b.load_cards({"小明": [outfit(V_BLUE, desc="蓝"), outfit(V_PINK, desc="粉")]})
+    assert b.look("friend", "小明") == "粉"
+    assert b.assign_friends({1: V_PINK}, set()) == {1: "小明"}
+
+
+def test_still_like_prefers_learned_over_card():
+    b = book(match=0.85, card_match=0.92)
+    b.load_cards({"小明": [outfit(V_PINK)]})
+    assert b.still_like(near(V_PINK, 0.95), "小明") and not b.still_like(near(V_PINK, 0.88), "小明")
+    b.learn("friend", "小明", V_BLUE, 0.0)  # 学到的是蓝：以它为准
+    assert b.still_like(near(V_BLUE, 0.9), "小明") and not b.still_like(V_PINK, "小明")
+    assert not b.still_like(V_PINK, "没有这人")
+
+
+def test_stranger_ids_reuse_new_back_and_forget():
+    b = book(stranger_forget=1800, keep=5.0)
+    assert b.stranger_id(V_WHITE, 0.0) == ("陌生人A", False)
+    assert b.stranger_id(V_BLUE, 1.0) == ("陌生人B", False)
+    assert b.stranger_id(near(V_WHITE), 2.0) == ("陌生人A", False)
+    assert b.stranger_id(near(V_WHITE), 60.0) == ("陌生人A", True)  # 离开超过 keep 又认回来
+    b.forget(60.0 + 1801)
+    assert b.stranger_id(V_WHITE, 2000.0)[0] == "陌生人C"  # 字母不复用
+
+
+def test_stranger_letters_roll_over_after_z():
+    b = book()
+    ids = [b.stranger_id(np.eye(40, dtype=np.float32)[i], float(i))[0] for i in range(28)]
+    assert ids[0] == "陌生人A" and ids[25] == "陌生人Z" and ids[26] == "陌生人AA" and ids[27] == "陌生人AB"
+
+
+def test_card_state_and_drift():
+    b = book(changed=0.70)
+    b.load_cards({"小明": [outfit(V_PINK)]})
+    b.learn("friend", "小明", near(V_PINK, 0.95), 0.0)
+    assert b.card_state("小明") == "same"
+    b.learn("friend", "小红", V_BLUE, 0.0)
+    assert b.card_state("小红") == "new"
+    b.learn("friend", "小白", V_WHITE, 0.0)
+    b.load_cards({"小白": [outfit(V_BLUE)]})
+    assert b.card_state("小白") == "changed"
+    m = book(ema=1.0, changed=0.70)  # ema = 1：学一次就整个换掉
+    m.learn("me", "", V_WHITE, 0.0)
+    m.set_desc("me", "", "白斗篷", V_WHITE)
+    assert not m.drifted("me", "") and m.look("me", "") == "白斗篷"
+    m.learn("me", "", V_BLUE, 1.0)
+    assert m.drifted("me", "")
