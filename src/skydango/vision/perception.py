@@ -32,6 +32,7 @@ import threading
 import time
 from collections import Counter, deque
 from dataclasses import dataclass
+from pathlib import Path
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
@@ -63,6 +64,9 @@ DISK_EVERY = 0.3  # 团子周围最多隔这么久找一次火焰
 DISK_GAP = 1.0  # 火焰断开不超过这么久算同一条线索（火焰会晃）
 SELF_MAX_AGE = 1.0  # 找火焰：团子框这么久没更新就不用（宁可漏，不全屏乱找）
 LIT_LOW = 0.2  # 点亮陌生人开着时检测器按这个出框：晚上黑影分数低（10-01 晚 0.27 / 0.28），找"火焰下面那个人"时也看低分框
+DIAG_EVERY = 0.5  # 点亮中每隔这么久存一张图（spec 2026-10-01-light-flame-around-self §5）
+DIAG_MAX = 30  # 一次最多存这么多张
+DIAG_RUNS = 50  # 一次运行最多存这么多次
 FRAME_STALE = 0.5  # lit()：最近一次扫描比 FRAME_STALE + DISK_EVERY 更旧（感知没在跑 / 团子框丢了）就不判
 LIT_SCANS = 2  # 判点亮：连续这么多次扫描（每 DISK_EVERY 一次）都看到他变亮才算
 ICON_OFFSET = 2.23  # 圆圈中心在名字标签上沿往下这么多倍标签高度（game-ops §6 实测）
@@ -198,6 +202,7 @@ class PerceptionWatcher:
         gesture_cfg: GestureConfig | None = None,
         social_cfg: SocialConfig | None = None,  # 点亮陌生人（spec 2026-10-01）：和 flame 都有才找火焰圆盘
         flame: np.ndarray | None = None,
+        light_dir: Path | None = None,  # 点亮陌生人每次存图 / summary.json 的目录（None = 不存）
         appearance=None,  # vision.appearance.AppearanceBook：认装扮（None = 不认，行为照旧）
         embedder=None,  # 外观特征模型（appearance.make_embedder）
         appearance_cfg: AppearanceConfig | None = None,
@@ -226,6 +231,9 @@ class PerceptionWatcher:
         self.light_cfg = social_cfg
         self.flame = flame
         self._flame: dict | None = None  # 团子身边现在的火焰线索（spec 2026-10-01-light-flame-around-self §3；self._lock 保护）
+        self.light_dir = light_dir
+        self._diag: dict | None = None  # 当前这次点亮的存图：dir / count / next / requested
+        self._diag_runs = 0
         self._flame_seq = 0
         self._flame_check = float("-inf")
         self._flame_log = float("-inf")  # DEBUG 日志每秒最多一行
@@ -449,7 +457,10 @@ class PerceptionWatcher:
         self._frame_h, self._frame_w = height, width
         dets = one_self(self._filter(self._detect(frame), width, height, panel_visible))
         detected = time.perf_counter()
-        low = [d for d in dets if d.score < self.cfg.conf]
+        low_all = [d for d in dets if d.score < self.cfg.conf]
+        # 检测器为点亮陌生人放低到 LIT_LOW 后，promote_weak_self / 难例 / last_low 仍只看原来阈值以上的低分框
+        floor = detector_conf(self.cfg)
+        low = [d for d in low_all if d.score >= floor]
         dets = promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low)
         if self._occlusion(frame, dets):
             return
@@ -565,7 +576,7 @@ class PerceptionWatcher:
             if self.saver is not None:
                 self._save_samples(frame, players, tagged, fresh, now)
         self._people_boxes = [
-            (d.box, d.score) for d in people_boxes(dets + [x for x in low if x.score >= LIT_LOW]) if d.cls != "self"
+            (d.box, d.score) for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW]) if d.cls != "self"
         ]
         bonfires = [t for t in tracks if t.cls == "bonfire"]
         self._watch_flames(frame, tags, bonfires, now, width, height, panel_visible)
@@ -1406,13 +1417,63 @@ class PerceptionWatcher:
                           now - clue["first"], clue["best"], "（冷却中）" if cooling else "", "（正在点亮）" if lighting else "")
             elif why:
                 log.debug("没找火焰 / 不算：%s", why)
+        if lighting is not None and self._diag is not None and self._scan is not None and now >= self._diag["next"]:
+            self._save_light(frame, now, "raised")
         if first:
             log.info("身边有没点火的陌生人：火焰出现了 %.0f 秒（线索 %d）", now - clue["first"], clue["id"])
             self._on_request(frame, now)
 
     def _on_request(self, frame: np.ndarray, now: float) -> None:
-        """第一次出请求时的钩子：存图（Task 5 填）。"""
-        pass
+        """第一次出请求：新建这次的存图目录、存一张（dry-run 不按键也存：看得出该不该举）。"""
+        if self.light_dir is None or self._diag_runs >= DIAG_RUNS:
+            self._diag = None
+            return
+        self._diag_runs += 1
+        stamp = time.strftime("%H%M%S")
+        path, k = self.light_dir / stamp, 1
+        while path.exists():
+            k += 1
+            path = self.light_dir / f"{stamp}-{k}"
+        self._diag = {"dir": path, "count": 0, "next": float("-inf"), "requested": now}
+        self._save_light(frame, now, "request")
+
+    def _save_light(self, frame: np.ndarray, now: float, label: str) -> None:
+        """画上搜索范围（灰）、团子框（白）、火焰（青圈 + 分数）、判点亮找到的人（绿 = 不黑 / 紫 = 黑 + black 值）。"""
+        diag = self._diag
+        if diag is None or diag["count"] >= DIAG_MAX:
+            return
+        import cv2
+
+        from ..imageio import imwrite
+
+        img = frame.copy()
+        scan = self._scan or {}
+        if scan.get("area") is not None:
+            a = scan["area"]
+            cv2.rectangle(img, (a.x, a.y), (a.x2, a.y2), (160, 160, 160), 2)
+        if scan.get("me") is not None:
+            m = scan["me"]
+            cv2.rectangle(img, (m.x, m.y), (m.x2, m.y2), (255, 255, 255), 2)
+        f = scan.get("flame")
+        if f is not None:
+            cv2.circle(img, (f.x, f.y), round(f.r * 1.5), (255, 255, 0), 2)
+            cv2.putText(img, f"{f.score:.2f}", (f.x + round(f.r * 1.5), f.y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        with self._lock:
+            person = self._lighting["person"] if self._lighting is not None else None
+            raised = self._lighting["raised"] if self._lighting is not None else None
+        if person is not None:
+            box, blk = person
+            color = (200, 60, 200) if blk >= self.light_cfg.lit_black else (60, 220, 60)
+            cv2.rectangle(img, (box.x, box.y), (box.x2, box.y2), color, 2)
+            cv2.putText(img, f"{blk:.2f}", (box.x, box.y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        offset = now - (raised if raised is not None else now)
+        try:
+            diag["dir"].mkdir(parents=True, exist_ok=True)
+            imwrite(diag["dir"] / f"{label}-{offset:+05.1f}.jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        except Exception:
+            log.debug("存点亮图出错", exc_info=True)
+        diag["count"] += 1
+        diag["next"] = now + DIAG_EVERY
 
     def mark_tried(self, clue_id: int) -> None:
         """身体举起蜡烛了：开始"点亮中"（期间不出新请求），记下这时火焰在哪、他有多黑。"""
@@ -1427,6 +1488,8 @@ class PerceptionWatcher:
                 "person": None, "person_at": float("-inf"),
                 "scan_at": float("-inf"), "bright": 0,  # 最近一次真的找过火焰的时间；连续几次扫描看到他变亮
             }
+            if self._diag is not None:
+                self._diag["next"] = float("-inf")  # 举起后第一帧就存
             self.requests.pop(LIGHT_KEY, None)
 
     def lit(self, clue_id: int, since: float) -> bool | None:
@@ -1471,7 +1534,26 @@ class PerceptionWatcher:
         self._light_finished(L, result)
 
     def _light_finished(self, lighting: dict, result: str) -> None:
-        """写存图的 summary.json（Task 5）。"""
+        """写这次的 summary.json：线索、出请求 / 举起时间、结果、举起时和最后的 black()、火焰最后看到的时间（都相对举起，秒）。"""
+        diag, self._diag = self._diag, None
+        if diag is None:
+            return
+        import json
+
+        raised = lighting["raised"]
+        rel = lambda t: None if t == float("-inf") else round(t - raised, 2)  # noqa: E731
+        summary = {
+            "clue": lighting["id"], "result": result, "images": diag["count"],
+            "requested": rel(diag["requested"]), "raised": 0.0, "done": rel(self.clock()),
+            "black_raised": lighting["black0"],
+            "black_end": round(lighting["person"][1], 3) if lighting["person"] is not None else None,
+            "flame_last": rel(lighting["flame_last"]),
+        }
+        try:
+            diag["dir"].mkdir(parents=True, exist_ok=True)
+            (diag["dir"] / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            log.debug("写点亮 summary 出错", exc_info=True)
 
     @staticmethod
     def _ring_center(ring: Track) -> tuple[int, int]:

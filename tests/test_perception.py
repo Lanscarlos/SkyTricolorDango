@@ -1831,7 +1831,7 @@ def test_orphan_white_ring_is_still_a_candle_request(name):
     assert w.requests[STRANGER].kind == "candle"
 
 
-def test_scene_watcher_loads_flame_only_for_brain(monkeypatch):
+def test_scene_watcher_loads_flame_only_for_brain(monkeypatch, tmp_path):
     """只有大脑模式的身体会举蜡烛：普通 Agent 不找火焰圆盘（否则 light 请求一直挂着）。"""
     from skydango import cli
     from skydango.config import Config
@@ -1845,6 +1845,12 @@ def test_scene_watcher_loads_flame_only_for_brain(monkeypatch):
     assert "light" in cfg.social.accept_strangers
     assert cli._scene_watcher(cfg).flame is None
     assert cli._scene_watcher(cfg, light=True).flame is not None
+    from types import SimpleNamespace
+
+    cfg.perception.hardcases = False
+    run = SimpleNamespace(path=tmp_path, hard=tmp_path / "hard")
+    assert cli._scene_watcher(cfg, run=run, light=True).light_dir == tmp_path / "light"
+    assert cli._scene_watcher(cfg, run=run).light_dir is None
 
 
 def lit_setup(monkeypatch, flames, black_seq=(0.9,)):
@@ -2053,3 +2059,69 @@ def test_light_done_pops_request(monkeypatch):
     w.requests[LIGHT_KEY] = req  # 模拟 mark_tried 落在 _watch_flames 算完和写入之间、请求被写回
     w.light_done("timeout")
     assert LIGHT_KEY not in w.requests
+
+
+def test_diag_images_and_summary(monkeypatch, tmp_path):
+    import json
+
+    w, det, clock = light_watcher(monkeypatch, [FLAME])
+    w.light_dir = tmp_path
+    det.frames = [[self_det(), unlit(1000)]]
+    run_frames(w, clock, 0.0, 3.1)
+    (d,) = list(tmp_path.iterdir())
+    assert len(list(d.glob("request-*.jpg"))) == 1  # 出请求那一刻一张（dry-run 也有）
+    cid = w.requests[LIGHT_KEY].track
+    w.mark_tried(cid)
+    run_frames(w, clock, 3.2, 5.2)
+    raised = sorted(d.glob("raised-*.jpg"))
+    assert 4 <= len(raised) <= 6  # 每 DIAG_EVERY 秒一张
+    w.light_done("timeout")
+    s = json.loads((d / "summary.json").read_text(encoding="utf-8"))
+    assert s["clue"] == cid and s["result"] == "timeout" and s["black_raised"] is not None
+    run_frames(w, clock, 5.3, 6.0)
+    assert len(sorted(d.glob("raised-*.jpg"))) == len(raised)  # 结束后不再存
+
+
+def test_diag_max_per_attempt(monkeypatch, tmp_path):
+    monkeypatch.setattr(perception_mod, "DIAG_MAX", 3)
+    w, det, clock = light_watcher(monkeypatch, [FLAME])
+    w.light_dir = tmp_path
+    det.frames = [[self_det()]]
+    run_frames(w, clock, 0.0, 3.1)
+    w.mark_tried(w.requests[LIGHT_KEY].track)
+    run_frames(w, clock, 3.2, 8.0)
+    (d,) = list(tmp_path.iterdir())
+    assert len(list(d.glob("*.jpg"))) == 3
+
+
+def test_diag_runs_capped(monkeypatch, tmp_path):
+    monkeypatch.setattr(perception_mod, "DIAG_RUNS", 1)
+    w, det, clock = light_watcher(monkeypatch, [FLAME])
+    w.light_dir = tmp_path
+    det.frames = [[self_det()]]
+    run_frames(w, clock, 0.0, 3.1)
+    w.mark_tried(w.requests[LIGHT_KEY].track)
+    w.light_done("lit")
+    run_frames(w, clock, 3.2, 6.5)  # 第二次出请求：超过 DIAG_RUNS 不再建目录
+    assert LIGHT_KEY in w.requests and len(list(tmp_path.iterdir())) == 1
+
+
+def test_no_light_dir_saves_nothing(monkeypatch, tmp_path):
+    w, det, clock = light_watcher(monkeypatch, [FLAME])
+    det.frames = [[self_det()]]
+    run_frames(w, clock, 0.0, 3.1)
+    w.mark_tried(w.requests[LIGHT_KEY].track)
+    run_frames(w, clock, 3.2, 4.0)
+    w.light_done("gone")  # 没有存图目录：不出错
+
+
+def test_low_boxes_for_light_do_not_change_weak_self_promotion():
+    """检测器为点亮陌生人放低到 LIT_LOW 后：低分 self 不能再触发 promote_weak_self（和以前一样只认 conf 以上的门槛），
+    低分黑影照样进 _people_boxes。"""
+    det = FakeDetector()
+    det.frames = [[Detection("player", SELF, 0.9), Detection("self", SELF, 0.22), unlit(1500, score=0.22)]]
+    w = watcher(det, hardcases=False)
+    w.process(frame(), 1.0, panel_visible=False)
+    assert not any(d.cls == "self" for d in w.last_dets)
+    assert w.last_low == []
+    assert any(b.x == 1500 and s == 0.22 for b, s in w._people_boxes)
