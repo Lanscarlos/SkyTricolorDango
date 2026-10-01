@@ -53,6 +53,12 @@
 
 看效果：`python -m skydango view --model models/sky-yolo-v4.pt`（只看不动）。
 
+**`.pt` 还是 `.onnx`**（10-01 实测，RTX 5070 Ti、120 帧录像）：本机继续用 `.pt`。v7 `.pt`（ultralytics CUDA）整帧检测 9.5 ms；
+导出的 `sky-yolo-v7.onnx`（960×960）用 onnxruntime-gpu 1.22 跑 20.8 ms（模型本身 7.5 ms，慢在 CPU 上的预处理 / NMS，
+还有 ultralytics 跑 `.pt` 时按 960×544 推理、ONNX 固定 960×960 多算了一倍像素），检测结果约 4% 的框不一样（补边不同，门槛边上的框时有时无）；CPU 上 73 ms。
+onnxruntime-gpu 1.30 要 CUDA 13（驱动 572.84 最高 12.8），1.22 / 1.23 能借 torch 自带的 CUDA 12 库（先 `import torch`）。
+没有 torch 的机器用 ONNX + DirectML（`device = "dml"`）时，**导出用和截图同比例的 960×544**，别用正方形。
+
 ## 今晚合并进 main 的代码
 
 - `fix(chatlog)`：聊天输入框变暗（面板开着一会儿后）也认得出 —— 之前弱标注把面板里的好友名当成头顶名字
