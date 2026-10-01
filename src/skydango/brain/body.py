@@ -693,7 +693,7 @@ class Body:
         a = self.attention
         a.width = self.frame_width
         if self.skills.active is not None:  # 技能（track）在动镜头
-            self._camera_moved_at = now
+            self._camera_moved("turn", now)
         if self._camera_moved_at > self._attn_seen_move:
             self._attn_seen_move = self._camera_moved_at
             a.external_move(self._camera_moved_at)
@@ -707,6 +707,7 @@ class Body:
         except Exception:
             log.exception("注意力转镜头出错")
             return
+        self._notify_camera("turn")  # 只告诉感知层；不设 _camera_moved_at（那是"别人"动镜头，会挡住注意力自己）
         a.pressed(th.action, now)
         self._attention_pressed_at = now
         self._ref_thumb = None  # 自己转的，不算画面大变
@@ -1414,6 +1415,7 @@ class Body:
         height = int(self.last_frame.shape[0]) if self.last_frame is not None else 1080
         planner = PeekPlanner(cfg, track, width, height)
         start, pressed, reason = self.clock(), 0, "budget"
+        zoomed = False
         last, shot = None, None
         try:
             with self.panel.borrow("look_person") as was_open:
@@ -1432,6 +1434,7 @@ class Body:
                         self.camera.nudge(action.direction, action.seconds)
                     else:
                         self.camera.zoom_once(action.direction)
+                        zoomed = True
                     pressed += 1
                     self.sleep(track.settle)
                     obs, frame = self._peek_look(name, self.clock())
@@ -1440,7 +1443,7 @@ class Body:
         finally:
             if pressed:
                 self._ref_thumb = None  # 自己转的，不算画面大变
-                self._camera_moved_at = self.clock()
+                self._camera_moved("zoom" if zoomed else "turn")
                 self._forget_self()
         if reason in ("budget", "lost") and planner.enlarging:  # 已经露出来过（调大小时用完预算 / 拉近把人推没了）：用露出来那一帧
             reason = "revealed"
@@ -1479,7 +1482,7 @@ class Body:
                 frames = self.camera.around(self.device.screenshot)
         finally:
             self._ref_thumb = None  # 自己转的镜头，不算画面大变
-            self._camera_moved_at = self.clock()
+            self._camera_moved("spin")
         self.last_frame = frames[0]
         return frames
 
@@ -1499,7 +1502,7 @@ class Body:
                 result = self.env.sweep([(0.0, shot.before), *shot.frames], spin)
         finally:
             self._ref_thumb = None  # 自己转的镜头，不算画面大变
-            self._camera_moved_at = self.clock()
+            self._camera_moved("spin")
         self.last_frame = shot.after
         if not shot.panel_reopened:
             self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
@@ -1944,7 +1947,7 @@ class Body:
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         self._ref_thumb = None  # 自己转的镜头，不算画面大变
-        self._camera_moved_at = self.clock()
+        self._camera_moved("zoom" if action.startswith("zoom") else "turn")
         self._forget_self()
         return "镜头现在：" + result + (OWNER_NOTE if owner and steps > CAMERA_MAX_STEPS else "") + stopped
 
@@ -1976,11 +1979,27 @@ class Body:
             return f"dry-run：没真的走（{direction} ×{max(1, min(steps, max_steps))}）{note}"
         result = self.locomotion.move(direction, steps, max_steps)
         self._ref_thumb = None  # 自己走的，不算画面大变
+        self._notify_camera("move")  # 走路时框高会突变：感知层别当成别人在走近走远
         self._forget_camera_reference()  # 走过之后转之前那张参照图对不上了：复位时只粗转
         return result + (OWNER_NOTE if relaxed else "")
 
     def stop_task(self) -> str:
         return self.skills.cancel(self, "大脑叫停")
+
+    def _camera_moved(self, kind: str, at: float | None = None) -> None:
+        """别人（大脑工具、技能、换角度、环顾）动了镜头：记下时间（注意力让开），再告诉感知层。"""
+        self._camera_moved_at = self.clock() if at is None else at
+        self._notify_camera(kind, self._camera_moved_at)
+
+    def _notify_camera(self, kind: str, at: float | None = None) -> None:
+        """告诉感知层镜头动了（turn / zoom / move / spin，spec 2026-10-01-tracking-relink-motion §2.5）；出错只记日志。"""
+        moved = getattr(self.env, "camera_moved", None)
+        if moved is None:
+            return
+        try:
+            moved(self.clock() if at is None else at, kind)
+        except Exception:
+            log.exception("告诉感知层镜头动了出错")
 
     def _stop_camera_task(self, why: str) -> str:
         """要自己转镜头 / 点人之前：正在跑要转镜头的技能（track）就先停下，返回给结果用的说明（没停返回空串）。"""
@@ -2022,7 +2041,7 @@ class Body:
         with self._held("camera"):
             result = self.camera.reset()
         self._ref_thumb = None
-        self._camera_moved_at = self.clock()
+        self._camera_moved("zoom")  # 复位会重放拉近拉远：按缩放算
         self._forget_self()
         return result + stopped
 
