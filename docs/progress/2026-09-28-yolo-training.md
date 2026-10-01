@@ -158,6 +158,33 @@ python -m skydango record --seconds 120 --fps 8 -o tmp/record/gesture-wave-1
 - **反例**（`none`）也要：好友站着不动、走来走去、坐下、做别的动作（拍手、跳舞……）各录一段，否则模型会把什么都当成挥手
 - 第一版认 **挥手（`wave`）、鞠躬（`bow`）、欢呼（`cheer`）、害羞（`shy`）** 四种（10-01 定的；`[gesture] labels` 到时候改）
 
+### 10-01 晚：先训座位（v8，没过线、没上线）
+
+录了两段茶座（`tmp/record/obj-bench-teatable-1`、`-2`，同一张地图，各 3 分钟 2 fps）：矮凳茶桌、顶棚茶摊配方凳、石圈旁木凳、蛋糕桌配马卡龙坐垫、长餐桌配红色高背椅；
+还拍到一大片**变身成雪人的玩家**（规则改成标 `player`，辅助标注提示词版本 4）。`--assist --model v7` 挑了 277 帧（116 + 161），再 `--objects --model v7 --only 'obj-bench-teatable-*'`，
+共约 180 万输入 / 78 万输出 token。核对后修正（脚本在 `tmp/check/`）：
+- 人物：雪人 / 变身玩家被判 `not_person` 的改回、一帧漏掉的团子和两个人补上（`fix_teatable_people.py`）
+- 物品模式把**共享空间玩家（蓝色半透明小人）和墙上壁画当成先祖**（13 个人物框被改、新加 26 个）→ 这两段没有真先祖：人物行从 `_backup/labels-20261001-221130` 恢复、先祖全删（`fix_teatable_objects.py`）
+- 物品模式把**白色"对话"图标（白圈里的气泡形图标）标成 typing**：拼图逐个看，删 80 个（`typing_*.jpg`）
+- 座位：拼图逐个看，删 23 个（空框、蛋糕桌桌面、带 ♪ 圆圈的蓝色亮晶晶摆件——多半是乐器，没确认）→ 271 个（train 221 / val 50）
+
+v8（`tmp/yolo/sky-v8/weights/best.pt`，816 帧、yolo11n、120 epoch、约 42 分钟）同一验证集 mAP50（`tmp/yolo/compare_v7_v8.py`）：
+
+| 类别 | 旧 val 90 帧 v7 → v8 | 茶座 val 49 帧 v7 → v8 |
+|---|---|---|
+| player | 0.734 → 0.735 | 0.547 → 0.552 |
+| social_ring | 0.922 → 0.878 | 0.545 → 0.779 |
+| self | 0.812 → 0.837 | 0.628 → 0.698 |
+| player_unlit | 0.771 → 0.746 | 0.563 → 0.422 |
+| typing | 0.994 → 0.994 | 0.274 → 0.409 |
+| bench | 0.495 → 0.124（旧数据只有几个框） | 0 → 0.216 |
+
+认人基本持平，**座位远低于 0.6**。看验证帧（`tmp/yolo/bench_diag.py` → `tmp/check/bench_diag_*.jpg`）：座位都找得到，但置信度 0.05~0.4、一处冒好几个大小不一的框 ——
+**标注不一致**：同一张桌这帧标了下帧没标，一排椅子只标两三把；有时一把椅子一个框、有时两把合一个，茶桌有时连茶壶有时只框凳面。v8 不上线，本机继续用 v7。
+
+下一步：定框法（一把椅子 / 一个坐垫一个框；茶桌、长椅这种连成一件的整件框、桌上东西一起框；桌子本身不算）→ 写进物品提示词 →
+`--objects --model tmp/yolo/sky-v8/weights/best.pt --recheck --only 'obj-bench-teatable-*'` 重标座位 → 拼图核对 → 再训；再录一两张别的地图的座位。
+
 ### 明天白天
 
 - 物品：`perception label <录像> --assist` 先标人 → `perception label datasets/sky --objects` 补物品 → 看 `_assist/objects.md` 修正 → `perception augment` → 训 v8；

@@ -220,7 +220,7 @@ dir = "private/sandbox"
 - 普通模式主人命令 `#spin [圈数]`：转一圈、截图存 `runs/<…>/spin/<时间>/`，打开感知层时回复带扫描结果；大脑模式不加
 - **本机在用 `models/sky-yolo-v7.pt`**（2026-09-30，539 帧，能认头顶气泡 `typing`；v4 在 run 里真机用过、v5 / v6 没上线），进度、数据、标注规则、各版对比和待办见 `docs/progress/2026-09-28-yolo-training.md`；
   **标气泡别只靠 Claude**：它标不出好友名字下方叠着的文字气泡，要 OCR 兜底（做法见进度文档 09-30 一节）；
-  **还没在 `run` 里打开过感知层，所有阈值都没在真机验证**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
+  感知层已在真机 `run` 里用过多次（好友走远、标签淡掉后轨迹断开被判成陌生人，见 `docs/superpowers/specs/2026-10-01-tracking-relink-motion-design.md`）；**下面这些阈值还没在真机标定**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
 - **核显 / 没有 N 卡的机器**（`device = "dml"`，`vision/onnxrt.py`，**未在 Windows 核显上验证**）：在 GPU 机器上导出 `.onnx`（`.pydeps\bin\yolo.exe export model=models/sky-yolo-v7.pt format=onnx imgsz=960`）拷过去，
   `pip uninstall onnxruntime` 再 `pip install onnxruntime-directml`（两个包都叫 `onnxruntime` 模块，只能装一个；以后 `pip install -e ".[ocr]"` 会把 onnxruntime 装回来盖掉，要重装 directml；`pip check` 报 skydango 缺 onnxruntime 是正常的）。
   先 `perception bench --model models/sky-yolo.onnx --images <录像目录>` 看后端是不是 `DmlExecutionProvider`、每帧多少 ms，再按实测把 `fps` 降下来（估计 2~3）。
