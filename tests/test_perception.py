@@ -1686,14 +1686,49 @@ def test_no_self_box_no_search(monkeypatch):
 
 
 def test_stale_self_track_still_used_within_a_second(monkeypatch):
+    """黑影贴着团子认不出团子时沿用最近的团子框最多 SELF_HOLD 秒（之前是 SELF_MAX_AGE 1 秒）。
+    1 秒内用旧框找火焰（SELF_MAX_AGE），1~3 秒用 _me_last 继续找（SELF_HOLD），3 秒后停止。"""
     w, det, clock = light_watcher(monkeypatch, [FLAME])
     det.frames = [[self_det()]]
     run(w, 0.0, clock)
     det.frames = [[]]
     run(w, 0.5, clock)  # 这一帧没认出团子，但 0.5 秒前有
     assert len(w.areas) == 2
-    run(w, 1.6, clock)  # 超过 SELF_MAX_AGE：不找
-    assert len(w.areas) == 2
+    run(w, 1.6, clock)  # SELF_MAX_AGE 过了（1.6 > 1.0），但 SELF_HOLD 内（1.6 < 3.0）还在找
+    assert len(w.areas) == 3
+    run(w, 3.1, clock)  # 过了 SELF_HOLD（3.1 > 3.0）：不找
+    assert len(w.areas) == 3
+
+
+def test_self_box_held_while_hidden(monkeypatch):
+    """黑影贴着团子认不出团子的情况。0.0 有 self_det()，0.3~2.9 只有 unlit（没有 self），
+    火焰一直在 → 这期间照样在找（w.areas 增加），线索不断（w._flame["id"] 不变），
+    3.1 秒出请求。"""
+    w, det, clock = light_watcher(monkeypatch, [FLAME])
+    det.frames = [[self_det(), unlit(1000)]]
+    run(w, 0.0, clock)
+    assert len(w.areas) == 1
+    flame_id_start = w._flame["id"] if w._flame else None
+    det.frames = [[unlit(1000)]]  # 0.3~2.9 秒没有 self，只有 unlit
+    run_frames(w, clock, 0.3, 2.9, step=0.1)  # 每 0.1 秒跑一帧，让 0.3, 0.6, 0.9 等都扫描到
+    assert len(w.areas) >= 5  # 应该有多次搜索（0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7）
+    assert w._flame is not None and w._flame["id"] == flame_id_start  # 线索没断
+    run(w, 3.1, clock)
+    assert LIGHT_KEY in w.requests  # 出请求了
+
+
+def test_self_box_hold_expires(monkeypatch):
+    """0.0 有 self，之后一直没有 → 3.0 秒之后不再找（w.areas 不再增加）。"""
+    w, det, clock = light_watcher(monkeypatch, [FLAME])
+    det.frames = [[self_det()]]
+    run(w, 0.0, clock)
+    assert len(w.areas) == 1
+    det.frames = [[]]  # 之后没有 self
+    for t in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0):
+        run(w, t, clock)
+    area_count_at_3_0 = len(w.areas)
+    run(w, 3.1, clock)
+    assert len(w.areas) == area_count_at_3_0  # 不再搜索
 
 
 def test_scan_throttled(monkeypatch):

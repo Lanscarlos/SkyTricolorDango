@@ -63,6 +63,7 @@ STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个
 DISK_EVERY = 0.3  # 团子周围最多隔这么久找一次火焰
 DISK_GAP = 1.0  # 火焰断开不超过这么久算同一条线索（火焰会晃）
 SELF_MAX_AGE = 1.0  # 找火焰：团子框这么久没更新就不用（宁可漏，不全屏乱找）
+SELF_HOLD = 3.0  # 团子框丢了（黑影贴着团子时 YOLO 常认不出 self）最多沿用最近的框这么久：镜头跟着团子，屏幕位置几乎不变
 LIT_LOW = 0.2  # 点亮陌生人开着时检测器按这个出框：晚上黑影分数低（10-01 晚 0.27 / 0.28），找"火焰下面那个人"时也看低分框
 DIAG_EVERY = 0.5  # 点亮中每隔这么久存一张图（spec 2026-10-01-light-flame-around-self §5）
 DIAG_MAX = 30  # 一次最多存这么多张
@@ -267,6 +268,7 @@ class PerceptionWatcher:
         self.timings: deque[tuple[float, float]] = deque(maxlen=300)  # (检测 ms, 整帧 ms)
         self.far_runs = 0  # 远处二次检测跑了几次（测速 / compare 用）
         self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
+        self._me_last: tuple[Rect, float] | None = None  # 沿用的最近一次团子框：(box, time)，黑影贴着时认不出 self
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
         self._frame_w = 1920  # 最近一帧的宽度（算在画面哪边用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
@@ -1320,9 +1322,18 @@ class PerceptionWatcher:
         return not white_ring(frame, cx, cy, ring.box.w / 2)
 
     def _self_now(self, now: float) -> Rect | None:
-        """团子现在在哪：最近 SELF_MAX_AGE 秒内更新过的 self 轨迹里分数最高的（不用 self_box / self_roi：团子会被镜头带着偏）。"""
-        selfs = [t for t in self.tracker.tracks.values() if t.cls == "self" and now - t.last <= SELF_MAX_AGE]
-        return max(selfs, key=lambda t: t.score).box if selfs else None
+        """团子现在在哪：最近这一帧有新检测的 self 轨迹里分数最高的。找不到时沿用最近的框最多 SELF_HOLD 秒。
+        黑影贴着团子时 YOLO 常认不出 self；镜头跟着团子，屏幕位置几乎不变，短时间沿用最近的框是安全的。"""
+        # 只用这一帧有新检测（刚匹配）的 self 轨迹（之前用 SELF_MAX_AGE 内的老轨迹，但现在黑影贴着时那些也会掉分、不进追踪）
+        fresh_selfs = [t for t in self.tracker.tracks.values() if t.cls == "self" and now - t.last < 1e-6]
+        if fresh_selfs:
+            best = max(fresh_selfs, key=lambda t: t.score)
+            self._me_last = (best.box, now)
+            return best.box
+        # 没有这一帧的新检测，沿用最近的框（黑影贴着认不出时）
+        if self._me_last and now - self._me_last[1] <= SELF_HOLD:
+            return self._me_last[0]
+        return None
 
     def _flame_area(self, me: Rect, width: int, height: int) -> Rect:
         cfg, cx = self.light_cfg, me.x + me.w / 2
