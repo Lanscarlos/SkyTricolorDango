@@ -166,6 +166,9 @@ class EnvWatcher:
     def held(self, reason: str) -> Iterator[None]:
         yield
 
+    def camera_moved(self, at: float, kind: str) -> None:
+        """身体动了镜头：整图 OCR 不用管（YOLO 感知层要清速度 / 走近历史）。"""
+
     def nearby(self, now: float) -> list[str]:
         """最近 keep 秒内看到过名字标签的好友（按名单顺序）。标签会被挡住、会闪，所以不要求每次都看到。"""
         return [n for n in self.names() if now - self.last_seen.get(n, float("-inf")) <= self.cfg.keep]

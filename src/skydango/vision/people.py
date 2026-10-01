@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from .bubbles import Rect
 
 WHO = {"stranger": "陌生人", "unlit": "没点火的陌生人"}
+MOVING = ("走近", "走远", "往左走", "往右走")  # 写进 status 的运动方向（站着不写）
 OBJECT_NAMES = {"bench": "座位", "bonfire": "篝火", "instrument": "乐器", "spirit": "先祖"}  # 物品类别 → 中文（顺序即类别顺序）
 
 
@@ -24,6 +25,7 @@ class Person:
     sure: bool = True  # False = 没看到名字标签、按外观认的好友（"像小明"）
     sid: str | None = None  # 点过火的陌生人按外观给的编号（"陌生人A"）
     look: str = ""  # 陌生人的装扮描述（有才有）
+    motion: str | None = None  # 走近 / 走远 / 往左走 / 往右走 / 站着（团子画面里的方向）；None = 拿不准
 
 
 def side_of(cx: float, width: int) -> str:
@@ -31,7 +33,7 @@ def side_of(cx: float, width: int) -> str:
 
 
 def _describe_person(p: Person) -> str:
-    where = f"{p.side}·{p.distance}"
+    where = f"{p.side}·{p.distance}" + (f"，正在{p.motion}" if p.motion in MOVING else "")
     if p.kind == "friend" and not p.sure:
         return f"像{p.name}（没看到名字，{where}）"
     if p.sid:

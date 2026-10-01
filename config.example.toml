@@ -117,8 +117,19 @@ far_crops = 3                   # 每帧最多裁几块；0 = 关（perception c
 object_min_hits = 3             # 物品（座位 / 篝火 / 乐器 / 先祖）连续看到几帧才算
 object_near = 0.85              # 物品远近按框底边：底边 ≥ 画面高 × 这个算近（待标定）
 object_far = 0.65               # ≥ 这个算中，再高算远（待标定）
-sticky_names = true             # 挂过名字标签的轨迹不断就一直算在身边（好友稍远名字标签会淡掉）；false = 照旧
 edge_band = 0.06                # 名字标签贴在屏幕最左 / 最右这么宽里、又没挂上人 = 好友在画面外，不算在身边；0 = 关
+# 追踪和接回（数字都没标定，先 perception track-eval 在录像上定；开关全关 = 原来的行为）
+sticky_names = true             # 挂过名字标签的轨迹不断就一直算在身边（好友稍远名字标签会淡掉）；false = 照旧
+track_low = true                # 低分框续旧轨迹（只续不开新的）
+track_predict = true            # 速度预测 + 中心距离兜底
+track_center_gate = 0.6         # 中心距离门槛（× 预测框高）
+track_pan = true                # 估计画面平移（转镜头）并补偿
+relink = true                   # 好友轨迹断了，keep 秒内在附近冒出来的没名字的人按位置接回成"像他"
+motion = true                   # 运动方向：走近 / 走远 / 往左走 / 往右走 / 站着
+motion_window = 1.5             # 看最近这么久（秒）
+motion_grow = 0.15              # 框高变化比例超过这个算走近 / 走远
+motion_side = 0.6               # 横向位移超过这么多个身高算往左 / 往右
+motion_hold = 0.5               # 新结论连续这么久才换
 
 [places]
 # 认地图（感知层三期，要先打开 [perception]）：和 places/<地名>/ 里的参考截图比，认出在哪张图

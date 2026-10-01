@@ -358,6 +358,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         places=places, place_interval=cfg.places.place_interval,
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
         social_cfg=cfg.social, flame=flame, **_appearance_parts(cfg, run), call_window=cfg.call.window,
+        camera_settle=cfg.track.settle,
     )
 
 
@@ -696,6 +697,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_appearance_eval(cfg, args)
     elif args.action == "halo-eval":
         _perception_halo_eval(cfg, args)
+    elif args.action == "track-eval":
+        _perception_track_eval(cfg, args)
 
 
 def _existing_clips(dataset: Path, out: Path, recording: str) -> dict[Path, list[str]]:
@@ -997,6 +1000,46 @@ def _perception_compare(cfg: Config, args) -> None:
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out / "report.md").write_text(report_md(summary), encoding="utf-8")
     print(f"两边不一致 {len(summary['diff_frames'])} 帧；报告：{out / 'report.md'}")
+
+
+def _perception_track_eval(cfg: Config, args) -> None:
+    """追踪和接回的离线评估（spec 2026-10-01-tracking-relink-motion §6）：同一批录像上基线（升级开关全关）和当前配置各跑一遍，
+    按录像时间抽帧（--fps，模拟身体截图），写 report.md / summary.json。"""
+    import dataclasses
+    import json
+
+    from .vision.compare import timed_files
+    from .vision.trackeval import baseline, evaluate, report_md, subsample
+
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    out = Path(args.output or f"tmp/track-eval/{time.strftime('%Y%m%d-%H%M%S')}")
+    out.mkdir(parents=True, exist_ok=True)
+    _, current = _perception(cfg, args)  # 先建当前配置（--model 等覆盖写进 cfg.perception），基线照抄它再关开关
+    _, base = _perception(dataclasses.replace(cfg, perception=baseline(cfg.perception)), args)
+    kept = list(subsample(timed, args.fps))
+    print(f"{len(timed)} 帧里按 {args.fps:g} 帧 / 秒抽了 {len(kept)} 帧（{kept[0][0]:.1f}~{kept[-1][0]:.1f} s），基线和当前配置各跑一遍 → {out}")
+
+    def frames():
+        for n, (t, path) in enumerate(kept, 1):
+            frame = imread(path)
+            if n % 100 == 0:
+                print(f"  {n}/{len(kept)}")
+            yield t, path.name, frame, _panel_open(cfg, frame)
+
+    results = {}
+    for key, watcher in (("baseline", base), ("current", current)):
+        print("基线（开关全关）" if key == "baseline" else "当前配置")
+        results[key] = evaluate(frames(), watcher)
+    meta = {"source": str(args.source), "frames": len(kept), "fps": args.fps}
+    (out / "summary.json").write_text(json.dumps(results | {"meta": meta}, ensure_ascii=False, indent=2) + "\n",
+                                      encoding="utf-8")
+    (out / "report.md").write_text(report_md(results["baseline"], results["current"], meta), encoding="utf-8")
+    print(f"报告：{out / 'report.md'}")
 
 
 def _perception_appearance_eval(cfg: Config, args) -> None:
@@ -2554,6 +2597,13 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
     q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关；开关各跑一次对比）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/compare/<时间>）")
+    q = psub.add_parser("track-eval", help="同一批录像上对比追踪升级前后：轨迹断开和原因、假走开、确认冤枉、接回对错、运动方向")
+    q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
+    q.add_argument("--model", help="模型文件（默认 perception.model）")
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"])
+    q.add_argument("--imgsz", type=int)
+    q.add_argument("--fps", type=float, default=6.5, help="按录像时间每秒抽几帧（模拟 run 时身体截图，默认 6.5）")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/track-eval/<时间>）")
     q = psub.add_parser("appearance-eval", help="认装扮的离线标定：录像上统计同一个人 / 不同人的外观相似度，给出建议的门槛，藏标签重放")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")

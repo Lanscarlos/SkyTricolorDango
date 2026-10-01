@@ -321,8 +321,20 @@ class PerceptionConfig:
     object_near: float = 0.85  # 远近按框底边：底边 ≥ 画面高 × 这个算近（待标定）
     object_far: float = 0.65  # ≥ 这个算中，再高算远（待标定）
     # 按 Q 喊一声（spec 2026-10-01-q-call §1）
-    sticky_names: bool = True  # 挂过名字标签的轨迹只要不断就一直算在身边（好友稍远标签就淡掉）；false = 照旧只靠标签
     edge_band: float = 0.06  # 名字标签中心在最左 / 最右这么宽（屏宽比例）里、又没挂上人 = 好友在画面外（不算在身边）；0 = 关
+    # 追踪和接回（spec 2026-10-01-tracking-relink-motion；数字都没标定，perception track-eval 定完再上真机）。
+    # 下面的开关全关 = 原来的行为
+    sticky_names: bool = True  # 挂过名字标签的轨迹只要不断就一直算在身边（好友稍远标签就淡掉）；false = 照旧只靠标签
+    track_low: bool = True  # 低分框（low_conf ~ conf）续旧轨迹（只续不开）
+    track_predict: bool = True  # 速度预测 + 中心距离兜底
+    track_center_gate: float = 0.6  # 中心距离门槛（× 预测框高，估的）
+    track_pan: bool = True  # 估计画面平移（转镜头）并补偿
+    relink: bool = True  # 好友轨迹断了，keep 秒内在附近冒出来的没名字的人按位置接回成"像他"
+    motion: bool = True  # 运动方向（走近 / 走远 / 往左走 / 往右走 / 站着）
+    motion_window: float = 1.5  # 看最近这么久（秒）
+    motion_grow: float = 0.15  # 框高变化比例超过这个算走近 / 走远（估的）
+    motion_side: float = 0.6  # 横向位移超过这么多个身高算往左 / 往右（估的）
+    motion_hold: float = 0.5  # 新结论连续这么久才换（防抖）
 
 
 @dataclass
