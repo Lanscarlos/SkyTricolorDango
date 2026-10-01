@@ -605,6 +605,9 @@ class PerceptionWatcher:
             strangers += is_stranger
             if maybe and now - self.last_seen.get(maybe, float("-inf")) <= self.cfg.keep:
                 self.last_seen[maybe] = now  # 好友还在身边、只是名字标签被挡住：别冒出"走开了"（已经走开的不靠外观接回来）
+            name = player.data.get("name")
+            if self.cfg.sticky_names and name and player.data.get("tagged") and now - player.last <= PEOPLE_STALE:
+                self.last_seen[name] = now  # 续命：挂过名字的轨迹没断就还在身边（走远了标签会自己淡掉），断了才开始算 keep
             if is_stranger and self.appearance is not None:
                 self._appearance_stranger(frame, player, players, fresh.get(player.id), now)
         if self.appearance is not None:

@@ -152,3 +152,36 @@ def test_resume_zeroes_velocity():
     assert all(t.vx == t.vy == t.vh == 0 for t in w.tracker.tracks.values())
     go(3.0, 3.1)
     assert w.last_shift is None  # 暂停前的缩略图作废
+
+
+# ---- Task 4：续命 ----
+def test_sticky_keeps_friend_nearby_while_track_alive():
+    w, det = make()
+    run(w, det, [player(800), tag(800)], 0.0, 1.0)
+    t = run(w, det, [player(800)], 1.0, 11.0)
+    assert NAME in w.nearby(t)
+
+
+def test_sticky_off_drops_after_keep():
+    w, det = make(sticky_names=False)
+    run(w, det, [player(800), tag(800)], 0.0, 1.0)
+    t = run(w, det, [player(800)], 1.0, 7.0)
+    assert NAME not in w.nearby(t)
+
+
+def test_sticky_ends_after_track_dropped():
+    w, det = make(relink=False)
+    run(w, det, [player(800), tag(800)], 0.0, 1.0)
+    run(w, det, [player(800)], 1.0, 3.0)  # 最后看到 2.9
+    run(w, det, [], 3.0, 7.5)
+    assert NAME in w.nearby(7.5)  # 轨迹 4.0 删掉，keep 从 2.9 算
+    run(w, det, [], 7.5, 8.5)
+    assert NAME not in w.nearby(8.5)
+
+
+def test_sticky_ignores_maybe():
+    w, det = make(relink=False)
+    run(w, det, [player(800)], 0.0, 0.5)
+    body(w).data["maybe"] = NAME  # 只有 maybe、没挂过标签：不靠续命
+    t = run(w, det, [player(800)], 0.5, 1.0)
+    assert NAME not in w.nearby(t)
