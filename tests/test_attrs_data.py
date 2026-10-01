@@ -144,3 +144,24 @@ def test_writeback_class_map(tmp_path):
     assert ad.writeback(root, out, datetime(2026, 10, 2, 1, 2, 3)) == {"frames": 1, "boxes": 3}
     got = [ln.split()[0] for ln in (root / "labels/val/0002_2.00s.txt").read_text(encoding="utf-8").splitlines()]
     assert got == ["4", "4", "9", "0"]
+
+
+def test_rows_absolute_paths_and_other_dataset_not_written(tmp_path):
+    from pathlib import Path
+
+    root = _dataset(tmp_path)
+    out = tmp_path / "attrs"
+    ad.crops_from_dataset(root, FakeDetector({1: [_det("player", 150, 5, 20, 40)]}), out, conf=0.2)
+    rows = _rows(out)
+    assert all(Path(r["image"]).is_absolute() and Path(r["image"]).is_file() for r in rows)
+    assert all(r["dataset"] == root.resolve().as_posix() for r in rows)
+    _move(out, next(r for r in rows if not r["known"]), "lit")
+    other = tmp_path / "other"
+    (other / "labels" / "train").mkdir(parents=True)
+    (other / "images" / "train").mkdir(parents=True)
+    assert ad.writeback(other, out, datetime(2026, 10, 2, 9, 0, 0)) == {"frames": 0, "boxes": 0}
+    assert not (other / "_backup").exists() and not list((other / "labels" / "train").iterdir())
+    # 旧记录（没有 dataset）跳过
+    (out / "_crops.jsonl").write_text(
+        "".join(json.dumps({k: v for k, v in r.items() if k != "dataset"}) + "\n" for r in rows), encoding="utf-8")
+    assert ad.writeback(root, out, datetime(2026, 10, 2, 9, 0, 0)) == {"frames": 0, "boxes": 0}

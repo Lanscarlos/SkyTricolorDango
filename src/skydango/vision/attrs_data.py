@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from datetime import datetime
@@ -30,6 +31,7 @@ DETECT_CLASSES = ("player", "player_unlit")
 UNLABELED_IOU = 0.4  # 检测框和任何人物标注的 IoU 低于这个才算"没标过"
 DEDUP_IOU = 0.5  # 同一张图里重叠这么多的只留分高的；写回时同帧已有人物框重叠这么多就不写
 
+log = logging.getLogger(__name__)
 _FRAME = re.compile(r"^(.*)_\d+_[\d.]+s$")
 
 
@@ -121,8 +123,7 @@ def crops_from_dataset(root: Path, detector, out: Path, conf: float, size: int =
                 img = imread(path)
                 h, wd = img.shape[:2]
                 labeled = _label_boxes(root / "labels" / split / f"{path.stem}.txt", wd, h)
-                rel = f"images/{split}/{path.name}"
-                base = {"image": rel, "split": split, "group": frame_group(path.stem), "source": "dataset"}
+                base = {"image": path.resolve().as_posix(), "dataset": root.resolve().as_posix(), "split": split, "group": frame_group(path.stem), "source": "dataset"}
                 for cls, box in labeled:
                     if cls in KNOWN:
                         w.add(img, path.stem, box, f"form/{KNOWN[cls]}",
@@ -151,7 +152,7 @@ def crops_from_images(folder: Path, detector, out: Path, conf: float, size: int 
                     kept.append(d)
             for d in kept:
                 w.add(img, f"{group}_{path.stem}", d.box, "_unlabeled",  # 不同目录可能有同名帧，裁图名带上目录名
-                      {"image": str(path), "score": round(float(d.score), 4), "yolo_cls": d.cls,
+                      {"image": path.resolve().as_posix(), "score": round(float(d.score), 4), "yolo_cls": d.cls,
                        "source": "images", "split": None, "group": group, "known": False})
     finally:
         counts = w.close()
@@ -163,14 +164,23 @@ def writeback(dataset: Path, out: Path, now: datetime) -> dict:
     现在躺在 out/form/<人形类>/ 里的裁图。写之前整个复制 labels/ 到 _backup/labels-<时间>。"""
     dataset, out = Path(dataset), Path(out)
     todo: dict[tuple[str, str], list[tuple[int, Rect, list[int] | None]]] = {}
+    here = dataset.resolve().as_posix()
+    old_rows = 0
     for r in _read_rows(out):
         if r.get("source") != "dataset" or r.get("known"):
+            continue
+        if "dataset" not in r:
+            old_rows += 1
+            continue
+        if Path(r["dataset"]).resolve().as_posix() != here:  # 别的数据集的裁图，共用同一个 out
             continue
         form = next((f for f in attrs.PERSON_FORMS if (out / "form" / f / r["crop"]).is_file()), None)
         if form is None:
             continue
         x, y, bw, bh = r["box"]
         todo.setdefault((r["split"], Path(r["image"]).stem), []).append((WRITEBACK_ID[form], Rect(x, y, bw, bh), r.get("size")))
+    if old_rows:
+        log.warning("%d 条旧的 _crops.jsonl 记录没有 dataset 字段，写回时跳过", old_rows)
     if not todo:
         return {"frames": 0, "boxes": 0}
     labels = dataset / "labels"
