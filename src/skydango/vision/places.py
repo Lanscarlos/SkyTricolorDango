@@ -24,16 +24,12 @@ import numpy as np
 from ..config import PlacesConfig
 from ..imageio import imread, imwrite
 from .bubbles import Rect, roi_rect
+from .embed import NORMS, OnnxEmbedder as _OnnxEmbedder, unit
 
 log = logging.getLogger(__name__)
 
 INDEX = "_index.npz"
 SUFFIXES = (".jpg", ".jpeg", ".png")
-NORMS = {
-    "imagenet": ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-    "clip": ((0.4815, 0.4578, 0.4082), (0.2686, 0.2613, 0.2758)),
-    "none": ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
-}
 
 
 def mask_scene(img: np.ndarray, boxes: list[Rect], keep_roi: list[float], hide_rois: list[list[float]]) -> np.ndarray:
@@ -54,10 +50,9 @@ def mask_scene(img: np.ndarray, boxes: list[Rect], keep_roi: list[float], hide_r
     return out
 
 
-def _unit(v: np.ndarray) -> np.ndarray:
-    v = np.asarray(v, np.float32).reshape(-1)
-    n = float(np.linalg.norm(v))
-    return v / n if n > 0 else v
+# 向后兼容：旧代码可以从 places 导入这些
+_unit = unit
+OnnxEmbedder = _OnnxEmbedder
 
 
 class ThumbEmbedder:
@@ -71,44 +66,14 @@ class ThumbEmbedder:
         gray -= gray.mean()
         hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
         hist = cv2.calcHist([hsv], [0, 1], None, [8, 4], [0, 180, 0, 256]).astype(np.float32)
-        return _unit(np.concatenate([_unit(gray), _unit(hist)]))
-
-
-class OnnxEmbedder:
-    """ONNX 图像编码器：输入 1×3×S×S（RGB，按 norm 归一化），输出里有二维的取二维的，否则取 [:, 0]（CLS token）。"""
-
-    def __init__(self, path: str, size: int = 224, norm: str = "imagenet", device: str = "cpu") -> None:
-        if norm not in NORMS:
-            raise ValueError(f"places.norm 只能是 {' / '.join(NORMS)}：{norm}")
-        if not Path(path).exists():
-            raise FileNotFoundError(f"找不到认地图的特征模型：{path}（places.model；先用 \"thumb\" 基线也行）")
-        try:
-            import onnxruntime as ort
-        except ImportError as exc:
-            raise ImportError("认地图的特征模型要 onnxruntime：pip install onnxruntime") from exc
-        wanted = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device == "cuda" else ["CPUExecutionProvider"]
-        providers = [p for p in wanted if p in ort.get_available_providers()] or ["CPUExecutionProvider"]
-        self.session = ort.InferenceSession(str(path), providers=providers)
-        self.input = self.session.get_inputs()[0]
-        shape = self.input.shape
-        self.size = shape[-1] if isinstance(shape[-1], int) and shape[-1] > 0 else size
-        self.mean, self.std = (np.array(v, np.float32) for v in NORMS[norm])
-        st = Path(path).stat()  # 缓存键带上完整路径和文件大小 / 修改时间：同名的另一个模型、覆盖过的模型都不能用旧向量
-        self.key = f"{Path(path).resolve().as_posix()}:{st.st_size}:{st.st_mtime_ns}:{self.size}:{norm}"
-
-    def embed(self, img: np.ndarray) -> np.ndarray:
-        rgb = cv2.cvtColor(cv2.resize(img, (self.size, self.size), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
-        x = ((rgb.astype(np.float32) / 255.0 - self.mean) / self.std).transpose(2, 0, 1)[None]
-        outs = self.session.run(None, {self.input.name: x})
-        flat = next((o for o in outs if o.ndim == 2), None)
-        return _unit(flat[0] if flat is not None else outs[0][:, 0][0])
+        return unit(np.concatenate([unit(gray), unit(hist)]))
 
 
 def make_embedder(cfg: PlacesConfig):
     if cfg.model == "thumb":
         return ThumbEmbedder()
     if Path(cfg.model).suffix.lower() == ".onnx":
-        return OnnxEmbedder(cfg.model, cfg.size, cfg.norm, cfg.device)
+        return OnnxEmbedder(cfg.model, cfg.size, cfg.norm, cfg.device, what="places.model")
     raise ValueError(f"places.model 要是 .onnx 文件或者 \"thumb\"：{cfg.model}")
 
 
