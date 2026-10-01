@@ -29,3 +29,45 @@ def test_self_filter_with_prefix():
     assert f.is_self("AI好呀一起走", 5)  # OCR 丢了括号
     assert not f.is_self("好呀，一起走", 100)  # 过了窗口
     assert not f.is_self("去哪里", 5)
+
+
+# ---- 视觉 Tracker.open_low ----
+def _det(cls, score, x=100, y=100, w=60, h=160):
+    from skydango.vision.bubbles import Rect
+    from skydango.vision.detect import Detection
+    return Detection(cls, Rect(x, y, w, h), score)
+
+
+def test_open_low_creates_provisional_track():
+    from skydango.vision.track import Tracker
+    tr = Tracker(open_low=frozenset({"player", "player_unlit"}))
+    out = tr.update([], 1.0, low=[_det("player", 0.3)])
+    assert len(out) == 1
+    assert out[0].strong_last == float("-inf")
+    tid = out[0].id
+    out = tr.update([_det("player", 0.8)], 1.1)
+    assert [t.id for t in out] == [tid]
+    assert out[0].strong_last == 1.1
+
+
+def test_open_low_ignores_other_classes():
+    from skydango.vision.track import Tracker
+    tr = Tracker(open_low=frozenset({"player", "player_unlit"}))
+    assert tr.update([], 1.0, low=[_det("name_tag", 0.3)]) == []
+    assert tr.tracks == {}
+
+
+def test_default_still_only_extends():
+    from skydango.vision.track import Tracker
+    tr = Tracker()
+    assert tr.update([], 1.0, low=[_det("player", 0.3)]) == []
+    assert tr.tracks == {}
+
+
+def test_open_low_order_extended_before_opened():
+    from skydango.vision.track import Tracker
+    tr = Tracker(open_low=frozenset({"player"}))
+    tr.update([_det("player", 0.8, x=100)], 1.0)
+    out = tr.update([], 1.1, low=[_det("player", 0.3, x=600), _det("player", 0.3, x=100)])
+    assert [t.box.x for t in out] == [100, 600]
+    assert out[0].strong_last == 1.0 and out[1].strong_last == float("-inf")

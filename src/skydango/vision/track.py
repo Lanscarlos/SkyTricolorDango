@@ -4,7 +4,7 @@
 好友靠名字重新接回（world.py），陌生人断了就当新的一条 —— 数陌生人时用"最近几秒同时出现的最多人数"，不数轨迹条数。
 
 升级（spec 2026-10-01-tracking-relink-motion §2，新参数不传时行为不变）：
-- 两段匹配：高分框先配；剩下的轨迹再和低分框（low_conf ~ conf）配，低分框只续旧轨迹、不开新轨迹
+- 两段匹配：高分框先配；剩下的轨迹再和低分框（low_conf ~ conf）配，低分框只续旧轨迹、默认不开新轨迹（open_low 里的类别可以开待复核的新轨迹）
 - 速度预测（predict）：轨迹记 vx / vy / vh，按速度往前推最多 PREDICT_MAX 秒再算 IoU
 - 中心距离兜底（center_gate > 0）：小框挪几个像素 IoU 就掉光，中心离预测框不远、框高差不多也算候选，永远排在 IoU 候选之后
 - 画面平移（shift）：转镜头时整幅画面平移，累计到每条轨迹的 pan 上，预测框加上它（带 / 不带各试一次：近处的人和远处背景平移量不一样）
@@ -73,13 +73,15 @@ def _center_dist(a: Rect, b: Rect) -> float:
 
 class Tracker:
     def __init__(self, buffer: float = 1.0, min_iou: float = 0.3, cross: frozenset[str] = frozenset(),
-                 cross_iou: float = 0.5, *, center_gate: float = 0.0, predict: bool = False) -> None:
+                 cross_iou: float = 0.5, *, center_gate: float = 0.0, predict: bool = False,
+                 open_low: frozenset[str] = frozenset()) -> None:
         self.buffer = buffer  # 轨迹这么久没匹配上就删
         self.min_iou = min_iou
         self.cross = cross  # 这几个类别之间也能接上（同一个人一会儿认成 player、一会儿认成 player_unlit）
         self.cross_iou = cross_iou  # 跨类别要重叠得更多才算同一个
         self.center_gate = center_gate  # 中心距离门槛（× 预测框高）；0 = 不用
         self.predict = predict  # 按速度预测位置
+        self.open_low = open_low  # 这些类别的低分框没配上旧轨迹时也开新轨迹（待第二层复核；可随时改，空 = 只续旧轨迹）
         self.tracks: dict[int, Track] = {}
         self.dropped: list[Track] = []  # 最近一次（prune 的）update 删掉的轨迹
         self.calm_until = float("-inf")  # 这之前的匹配不更新速度（镜头缩放、走路后画面还没停稳）
@@ -172,9 +174,9 @@ class Tracker:
 
     def update(self, dets: list[Detection], now: float, *, low: Sequence[Detection] = (),
                shift: tuple[float, float] | None = None, prune: bool = True) -> list[Track]:
-        """接上这一帧的检测，返回这一帧看到的轨迹（顺序同 dets；被低分框续上的附在后面）。
+        """接上这一帧的检测，返回这一帧看到的轨迹（顺序同 dets；被低分框续上的、再是低分框新开的附在后面）。
 
-        low：这一帧 low_conf ~ conf 之间的框，只续旧轨迹；shift：这一帧相对上一帧的画面平移（像素，None = 不知道）；
+        low：这一帧 low_conf ~ conf 之间的框，续旧轨迹（类别在 open_low 里的没配上就开待复核的新轨迹）；shift：这一帧相对上一帧的画面平移（像素，None = 不知道）；
         prune = False：不删过期轨迹、不动 dropped（同一帧第二次调用时用）。"""
         if shift is not None and (shift[0] or shift[1]):
             for track in self.tracks.values():
@@ -186,6 +188,17 @@ class Tracker:
         free = dict(self.tracks)
         matched = self._assign(dets, free, now)
         weak = self._assign(low, free, now, strong=False) if low and free else {}
+        # 没被用掉的低分框：指定类别的开待复核的新轨迹（strong_last 保持 -inf）
+        opened = []
+        if self.open_low:
+            used = set(weak)
+            for di, det in enumerate(low):
+                if di in used or det.cls not in self.open_low:
+                    continue
+                track = Track(self._next, det.cls, det.box, det.score, now, now)
+                self.tracks[track.id] = track
+                self._next += 1
+                opened.append(track)
         for track in weak.values():
             track.weak_hits += 1
         out = []
@@ -196,7 +209,7 @@ class Tracker:
                 self.tracks[track.id] = track
                 self._next += 1
             out.append(track)
-        return out + [weak[i] for i in sorted(weak)]
+        return out + [weak[i] for i in sorted(weak)] + opened
 
     def shift(self, d: float) -> None:
         """感知暂停了 d 秒：所有轨迹的时间往后挪，恢复后不会因为"太久没看到"而断掉。"""
