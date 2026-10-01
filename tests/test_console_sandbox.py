@@ -185,3 +185,15 @@ def test_forget_source_sandbox_changes_sandbox_file(srv, tmp_path):
 def test_inner_dango_while_sandbox_runs_reads_files(srv):
     srv.runner.state, srv.runner.kind = "running", "sandbox"
     assert request(srv.url + "api/inner")[1]["source"] == "files"  # 团子没在跑：不去 /live/inner
+
+
+# ---- 报告接口（console-redesign Task 3）----
+def test_reports_routes(srv, tmp_path):
+    reports = tmp_path / "sandbox" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "r-20261001-000000.md").write_text("hi", encoding="utf-8")
+    (tmp_path / "sandbox" / "x.md").write_text("secret", encoding="utf-8")
+    assert request(srv.url + "api/sandbox/reports")[1]["reports"][0]["name"] == "r-20261001-000000.md"
+    assert request(srv.url + "api/sandbox/reports/r-20261001-000000.md")[1]["text"] == "hi"
+    assert request(srv.url + "api/sandbox/reports/..%2fx.md")[0] == 404
+    assert request(srv.url + "api/sandbox/reports", headers={"Host": f"evil.com:{srv.port}"})[0] == 403

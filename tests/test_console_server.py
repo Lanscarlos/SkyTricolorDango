@@ -399,3 +399,10 @@ def test_sandbox_info_has_problems(srv):  # 没有 Claude 令牌
     info = request(srv.url + "api/sandbox/info")[1]
     assert any(p["setting"] == "secret.claude" for p in info["problems"])
     assert all(set(p) == {"text", "setting"} for p in info["problems"])
+
+
+def test_serves_console_static(srv):
+    with urllib.request.urlopen(srv.url + "console/static/console.css", timeout=5) as r:
+        assert r.status == 200 and "text/css" in r.headers["Content-Type"]
+    for bad in ("console/static/console.html", "console/static/../server.py", "console/static/%2e%2e/server.py", "console/static/nope.js"):
+        assert request(srv.url + bad)[0] == 404

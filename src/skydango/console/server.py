@@ -14,6 +14,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -30,6 +31,7 @@ from . import probes
 from .devicecheck import run_checks
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
 from .preflight import preflight, problem
+from .reports import list_reports, read_report
 from .replay import KEEP_NOTE, Recorder, Replayer, safe_name
 from .runner import LOCAL, LaunchOptions, Runner, build_command, build_sandbox_command, child_env, probe_status, send_shutdown
 from .settings import SettingsStore
@@ -44,6 +46,21 @@ NOT_RUNNING = {"ok": False, "text": "团子没在运行"}
 SANDBOX_NOT_RUNNING = {"ok": False, "text": "沙盒没在运行"}
 SANDBOX_PROXY_TIMEOUT = 35.0  # /sandbox/state 长轮询最多 25 秒、/sandbox/op 身体线程最多 10 秒 + 余量
 SANDBOX_GET = ("state", "brain", "inner", "status")  # 转发给沙盒的 GET
+_STATIC_NAME = re.compile(r"[A-Za-z0-9_.-]+\.(css|js)")
+_STATIC_TYPES = {"css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
+
+
+def _console_static(name: str) -> tuple[str, bytes] | None:
+    """`console/static/` 下的 css / js；名字不合规矩或不存在返回 None。"""
+    m = _STATIC_NAME.fullmatch(name)
+    if m is None or ".." in name:
+        return None
+    try:
+        return _STATIC_TYPES[m.group(1)], (importlib.resources.files("skydango.console") / "static" / name).read_bytes()
+    except (OSError, FileNotFoundError):
+        return None
+
+
 SANDBOX_POST = ("op", "inner/forget")  # 转发给沙盒的 POST（/shutdown 不给页面直接发，走 /api/sandbox/stop）
 
 
@@ -597,8 +614,19 @@ class ConsoleServer:
                     else:
                         self._send(200, *asset)
                     return
+                if url.path.startswith("/console/static/"):  # 面板自己的样式 / 脚本（同页面一样公开）
+                    asset = _console_static(url.path[len("/console/static/"):])
+                    if asset is None:
+                        self._json(404, {"ok": False, "text": "没有这个地址"})
+                    else:
+                        self._send(200, *asset)
+                    return
                 if not is_local_host(self.headers.get("Host") or "", console.port):
                     self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                elif url.path == "/api/sandbox/reports":
+                    self._json(200, {"reports": list_reports(console.sandbox_dir() / "reports")})
+                elif url.path.startswith("/api/sandbox/reports/"):
+                    self._json(*read_report(console.sandbox_dir() / "reports", url.path[len("/api/sandbox/reports/"):]))
                 elif url.path == "/api/state":
                     self._json(200, console.state())
                 elif url.path == "/api/logs":
