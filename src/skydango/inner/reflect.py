@@ -126,6 +126,12 @@ class Reflector:
             return True
         return self._lines >= self.cfg.reflect_min_lines and now - self._last_line >= self.cfg.reflect_after_quiet
 
+    def next_in(self, now: float) -> float | None:
+        """离下次定时反思还有几秒（有动静才真的反思）；下线反思开始了 / 正在反思时 None。introspect 用。"""
+        if self._final or self._running:
+            return None
+        return max(0.0, self._last_run + self.cfg.reflect_every - now)
+
     def start(self, content: str, now: float) -> None:
         self._last_run = now
         self._stirred = False

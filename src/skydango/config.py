@@ -632,6 +632,15 @@ class ReflexConfig:
 
 
 @dataclass
+class BackstageConfig:
+    """幕后（spec 2026-10-01-backstage）：团子知道自己是 AI、主人做了她，能跟主人聊她自己怎么运作。"""
+
+    enabled: bool = False  # 公开仓库：默认不出戏
+    changelog_max: int = 10  # 「更新记录」最多几条
+    changelog_days: int = 7  # 没有标记（或标记不在历史里）时往前看几天
+
+
+@dataclass
 class InnerConfig:
     """内心层第 1 期（见 docs/superpowers/specs/2026-09-30-inner-phase1-design.md）：给好友记关系卡、每次上线记一行，
     写在 memory/inner/，只在 --live 时写盘。数字都是估的"""
@@ -722,6 +731,7 @@ class Config:
     reflex: ReflexConfig = field(default_factory=ReflexConfig)
     attention: AttentionConfig = field(default_factory=AttentionConfig)
     inner: InnerConfig = field(default_factory=InnerConfig)
+    backstage: BackstageConfig = field(default_factory=BackstageConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 

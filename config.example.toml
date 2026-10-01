@@ -345,6 +345,13 @@ jokes_max = 20                 # 老梗总共最多几条
 opinions_max = 10              # 看法最多几条（一个话题一句）
 soft_minutes = 30.0            # 好友说难过后多久内对他收着点
 
+[backstage]
+# 幕后（大脑模式）：团子知道自己是 AI、主人（[brain] owner_name）做了她，能跟主人聊自己怎么运作、用 introspect 查自己的内心细节，
+# 启动时知道主人上次以来改了她什么（git 提交）。好友要在 friends.md 他那一节写「知道团子是 AI」，团子才会跟他承认。没在真机验证
+enabled = false
+changelog_max = 10             # 「更新记录」最多几条
+changelog_days = 7             # 第一次（没有 inner/backstage.json）往前看几天
+
 [friend_check]
 # 大脑的 check_friend 工具：点一下人物打开右侧好友树面板，截图给大脑看是不是好友，再关掉
 # 关面板用 ESC（用户确认）；面板样子还没核对：先用 python -m skydango friend-check X Y 试，确认后再打开

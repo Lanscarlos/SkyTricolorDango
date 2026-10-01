@@ -43,3 +43,25 @@ def test_awake_minutes_continues_without_sleep():
     assert awake_minutes(T0 + 600, T0, [], 3600) == 10
     crash = [Session(start=T0 - 1200, end=None, saved=T0 - 600)]  # 意外断的：用 saved
     assert awake_minutes(T0 + 600, T0, crash, 3600) == 20
+
+
+def test_energy_parts_sum_matches_energy():
+    from skydango.inner.energy import energy_parts
+
+    for args in [(14, 0, False, 0), (1, 130, True, 0), (23, 200, False, 90), (5, 600, True, 80), (14, 0, True, 0)]:
+        parts = energy_parts(*args)
+        assert max(0, min(100, sum(p for p, _ in parts))) == energy(*args).score
+
+
+def test_format_parts():
+    from skydango.inner.energy import energy_parts, format_parts
+
+    text = format_parts(energy_parts(14, 130, True, 0), energy(14, 130, True, 0))
+    assert text == "基础 100（白天）− 20（连着挂了 2 个多小时）+ 10（有人陪着聊）= 90，精神"
+
+
+def test_format_parts_clamped():
+    from skydango.inner.energy import energy_parts, format_parts
+
+    text = format_parts(energy_parts(14, 0, True, 0), energy(14, 0, True, 0))
+    assert text.endswith("= 100，精神")

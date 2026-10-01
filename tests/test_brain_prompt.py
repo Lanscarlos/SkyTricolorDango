@@ -277,3 +277,21 @@ def test_look_person_description_mentions_stranger_id():
     from skydango.brain.tools import DESCRIPTIONS
 
     assert "陌生人A" in DESCRIPTIONS["look_person"]
+
+
+def test_brain_prompt_backstage_replaces_identity():
+    from skydango.brain.backstage import section
+
+    off = brain_prompt(ReplyConfig(), None)
+    on = brain_prompt(ReplyConfig(), None, backstage=section("卡洛", "sonnet", "haiku", "sonnet", []))
+    assert "## 身份" in off and "## 身份" not in on and "## 幕后" in on
+
+    def floor(p):
+        return p.split("## 底线")[1].split("\n## ")[0]
+
+    assert floor(on) == floor(off)
+    assert on.index("## 主动开口") < on.index("## 幕后") < on.index("## 底线")
+
+
+def test_brain_prompt_without_backstage_unchanged():
+    assert brain_prompt(ReplyConfig(), None, backstage="") == brain_prompt(ReplyConfig(), None)
