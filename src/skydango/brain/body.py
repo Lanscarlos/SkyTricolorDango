@@ -203,6 +203,7 @@ class Body:
         self.skills = SkillRunner(events, clock, panel=self.panel)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
         self._raised: tuple[int, tuple[int, int], float] | None = None  # 举着蜡烛等他亮起来：(轨迹 id, 圆盘位置, 举起时间)
         self._bow: tuple[float, float, float | None] | None = None  # 点火后要鞠躬：(到点, 放弃, 兜底放下的蜡烛几时举的)
+        self._dark_at = float("-inf")  # 最近一次黑屏是几时开始的：举蜡烛之后黑过屏（切场景），蜡烛还举没举着说不准
         self._lit_at = float("-inf")
 
     # ---- 主循环 ----
@@ -809,6 +810,8 @@ class Body:
         black = is_black(frame)
         if black != self.blackout:
             self.blackout = black
+            if black:
+                self._dark_at = now
             if self.env is not None and hasattr(self.env, "hold"):  # 黑屏期间看不到人，别算成"走开了"
                 (self.env.hold if black else self.env.release)("blackout")
             self.events.put("scene_change", "画面整屏黑了（可能在切场景）" if black else "画面恢复了")
@@ -918,6 +921,12 @@ class Body:
             except Exception:
                 log.exception("处理互动请求出错")
                 handled = []
+            if handled and (self._raised is not None or (self._bow is not None and self._bow[2] is not None)):
+                # 点圆圈接受互动会放下手里的蜡烛：之后再按 3 就是把它举起来了
+                log.info("举着蜡烛时接受了%s，蜡烛当作已经放下，不再等那个陌生人亮起来、也不再按 3 放下", "、".join(handled))
+                self._raised = None
+                if self._bow is not None:
+                    self._bow = (self._bow[0], self._bow[1], None)  # 鞠躬照做，只是不用兜底放下了
             for item in handled:
                 name, kind = item.split(":", 1)
                 self.events.put("accepted", f"身体按规则接受了 {name} 的{KIND_NAMES.get(kind, kind)}")
@@ -943,6 +952,8 @@ class Body:
         if not self.social.allowed(req):
             return
         if self.skills.active is not None or self.holding or self._bubble_blocked():
+            return
+        if self._bubble_at is not None:  # 身体替大脑开着输入框（有人在跟团子说话）：按键会把框关掉，先不举
             return
         if now - self.emotes.last_any < self.cfg.reflex.min_gap:  # 刚做完动作就按 3 可能被动画吞掉
             return
@@ -1011,6 +1022,10 @@ class Body:
         """按 3 放下自己举的蜡烛——只在举起之后没做过任何动作时（做动作会放下蜡烛，再按就又举起来了）。"""
         if self.emotes is None or self.emotes.last_any > raised_at or self._dry(False):
             return
+        if self._dark_at >= raised_at:
+            log.info("举蜡烛之后黑过屏（可能切了场景），蜡烛还举没举着说不准，不按 3")
+            return
+        self._close_bubble("放下蜡烛")  # 按数字键前会关掉输入框：替大脑开的框要走这里关，sender 才知道
         try:
             with self._held("wheel"):
                 self.emotes.press_slot(self.cfg.social.candle_slot)

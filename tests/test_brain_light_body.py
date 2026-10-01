@@ -220,7 +220,7 @@ def test_shutdown_lowers_candle_when_raised_not_lit(clock):
     assert presses(dev) == 2
 
 
-def test_schedule_bow_keeps_pending_raised_at(clock):
+def test_accepting_candle_while_bow_pending_keeps_one_bow_without_lowering(clock):
     social = AllowAll()
     b, dev, env, emotes, events = lb(clock, social=social)
     offer(env, clock)
@@ -229,13 +229,14 @@ def test_schedule_bow_keeps_pending_raised_at(clock):
     b.step()  # 排上鞠躬，带着要兜底放下的蜡烛
     env.requests["陌生人"] = Request("陌生人", "candle", (990, 400), clock())
     social.to_handle = ["陌生人:candle"]
-    b.step()  # 接受别人点火又要排鞠躬：不能把上一个覆盖掉
+    b.step()  # 接受别人点火又要排鞠躬：不能把上一个覆盖掉（点圆圈会放下蜡烛：不用兜底放下了，见最终审查 #4）
+    assert b._bow is not None and b._bow[2] is None
     b._reflex_emote = lambda *a: False
     clock.advance(2.6)
     b.step()
     clock.advance(5.1)
     b.step()
-    assert emotes.done == [] and presses(dev) == 2
+    assert emotes.done == [] and presses(dev) == 1
 
 
 def test_emote_while_raised_clears_state(clock):
@@ -268,21 +269,113 @@ def test_dry_run_lower_candle_presses_nothing(clock):
     assert presses(dev) == 0
 
 
-def test_bow_from_accepted_candle_then_lit_keeps_raised_at(clock):
+def test_accepting_candle_while_raised_stops_waiting_for_lit(clock):
     social = AllowAll()
     b, dev, env, emotes, events = lb(clock, social=social)
     offer(env, clock)
     b.step()  # 举起蜡烛
     env.requests["陌生人"] = Request("陌生人", "candle", (990, 400), clock())
     social.to_handle = ["陌生人:candle"]
-    b.step()  # 接受别人点火：先排上一个没有 raised_at 的鞠躬
+    b.step()  # 接受别人点火：先排上一个没有 raised_at 的鞠躬；点圆圈放下了蜡烛，不再等他亮起来（最终审查 #4）
     env.requests.pop("陌生人")
     social.to_handle = []
     env.lit_result = True
-    b.step()  # 自己点亮了别人：要把 raised_at 并进已有的鞠躬
+    b.step()
+    assert b._raised is None and b._bow is not None and b._bow[2] is None
     b._reflex_emote = lambda *a: False
     clock.advance(2.6)
     b.step()
     clock.advance(5.1)
     b.step()
-    assert emotes.done == [] and presses(dev) == 2
+    assert emotes.done == [] and presses(dev) == 1
+
+
+# ---- 最终审查 #2 / #4 / #5 ----
+def test_no_raise_while_body_bubble_open(clock):
+    """身体替大脑开着输入框（有人在跟团子说话）：不举蜡烛（按键会把框关掉，大脑那句就发不出去）。"""
+    b, dev, env, emotes, events = lb(clock)
+    assert b._open_bubble(clock()) and b._bubble_at is not None
+    offer(env, clock)
+    b.step()
+    assert presses(dev) == 0 and env.tried == [] and b.sender.opened
+
+
+def test_lowering_candle_closes_body_bubble_properly(clock):
+    """举着蜡烛时身体开了框，超时放下蜡烛：按键前走 _close_bubble，sender 知道框关了（否则 say 往空里打字）。"""
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    assert presses(dev) == 1
+    assert b._open_bubble(clock()) and b.sender.opened
+    clock.advance(8.1)
+    b.step()
+    assert presses(dev) == 2
+    assert not b.sender.opened and b._bubble_at is None
+
+
+def test_accepting_other_interaction_while_raised_forgets_candle(clock):
+    """举着蜡烛时接受了别的互动（点圆圈会放下蜡烛）：之后超时不能再按 3（那会把蜡烛举起来）。"""
+    social = AllowAll()
+    b, dev, env, emotes, events = lb(clock, social=social)
+    offer(env, clock)
+    b.step()
+    env.requests["小明"] = Request("小明", "hand", (990, 400), clock())
+    social.to_handle = ["小明:hand"]
+    b.step()
+    env.requests.pop("小明")
+    assert "正在举蜡烛" not in b.status()
+    clock.advance(8.1)
+    b.step()
+    assert presses(dev) == 1
+
+
+def test_accepting_other_interaction_keeps_bow_but_not_lowering(clock):
+    social = AllowAll()
+    b, dev, env, emotes, events = lb(clock, social=social)
+    offer(env, clock)
+    b.step()
+    env.lit_result = True
+    b.step()  # 点亮了，鞠躬排上，带着兜底放下的蜡烛
+    env.requests["小明"] = Request("小明", "hand", (990, 400), clock())
+    social.to_handle = ["小明:hand"]
+    b.step()
+    env.requests.pop("小明")
+    assert b._bow is not None and b._bow[2] is None  # 鞠躬留着，蜡烛当作已经放下
+    b._reflex_emote = lambda *a: False
+    clock.advance(2.6)
+    b.step()
+    clock.advance(5.1)
+    b.step()
+    assert presses(dev) == 1
+
+
+def test_blackout_while_raised_does_not_press_on_timeout(clock):
+    """举着蜡烛时黑过屏（切场景）：蜡烛状态不明，超时不按 3。"""
+    import numpy as np
+    from conftest import scene
+
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    dev.frames = [np.zeros((720, 1280, 3), np.uint8)]
+    clock.advance(1.5)
+    b.step()
+    assert b.blackout
+    dev.frames = [scene()]
+    clock.advance(1.5)
+    b.step()
+    assert not b.blackout
+    clock.advance(5.2)
+    b.step()
+    assert presses(dev) == 1
+
+
+def test_schedule_bow_merges_raised_at_into_pending_bow(clock):
+    """已经排了一个鞠躬：再排只补上还缺的 raised_at，不覆盖时间、不丢已有的。"""
+    b, dev, env, emotes, events = lb(clock)
+    b._schedule_bow(clock(), None)
+    due = b._bow[0]
+    b._schedule_bow(clock() + 1, 5.0)
+    assert b._bow[0] == due and b._bow[2] == 5.0
+    b._schedule_bow(clock() + 2, None)
+    assert b._bow[2] == 5.0
