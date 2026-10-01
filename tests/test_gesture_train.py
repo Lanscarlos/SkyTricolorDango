@@ -98,3 +98,44 @@ def test_save_load_split(tmp_path):
     s = split(_multi(), LABELS, seed=3)
     save_split(tmp_path, s)
     assert load_split(tmp_path)["train"] == s["train"]
+
+
+def _starts(names):
+    return [float(n.rsplit("_t", 1)[1][:-1]) for n in names]
+
+
+def _mixed():
+    # R1 是 wave 唯一的录像，里面还有 none；none 另有两段录像
+    out = []
+    for t in range(50):
+        out.append(smp("wave", "R1", t, len(out)))
+        out.append(smp("none", "R1", t, len(out)))
+    for r in ("R2", "R3"):
+        for t in range(10):
+            out.append(smp("none", r, t, len(out)))
+    return out
+
+
+def test_pinned_recording_cut_applies_to_all_labels():
+    for seed in range(4):
+        out = _mixed()
+        s = split(out, ["none", "wave"], gap=2.0, seed=seed)
+        c = 40.0  # wave 有 50 段：第 ceil(0.8*50)=40 段的 start
+        r1 = lambda names: [n for n in names if n.startswith("R1__")]
+        assert all(t >= c for t in _starts(r1(s["val"])))
+        assert all(t < c - 2.0 for t in _starts(r1(s["train"])))
+        assert any(x.label == "none" and x.recording == "R1" and x.clip in s["val"] for x in out)
+        assert not set(s["train"]) & set(s["val"])
+        assert any("R1" in w and "丢掉" in w for w in s["warnings"])
+
+
+def test_two_labels_pinning_same_recording_use_smallest_cut():
+    out = []
+    for t in range(50):
+        out.append(smp("wave", "R1", t, len(out)))
+    for t in range(20):
+        out.append(smp("cheer", "R1", t, len(out)))
+    s = split(out, ["wave", "cheer"], gap=1.0)
+    # wave 切点 40，cheer 切点 16：取 16
+    assert min(_starts(s["val"])) == 16.0
+    assert max(_starts(s["train"])) < 15.0

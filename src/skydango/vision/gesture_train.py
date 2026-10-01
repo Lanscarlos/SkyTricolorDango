@@ -73,7 +73,8 @@ def split(
       其余录像随机补到验证集样本数约占 val_ratio。
     - 类别只有一段录像：该录像里这个类别的片段按 start 切——设 n 段按 start 排序，
       c = 第 ceil((1 − val_ratio)·n) 段（至多最后一段）的 start；train = start < c − gap，val = start ≥ c，
-      中间 gap 秒内的不用。这段录像里别的类别的片段照常进训练集（它不进整录像验证候选）。
+      中间 gap 秒内的不用。这段录像里所有类别的片段都按同一个 c 切（几个类别钉在同一段录像上取最小的 c），
+      免得同一时刻的画面一边训练一边验证；被 gap 丢掉的段数写进 warnings；这段录像不进整录像验证候选。
     - 进不了验证（或训练）集的类别写进 warnings。
     返回 {"train": [片段名], "val": [片段名], "warnings": [...], "seed": seed}。
     """
@@ -117,25 +118,31 @@ def split(
 
     train: list[str] = []
     val: list[str] = []
-    cut: dict[str, float] = {}  # 只有一段录像的类别 → 切点 c
+    cut: dict[str, float] = {}  # 只有一段录像的类别所在的录像 → 切点 c（几个类别钉在同一段录像上取最小的）
     for label, recs in recs_of.items():
         if len(recs) == 1:
             starts = sorted(s.start for s in samples if s.label == label)
             if len(starts) >= 2:
-                cut[label] = starts[min(math.ceil((1 - val_ratio) * len(starts)), len(starts) - 1)]
+                c = starts[min(math.ceil((1 - val_ratio) * len(starts)), len(starts) - 1)]
+                rec = next(iter(recs))
+                cut[rec] = min(c, cut.get(rec, c))
+    dropped: dict[str, int] = {}
     for s in samples:
-        if key(s) in val_recs:
+        rec = key(s)
+        if rec in val_recs:
             val.append(s.clip)
-        elif s.label in cut:
-            if s.start < cut[s.label] - gap:
+        elif rec in cut:  # 这段录像里所有类别的片段都按同一个时间切，免得相邻画面一边训练一边验证
+            if s.start < cut[rec] - gap:
                 train.append(s.clip)
-            elif s.start >= cut[s.label]:
+            elif s.start >= cut[rec]:
                 val.append(s.clip)
+            else:
+                dropped[rec] = dropped.get(rec, 0) + 1
         else:
             train.append(s.clip)
     in_val = set(val)
     in_train = set(train)
-    warnings = []
+    warnings = [f"录像 {r or '(无名)'} 按时间切，切点前后 {gap:g} 秒内丢掉 {n} 段" for r, n in sorted(dropped.items())]
     for label in labels:
         mine = [s.clip for s in samples if s.label == label]
         if not mine:
