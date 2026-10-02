@@ -218,9 +218,9 @@ dir = "private/sandbox"
 - **三期（代码已完成，见 `…-phase3-design.md`）**：远处的小人（框高 < `far_height`）没挂上名字标签时在它头顶裁一块再检测一次（`far_crops`）；
   认地图（`[places]`，要配合 `[perception]`）：`places/<地名>/*.jpg` 图库（不进 git）+ 图像特征模型，每 30 秒 / 画面大变后认一次，写进提示词"看起来在：…"；
   读得清楚但不在好友名单里的名字记进 `runs/<…>/unknown_names/`；别人对团子挥手 / 鞠躬 / 欢呼 / 害羞（`[gesture]` 四个动作 wave / bow / cheer / shy + none，研究性质、默认关）→ 身体发 `gesture` 事件，大脑可以用 `emote` 回礼。
-  数据和训练（设计 `docs/superpowers/specs/2026-10-01-gesture-labeling-training-design.md`）：`perception clips` 切片段 → `perception gesture-label` Claude 初分 → 管理面板「标注」页人工确认 →
+  数据和训练（设计 `docs/superpowers/specs/2026-10-01-gesture-labeling-training-design.md`）：`perception clips` 切片段 →（`perception gesture-label` Claude 初分：10-02 实测认不出，`--blind` 不看录像名时挥手录像一段挥手都没判出来，跳过）管理面板「标注」页人工标 →
   `perception gesture-train`（DINOv2-small 冻住 + 时序头，导出 `models/gesture-<日期>.onnx`、不覆盖 `gesture.onnx`，报告 `tmp/gesture-train/<时间>/report.md`）→ `perception gesture-eval`（有 `_split.json` 时只评验证集）；
-  **还没有真数据和模型**（每类至少 20 段才训练）；
+  **10-02 标了第一批（挥手 86 / 鞠躬 54 / 都不是 124，各只有一两段录像）、试训 3 类没达标：换了录像就认不出，缺多场景素材，欢呼 / 害羞还没录**（每类至少 20 段才训练；进度见 `docs/progress/2026-10-02-tonight.md` 末尾）；
   跟随只做了第 1 步：提示词里说想跟谁走就请他牵手（视觉伺服 `follow` 要等 `move` 工具接好、标定）
 - **物品识别（代码已完成，见 `2026-09-29-object-recognition-design.md`；还没有数据和模型）**：类别末尾追加 `bench` 座位 / `bonfire` 篝火 / `instrument` 乐器 / `spirit` 先祖（编号 6~9，旧编号不变；用 v4 时自然为空）。
   `objects()` 给出方位和远近（按框底边，`object_near` / `object_far` **未标定**，连续 `object_min_hits` 帧才算）；状态里"画面里的东西：座位（左边·近）"、眼睛的位置说明、网页"附近的东西"都有；
