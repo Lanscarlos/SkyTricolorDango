@@ -249,6 +249,19 @@ def test_write_error_is_logged_not_raised(tmp_path, brightness, monkeypatch, cap
     assert "图鉴收集写盘出错" in caplog.text
 
 
+def test_encode_error_is_logged_and_buffer_kept(tmp_path, brightness, monkeypatch, caplog):
+    def boom(*a, **k):
+        raise RuntimeError("编码失败")
+
+    monkeypatch.setattr(cat, "imwrite", boom)
+    c = collector(tmp_path)
+    c.update(frame(), [track(1)], [], 0.0, None, "", friend)
+    with caplog.at_level("WARNING"):
+        c.close()  # 不抛
+    assert "图鉴收集写盘出错" in caplog.text
+    assert c.buffer("懒洋洋大王")  # 写失败留着缓冲
+
+
 def test_closed_collector_ignores_updates(tmp_path, brightness):
     c = collector(tmp_path)
     c.close()

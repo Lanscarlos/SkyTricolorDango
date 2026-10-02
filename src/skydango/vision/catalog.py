@@ -239,7 +239,7 @@ class CatalogCollector:
             for k in keys:
                 self._write(k)
             self._write_index()
-        except OSError as exc:
+        except Exception as exc:  # imwrite 编码失败是 RuntimeError / cv2.error，不只 OSError
             log.warning("图鉴收集写盘出错：%s", exc)
 
     def dropped(self, tracks: Iterable[Track]) -> None:
@@ -286,11 +286,14 @@ def contact_sheet(folder: Path, cell: int = 240) -> tuple[np.ndarray, list[str]]
     for row, (who, rs) in enumerate(groups.items()):
         legend.append(f"{who}（{len(rs)} 张）")
         for col, r in enumerate(rs):
-            img = imread(root / r["file"])
+            try:
+                img = imread(root / r["file"])
+            except RuntimeError:
+                continue
             scale = min(cell / img.shape[0], cell / img.shape[1])
             small = cv2.resize(img, (max(1, int(img.shape[1] * scale)), max(1, int(img.shape[0] * scale))))
             y, x = row * cell, col * cell
             sheet[y:y + small.shape[0], x:x + small.shape[1]] = small
-            cv2.putText(sheet, f"s{r['sharp']:.0f} h{r['height']:.2f}", (x + 4, y + 16),
+            cv2.putText(sheet, f"s{r['sharp']:.0f} c{r['score']:.0f} h{r['height']:.2f}", (x + 4, y + 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
     return sheet, legend

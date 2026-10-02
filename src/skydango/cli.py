@@ -512,16 +512,18 @@ def cmd_catalog(cfg: Config, args) -> None:
     watcher.catalog = collector
     kept = list(subsample(timed, args.fps))
     print(f"{len(timed)} 帧里按 {args.fps:g} 帧 / 秒抽了 {len(kept)} 帧 → {out}")
-    for n, (t, path) in enumerate(kept, 1):
-        now[0] = t
-        frame = imread(path)
-        watcher.process(frame, t, _panel_open(cfg, frame))
-        if n % 100 == 0:
-            print(f"  {n}/{len(kept)}")
-    watcher.stop()  # 收集器全部写出
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "candidates.jsonl").write_text(
-        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in collector.candidates), encoding="utf-8")
+    try:
+        for n, (t, path) in enumerate(kept, 1):
+            now[0] = t
+            frame = imread(path)
+            watcher.process(frame, t, _panel_open(cfg, frame))
+            if n % 100 == 0:
+                print(f"  {n}/{len(kept)}")
+    finally:  # Ctrl+C / 读图出错时，已经收到的照样写出
+        watcher.stop()  # 收集器全部写出
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "candidates.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in collector.candidates), encoding="utf-8")
     fails = Counter(r["fail"] or "收下" for r in collector.candidates)
     print(f"看了 {len(collector.candidates)} 个候选：" + "、".join(f"{k} {v}" for k, v in fails.most_common()))
     made = contact_sheet(collector.folder)

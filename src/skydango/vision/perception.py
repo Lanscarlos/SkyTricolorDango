@@ -599,7 +599,10 @@ class PerceptionWatcher:
     def stop(self) -> None:
         self._stop.set()
         if self.catalog is not None:
-            self.catalog.close()
+            try:
+                self.catalog.close()
+            except Exception:
+                log.exception("图鉴收集收尾出错")
 
     # ---- 一帧 ----
     def process(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
@@ -623,6 +626,11 @@ class PerceptionWatcher:
             if shift is None:
                 # 转了镜头、又估不出转了多少：原来屏幕位置上的人已经不是原来那个了。轨迹全作废（不记失踪），按名字重新认
                 log.debug("转过镜头、估不出平移：%d 条轨迹的位置作废", len(self.tracker.tracks))
+                if self.catalog is not None:
+                    try:
+                        self.catalog.dropped(list(self.tracker.tracks.values()))
+                    except Exception:
+                        log.exception("图鉴收集出错")
                 self.tracker.tracks.clear()
                 self._lost.clear()
         tracks = self.tracker.update(dets, now, low=low if self.cfg.track_low or attrs_on else (), shift=shift)
@@ -844,18 +852,24 @@ class PerceptionWatcher:
         return t.data.get("admitted", True)
 
     def _catalog_who(self, t: Track) -> Who | None:
-        """图鉴收集的身份（spec 2026-10-02-catalog-collect §2）：团子 / 名字标签证实的好友 / 其余点过火的按陌生人；黑影不收。
+        """图鉴收集的身份（spec 2026-10-02-catalog-collect §2）：团子 / 名字标签证实的好友 / 感知层判过的陌生人（或"像小明"）；黑影不收。
+        陌生人不比感知层判得早（data["stranger"] 在调收集器之前算好）；有标签但不在好友名单里的不收（unknown_names 记）。
         process() 交给收集器的 players 已经去掉了第二层没放行和先祖 / 共享空间的。"""
         if t.cls == "self":
             return Who("团子", "self", True)
         if self._unlit(t):
             return None
         d = t.data
-        if d.get("tagged") and d.get("name"):
+        tagged = d.get("tagged")
+        if tagged and d.get("name"):
             return Who(d["name"], "friend", True)
         if self._near_dango(t):
             return None  # 团子身上的 player 框（这一帧没 self 框、或者重叠不到 _is_self 的 0.5）：团子自己有一份，不当陌生人收
-        return Who(stranger_key(t.id), "stranger", False, d.get("maybe"))
+        if tagged:
+            return None
+        if d.get("stranger") or d.get("maybe"):
+            return Who(stranger_key(t.id), "stranger", False, d.get("maybe"))
+        return None
 
     def _near_dango(self, t: Track) -> bool:
         """这条人物轨迹是不是落在团子刚待过的地方（SELF_MEMORY 秒内的团子框、重叠 ≥ SELF_IOU）。"""
