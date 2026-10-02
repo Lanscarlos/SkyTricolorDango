@@ -64,9 +64,11 @@ log = logging.getLogger(__name__)
 UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 SELF_MEMORY = 1.0  # 图鉴收集：团子框这么久内出现过的位置上冒出来的"陌生人"按团子算（YOLO 有的帧不给团子出 self 框）
-SELF_IOU = 0.3  # 和团子框重叠这么多就算团子（_is_self 用 0.5，团子身上的 player 框常比 self 框大一圈）
+SELF_IOU = 0.3  # 和团子框重叠这么多就算团子（_mark_dango 用 same_body 更严，团子身上的 player 框常比 self 框大一圈）
 DISK_EVERY = 0.3  # 团子周围最多隔这么久找一次火焰
 DISK_GAP = 1.0  # 火焰断开不超过这么久算同一条线索（火焰会晃）
+SAME_BODY_IOU = 0.45  # same_body：团子身上的 player 框和 self 框
+DANGO_MEMORY = 30.0  # 团子框（按聊天面板开 / 关分别记）这么久内见过：YOLO 没出 self 时，落在那个位置上的人物框就是团子
 SELF_HOLD = 3.0  # 团子框丢了（黑影贴着团子时 YOLO 常认不出 self）最多沿用最近的框这么久：镜头跟着团子，屏幕位置几乎不变
 LIT_LOW = 0.2  # 点亮陌生人开着时检测器按这个出框：晚上黑影分数低（10-01 晚 0.27 / 0.28），找"火焰下面那个人"时也看低分框
 DIAG_EVERY = 0.5  # 点亮中每隔这么久存一张图（spec 2026-10-01-light-flame-around-self §5）
@@ -199,6 +201,12 @@ def promote_weak_self(dets: list[Detection], low: list[Detection]) -> list[Detec
     out = list(dets)
     out[i] = Detection("self", dets[i].box, dets[i].score)
     return out
+
+
+def same_body(a: Rect, b: Rect) -> bool:
+    """两个框是不是同一个人的身体（IoU ≥ SAME_BODY_IOU）。团子身上的 player 框带着斗篷常比 self 框宽一圈（10-02 晚 IoU 0.55 左右）；
+    不看"小框在大框里"：贴在团子身前的陌生人框常把团子框整个包住（play-1001-1 IoU 0.26 / 0.33），他不是团子。"""
+    return iou(a, b) >= SAME_BODY_IOU
 
 
 def people_boxes(dets: list[Detection]) -> list[Detection]:
@@ -364,6 +372,7 @@ class PerceptionWatcher:
         self.far_runs = 0  # 远处二次检测跑了几次（测速 / compare 用）
         self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
         self._me_last: tuple[Rect, float] | None = None  # 沿用的最近一次团子框：(box, time)，黑影贴着时认不出 self
+        self._dango_mem: dict[bool, tuple[Rect, float]] = {}  # 聊天面板开着 / 关着 → 最近一次高分 self 框和时间
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
         self._frame_w = 1920  # 最近一帧的宽度（算在画面哪边用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
@@ -640,7 +649,8 @@ class PerceptionWatcher:
         if self.cfg.relink:
             self._note_lost(now)
         selfs = [t for t in tracks if t.cls == "self"]
-        players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs) and self._admitted(t)]
+        self._mark_dango(tracks, selfs, now, panel_visible)
+        players = [t for t in tracks if t.cls in ("player", UNLIT) and not t.data.get("dango") and self._admitted(t)]
         if self.attrs is not None:
             # 外形是先祖 / 共享空间的：看得到，但不算陌生人、不挂名字、不进接回 / 续命 / 走近 / 运动 / 动作 / 认装扮（spec §3.5）
             others = [t for t in players if self._other_form(t)]
@@ -864,7 +874,7 @@ class PerceptionWatcher:
         if tagged and d.get("name"):
             return Who(d["name"], "friend", True)
         if self._near_dango(t):
-            return None  # 团子身上的 player 框（这一帧没 self 框、或者重叠不到 _is_self 的 0.5）：团子自己有一份，不当陌生人收
+            return None  # 团子身上的 player 框（_mark_dango 没认出来的）：团子自己有一份，不当陌生人收
         if tagged:
             return None
         if d.get("stranger") or d.get("maybe"):
@@ -962,10 +972,9 @@ class PerceptionWatcher:
     def unnamed(self, now: float) -> int:
         """最近一帧里没挂名字的点过火的人（陌生人、没归类的远处小人；按外观认的好友不算）。"""
         tracks = [t for t in list(self.last_tracks) if now - t.last <= PEOPLE_STALE]
-        selfs = [t for t in tracks if t.cls == "self"]
         return self._count_unnamed([
             t for t in tracks
-            if t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and not self._is_self(t, selfs)
+            if t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and not t.data.get("dango")
         ])
 
     def _count_unnamed(self, players: list[Track]) -> int:
@@ -1443,9 +1452,39 @@ class PerceptionWatcher:
             areas.append(roi_rect(self.cfg.self_roi, width, height))
         return areas
 
+    def _mark_dango(self, tracks: list[Track], selfs: list[Track], now: float, panel_visible: bool) -> None:
+        """给这一帧的人物轨迹打"是团子"的标记（data["dango"] = 这一帧的框），打了的不算别人（不判陌生人、不挂名字标签、不算没挂名字的人）。
+
+        YOLO 在团子身上常常只出 player、self 分数很低或者干脆没有（10-02 晚真机：图鉴 50 张"陌生人"里约 26 张是团子）。
+        镜头跟着团子，团子在屏幕上几乎不动，只是聊天面板开 / 关时整个画面横移约 400 px：按面板开关分别记住最近的高分 self 框，
+        DANGO_MEMORY 秒内落在那里的人物框就是团子。标记跟着轨迹走（镜头拉近拉远时框慢慢变），直到这一帧有 self 框、它又不在 self 框上，
+        或者横着走开 / 框和上一帧对不上（被别人接走了）。"""
+        strong = [s for s in selfs if s.strong_last == now]
+        if strong:
+            self._dango_mem[panel_visible] = (max(strong, key=lambda s: s.score).box, now)
+        mem = self._dango_mem.get(panel_visible)
+        refs = [s.box for s in selfs] + ([mem[0]] if mem is not None and now - mem[1] <= DANGO_MEMORY else [])
+        for t in tracks:
+            if t.cls not in ("player", UNLIT):
+                continue
+            if any(same_body(t.box, b) for b in refs):
+                if not t.data.get("dango"):
+                    t.data.pop("stranger", None)
+                t.data["dango"] = t.box
+            elif t.data.get("dango") and (selfs or self._walked_off(t, mem, now) or not same_body(t.box, t.data["dango"])):
+                # 框和上一帧对不上 = 轨迹被别人接走了（陌生人一下子挡到团子身前，框胀成两倍多宽）
+                log.debug("轨迹 %d 不在团子框上了：不再当成团子", t.id)
+                t.data.pop("dango")
+            elif t.data.get("dango"):
+                t.data["dango"] = t.box  # 没有 self 框时跟着轨迹走（镜头拉近拉远框慢慢变）
+
     @staticmethod
-    def _is_self(player: Track, selfs: list[Track]) -> bool:
-        return any(iou(player.box, s.box) >= 0.5 for s in selfs)
+    def _walked_off(t: Track, mem: tuple[Rect, float] | None, now: float) -> bool:
+        """没有 self 框时：轨迹中心横着离开记住的团子位置超过一个团子框宽（团子是镜头支点，拉近拉远时中心几乎不动）。"""
+        if mem is None or now - mem[1] > DANGO_MEMORY:
+            return False
+        box = mem[0]
+        return abs(t.box.x + t.box.w / 2 - box.x - box.w / 2) > box.w
 
     def _read_name(self, frame: np.ndarray, tag: Track, now: float, friends: list[str]) -> None:
         """名字标签轨迹：刚出现就读一次，之后隔 ocr_retry 秒再读，读够 ocr_votes 次（且认出是谁）就不再读。"""
@@ -1763,7 +1802,7 @@ class PerceptionWatcher:
         out = []
         others = {t.id for t in list(self._others)}  # process 认定的先祖 / 共享空间的人（和团子框重叠的不算）
         for t in list(self.last_tracks):
-            if now - t.last > PEOPLE_STALE or t.cls not in ("player", UNLIT) or not self._admitted(t):
+            if now - t.last > PEOPLE_STALE or t.cls not in ("player", UNLIT) or not self._admitted(t) or t.data.get("dango"):
                 continue
             d = t.data
             # 每个键只读一次（不 get 完再 []）：身体线程在读的同时，感知线程可能刚好 pop 掉 maybe / sid

@@ -2087,10 +2087,11 @@ class Body:
             tracks = [t for t in list(getattr(self.env, "last_tracks", ())) if self.clock() - t.last <= CALL_TRACK_STALE]
             selfs = [t for t in tracks if t.cls == "self"]
             heads = {t.id: t.box for t in selfs}
-            # 和 self 框重叠的 player 框是团子本人（同感知层 _is_self）：别让一个光圈点亮两个区域、判成"别人也在喊"
+            # 感知层认成团子的 player 框（data["dango"]，和 self 框重叠的、self 框没出时落在团子位置上的）是团子本人：
+            # 别让一个光圈点亮两个区域、判成"别人也在喊"
             # 感知层第二层没放行 / 撤下的 player 轨迹（待复核的低分框、树……）不是人，不看它头顶
             heads.update({t.id: t.box for t in tracks if t.cls == "player" and t.data.get("admitted", True)
-                          and not any(iou(t.box, s.box) >= 0.5 for s in selfs)})
+                          and not t.data.get("dango") and not any(iou(t.box, s.box) >= 0.5 for s in selfs)})
             at = self.clock()  # 按键命令发出之前：adb 往返之后才记会把最亮那一下算到窗口之前
             watch = HaloWatch(base, heads, at, cfg)
             self.device.hw_key(LINUX_KEY_Q)
