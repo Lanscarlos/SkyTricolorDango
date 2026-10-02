@@ -177,7 +177,8 @@ def test_cli_blind_writes_blind_file_and_compares(tmp_path, monkeypatch, capsys)
     write_guess(a, Guess("bow", 0.5, ""), "m")
     write_guess(b, Guess("wave", 0.5, ""), "m")
     cli._perception_gesture_label(cfg, _args(blind=True))
-    assert sorted(s for batch in sent for s in batch) == [a.name, b.name]  # 已有 claude.json 不算做过
+    stems = [s for batch in sent for s in batch]
+    assert len(set(stems)) == 2 and not any("bow" in s or "gesture" in s for s in stems)  # 片段名里的录像名也不给看
     assert load_guess(a).label == "bow" and load_guess(a, BLIND_FILE).label == "wave"
     assert "和看录像名的那次一致 1/2" in capsys.readouterr().out
     cli._perception_gesture_label(cfg, _args(blind=True))  # 做过的跳过
