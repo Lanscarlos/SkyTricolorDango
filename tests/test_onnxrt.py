@@ -114,3 +114,58 @@ def test_perception_bench_accepts_dml(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # 没有 config.toml：用默认配置
     cli.main(["perception", "bench", "--device", "dml", "--images", str(tmp_path)])
     assert seen == ["dml"]
+
+
+class _PreloadOrt(_FakeOrt):
+    """记下 preload_dlls 的调用（onnxruntime-gpu ≥ 1.21 才有）；fail = True 时 preload 抛错。"""
+
+    def __init__(self, available, fail=False):
+        super().__init__(available)
+        self.preloaded = []
+        self.fail = fail
+
+    def preload_dlls(self, directory=None):
+        self.preloaded.append(directory)
+        if self.fail:
+            raise OSError("缺 DLL")
+
+
+@pytest.fixture
+def torch_lib(tmp_path, monkeypatch):
+    from skydango.vision import onnxrt
+    monkeypatch.setattr(onnxrt, "_torch_lib", lambda: str(tmp_path))
+    monkeypatch.setattr(onnxrt, "_preloaded", False)
+    return str(tmp_path)
+
+
+def test_cuda_session_preloads_torch_cuda_dlls_once(monkeypatch, torch_lib):
+    """onnxruntime-gpu 要的 CUDA 12 / cuDNN 9 运行库就在 torch 的 lib 目录里：建 CUDA 会话前先加载一次。"""
+    fake = _PreloadOrt([CUDA, CPU])
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    open_session("a.onnx", "cuda")
+    open_session("b.onnx", "cuda")
+    assert fake.preloaded == [torch_lib]
+
+
+def test_cpu_session_does_not_preload(monkeypatch, torch_lib):
+    fake = _PreloadOrt([CUDA, CPU])
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    open_session("a.onnx", "cpu")
+    assert fake.preloaded == []
+
+
+def test_no_torch_no_preload(monkeypatch):
+    from skydango.vision import onnxrt
+    monkeypatch.setattr(onnxrt, "_torch_lib", lambda: None)
+    monkeypatch.setattr(onnxrt, "_preloaded", False)
+    fake = _PreloadOrt([CUDA, CPU])
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    open_session("a.onnx", "cuda")
+    assert fake.preloaded == [] and fake.created[0][2] == [CUDA, CPU]
+
+
+def test_preload_failure_still_opens_session(monkeypatch, torch_lib):
+    fake = _PreloadOrt([CUDA, CPU], fail=True)
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    open_session("a.onnx", "cuda")
+    assert fake.created and fake.created[0][2] == [CUDA, CPU]
