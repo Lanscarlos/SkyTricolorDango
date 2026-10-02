@@ -169,6 +169,7 @@ dir = "private/sandbox"
 | `frames/*.jpg` | 读到新消息时截的聊天面板（红框标新消息），`run.save_frames = false` 关掉 |
 | `config.json` | 本次实际生效的配置（含 `--live` / `--echo` 覆盖） |
 | `hard/*.jpg`、`hard.jsonl` | YOLO 感知层可能认错的画面（难例）和原因、检测框（`[perception] hardcases`，每次最多 200 张）；要用的及时 `perception label runs --from-runs` 收进数据集 |
+| `look_person/` | `look_person` 裁给大脑的图（`<时间>-<名字>-crop.jpg`）和画了裁剪范围的整帧（`-frame.jpg`），事后核对它看到的是谁 |
 | `spin/<时间>/` | 主人 `#spin` 转一圈的截图：转前 / 转完 / 每帧（文件名带按住后第几秒）和 `summary.json` |
 | `light/<时间>/` | 每次点亮陌生人（`[social]` light）：出请求那一刻 + 举起后每 0.5 秒的截图（每次最多 30 张、每次 run 最多 50 次；所有火焰候选画青圈，他那团画粗）和 `summary.json`（线索、结局、举起时和最后的 `black()`、火焰最后看到的时间和位置、最后在不在边上 `away`） |
 | `unknown_names/` | YOLO 感知层读得清楚、但不在 friends.md 里的名字（`names.jsonl` + 每个名字一张裁剪图）；`perception unknown-names` 汇总，**只列出，不自动写 friends.md** |
@@ -378,6 +379,8 @@ dir = "private/sandbox"
   **被团子挡住时换角度**（`[peek]`，`brain/peek.py` 纯决策 + `Body._peek`，**未在真机验证**）：好友只有名字标签、标签压在团子框上（团子框 = YOLO 的 `self`，只信画面水平中间附近的）→
   在 `look_person` 里闭环：每按一下（`Camera.nudge` 左右 / `zoom_once` 拉近拉远）等画面停稳、看 YOLO 最新结果再定下一下；贴太近先拉远、转不动拉远再转、露出来太小就拉近（拉近后又挡住 / 出画面退一步）；
   **看完镜头不复位**（结果和 status 的"镜头："告诉大脑，要不要 `camera_reset` 它自己定）；status 里有"被你挡住：小明"。dry-run、黑屏、track 在跑时不转，只说被挡住了
+  和团子框是同一个身体（`same_body`）的人物框不算他的身体（10-02 晚 22:26：团子身上的框挂上了他的名字，一看就"露出来了"、裁了团子自己的背影）；
+  每一下按什么、看到什么写 DEBUG（"换角度 第 N 下：…"）；裁给大脑的图和画了裁剪范围的整帧存进 `runs/<…>/look_person/`
 - **技能层**（`brain/skills.py`，计划见 `docs/superpowers/plans/2026-09-28-brain-skills-roadmap.md`）：大脑一轮几秒到十几秒，盯人 / 走过去 / 点火这种要每秒修正的事来不及做，
   交给身体按主循环的节拍闭环做。同时最多一个技能；黑屏、超时、出错都算失败；结束时发 `task_done` / `task_failed` 事件叫醒大脑，
   状态里有"正在做：…"；`stop_task` 叫停；退出时先停技能再复原镜头。approach / light_candle 见计划 E~G 期。

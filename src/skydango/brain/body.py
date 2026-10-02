@@ -20,6 +20,8 @@ from concurrent.futures import Future
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from typing import Any
 
+import cv2
+
 from ..agent import RateLimiter
 from ..chat.memory import Turn
 from ..chat.panel import PanelManager
@@ -32,6 +34,7 @@ from ..imageio import imwrite
 from ..device.base import LINUX_KEY_Q
 from ..vision.bubbles import Rect, roi_rect
 from ..vision.halo import HaloWatch
+from ..vision.perception import same_body
 from ..vision.track import iou
 from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.people import describe_people, describe_things
@@ -51,7 +54,7 @@ from ..inner.lull import Lull, LullTracker, parse_musing
 from ..inner.mind import sounds_upset
 from ..inner.reflect import friend_sections, materials as reflect_materials_text
 from .attention import Attention, Target as AttnTarget
-from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
+from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, overlap_x, pick_self
 from .skills import SkillRunner
 from .track import TrackSkill
 
@@ -69,6 +72,14 @@ PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身�
 
 def _first_line(exc: BaseException) -> str:
     return (str(exc).splitlines() or [type(exc).__name__])[0]
+
+
+def _peek_obs_text(obs: "PeekObs | None") -> str:
+    """换角度每一步的 DEBUG：标签、身体框、团子框、身体框和团子框水平重叠多少。"""
+    if obs is None:
+        return "看不到他"
+    overlap = f"{overlap_x(obs.body, obs.me):.2f}" if obs.body is not None and obs.me is not None else "-"
+    return f"标签 {obs.tag} 身体 {obs.body} 团子 {obs.me} 重叠 {overlap}"
 
 
 FORGET_KINDS = ("catchphrase", "joke", "opinion")  # 网页上能删的性格条目类别
@@ -1260,6 +1271,7 @@ class Body:
         if self.env is None:
             return None
         people = [p for p in self.env.people(now) if p.name and p.sure] if hasattr(self.env, "people") else []  # "像小明"见 _locate_by_look
+        people = [p for p in people if not self._on_me(p.box, now)]
         labels = {n: v for n, v in dict(self.env.labels).items()  # env 后台线程会改这个 dict：先拍快照
                   if now - v[4] <= self.cfg.env.interval * 2 + 1}
         for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
@@ -1365,10 +1377,27 @@ class Body:
         mx, my = round(bw * 0.2), round(bh * 0.2)  # 四周各放宽 20%：人会动、框也不一定贴身
         x1, y1, x2, y2 = max(0, bx - mx), max(0, by - my), min(fw, bx + bw + mx), min(fh, by + bh + my)
         crop = fit(frame[y1:y2, x1:x2], tuple(brain.image_size))
+        self._save_look_person(name, frame, crop, (x1, y1, x2, y2))
         text = f"这是 {name}（原图 ({x1}, {y1}) 起 {x2 - x1}×{y2 - y1}）"
         if guessed:
             text += "；按名字标签估的位置，可能没框全"
         return [image_block(crop, brain.jpeg_quality), {"type": "text", "text": text + note + by_look}]
+
+    def _save_look_person(self, name: str, frame, crop, area: tuple[int, int, int, int]) -> None:
+        """裁给大脑的图存进运行目录 look_person/（事后核对看到的是谁）：裁图 + 整帧画上裁的范围。出错只记日志。"""
+        if self.run_dir is None:
+            return
+        try:
+            folder = self.run_dir.path / "look_person"
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%H%M%S", time.localtime(self.wall()))
+            marked = frame.copy()
+            x1, y1, x2, y2 = area
+            cv2.rectangle(marked, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            imwrite(folder / f"{stamp}-{name}-crop.jpg", crop)
+            imwrite(folder / f"{stamp}-{name}-frame.jpg", marked)
+        except Exception:
+            log.exception("存 look_person 的图出错")
 
     # ---- look_person 换角度（peek）：好友躲在团子身后 ----
     def _self_box(self, now: float, since: float | None = None) -> Rect | None:
@@ -1403,11 +1432,18 @@ class Body:
         if since is not None:
             seen = {t.id for t in list(getattr(self.env, "last_tracks", ())) if t.last >= since}
             people = [p for p in people if p.track_id in seen]
+        people = [p for p in people if not self._on_me(p.box, now, since)]
         for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
             for p in people:
                 if same(p.name):
                     return p.box
         return None
+
+    def _on_me(self, box: Rect, now: float, since: float | None = None) -> bool:
+        """这个框就是团子（和团子框是同一个身体）：好友站在团子正后方时，团子身上的 player 框可能挂上他的名字（10-02 晚 22:26），
+        不算他的身体 —— 不然一看就"露出来了"，裁给大脑的是团子自己的背影。"""
+        me = self._self_box(now, since)
+        return me is not None and same_body(box, me)
 
     def _hidden_tag(self, name: str, now: float) -> Rect | None:
         """这个好友被团子挡住了就返回他的名字标签：标签新鲜、没有身体框、标签压在团子框上。"""
@@ -1489,6 +1525,7 @@ class Body:
                 last, shot = (obs, frame) if obs is not None else (None, None)
                 while True:
                     action = planner.next(obs)
+                    log.debug("换角度 第 %d 下：%s → %s", pressed, _peek_obs_text(obs), action)
                     if isinstance(action, PeekDone):
                         reason = action.reason
                         break
@@ -1511,6 +1548,7 @@ class Body:
                 self._forget_self()
         if reason in ("budget", "lost") and planner.enlarging:  # 已经露出来过（调大小时用完预算 / 拉近把人推没了）：用露出来那一帧
             reason = "revealed"
+        log.debug("换角度 结束：%s，按了 %d 下，最后看到 %s", reason, pressed, _peek_obs_text(last))
         where = f"镜头：{self.camera.describe()}，要转回去用 camera_reset" if pressed else ""
         if reason == "revealed" and last is not None:
             done = f"；刚才被你挡住了，转了一下镜头才看清（{where}）" if pressed else ""

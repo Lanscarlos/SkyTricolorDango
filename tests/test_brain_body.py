@@ -2263,6 +2263,36 @@ def test_status_hidden_note_depends_on_whether_peek_can_run(clock):
     assert "被你挡住：小明" in b.status() and "会自己换角度" not in b.status()
 
 
+ON_ME = Rect(850, 395, 220, 410)  # 团子身上的 player 框（比 self 框宽一圈）
+
+
+def test_body_box_on_self_is_not_the_friend(clock):
+    """10-02 晚 22:26：好友在团子正后方，标签在团子头顶，团子身上的 player 框挂上了他的名字。
+    这个框就是团子：不算他的身体（不算露出来），照样换角度。"""
+    b, device, _ = peek_body(clock, [(BEHIND_TAG, ON_ME), ((980, 360, 120, 36), None), ((1270, 380, 120, 36), CLEAR_BODY)])
+    assert "被你挡住：小明" in b.status()
+    img, note = b.look_person("小明")
+    assert len([c for c in presses(device) if c[0] == "hw_hold"]) == 2
+    assert "转了一下镜头" in note["text"] and "按名字标签估的" not in note["text"]
+    assert "(1218, 340)" in note["text"]  # 裁的是露出来之后的身体框（CLEAR_BODY 四周放宽 20%），不是团子
+
+
+def test_look_person_saves_what_it_showed_the_brain(clock, tmp_path):
+    """look_person 裁给大脑的图存进运行目录，事后能核对看到的是谁。"""
+    b, _, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 380, 120, 36), CLEAR_BODY)], run=SimpleNamespace(path=tmp_path))
+    b.look_person("小明")
+    saved = sorted(p.name for p in (tmp_path / "look_person").iterdir())
+    assert len(saved) == 2 and saved[0].endswith("-小明-crop.jpg") and saved[1].endswith("-小明-frame.jpg")
+
+
+def test_peek_logs_each_step(clock, caplog):
+    b, _, _ = peek_body(clock, [(BEHIND_TAG, None), ((980, 360, 120, 36), None), ((1270, 380, 120, 36), CLEAR_BODY)])
+    with caplog.at_level(logging.DEBUG, logger="skydango.brain.body"):
+        b.look_person("小明")
+    steps = [r.getMessage() for r in caplog.records if r.getMessage().startswith("换角度")]
+    assert len(steps) >= 3 and any("Turn" in s for s in steps) and "revealed" in steps[-1]
+
+
 def test_peek_lost_after_undoing_zoom_still_uses_revealed_view(clock):  # 露出来过、拉近把人推出画面、退回后仍看不到
     small = Rect(1300, 500, 60, 150)
     b, _, _ = peek_body(clock, [(BEHIND_TAG, None), ((1270, 460, 120, 36), small), (None, None)])
