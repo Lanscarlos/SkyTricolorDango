@@ -333,7 +333,7 @@ TYPING = CLASSES.index("typing")
 
 
 def test_prompt_mentions_typing_and_version_bumped():
-    assert "typing" in OBJECT_RULES and OBJECT_PROMPT_VERSION == 3
+    assert "typing" in OBJECT_RULES and OBJECT_PROMPT_VERSION >= 3
 
 
 def test_object_names_has_no_typing():
@@ -490,4 +490,10 @@ def test_object_prompt_uses_actual_frame_size():
     rules = build_object_message([small], AssistConfig())[0]["text"]
     assert "原图 1280×720" in rules and "1920×1080" not in rules
     assert build_object_message([frame_input()], AssistConfig())[0]["text"] == OBJECT_RULES  # 1920×1080 的提示词一字不变
-    assert "原图 1920×1080" in OBJECT_RULES and OBJECT_PROMPT_VERSION == 3
+    assert "原图 1920×1080" in OBJECT_RULES and OBJECT_PROMPT_VERSION == 4
+
+
+def test_bench_rule_one_box_per_seat():
+    """座位的框法（10-02 用户定的）：一个能坐的地方一个框，连成一件的长椅整件一个框，桌子和桌上的东西不框。"""
+    assert "一个能坐的地方一个框" in OBJECT_RULES
+    assert "桌子" in OBJECT_RULES and "不框" in OBJECT_RULES
