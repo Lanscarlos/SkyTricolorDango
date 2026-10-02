@@ -759,9 +759,12 @@ class PerceptionWatcher:
                 self._save_samples(frame, players, tagged, fresh, now)
         # 认得出是谁的人（好友）不算"火焰下面那个人"：好友本来就是亮的，站在火焰旁边会被当成点亮了
         known = [t.box for t in players if t.data.get("name") or t.data.get("tagged") or t.data.get("maybe")]
+        # 第二层没放行 / 撤下的人物框（树、石像……）也不算（spec 2026-10-02-perception-attrs §3.3）
+        hidden = ([t.box for t in tracks if t.cls in ("player", UNLIT) and not self._admitted(t)]
+                  if self.attrs is not None else [])
         self._people_boxes = [
             (d.box, d.score) for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
-            if d.cls != "self" and not any(iou(d.box, k) >= 0.5 for k in known)
+            if d.cls != "self" and not any(iou(d.box, k) >= 0.5 for k in known + hidden)
         ]
         bonfires = [t for t in tracks if t.cls == "bonfire"]
         self._watch_flames(frame, tags, bonfires, now, width, height, panel_visible)

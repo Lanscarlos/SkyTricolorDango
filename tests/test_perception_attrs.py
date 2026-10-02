@@ -136,6 +136,26 @@ def test_high_score_tree_is_withdrawn():
     assert w.strangers(2.5) == 0 and w.nearest(2.5) is None and w.unnamed(2.5) == 0
 
 
+def test_withdrawn_box_is_not_a_person_under_the_flame():
+    """撤下的误框不进 _people_boxes（点亮陌生人找"火焰下面那个人"用）；没接第二层时照旧在里面。"""
+    box = Rect(1500, 400, 90, 220)
+    img, model = scene({1500: probs(not_person=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1500)]]
+    w = watcher(det, model)
+    for t in (0.0, 0.5):
+        w.process(img, t, panel_visible=False)
+        assert [b for b, _ in w._people_boxes] == [box]
+    w.process(img, 1.0, panel_visible=False)  # 第 3 票：撤下
+    assert w.last_tracks[0].data["rejected"] and w._people_boxes == []
+
+    off = watcher(FakeDetector(), None)
+    off.detector.frames = [[player(1500)]]
+    for t in (0.0, 0.5, 1.0):
+        off.process(img, t, panel_visible=False)
+    assert [b for b, _ in off._people_boxes] == [box]
+
+
 def test_unvoted_weak_track_is_not_kept_alive():
     img, model = scene({1500: probs(not_person=0.9)})
     det = FakeDetector()
