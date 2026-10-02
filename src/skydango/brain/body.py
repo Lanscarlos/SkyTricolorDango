@@ -49,7 +49,7 @@ from ..inner.ledger import ago
 from ..inner.log import ENERGY_EVERY, diff as diff_inner
 from ..inner.lull import Lull, LullTracker, parse_musing
 from ..inner.mind import sounds_upset
-from ..inner.reflect import materials as reflect_materials_text
+from ..inner.reflect import friend_sections, materials as reflect_materials_text
 from .attention import Attention, Target as AttnTarget
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, pick_self
 from .skills import SkillRunner
@@ -144,6 +144,8 @@ class Body:
         self._soft_until: dict[str, tuple[float, str]] = {}  # 说了难过的好友 → (收着点到什么时候, 他的原话)
         self.profile_text: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
         self.memory_notes: Callable[[], str] = lambda: ""  # 反思用的笔记（cli 设成 notes.md + inbox.md）
+        self.friends_text: Callable[[], str] = lambda: ""  # 反思用的好友名单（cli 设成 friends.md）：日记里称呼、性别照它
+        self.recent_changes: Callable[[], list[str]] | None = None  # introspect(改动)：最近几天的提交（cli 在幕后开着时设）
         self._energy: Energy | None = None  # 这一圈的精力（每圈算一次）
         self._born_wall = wall()
         self._cheered_at = float("-inf")  # 最近一次有好友跟团子说话（墙上时间）
@@ -2295,7 +2297,15 @@ class Body:
                 return "还没写过日记"
             m = re.match(r"(\d+月\d+日：)?(.*)", diaries[-1], re.S)  # 日期不算进 600 字
             return "最近一篇日记：" + (m.group(1) or "") + m.group(2)[:600]
-        raise ToolError("topic 只能是 精力 / 反思 / 性格 / 日记 / 眼睛")
+        if topic == "改动":
+            if self.recent_changes is None:
+                return off
+            days = self.cfg.backstage.changelog_days
+            lines = self.recent_changes()
+            if not lines:
+                return f"最近 {days} 天没改你"
+            return f"最近 {days} 天{owner}改了你这些（提交原文，技术话，用你自己的话理解）：\n" + "\n".join(lines)
+        raise ToolError("topic 只能是 精力 / 反思 / 性格 / 日记 / 眼睛 / 改动")
 
     @staticmethod
     def _reflect_line(r: dict, wall: float) -> str:
@@ -2377,9 +2387,10 @@ class Body:
         if final:  # 下线前还没结束的冷场也写进去
             for lull in self._lull_call(lambda: self.lulls.flush(wall), []) or []:
                 self._lull_note(lull)
+        chat, comings = (self._session_chat, self._session_comings) if final else (self._reflect_chat, self._reflect_comings)
         friends = self._safe_friends()
-        names = list(dict.fromkeys(
-            [n for n in (match_friend(who, friends) for _, who, _ in self._reflect_chat) if n]
+        names = list(dict.fromkeys(  # 下线那次看整次上线的聊天：早先说过话的好友也要有关系卡和名单那一节（日记写得对）
+            [n for n in (match_friend(who, friends) for _, who, _ in chat) if n]
             + [n for n in (match_friend(x, friends) for x in (self.env.nearby(self.clock()) if self.env is not None else [])) if n]
         ))
         cards = []
@@ -2392,10 +2403,9 @@ class Body:
         mind_line = self.mind.line(wall, self._energy) if self.mind is not None else ""
         if self.mind is not None and self.mind.updated is not None:
             mind_line += f"（{ago(wall - self.mind.updated)}前想的）"
-        chat, comings = (self._session_chat, self._session_comings) if final else (self._reflect_chat, self._reflect_comings)
         return reflect_materials_text(
             wall, self._energy.note if self._energy is not None else "", mind_line, list(chat), list(comings), cards, notes,
-            self.profile_text() or "", final, self._traits(),
+            self.profile_text() or "", final, self._traits(), friend_sections(self.friends_text() or "", names),
         )
 
     def _traits(self) -> str | None:

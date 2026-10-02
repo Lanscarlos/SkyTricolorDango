@@ -286,3 +286,39 @@ def test_both_kinds_status():
     t.tick(T0 + 70, ["阿花"], chat)
     status = t.status(T0 + 70)
     assert status.startswith("冷场：") and "；" in status and "阿花" in status and "懒洋洋大王 走开" in status
+
+
+def test_next_lull_shows_earlier_musings():  # 沙盒里每次冷场都想“他在忙，我等等”：叫醒时带上之前想过的，别重复
+    t, chat = started()
+    t.muse("他大概在忙", T0 + 70)
+    t.heard(T0 + 100, "懒洋洋大王", "回来了")
+    chat = chat + [(T0 + 100, "懒洋洋大王", "回来了")]
+    cues = t.tick(T0 + 160, NEAR, chat)
+    assert len(cues) == 1 and cues[0].text.endswith("之前冷场时你想过「他大概在忙」，这次换个想法。")
+    t.muse("是不是我太黏人了", T0 + 170)
+    later = t.tick(T0 + 280, NEAR, chat)  # 同一次冷场的下一个节点：状态里有“在想”，不再附
+    assert len(later) == 1 and "之前冷场" not in later[0].text
+
+
+def test_left_opening_shows_earlier_musings():
+    t, chat = started()
+    t.muse("他大概在忙", T0 + 70)
+    t.heard(T0 + 100, "懒洋洋大王", "我去拿快递")
+    chat = chat + [(T0 + 100, "懒洋洋大王", "我去拿快递")]
+    assert t.left("懒洋洋大王", T0 + 105, chat)
+    cues = t.tick(T0 + 125, [], chat)
+    assert len(cues) == 1 and cues[0].text.startswith("冷场  懒洋洋大王 聊着聊着走开了。")
+    assert cues[0].text.endswith("之前冷场时你想过「他大概在忙」，这次换个想法。")
+
+
+def test_earlier_musings_keep_last_two():
+    t = tracker()
+    for i, thought in enumerate(["一", "二", "三"]):
+        base = T0 + i * 1000
+        chat = [(base, "懒洋洋大王", "在吗"), (base + 5, "我", "在呢")]
+        assert len(t.tick(base + 65, NEAR, chat)) == 1
+        t.muse(thought, base + 70)
+        t.heard(base + 100, "懒洋洋大王", "嗯")
+    chat = [(T0 + 3000, "懒洋洋大王", "在吗")]
+    cues = t.tick(T0 + 3065, NEAR, chat)
+    assert cues[0].text.endswith("之前冷场时你想过「二」「三」，这次换个想法。")

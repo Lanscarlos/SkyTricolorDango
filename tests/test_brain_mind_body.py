@@ -183,3 +183,23 @@ def test_idle_scale_survives_reflex_done(clock):  # 终审 I6：困了闲着的�
     clock.advance(51)
     b.step()
     assert len(done) == n + 1  # 下一个也按 ×0.5 的间隔
+
+
+def test_materials_have_friend_profiles(clock, tmp_path):  # 日记里把女生写成“他”
+    b, env, reader, _ = make(clock, tmp_path)
+    b.friends_text = lambda: "## 懒洋洋大王\n- 本名卡洛\n\n## 阿花\n- 女生\n"
+    reader.batches = [[msg("在吗", "阿花")]]
+    b.step()
+    text = b.reflect_materials(False)
+    assert "阿花：女生" in text and "本名卡洛" not in text  # 只带这段时间相关的好友
+
+
+def test_final_materials_cover_friends_from_whole_session(clock, tmp_path):  # 日记看整次上线：早先说过话的好友也要带上
+    b, env, reader, _ = make(clock, tmp_path, reflect_reply='{"mood": {"level": "开心"}}')
+    b.friends_text = lambda: "## 阿花\n- 女生\n"
+    reader.batches = [[msg("早上好", "阿花")]]
+    b.step()
+    clock.advance(1300)
+    b.step()  # 后台反思开始：这一段的材料清空
+    b.step()
+    assert "阿花：女生" in b.reflect_materials(True)
