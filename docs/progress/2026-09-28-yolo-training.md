@@ -185,6 +185,29 @@ v8（`tmp/yolo/sky-v8/weights/best.pt`，816 帧、yolo11n、120 epoch、约 42 
 下一步：定框法（一把椅子 / 一个坐垫一个框；茶桌、长椅这种连成一件的整件框、桌上东西一起框；桌子本身不算）→ 写进物品提示词 →
 `--objects --model tmp/yolo/sky-v8/weights/best.pt --recheck --only 'obj-bench-teatable-*'` 重标座位 → 拼图核对 → 再训；再录一两张别的地图的座位。
 
+### 10-02：座位重标（v9，没过线、没上线）
+
+框法定成**一个能坐的地方一个框**（每把椅子 / 凳子 / 坐垫各一个，长椅这种连成一件的整件一个；桌子和桌上的东西不框），写进物品提示词（版本 4）。
+`perception label datasets/sky --objects --model tmp/yolo/sky-v8/weights/best.pt --recheck --only 'obj-bench-teatable-*'` 重核 277 帧（约 91 万输入 / 32 万输出 token，备份 `_backup/labels-20261002-124506`）。
+`--recheck` 把这些帧的所有物品都重核了：又加回 22 个先祖、8 个人物框改成先祖（10-01 晚核对过这两段没有真先祖）、typing 188 个——
+所以**只留下这次的座位框（263 → 340），别的类别全部恢复成重标前**（脚本见当时的会话，按备份逐帧替换）。
+
+拼图抽查：红餐椅、蓝色小椅子一把一个框、矮茶凳整件一个框做到了；**雪人蛋糕桌旁的马卡龙坐垫很多帧没标、有一帧把蛋糕桌整个框进去**，矮茶凳连茶壶一起框。
+
+v9（`tmp/yolo/sky-v9/weights/best.pt`，同 v8 的设置，120 epoch、约 20 分钟）同一验证集 mAP50（茶座验证集用的是重标后的座位）：
+
+| 类别 | 旧 val 90 帧 v7 / v8 / v9 | 茶座 val 49 帧 v7 / v8 / v9 |
+|---|---|---|
+| player | 0.734 / 0.735 / 0.691 | 0.547 / 0.552 / 0.616 |
+| self | 0.812 / 0.837 / 0.831 | 0.628 / 0.698 / 0.628 |
+| player_unlit | 0.771 / 0.746 / 0.733 | 0.563 / 0.422 / 0.382 |
+| typing | 0.994 / 0.994 / 0.993 | 0.274 / 0.409 / 0.569 |
+| bench | 0.495 / 0.124 / 0.247 | 0 / 0.335 / 0.409 |
+
+座位涨了（v8 在新标注上 0.335 比旧标注上 0.216 高，说明新框法本身更一致），但离 0.6 还远；**旧验证集上 player 掉到 0.691**，过不了"认人不低于 v7"。v9 不上线，本机继续用 v7。
+
+下一步：X-AnyLabeling 人工补马卡龙坐垫、去掉蛋糕桌 / 茶壶 → 再训；再录一两张别的地图的座位。认人掉分要看是不是茶座帧的人物标注（雪人变身、共享空间）拉的。
+
 ### 明天白天
 
 - 物品：`perception label <录像> --assist` 先标人 → `perception label datasets/sky --objects` 补物品 → 看 `_assist/objects.md` 修正 → `perception augment` → 训 v8；
@@ -194,17 +217,17 @@ v8（`tmp/yolo/sky-v8/weights/best.pt`，816 帧、yolo11n、120 epoch、约 42 
 
 ## 第二层（10-02）：裁图复核 + 外形头
 
-设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。**代码都写完了（`[attrs] enabled` 默认关），还没有训练数据和模型，没上真机。**
+设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。**代码都写完了（`[attrs] enabled` 默认关），Claude 初分做完了，等人工确认；还没有模型，没上真机。**
 
-**测速**（10-02，`models/dinov2-small.onnx`，输入 224×224，随机图，预热 10 次、60 轮取中位数）：
-**CUDA 没用上**——这台机器的 onnxruntime 是 CPU 版（没有 `CUDAExecutionProvider`，`OnnxEmbedder` 警告后退回 CPU），所以下面是 **CPU 的数**，5070 Ti 上的要装 `onnxruntime-gpu` 后重测：
+**测速**（10-02，`models/dinov2-small.onnx`，输入 224×224，随机图，预热后取中位数）：
 
 | | 单张 | 4 张逐张 |
 |---|---|---|
-| CPU | 31.6 ms | 127.9 ms |
+| CPU（原来装的 onnxruntime 1.30） | 31.6 ms | 127.9 ms |
+| 5070 Ti（onnxruntime-gpu 1.23.2，显卡空闲） | 4.8 ms | 19.5 ms |
 
-逐张 4 张 > 40 ms：真要在 GPU 上也超，就得**导出带动态 batch 维的主干**（`models/dinov2-small-b.onnx`），不在这一期做。
-上线门槛第 3 条（`bench --attrs` 帧率降不超过 10%）要等装好 GPU 版 onnxruntime 再量。
+GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-gpu 1.30 默认按 CUDA 13 编译、和 torch cu128 对不上，装的是 1.23.2，DLL 借 torch 的（见 CLAUDE.md「环境」）。
+上线门槛第 3 条（`bench --attrs` 帧率降不超过 10%）要等有模型再量。
 
 **真数据跑裁图**（`perception crops … --model models/sky-yolo-v7.pt`，默认 `--conf 0.2`，输出 `datasets/attrs/`；没调 Claude、没写回、没动 `datasets/sky`）：
 - `datasets/sky`：已标注的人物框 lit（点过火）1178、unlit（黑影）385、spirit（先祖）0；对不上标注的框 `_unlabeled` 175
@@ -218,9 +241,13 @@ v8（`tmp/yolo/sky-v8/weights/best.pt`，816 帧、yolo11n、120 epoch、约 42 
 3. 5070 Ti 上 `perception bench --attrs`：感知层帧率降不超过 10%
 4. 真机三步：`view --images <录像>` 看灰框 / 复核框（茶座、开花的树、篝火那几段）→ `run --dry-run` 10 分钟 `[attrs]` 开 / 关各一次比 `stranger` / `approach` 事件数和 `hard/` 里的 `attrs_*` → 有黑影来时点亮陌生人链路照常
 
+**Claude 初分**（10-02，sonnet，约 19 万输入 / 26 万输出 token）：2067 张里 2064 张有结果——lit 852、unlit 681、not_person 243、unsure 157、spirit 55、morph 41、shared 35。
+抽查（各 24 张拼图）：**not_person 约八成对**（篝火、大锅、灯柱、绣球、树、红椅子、茶壶对；白斗篷玩家、站着的黑影被判成不是人）；
+**spirit 基本不可信**（多数是橙袍子 / 绿光里 / 发蓝光的普通玩家，还有变身的白鹿）。和动作初分一样只当参考，标注页上先祖要逐张改。
+
 **剩下要人做的**（按顺序）：
-1. `pip` 装 `onnxruntime-gpu` 重测速（或决定导出带 batch 的主干）
-2. `perception attrs-label`（花 Claude 额度，初分 `datasets/attrs/_unlabeled`）
+1. ~~装 `onnxruntime-gpu` 重测速~~（10-02 做完，见上）
+2. ~~`perception attrs-label`~~（10-02 做完，见上）
 3. 管理面板「标注」页的「外形」标签页逐张确认
 4. `perception crops datasets/sky --writeback`（确认是人的框写回 `datasets/sky`，先自动备份）
 5. `perception attrs-train`，看 `report.md` 对门槛 1~3；`perception attrs-eval` 复评
