@@ -103,6 +103,7 @@ def assess(
     spoken: Sequence[Spoken],
     is_friend: Callable[[str], bool],
     quota_scale: float = 1.0,  # 心情 / 精力的倍数（内心层第 2 期）；额度至少 1
+    greeting: bool = False,  # 有好友刚来、团子还没开口：打招呼不受 min_gap 限制（额度、冷场照旧）
 ) -> Occasion:
     others = sum(1 for t, who, _ in chat if who != ME and now - cfg.busy_window <= t <= now)
     if not friends:
@@ -134,7 +135,7 @@ def assess(
         # 要等到窗口里只剩 limit - 1 句（档位变低时不止最早那一句）
         wait = math.ceil(in_window[recent - limit][0].t + cfg.quota_window - now) if in_window else 0
         blocked = f"最近 {cfg.quota_window / 60:g} 分钟已经主动说了 {recent} 句，{wait} 秒后才能再主动开口"
-    elif last is not None and now - last.t < cfg.min_gap:
+    elif last is not None and now - last.t < cfg.min_gap and not greeting:
         blocked = f"刚主动说过，{math.ceil(last.t + cfg.min_gap - now)} 秒后才能再主动开口"
 
     return Occasion(

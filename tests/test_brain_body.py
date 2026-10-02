@@ -1512,6 +1512,36 @@ def test_min_gap_and_recovery(clock):
     assert [s.proactive for s in b.spoken] == [True, True]
 
 
+def test_greeting_new_friend_skips_min_gap(clock):  # 沙盒：卡洛刚来时主动说了一句，饶总紧跟着上线，招呼被 60 秒间隔拦下
+    b, env, _ = pro_body(clock)
+    b.friend_names = lambda: ["阿花", "小明"]
+    b.cfg.proactive.quota_quiet = 10  # 只测间隔
+    b.step()  # 阿花来了
+    b.say("阿花来啦")
+    clock.advance(10)
+    env.near = ["阿花", "小明"]
+    b.step()  # 小明来了：招呼不受间隔限制
+    assert b.occasion().blocked == ""
+    b.say("小明也来啦")
+    clock.advance(10)
+    with pytest.raises(ToolError, match="刚主动说过"):  # 招呼过了：间隔照旧
+        b.say("你们好呀")
+    assert [s.proactive for s in b.spoken] == [True, True]
+
+
+def test_greeting_window_expires(clock):
+    b, env, _ = pro_body(clock)
+    b.friend_names = lambda: ["阿花", "小明"]
+    env.near = ["小明"]
+    b.step()  # 小明来了，没打招呼
+    clock.advance(b.cfg.proactive.greet_window + 1)
+    env.near = ["小明", "阿花"]
+    b.say("小明在吗")  # 主动说一句
+    clock.advance(5)
+    with pytest.raises(ToolError, match="刚主动说过"):  # 小明来了太久、阿花还没被身体认出来：不算刚来
+        b.say("还有谁")
+
+
 def cold(b, clock):
     b.cfg.proactive.min_gap = 0
     b.cfg.proactive.quota_quiet = 10

@@ -63,6 +63,14 @@ def test_min_gap():
     assert o.left == 1 and o.blocked == "刚主动说过，40 秒后才能再主动开口"
 
 
+def test_greeting_skips_min_gap_only():
+    o = assess(CFG, NOW, ("阿花",), 0, [], [said(20)], FRIEND, greeting=True)
+    assert o.blocked == "" and o.left == 1
+    full = assess(CFG, NOW, ("阿花",), 0, [], [said(500), said(20)], FRIEND, greeting=True)
+    assert full.blocked.startswith("最近 10 分钟已经主动说了 2 句")  # 额度照旧
+    assert ProactiveConfig().greet_window == 60.0
+
+
 def test_cold_and_recovery():
     three = [said(500), said(350), said(200)]
     cold = occ(spoken=three)

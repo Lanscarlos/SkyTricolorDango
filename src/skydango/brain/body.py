@@ -225,6 +225,7 @@ class Body:
         # 按 Q 喊一声（spec 2026-10-01-q-call）
         self.last_call: CallResult | None = None  # 上次喊（status 用；窗口结束后 seen 补上）
         self._call_at = float("-inf")  # 上次按 Q（dry-run 也记）：min_gap 从这里算
+        self._arrived_at: dict[str, float] = {}  # 好友来到身边（arrive）的墙钟：刚来时打招呼不受主动开口的间隔限制
         self._call_times: deque[float] = deque()  # 身体自动喊的时间（额度）
         self._auto_called: dict[str, float] = {}  # 好友 → 为他哪一次走开（_left_at 的时间）自动喊过
         self._pending_auto: CallResult | None = None  # 自动喊了、还在等窗口结果
@@ -961,6 +962,7 @@ class Body:
                     joke = self._inner_call(lambda: self.persona.joke_note(name), default="")
                 text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}{joke or ''}{back or ''}"
                 self.events.put("arrive", text, who=name)
+                self._arrived_at[name] = self.wall()
                 self._reflect_note(f"{name} 来到身边")
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
@@ -1638,7 +1640,16 @@ class Body:
         strangers = self.env.strangers(now) if hasattr(self.env, "strangers") else 0
         return assess(
             self.cfg.proactive, self.wall(), friends, strangers, list(self.chat), list(self.spoken),
-            is_friend_fn(self.friend_names()), quota_scale=self.effects().quota,
+            is_friend_fn(self.friend_names()), quota_scale=self.effects().quota, greeting=self._greeting(friends),
+        )
+
+    def _greeting(self, friends: list[str]) -> bool:
+        """有好友刚来（greet_window 内）、团子之后还没开口：这句算打招呼。"""
+        wall = self.wall()
+        said = max((t for t, who, _ in self.chat if who == "我"), default=float("-inf"))
+        return any(
+            0 <= wall - t <= self.cfg.proactive.greet_window and t > said
+            for name, t in self._arrived_at.items() if name in friends
         )
 
     def chat_log(self, n: int = 20) -> str:
