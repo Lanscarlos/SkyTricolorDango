@@ -146,6 +146,31 @@ def test_two_labels_pinning_same_recording_use_smallest_cut():
     assert max(_starts(s["train"])) < 15.0
 
 
+def _lopsided():
+    # 10-02 真数据的样子：挥手录像 A、鞠躬录像 B，普通游玩 C 里夹着少量挥手和极少鞠躬
+    out = []
+    for rec, counts in (("A", {"wave": 60, "none": 50}), ("B", {"bow": 50, "none": 25}),
+                        ("C", {"none": 45, "wave": 20, "bow": 2})):
+        for label, k in counts.items():
+            for t in range(k):
+                out.append(smp(label, rec, t, len(out)))
+    return out
+
+
+def test_split_keeps_most_of_each_label_in_train():
+    # 以前：B 整段进验证集，训练集只剩 C 里的 2 段鞠躬（10-02 实际训出来召回率 0%）
+    out = _lopsided()
+    labels = ["none", "wave", "bow"]
+    for seed in range(6):
+        s = split(out, labels, gap=1.0, seed=seed)
+        train, val = set(s["train"]), set(s["val"])
+        for label in labels:
+            mine = [x.clip for x in out if x.label == label]
+            assert len(train.intersection(mine)) >= len(mine) / 2, (seed, label)
+            assert len(val.intersection(mine)) >= 5, (seed, label)  # 验证集里别只有零星一两段
+        assert not train & val
+
+
 # ---- 第二部分：训练、导出、报告（假特征提取器：每帧的平均颜色，不下载 DINOv2）----
 def fake_extractor():
     torch = pytest.importorskip("torch")
