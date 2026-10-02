@@ -180,7 +180,7 @@ save_max = 2000                 # 一次运行最多存几张
 [attrs]
 # 人物复核（第二层，要先打开 [perception]）：给 YOLO 的人物框裁图再判一次——挡树 / 石像等误框、捞低分框、认先祖 / 共享空间的人、点没点火两边投票。
 # 模型用 `perception attrs-train` 训练，过了上线门槛再打开；数字都是估的，未在真机验证。低分框的阈值复用 [perception] low_conf
-# 本机 onnxruntime 是 CPU 版（一张裁图约 32 ms）：装 onnxruntime-gpu 之前别开，或者 max_crops = 1、every = 1.0
+# DINOv2 在 5070 Ti 上一张裁图约 5 ms（onnxruntime-gpu 1.23.2）；只有 CPU 时一张约 32 ms，别开，或者 max_crops = 1、every = 1.0
 enabled = false
 model = "models/attrs.npz"      # 线性头文件
 backbone = "models/dinov2-small.onnx"  # 冻住的特征主干，文件名要和 npz 里记的一致
