@@ -314,6 +314,18 @@ def _appearance_parts(cfg: Config, run: RunDir | None = None) -> dict:
     }
 
 
+def _catalog_collector(cfg: Config, run: RunDir | None):
+    """装扮图鉴收集（spec 2026-10-02-catalog-collect §4）：[catalog] 开着、有运行目录（run 的 dry-run / live）才建；
+    view、perception detect 没有运行目录，不收。[perception] 没开时 _scene_watcher 根本不走到这里。"""
+    if not cfg.catalog.enabled or run is None:
+        return None
+    from .vision.catalog import CatalogCollector
+
+    collector = CatalogCollector(cfg.catalog, Path(cfg.catalog.dir), run.path.name, time.strftime("%Y-%m-%d"))
+    log.info("图鉴收集：近处的人清楚的裁图存进 %s", collector.folder)
+    return collector
+
+
 def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, run: RunDir | None = None, light: bool = False):
     """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。
 
@@ -362,6 +374,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         social_cfg=cfg.social, flame=flame,
         light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run),
         call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
+        catalog=_catalog_collector(cfg, run),
     )
 
 
@@ -521,6 +534,9 @@ def _stop_scene(env) -> None:
     unknown = getattr(env, "unknown", None)
     if unknown is not None and unknown.entries:
         print(f"没认出的名字：{len(unknown.entries)} 个 → {unknown.folder}（汇总：perception unknown-names）")
+    catalog = getattr(env, "catalog", None)
+    if catalog is not None and catalog.saved:
+        print(f"图鉴收集：存了 {catalog.saved} 张 → {catalog.folder}")
 
 
 def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False, on_shutdown=None):
