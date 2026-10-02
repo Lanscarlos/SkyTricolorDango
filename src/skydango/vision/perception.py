@@ -1464,38 +1464,38 @@ class PerceptionWatcher:
         diag = self._diag
         if diag is None or diag["count"] >= DIAG_MAX:
             return
-        import cv2
-
-        from ..imageio import imwrite
-
-        img = frame.copy()
-        scan = self._scan or {}
-        if scan.get("area") is not None:
-            a = scan["area"]
-            cv2.rectangle(img, (a.x, a.y), (a.x2, a.y2), (160, 160, 160), 2)
-        if scan.get("me") is not None:
-            m = scan["me"]
-            cv2.rectangle(img, (m.x, m.y), (m.x2, m.y2), (255, 255, 255), 2)
-        f = scan.get("flame")
-        if f is not None:
-            cv2.circle(img, (f.x, f.y), round(f.r * 1.5), (255, 255, 0), 2)
-            cv2.putText(img, f"{f.score:.2f}", (f.x + round(f.r * 1.5), f.y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        with self._lock:
-            person = self._lighting["person"] if self._lighting is not None else None
-            raised = self._lighting["raised"] if self._lighting is not None else None
-        if person is not None:
-            box, blk = person
-            color = (200, 60, 200) if blk is None or blk >= self.light_cfg.lit_black else (60, 220, 60)
-            cv2.rectangle(img, (box.x, box.y), (box.x2, box.y2), color, 2)
-            cv2.putText(img, "?" if blk is None else f"{blk:.2f}", (box.x, box.y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        offset = now - (raised if raised is not None else now)
+        diag["count"] += 1
+        diag["next"] = now + DIAG_EVERY  # 先前进：存图失败也不会每次扫描都重试
         try:
+            import cv2
+
+            from ..imageio import imwrite
+
+            img = frame.copy()
+            scan = self._scan or {}
+            if scan.get("area") is not None:
+                a = scan["area"]
+                cv2.rectangle(img, (a.x, a.y), (a.x2, a.y2), (160, 160, 160), 2)
+            if scan.get("me") is not None:
+                m = scan["me"]
+                cv2.rectangle(img, (m.x, m.y), (m.x2, m.y2), (255, 255, 255), 2)
+            f = scan.get("flame")
+            if f is not None:
+                cv2.circle(img, (f.x, f.y), round(f.r * 1.5), (255, 255, 0), 2)
+                cv2.putText(img, f"{f.score:.2f}", (f.x + round(f.r * 1.5), f.y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            with self._lock:
+                person = self._lighting["person"] if self._lighting is not None else None
+                raised = self._lighting["raised"] if self._lighting is not None else None
+            if person is not None:
+                box, blk = person
+                color = (200, 60, 200) if blk is None or blk >= self.light_cfg.lit_black else (60, 220, 60)
+                cv2.rectangle(img, (box.x, box.y), (box.x2, box.y2), color, 2)
+                cv2.putText(img, "?" if blk is None else f"{blk:.2f}", (box.x, box.y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            offset = now - (raised if raised is not None else now)
             diag["dir"].mkdir(parents=True, exist_ok=True)
             imwrite(diag["dir"] / f"{label}-{offset:+05.1f}.jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
         except Exception:
             log.debug("存点亮图出错", exc_info=True)
-        diag["count"] += 1
-        diag["next"] = now + DIAG_EVERY
 
     def mark_tried(self, clue_id: int) -> None:
         """身体举起蜡烛了：开始"点亮中"（期间不出新请求），记下这时火焰在哪、他有多黑。"""

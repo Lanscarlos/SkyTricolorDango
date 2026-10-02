@@ -1685,7 +1685,7 @@ def test_no_self_box_no_search(monkeypatch):
     assert w.areas == [] and LIGHT_KEY not in w.requests
 
 
-def test_stale_self_track_still_used_within_a_second(monkeypatch):
+def test_stale_self_track_still_used_within_self_hold(monkeypatch):
     """黑影贴着团子认不出团子时沿用最近的团子框最多 SELF_HOLD 秒。
     SELF_HOLD 内用 _me_last 继续找，过了就停止。"""
     w, det, clock = light_watcher(monkeypatch, [FLAME])
@@ -2010,7 +2010,7 @@ def test_lit_false_while_paused_or_stale(monkeypatch):
     det.frames = [[self_det()]]
     run_frames(w, clock, 3.2, 5.5)
     assert w.lit(cid, 3.1) is None
-    clock.t = 6.5  # 1.2 秒没扫描（> FRAME_STALE + DISK_EVERY）
+    clock.t = 6.5  # 1.1 秒没扫描（> FRAME_STALE + DISK_EVERY）
     assert w.lit(cid, 3.1) is False
     clock.t = 5.4
     w.hold("panel")
@@ -2075,15 +2075,23 @@ def test_lit_false_when_self_box_lost(monkeypatch):
 
 
 def test_lit_uses_scan_time_not_frame_time(monkeypatch):
-    """process() 一开始就写 _frame_at、扫描还没做完：身体线程这时调 lit 不能拿新帧时间比旧扫描结果。"""
+    """process() 处理新一帧的途中（检测器里）身体线程调 lit：要按最近一次真扫描的时间判，不能拿新帧时间去比旧扫描结果。"""
     w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
     monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
     monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.1)
     det.frames = [[self_det(), player(1000)]]
-    run_frames(w, clock, 3.2, 3.5)  # 火焰刚消失 0.3 秒、人还在
-    assert w.lit(cid, 0.0) is False
-    w._frame_at = 4.5  # 模拟 process 刚开始处理新的一帧
-    assert w.lit(cid, 0.0) is False
+    run_frames(w, clock, 3.2, 4.5)
+    assert w.lit(cid, 0.0) is True
+    seen = []
+    real_detect = det.detect
+
+    def detect_and_ask(img):
+        seen.append(w.lit(cid, 0.0))  # 这一帧（4.8）刚开始处理、扫描还没做
+        return real_detect(img)
+
+    det.detect = detect_and_ask
+    run(w, 4.8, clock)
+    assert seen == [True]
 
 
 def test_lit_false_when_last_scan_found_nobody(monkeypatch):
