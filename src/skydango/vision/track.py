@@ -188,12 +188,18 @@ class Tracker:
         free = dict(self.tracks)
         matched = self._assign(dets, free, now)
         weak = self._assign(low, free, now, strong=False) if low and free else {}
-        # 没被用掉的低分框：指定类别的开待复核的新轨迹（strong_last 保持 -inf）
+        # 没被用掉的低分框：指定类别的开待复核的新轨迹（strong_last 保持 -inf）。
+        # 压在这一帧已有的框上的不开（检测器按类别各自 NMS，同一个人常同时有高分 player + 低分 player_unlit、
+        # 或者一个和整身框 IoU 不到 cross_iou 的半身框）：和这一帧的高分框、被接上 / 续上的轨迹重叠够 min_iou 就算同一个人
         opened = []
         if self.open_low:
             used = set(weak)
+            taken = [(d.cls, d.box) for d in dets] + [(t.cls, t.box) for t in (*matched.values(), *weak.values())]
             for di, det in enumerate(low):
                 if di in used or det.cls not in self.open_low:
+                    continue
+                if any((cls == det.cls or (cls in self.cross and det.cls in self.cross)) and iou(box, det.box) >= self.min_iou
+                       for cls, box in taken):
                     continue
                 track = Track(self._next, det.cls, det.box, det.score, now, now)
                 self.tracks[track.id] = track

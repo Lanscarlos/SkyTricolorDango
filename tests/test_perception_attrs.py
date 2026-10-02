@@ -120,6 +120,19 @@ def test_low_score_person_appears_only_after_review():
     assert [e["kind"] for e in w.overlay(1.0)] == ["stranger"]
 
 
+def test_low_box_of_other_class_on_friend_is_no_ghost():
+    """好友高分 player 框上叠着一个低分 player_unlit 框（检测器按类别各自 NMS）：不另开轨迹，不冒出幽灵陌生人 / 黑影。"""
+    img, model = scene({1000: probs(lit=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110), low_player(1008, cls="player_unlit")]]
+    w = watcher(det, model, ocr=FakeOcr({110: NAME}), keep=5.0)
+    for t in (0.0, 0.5, 1.0, 1.5, 2.0):
+        w.process(img, t, panel_visible=False)
+    assert [(p.kind, p.name) for p in w.people(2.0)] == [("friend", NAME)]
+    assert (w.strangers(2.0), w.unlit(2.0)) == (0, 0)
+    assert len(w.tracker.tracks) == 2  # 好友 + 名字标签
+
+
 def test_high_score_tree_is_withdrawn():
     img, model = scene({1500: probs(not_person=0.9)})
     det = FakeDetector()

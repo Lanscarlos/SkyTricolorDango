@@ -239,3 +239,28 @@ def test_open_low_order_extended_before_opened():
     out = t.update([], 1.1, low=[P(600, s=0.3), P(100, s=0.3)])
     assert [x.box.x for x in out] == [100, 600]
     assert out[0].strong_last == 1.0 and out[1].strong_last == float("-inf")
+
+
+def test_open_low_no_duplicate_for_cross_class_box_on_tracked_person():
+    """同一个人：高分 player 框 + 重叠的低分 player_unlit 框（检测器按类别各自 NMS）——低分框不另开轨迹。"""
+    t = Tracker(cross=frozenset({"player", "player_unlit"}), open_low=frozenset({"player", "player_unlit"}))
+    out = t.update([P(100)], 1.0, low=[P(104, s=0.3, cls="player_unlit")])
+    assert len(out) == 1 and len(t.tracks) == 1
+    tid = out[0].id
+    # 下一帧：轨迹被高分框接上，又冒出一个半身的低分框（和整身框 IoU 不到 0.5）
+    out = t.update([P(100)], 1.1, low=[P(100, h=25, s=0.3, cls="player_unlit")])
+    assert [x.id for x in out] == [tid] and len(t.tracks) == 1
+
+
+def test_open_low_no_duplicate_for_box_on_weak_extended_track():
+    t = Tracker(cross=frozenset({"player", "player_unlit"}), open_low=frozenset({"player", "player_unlit"}))
+    t.update([P(100)], 1.0)
+    out = t.update([], 1.1, low=[P(100, s=0.3), P(103, s=0.25, cls="player_unlit")])
+    assert len(out) == 1 and len(t.tracks) == 1
+
+
+def test_open_low_other_class_outside_cross_still_opens():
+    """不在 cross 里的两类不算同一个人：照样开。"""
+    t = Tracker(open_low=frozenset({"player", "player_unlit"}))
+    out = t.update([P(100)], 1.0, low=[P(104, s=0.3, cls="player_unlit")])
+    assert len(out) == 2
