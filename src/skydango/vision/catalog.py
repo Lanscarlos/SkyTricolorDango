@@ -104,11 +104,15 @@ class CatalogCollector:
         with self._lock:
             return self._total()
 
+    def _saved(self) -> int:
+        """内部计算盘上张数（不加锁；仅供内部方法调用）。"""
+        return sum(len(rows) for rows in self._written.values())
+
     @property
     def saved(self) -> int:
         """现在盘上有几张。"""
         with self._lock:
-            return sum(len(rows) for rows in self._written.values())
+            return self._saved()
 
     def buffer(self, key: str) -> list[Shot]:
         with self._lock:
@@ -185,8 +189,9 @@ class CatalogCollector:
         close = [s for s in buf if abs(s.t - shot.t) < self.cfg.gap]
         if close:
             if all(shot.score > s.score for s in close):
-                for s in close:
-                    buf.remove(s)
+                # 用列表推导式构造新缓冲，避免 list.remove() 对 numpy 数组的比较问题
+                close_set = {id(s) for s in close}
+                buf[:] = [s for s in buf if id(s) not in close_set]
                 buf.append(shot)
                 self._dirty.add(key)
             return
@@ -196,10 +201,64 @@ class CatalogCollector:
             return
         worst = min(buf, key=lambda s: s.score)  # 缓冲满了，或者这次运行的张数到顶了：只换不加
         if shot.score > worst.score:
-            buf.remove(worst)
+            # 用列表推导式避免 list.remove() 对 numpy 数组的比较问题
+            buf[:] = [s for s in buf if id(s) != id(worst)]
             buf.append(shot)
             self._dirty.add(key)
 
+    def _write(self, key: str) -> None:
+        """把 key 的缓冲按得分写成 1.jpg、2.jpg……；缓冲比上次少就删掉多出来的旧文件。"""
+        buf = sorted(self._buffers.get(key, []), key=lambda s: -s.score)
+        folder = self.folder / _folder_name(key)
+        out = []
+        for i, s in enumerate(buf, 1):
+            path = folder / f"{i}.jpg"
+            imwrite(path, s.crop, JPEG)
+            out.append({"file": path.relative_to(self.root).as_posix(), **s.row})
+        for i in range(len(buf) + 1, max(self.cfg.per_who, len(self._written.get(key, []))) + 1):
+            (folder / f"{i}.jpg").unlink(missing_ok=True)
+        self._written[key] = out
+        self._dirty.discard(key)
+
+    def _write_index(self) -> None:
+        """索引整份重写（先写临时文件再替换），和目录里的图一一对应。"""
+        lines = [json.dumps(r, ensure_ascii=False) + "\n" for k in sorted(self._written) for r in self._written[k]]
+        self.folder.mkdir(parents=True, exist_ok=True)
+        tmp = self.folder / "index.jsonl.tmp"
+        tmp.write_text("".join(lines), encoding="utf-8")
+        os.replace(tmp, self.folder / "index.jsonl")
+
     def _flush(self, keys: Iterable[str]) -> None:
-        """写盘（Task 4 补上）。这一个 Task 先什么都不做：测试只看内存里的缓冲。"""
-        return
+        keys = [k for k in keys if k in self._dirty]
+        if not keys:
+            return
+        try:
+            for k in keys:
+                self._write(k)
+            self._write_index()
+        except OSError as exc:
+            log.warning("图鉴收集写盘出错：%s", exc)
+
+    def dropped(self, tracks: Iterable[Track]) -> None:
+        """追踪器删掉的轨迹：陌生人那份写出去、清掉缓冲（写失败就留着，下次再写）。"""
+        with self._lock:
+            if self._closed:
+                return
+            for t in tracks:
+                self._seen.pop(t.id, None)
+                key = stranger_key(t.id)
+                if key not in self._buffers:
+                    continue
+                self._flush([key])
+                if key not in self._dirty:
+                    self._archived += len(self._buffers.pop(key))
+
+    def close(self) -> None:
+        """全部写出；之后的 update / dropped 都不理。"""
+        with self._lock:
+            if self._closed:
+                return
+            self._flush(list(self._buffers))
+            self._closed = True
+            if self._saved():
+                log.info("图鉴收集：存了 %d 张 → %s", self._saved(), self.folder)

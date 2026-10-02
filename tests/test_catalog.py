@@ -1,11 +1,13 @@
 """图鉴收集（spec 2026-10-02-catalog-collect）：门槛、挑图、写盘。"""
 
 import cv2
+import json
 import numpy as np
 import pytest
 import threading
 
 from skydango.config import CatalogConfig
+from skydango.imageio import imread
 from skydango.vision import catalog as cat
 from skydango.vision.bubbles import Rect
 from skydango.vision.catalog import CatalogCollector, Who, sharpness, stranger_key
@@ -179,3 +181,77 @@ def test_public_readers_take_the_lock(tmp_path, brightness):
     t.join(timeout=1.0)
     assert not t.is_alive(), "读者线程应该能获取锁并完成"
     assert result == [1], "读者线程应该读到 1"
+
+
+def rows(c):
+    return [json.loads(line) for line in (c.folder / "index.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_close_writes_files_and_index(tmp_path, brightness):
+    c = collector(tmp_path)
+    c.update(frame(100), [track(1)], [], 0.0, None, "", friend)
+    c.update(frame(150), [track(1)], [], 5.0, None, "", friend)
+    c.close()
+    folder = tmp_path / "catalog" / "inbox" / "2026-10-02" / "20261002-210000-dry-brain"
+    assert c.folder == folder
+    assert sorted(p.name for p in (folder / "懒洋洋大王").iterdir()) == ["1.jpg", "2.jpg"]
+    assert imread(folder / "懒洋洋大王" / "1.jpg").mean() == pytest.approx(150, abs=2)  # 名次按得分
+    rs = rows(c)
+    assert [r["file"] for r in rs] == [
+        "inbox/2026-10-02/20261002-210000-dry-brain/懒洋洋大王/1.jpg",
+        "inbox/2026-10-02/20261002-210000-dry-brain/懒洋洋大王/2.jpg",
+    ]
+    assert rs[0]["kind"] == "outfit" and rs[0]["who"] == "懒洋洋大王" and rs[0]["t"] == 5.0
+    assert c.saved == 2
+
+
+def test_nothing_collected_leaves_no_folder(tmp_path):
+    c = collector(tmp_path)
+    c.update(frame(), [], [], 0.0, None, "", friend)
+    c.close()
+    assert not (tmp_path / "catalog").exists()
+
+
+def test_dropped_stranger_is_written_and_cleared(tmp_path, brightness):
+    c = collector(tmp_path)
+    c.update(frame(), [track(7)], [], 0.0, None, "", stranger)
+    c.dropped([track(7), track(99)])  # 99 没收过：不管
+    assert (c.folder / "陌生人-t7" / "1.jpg").exists()
+    assert c.buffer("陌生人-t7") == [] and c.total == 1  # 清掉了，但还算在这次运行的张数里
+    c.update(frame(), [track(8, x=1300)], [], 1.0, None, "", stranger)
+    c.close()
+    assert [r["who"] for r in rows(c)] == ["陌生人-t7", "陌生人-t8"]  # 清掉的那份还在索引里
+
+
+def test_periodic_flush_and_shrink_removes_extra_file(tmp_path, brightness):
+    c = collector(tmp_path, flush_every=10.0, gap=3.0)
+    # 时间不按顺序来，每次换一条轨迹（同一条轨迹 every 秒内只看一次）
+    c.update(frame(100), [track(1)], [], 0.0, None, "", friend)
+    c.update(frame(100), [track(2)], [], 3.0, None, "", friend)
+    c.update(frame(100), [track(3)], [], 10.0, None, "", friend)  # 到 10 秒：写一次盘
+    assert len(list((c.folder / "懒洋洋大王").iterdir())) == 3
+    c.update(frame(250), [track(4)], [], 11.5, None, "", friend)  # 离 10.0 不到 3 秒、更好：换掉 10.0 那张
+    c.update(frame(255), [track(5)], [], 1.5, None, "", friend)  # 离 0.0 和 3.0 都不到 3 秒、都更好：两张换一张
+    c.close()
+    assert sorted(p.name for p in (c.folder / "懒洋洋大王").iterdir()) == ["1.jpg", "2.jpg"]
+    assert len(rows(c)) == 2
+
+
+def test_write_error_is_logged_not_raised(tmp_path, brightness, monkeypatch, caplog):
+    def boom(*a, **k):
+        raise OSError("磁盘满了")
+
+    monkeypatch.setattr(cat, "imwrite", boom)
+    c = collector(tmp_path)
+    c.update(frame(), [track(1)], [], 0.0, None, "", friend)
+    with caplog.at_level("WARNING"):
+        c.close()
+    assert "图鉴收集写盘出错" in caplog.text
+
+
+def test_closed_collector_ignores_updates(tmp_path, brightness):
+    c = collector(tmp_path)
+    c.close()
+    c.update(frame(), [track(1)], [], 0.0, None, "", friend)
+    c.dropped([track(1)])
+    assert c.total == 0
