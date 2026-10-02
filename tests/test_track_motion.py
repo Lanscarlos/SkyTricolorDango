@@ -259,6 +259,16 @@ def test_open_low_no_duplicate_for_box_on_weak_extended_track():
     assert len(out) == 1 and len(t.tracks) == 1
 
 
+def test_open_low_one_track_for_overlapping_low_boxes_of_one_person():
+    """同一个人这一帧只有两个跨类重叠的低分框：只开一条待复核轨迹，用分高的那个框。"""
+    t = Tracker(cross=frozenset({"player", "player_unlit"}), open_low=frozenset({"player", "player_unlit"}))
+    out = t.update([], 1.0, low=[P(100, s=0.25), P(104, s=0.3, cls="player_unlit")])
+    assert len(out) == 1 and len(t.tracks) == 1
+    assert out[0].cls == "player_unlit" and out[0].score == 0.3
+    out = t.update([], 1.1, low=[P(100, s=0.25), P(104, s=0.3, cls="player_unlit")])
+    assert len(t.tracks) == 1
+
+
 def test_open_low_other_class_outside_cross_still_opens():
     """不在 cross 里的两类不算同一个人：照样开。"""
     t = Tracker(open_low=frozenset({"player", "player_unlit"}))
