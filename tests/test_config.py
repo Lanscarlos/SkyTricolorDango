@@ -275,5 +275,6 @@ def test_catalog_defaults_and_example():
     assert c.enabled is True and c.dir == "catalog"
     assert (c.every, c.min_height, c.edge, c.pad, c.sharp_min) == (0.5, 0.25, 8, 0.1, 50.0)
     assert (c.per_who, c.gap, c.flush_every, c.max_per_run) == (6, 3.0, 300.0, 300)
+    assert c.dark_max == 0.5
     ex = load_config(ROOT / "config.example.toml").catalog
     assert ex == CatalogConfig()

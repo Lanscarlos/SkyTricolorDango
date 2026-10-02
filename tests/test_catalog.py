@@ -65,12 +65,12 @@ def test_gates(tmp_path, brightness):
     c.update(f, [track(3, y=H - 400)], [], 0.0, None, "", stranger)  # 贴下边
     c.update(f, [track(4), track(5, x=850)], [], 0.0, None, "", stranger)  # 两个人叠在一起
     c.update(f, [track(6, x=100)], [], 0.0, Rect(0, 0, 640, 920), "", stranger)  # 压在聊天面板上
-    c.update(frame(5), [track(7)], [], 0.0, None, "", stranger)  # 模糊（亮度 5 < sharp_min 10）
+    c.update(frame(5), [track(7)], [], 0.0, None, "", lambda t: Who("好友-t7", "friend", True))  # 模糊（亮度 5 < sharp_min 10；黑度门槛只管陌生人，所以用好友）
     c.update(f, [track(8)], [], 0.0, None, "", lambda t: None)  # judge 说不收
     assert c.total == 0
     fails = {r["who"]: r["fail"] for r in c.candidates}
     assert fails == {"陌生人-t1": "small", "陌生人-t2": "edge", "陌生人-t3": "edge", "陌生人-t4": "blocked",
-                     "陌生人-t5": "blocked", "陌生人-t6": "blocked", "陌生人-t7": "blurry"}
+                     "陌生人-t5": "blocked", "陌生人-t6": "blocked", "好友-t7": "blurry"}
     c.update(f, [track(9)], [], 0.0, None, "", stranger)
     assert [s.row["who"] for s in c.buffer("陌生人-t9")] == ["陌生人-t9"]
 
@@ -267,3 +267,20 @@ def test_contact_sheet_one_row_per_identity(tmp_path, brightness):
     assert legend == ["懒洋洋大王（2 张）", "陌生人-t2（1 张）"]
     assert sheet.shape == (2 * 100, 2 * 100, 3)  # 2 行；最多的一行 2 张
     assert cat.contact_sheet(tmp_path / "nothing") is None
+
+
+def dark_person(v_body=10, v_bg=100):
+    """背景亮、人物框里很黑的画面（黑影）。"""
+    f = np.full((H, W, 3), v_bg, np.uint8)
+    f[300:700, 800:1000] = v_body
+    return f
+
+
+def test_dark_strangers_are_skipped_but_dark_friends_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(cat, "sharpness", lambda crop: 100.0)  # 清晰度不是这里要测的
+    c = collector(tmp_path)
+    c.update(dark_person(), [track(1)], [], 0.0, None, "", stranger)  # 黑影：不收
+    c.update(dark_person(), [track(2)], [], 0.0, None, "", friend)  # 披黑斗篷的好友：照收
+    c.update(dark_person(v_body=150), [track(3)], [], 0.0, None, "", stranger)  # 点过火的陌生人：收
+    assert {r["who"]: r["fail"] for r in c.candidates} == {"陌生人-t1": "dark", "懒洋洋大王": None, "陌生人-t3": None}
+    assert c.total == 2

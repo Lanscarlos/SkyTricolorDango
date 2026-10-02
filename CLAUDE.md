@@ -281,7 +281,7 @@ dir = "private/sandbox"
 设计见 `docs/superpowers/specs/2026-10-02-catalog-collect-design.md`（开头有五期路线图：收集 → 归类 + 部位 + 管理面板起名 → 游戏里主动问 → 用图鉴认 → 地图 / 先祖 / 物品），计划 `docs/superpowers/plans/2026-10-02-catalog-collect.md`。
 目标是让团子认出好友身上发型 / 斗篷 / 面具的**俗称**：图鉴从团子自己的经历里长出来，认法是 DINOv2 特征检索 + Claude 对图确认（新加单品不用重训）。**这一期只做收集，还没在真机上跑过，门槛是估的**。
 - `run`（dry-run 和 live 都算）时感知层每帧把人物框交给 `CatalogCollector`：够大（`min_height`）、不贴边、没被别人 / 聊天面板挡（和认装扮共用 `clear_box`）、清楚（拉普拉斯方差 ≥ `sharp_min`）才收；
-  好友（名字标签证实的）、团子、点过火的陌生人收，黑影 / 先祖 / 共享空间 / 第二层没放行的不收；"像小明"的按陌生人存、索引记 `maybe`
+  好友（名字标签证实的）、团子、点过火的陌生人收，黑影 / 先祖 / 共享空间 / 第二层没放行的不收；"像小明"的按陌生人存、索引记 `maybe`；陌生人框太黑（`dark_max`，YOLO 认错的黑影）不收，团子身上多出来的 player 框按团子算
 - 每个身份每次运行留最好的 `per_who` 张、两两隔 `gap` 秒；陌生人轨迹断了写出、每 `flush_every` 秒和退出时全部写出；存进 `catalog/inbox/<日期>/<运行>/<身份>/<名次>.jpg` + 同目录 `index.jsonl`（`catalog/` 不进 git，只在本机；第 2 期起完名的精选图才进私有仓库）
 - 和认装扮（`[appearance]`）完全分开，不带它的副作用；`enabled = false` 时感知层逐字照旧；管理面板有 `catalog.enabled`
 - 定门槛：`catalog collect <录像目录>` → `tmp/catalog/<时间>/`（`sheet.jpg` 总览、`candidates.jsonl` 每个候选过没过哪条门槛）

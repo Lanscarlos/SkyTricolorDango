@@ -23,6 +23,7 @@ from ..config import CatalogConfig
 from ..imageio import imread, imwrite
 from .appearance import _folder_name, clear_box
 from .bubbles import Rect
+from .candle import black
 from .track import Track
 
 log = logging.getLogger(__name__)
@@ -154,6 +155,8 @@ class CatalogCollector:
                   place: str, now: float, width: int, height: int) -> None:
         h = box.h / height
         fail = self._gate(box, others, panel, width, height)
+        if fail is None and who.kind == "stranger" and (black(frame, box) or 0.0) >= self.cfg.dark_max:
+            fail = "dark"
         sharp = score = None
         crop = None
         if fail is None:
