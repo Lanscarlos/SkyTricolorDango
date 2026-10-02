@@ -1,6 +1,7 @@
 /* 标注页（spec 2026-10-01-gesture-labeling-training §3）：左 片段列表（筛选 + 各类计数），中 16 帧动图（canvas 放大 3 倍、按 fps 循环），
  * 右 Claude 的猜测 + 按钮。确认 / 改类别 / 丢弃 / 撤销走 api/gesture/*，后端把片段文件夹挪到对应目录。
- * 键盘（焦点不在输入框、没开对话框时）：Enter 同意 Claude、1~5 = 挥手 / 鞠躬 / 欢呼 / 害羞 / 都不是、0 不要、Z 撤销、空格 暂停、← → 逐帧（暂停时）。
+ * 键盘（焦点不在输入框、没开对话框时）：1~5 = 挥手 / 鞠躬 / 欢呼 / 害羞 / 都不是、0 不要、Z 撤销、空格 暂停、← → 逐帧（暂停时）。
+ * 动作页没有「同意 Claude」（10-03 去掉：Claude 初分认不出动作，直接人工标）；有旧的猜测照样显示、按钮上标出来。
  * 页顶「动作 / 外形 / 动作名」三个标签：外形页标人物裁图（api/form/*，Enter / 1~6 = 外形类别 / 0 不要 / Z 撤销，只在外形页开着时有效）；
  * 动作名页给动作图标起名（emotenames.js，这里只管切过去和刷新，开着时这里的按键都不生效）。
  * 模型写的理由一律 textContent。 */
@@ -313,7 +314,7 @@ function renderSide() {
   // 猜测
   const gbox = $("lb-guess"); gbox.textContent = "";
   if (!c) gbox.append(el("p", "none", "—"));
-  else if (!c.guess) gbox.append(el("p", "none", "Claude 还没猜这一段（跑 perception gesture-label）"));
+  else if (!c.guess) gbox.append(el("p", "none", "没有 Claude 的猜测（它认不准动作，直接按键标）"));
   else {
     const g = c.guess, main = el("div", "lb-guess-main" + (g.label === "unsure" ? " unsure" : ""));
     main.append(el("b", "", nameOf(g.label)), el("span", "lb-conf", `把握 ${pct(g.confidence)}`));
@@ -331,10 +332,7 @@ function renderSide() {
   }
   // 按钮
   const acts = $("lb-actions"); acts.textContent = "";
-  const off = !c || LB.busy, g = c && c.guess, canAgree = !!g && g.label !== "unsure";
-  const agree = kbdBtn("btn go lb-agree", canAgree ? `同意 Claude：${nameOf(g.label)}` : "同意 Claude", "Enter", agreeClaude);
-  agree.disabled = off || !canAgree;
-  acts.append(agree);
+  const off = !c || LB.busy, g = c && c.guess;
   const grid = el("div", "lb-grid");
   keyOrder().forEach((l, k) => {
     const b = kbdBtn("btn lb-act", nameOf(l), String(k + 1), () => label(l));
@@ -419,7 +417,6 @@ const G = {
   s: LB, tab: "gesture", itemsKey: "clips", key: "clip", post: "clip", api: "api/gesture", ids: "lb", noun: "片段",
   rowClass: "lb-item",
   labels: keyOrder, name: nameOf, whereText, short: shortName,
-  agreeable: g => g.label !== "unsure",
   select: clip => select(clip), renderSide: () => renderSide(),
   row: c => [el("span", "n", shortName(c.clip)), guessTag(G, c), el("span", "r", c.recording || "（没有录像名）")],
   onCounts: n => { const m = $("mark-labeling"); if (m) m.textContent = n[UNL] ? `${n[UNL]} 待确认` : ""; },
@@ -440,7 +437,6 @@ const F = {
 function clips() { return pItems(G); }
 function byName(clip) { return pBy(G, clip); }
 function label(to) { return pLabel(G, to); }
-function agreeClaude() { return pAgree(G); }
 function undo() { return pUndo(G); }
 function load() { return pLoad(G); }
 function setFilter(f) { return pSetFilter(G, f); }
@@ -493,7 +489,6 @@ function onKey(e) {
     else if (/^[1-9]$/.test(k)) { const l = fmForms()[Number(k) - 1]; if (l) act = () => fmLabel(l); }
   }
   else if (k === " " || k === "Spacebar") act = () => setPlaying(!LB.playing);
-  else if (k === "Enter") act = agreeClaude;
   else if (k === "ArrowLeft") act = () => step(-1);
   else if (k === "ArrowRight") act = () => step(1);
   else if (k === "z" || k === "Z") act = undo;
