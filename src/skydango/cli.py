@@ -794,7 +794,6 @@ def _perception_crops(cfg: Config, args) -> None:
 def _perception_attrs_label(cfg: Config, args) -> None:
     """第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json，见 vision/attrs_data.py。"""
     import dataclasses
-    import tempfile
 
     from .brain import claude
     from .imageio import imread
@@ -814,47 +813,48 @@ def _perception_attrs_label(cfg: Config, args) -> None:
     a = dataclasses.replace(cfg.assist, batch=2)  # 每批 2 张拼图（32 张裁图）
     cmd = assist.assist_command(base, a, system=ad.FORM_PROTOCOL.system)
     work = assist.assist_workdir()
-    with tempfile.TemporaryDirectory() as cache:  # Reviewer 的缓存按拼图名存，这里用不上：续跑靠 claude.json
-        reviewer = assist.Reviewer(
-            lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), Path(cache), a,
-            "attrs", protocol=ad.FORM_PROTOCOL,
-        )
-        print(f"{len(todo)} 张裁图交给 Claude（{a.model}）初分：每张拼图 {ad.FORM_PER_SHEET} 张、每批 {a.batch} 张拼图、{a.jobs} 路并发"
-              + (f"；{done} 张已有 {ad.FORM_GUESS_FILE}，跳过" if done else ""))
-        counts: dict[str, int] = {}
-        failed = 0
-        unreadable: list[str] = []
-        step = ad.FORM_PER_SHEET * a.batch * max(1, a.jobs)  # 每轮并发跑完就写盘：额度用完 / 中断最多丢这一轮
-        for c0 in range(0, len(todo), step):
-            sheets: list[assist.FrameInput] = []
-            for s0 in range(c0, min(c0 + step, len(todo)), ad.FORM_PER_SHEET):
-                names, crops = [], []
-                for n in todo[s0 : s0 + ad.FORM_PER_SHEET]:
-                    try:  # 裁图可能刚在标注页被挪走或者坏了：跳过这张
-                        crops.append(imread(unl / n))
-                        names.append(n)
-                    except (OSError, RuntimeError, ValueError):
-                        unreadable.append(n)
-                if names:
-                    sheets.append(ad.make_sheet_input(names, crops))
-            batch_new: dict[str, ad.Guess] = {}
-            try:
-                for got in (reviewer.review(sheets) if sheets else {}).values():
-                    batch_new.update(got or {})
-            except assist.AssistLimit:
-                raise SystemExit(f"订阅额度用完了：已初分的裁图存好了，额度恢复后重跑同一条命令会接着做（{unl / ad.FORM_GUESS_FILE}）") from None
-            asked = {n for s in sheets for n in s.hints}
-            failed += len(asked - set(batch_new))
-            batch_new = {n: g for n, g in batch_new.items() if (unl / n).is_file()}  # 初分期间被标注页挪走的不写
-            ad.write_form_guesses(unl, batch_new, a.model)
-            for g in batch_new.values():
-                counts[g.label] = counts.get(g.label, 0) + 1
-            print(f"  {min(c0 + step, len(todo))}/{len(todo)} 张")
-        print("初分：" + ("、".join(f"{k}×{v}" for k, v in sorted(counts.items())) or "没有") + f"；没初分成 {failed} 张")
-        if unreadable:
-            print(f"读不了 {len(unreadable)} 张（裁图没了或者坏了，跳过）")
-        u = reviewer.usage
-        print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")
+    cache = Path("tmp") / "attrs-label" / "cache"  # Reviewer 的缓存按拼图名存，这里用不上：续跑靠 claude.json
+    cache.mkdir(parents=True, exist_ok=True)
+    reviewer = assist.Reviewer(
+        lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), cache, a,
+        "attrs", protocol=ad.FORM_PROTOCOL,
+    )
+    print(f"{len(todo)} 张裁图交给 Claude（{a.model}）初分：每张拼图 {ad.FORM_PER_SHEET} 张、每批 {a.batch} 张拼图、{a.jobs} 路并发"
+          + (f"；{done} 张已有 {ad.FORM_GUESS_FILE}，跳过" if done else ""))
+    counts: dict[str, int] = {}
+    failed = 0
+    unreadable: list[str] = []
+    step = ad.FORM_PER_SHEET * a.batch * max(1, a.jobs)  # 每轮并发跑完就写盘：额度用完 / 中断最多丢这一轮
+    for c0 in range(0, len(todo), step):
+        sheets: list[assist.FrameInput] = []
+        for s0 in range(c0, min(c0 + step, len(todo)), ad.FORM_PER_SHEET):
+            names, crops = [], []
+            for n in todo[s0 : s0 + ad.FORM_PER_SHEET]:
+                try:  # 裁图可能刚在标注页被挪走或者坏了：跳过这张
+                    crops.append(imread(unl / n))
+                    names.append(n)
+                except (OSError, RuntimeError, ValueError):
+                    unreadable.append(n)
+            if names:
+                sheets.append(ad.make_sheet_input(names, crops))
+        batch_new: dict[str, ad.Guess] = {}
+        try:
+            for got in (reviewer.review(sheets) if sheets else {}).values():
+                batch_new.update(got or {})
+        except assist.AssistLimit:
+            raise SystemExit(f"订阅额度用完了：已初分的裁图存好了，额度恢复后重跑同一条命令会接着做（{unl / ad.FORM_GUESS_FILE}）") from None
+        asked = {n for s in sheets for n in s.hints}
+        failed += len(asked - set(batch_new))
+        batch_new = {n: g for n, g in batch_new.items() if (unl / n).is_file()}  # 初分期间被标注页挪走的不写
+        ad.write_form_guesses(unl, batch_new, a.model)
+        for g in batch_new.values():
+            counts[g.label] = counts.get(g.label, 0) + 1
+        print(f"  {min(c0 + step, len(todo))}/{len(todo)} 张")
+    print("初分：" + ("、".join(f"{k}×{v}" for k, v in sorted(counts.items())) or "没有") + f"；没初分成 {failed} 张")
+    if unreadable:
+        print(f"读不了 {len(unreadable)} 张（裁图没了或者坏了，跳过）")
+    u = reviewer.usage
+    print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")
     print("下一步：管理面板「标注」页确认外形，再 perception crops --writeback")
 
 
@@ -2754,7 +2754,7 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("attrs-label", help="第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json")
     q.add_argument("source", nargs="?", help="数据目录（默认 datasets/attrs）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的裁图也重新初分")
-    q = psub.add_parser("gesture-label",help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
+    q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
     q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的片段也重新初分")
     q.add_argument("--blind", action="store_true",
