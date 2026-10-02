@@ -94,7 +94,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/viewer.py` | 识别可视化网页（`view` / `run --view`）：标准库 HTTP 服务，画面 + 识别框 + 状态放在同一份快照里，框和中文标签由浏览器画 |
 | `src/skydango/vision/panels.py` `game/panels.py` `assets/panels/` | 面板识别：特征卡快看 + OCR 细读 + 通用兜底认出开着哪些面板（`vision`）；按卡片关面板、点按钮（`game`）；六张特征卡（见「面板识别」） |
 | `src/skydango/game/social.py` | 社交互动：好友头顶圆圈里出现牵手 / 拥抱 / 击掌图标时点圆圈接受（请求由 env 的后台扫描发现），图标模板在 `assets/social/` |
-| `src/skydango/vision/candle.py` | 火焰圆盘（没点火的黑影站到身边时他身上的深色圆 + 火焰）：只用来判断黑影在能点火的距离里，**绝不点**；`white_ring` 分孤儿圆圈是举蜡烛请求（有白圈）还是圆盘 |
+| `src/skydango/vision/candle.py` | 火焰：`find_flame` 在调用方给的范围（团子周围）里找火焰，`black()` 量人物框有多黑（判点亮用），`white_ring` 分孤儿圆圈是举蜡烛请求（有白圈）还是圆盘；火焰圆盘**绝不点** |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
@@ -161,6 +161,7 @@ dir = "private/sandbox"
 | `config.json` | 本次实际生效的配置（含 `--live` / `--echo` 覆盖） |
 | `hard/*.jpg`、`hard.jsonl` | YOLO 感知层可能认错的画面（难例）和原因、检测框（`[perception] hardcases`，每次最多 200 张）；要用的及时 `perception label runs --from-runs` 收进数据集 |
 | `spin/<时间>/` | 主人 `#spin` 转一圈的截图：转前 / 转完 / 每帧（文件名带按住后第几秒）和 `summary.json` |
+| `light/<时间>/` | 每次点亮陌生人（`[social]` light）：出请求那一刻 + 举起后每 0.5 秒的截图（每次最多 30 张、每次 run 最多 50 次）和 `summary.json`（线索、结局、举起时和最后的 `black()`、火焰最后看到的时间） |
 | `unknown_names/` | YOLO 感知层读得清楚、但不在 friends.md 里的名字（`names.jsonl` + 每个名字一张裁剪图）；`perception unknown-names` 汇总，**只列出，不自动写 friends.md** |
 | `appearance/` | 认装扮攒的训练数据：`crops/<身份>/*.jpg`（好友名，或 `t<轨迹>`）+ `appearance.jsonl`（`[appearance] save`，每条轨迹 2 秒一张、每次最多 2000 张） |
 | `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有 `--brain`）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
@@ -190,10 +191,10 @@ dir = "private/sandbox"
 扫描时顺带看好友名字下方的圆圈（`[social]`）：图标变成牵手 / 拥抱 / 击掌就记为请求，主循环里去点圆圈接受
 （原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受举蜡烛给团子点火（头顶没名字的圆圈要有白圈才算，深色火焰圆盘绝不点，见 game-ops §6）；
 输入框开着时不点；dry-run 只打印。`python -m skydango record` 连续截图，用来观察新的界面变化。
-没点火的黑影站到团子身边 `light_after` 秒（他身上出现深色圆盘 + 火焰，`vision/candle.py` 认；只有大脑模式找，普通 Agent 不管 light 请求），大脑模式下身体按 3 号键举蜡烛（**绝不点那个圆盘**：会跟着人走），
-举满 `lit_min`（2 秒）后 YOLO 认成 `player` 满 `lit_frames` 帧、且他身上的圆盘消失超过 1 秒才算点亮（近处还黑着的人 YOLO 常直接认成 `player`；闪光时会冒出重复轨迹、原轨迹冻住——按最近处理的一帧算 `lit_stale` 秒没接上就换和它最后的框重叠的新 `player`，这条路要原来那个人和替身自己的圆盘都消失超过 1 秒、替身还要被扫满 1 秒；感知暂停 / 没在跑时一律不算）、过 `bow_delay` 鞠躬（顺带放下蜡烛）；`light_timeout` 秒没亮就按 3 放下、这个人不再点；鞠躬没做完不再举第二次、举之前先查 `reflex.min_gap`、身体替大脑开着输入框时不举；
-放下前先关替大脑开的框（按数字键会关掉它）；举着时接受了别的互动（点圆圈会放下蜡烛）或黑过屏（切场景、状态不明）就不再按 3 放下。接受别人点火后也鞠躬。
-大脑能用 `set_request_policy("stranger", "light", false)` 关掉；**未在真机验证**（spec `docs/superpowers/specs/2026-10-01-light-unlit-stranger-design.md` §9；录像 c / d 上的核对见 game-ops §6）
+点亮陌生人（只有大脑模式找，普通 Agent 不管 light 请求）：团子框周围（左右 `light_area_x` = 1.4、往上 `light_area_up` = 0.5 倍框高）连续 `light_after` 秒冒着火焰（`vision/candle.py` 的 `find_flame`；**不管 YOLO 认没认出这个人**；认出名字的好友标签下、聊天面板下、`bonfire` 框里的不算；团子框丢了沿用最后一个，最多 3 秒），身体按 3 号键举蜡烛（**绝不点那个圆盘**：会跟着人走）；
+举满 `lit_min`（2 秒）后火焰消失超过 1 秒、原地那个举蜡烛期间见过是黑的人 `black()` 连续两次扫描变低（< `lit_black`、降了 ≥ `lit_drop`）才算点亮，过 `bow_delay` 鞠躬（顺带放下蜡烛）；原地没人算走了、放下不鞠躬；`light_timeout` 秒没结果放下；没点亮冷却 `light_cooldown`（60 秒）；
+鞠躬没做完不再举第二次、举之前先查 `reflex.min_gap`、身体替大脑开着输入框时不举；放下前先关替大脑开的框（按数字键会关掉它）；举着时接受了别的互动（点圆圈会放下蜡烛）或黑过屏（切场景、状态不明）就不再按 3 放下。接受别人点火后也鞠躬。每次存图到 `runs/<…>/light/`。
+大脑能用 `set_request_policy("stranger", "light", false)` 关掉；**未在真机验证**（spec `docs/superpowers/specs/2026-10-01-light-flame-around-self-design.md` §11；数字和录像核对见 game-ops §6）。篝火「点燃」图标也是火焰圆圈，要等 YOLO 学会 `bonfire` 才排除得掉（之前团子站篝火旁可能误举一次）
 
 ## YOLO 感知层（`[perception]`，开发中）
 

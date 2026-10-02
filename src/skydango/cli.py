@@ -331,7 +331,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
     from .vision.perception import PerceptionWatcher, detector_conf
 
     p = cfg.perception
-    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
+    want_light = light and cfg.social.enabled and "light" in cfg.social.accept_strangers
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, want_light), p.iou, p.device)
     log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
     hardcases = None
@@ -347,7 +348,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
 
         unknown = UnknownNames(run.path / "unknown_names", _friend_names(cfg))
     flame = None
-    if light and cfg.social.enabled and "light" in cfg.social.accept_strangers:
+    if want_light:
         from .vision.candle import load_flame
 
         flame = load_flame(cfg.social.flame)
@@ -357,8 +358,9 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
         places=places, place_interval=cfg.places.place_interval,
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
-        social_cfg=cfg.social, flame=flame, **_appearance_parts(cfg, run), call_window=cfg.call.window,
-        camera_settle=cfg.track.settle,
+        social_cfg=cfg.social, flame=flame,
+        light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run),
+        call_window=cfg.call.window, camera_settle=cfg.track.settle,
     )
 
 

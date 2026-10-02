@@ -360,6 +360,7 @@ class Body:
         if self._raised is not None:  # 退出时还举着蜡烛：放下
             self._lower_candle(self._raised[2])
             self._raised = None
+            self._light_done("exit")
         if self._bow is not None and self._bow[2] is not None:  # 点亮了、鞠躬还没做：蜡烛还举着，放下
             self._lower_candle(self._bow[2])
         self._bow = None
@@ -1040,6 +1041,8 @@ class Body:
             if handled and (self._raised is not None or (self._bow is not None and self._bow[2] is not None)):
                 # 点圆圈接受互动会放下手里的蜡烛：之后再按 3 就是把它举起来了
                 log.info("举着蜡烛时接受了%s，蜡烛当作已经放下，不再等那个陌生人亮起来、也不再按 3 放下", "、".join(handled))
+                if self._raised is not None:  # 只排着鞠躬的不报：那次点亮早报过 lit 了
+                    self._light_done("interrupted")
                 self._raised = None
                 if self._bow is not None:
                     self._bow = (self._bow[0], self._bow[1], None)  # 鞠躬照做，只是不用兜底放下了
@@ -1054,7 +1057,7 @@ class Body:
 
     # ---- 点亮没点火的陌生人（spec 2026-10-01-light-unlit-stranger） ----
     def _watch_light(self, now: float) -> None:
-        """黑影在身边站够了：按 3 号键举蜡烛（绝不点他身上的火焰圆盘：点了会跟着他走），等 YOLO 看到他亮起来。"""
+        """团子身边冒火焰够久了：按 3 号键举蜡烛（绝不点火焰圆盘：点了会跟着他走），等感知层看他亮起来。"""
         if self._raised is not None:
             self._check_lit(now)
             return
@@ -1078,35 +1081,53 @@ class Body:
         except ToolError as exc:
             log.debug("先不举蜡烛：%s", exc)
             return
-        self.env.mark_tried(req.track)  # 不管成没成，这个人只举一次
+        self.env.mark_tried(req.track)  # 开始点亮（感知层停止出请求、开始存图）
         if self._dry(False):
             log.info("[dry-run] 会举蜡烛点亮身边的陌生人")
+            self._light_done("dry-run")
             return
         try:
             with self._held("wheel"):
                 self.emotes.press_slot(self.cfg.social.candle_slot)
         except Exception:
             log.warning("举蜡烛没成功", exc_info=True)
+            self._light_done("failed")
             return
         self._raised = (req.track, req.pos, now)
         log.info("举起蜡烛给身边没点火的陌生人点火")
+
+    def _light_done(self, result: str) -> None:
+        """这次点亮结束了，告诉感知层（结束"点亮中"、写存图 summary、没点亮就冷却）。"""
+        try:
+            self.env.light_done(result)
+        except Exception:
+            log.exception("light_done 出错")
 
     def _check_lit(self, now: float) -> None:
         track, pos, raised_at = self._raised
         if self.emotes is not None and self.emotes.last_any > raised_at:  # 做动作已经把蜡烛放下了
             self._raised = None
             log.info("举蜡烛时做了别的动作，蜡烛已经放下，不再等他亮起来")
+            self._light_done("interrupted")
             return
-        if self.env.lit(track, pos, raised_at):
+        result = self.env.lit(track, raised_at)
+        if result:
             self._raised = None
             self._lit_at = now
             log.info("陌生人亮起来了（举蜡烛 %.1f 秒）", now - raised_at)
             self.events.put("accepted", "你举起蜡烛给身边一个没点火的陌生人点了火（他亮起来了）")
+            self._light_done("lit")
             self._schedule_bow(now, raised_at)
+        elif result is None:
+            self._raised = None
+            log.info("他走开了（举蜡烛 %.1f 秒），放下蜡烛", now - raised_at)
+            self._lower_candle(raised_at)
+            self._light_done("gone")
         elif now - raised_at >= self.cfg.social.light_timeout:
             self._raised = None
-            log.warning("举了蜡烛 %.0f 秒他还是黑的（或者走了），不再点他", self.cfg.social.light_timeout)
+            log.warning("举了蜡烛 %.0f 秒他还是黑的，放下", self.cfg.social.light_timeout)
             self._lower_candle(raised_at)
+            self._light_done("timeout")
 
     def _schedule_bow(self, now: float, raised_at: float | None) -> None:
         """点亮了别人（raised_at = 举蜡烛的时间）/ 接受了别人点火（None）：过 bow_delay 鞠躬；做不了鞠躬时把自己举的蜡烛放下。"""
