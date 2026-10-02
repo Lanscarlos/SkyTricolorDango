@@ -116,3 +116,18 @@ def test_reflector_next_in(clock):
     assert r.next_in(200.0) == cfg.reflect_every - 200
     r._final = True
     assert r.next_in(200.0) is None
+
+
+def test_introspect_changes_topic_accepted():
+    out, err = ToolBox(IntrospectBody(), FakeEyes(), backstage=True).run("introspect", {"topic": "改动"})
+    assert not err and out == "查了改动"
+
+
+def test_introspect_changes(clock):
+    b, *_ = body(clock)
+    assert "没开" in b.introspect("改动")
+    b.recent_changes = lambda: ["- 昨天 feat(inner): 冷场时会想东想西"]
+    out = b.introspect("改动")
+    assert "- 昨天 feat(inner): 冷场时会想东想西" in out and "7 天" in out
+    b.recent_changes = lambda: []
+    assert "没改" in b.introspect("改动")

@@ -1,6 +1,6 @@
 """性格档案（spec 2026-09-30-inner-phase3 §1）：口头禅、老梗、看法。纯数据，不碰文件（读写在 store.py）。
 
-反思（模型）只提建议；这里决定收不收：字数截断、敏感词丢、老梗只挂在够熟的好友名下、收着点的人不记新梗、
+反思（模型）只提建议；这里决定收不收：太长的不记（不截半句）、敏感词丢、老梗只挂在够熟的好友名下、收着点的人不记新梗、
 每类有上限（先淘汰 hits 最少的，再淘汰最久没用的）、久不用会淡出。
 """
 
@@ -14,8 +14,10 @@ from ..config import InnerConfig
 from .ledger import Card, match_friend
 from .mind import sounds_upset
 
-TEXT_CHARS = 30  # 口头禅 / 老梗 / 立场最多几个字
-TOPIC_CHARS = 10  # 话题最多几个字
+# 提示词让口头禅 / 老梗 / 立场不超过 30 字、话题不超过 10 字；模型数字数不准：超一点整句收下，
+# 超过下面的数就整条不记（截在半个词会记下“…但是可”这种话）
+TEXT_MAX = 40
+TOPIC_MAX = 15
 SIMILAR = 0.75
 # 这些词出现在条目里就不记（光遇未成年玩家多：外貌、家里、成绩、年龄都不拿来开玩笑）
 SENSITIVE = ("胖", "瘦", "丑", "矮", "长相", "身材", "脸", "爸", "妈", "家里", "成绩", "考试", "分数", "几岁", "年纪", "学校", "班",
@@ -145,7 +147,9 @@ class Persona:
         if mentions(friends, text):
             dropped.append(f"口头禅里有人（人只进老梗）：{text}")
             return
-        text = text[:TEXT_CHARS]
+        if len(text) > TEXT_MAX:
+            dropped.append(f"口头禅太长，不记：{text}")
+            return
         if any(similar(text, t.text, SIMILAR) for t in self.catchphrases):
             return
         self.catchphrases.append(Trait(text, since=now))
@@ -167,8 +171,9 @@ class Persona:
             dropped.append(f"对 {who} 收着点，不记老梗")
         elif unsafe(text):
             dropped.append(f"老梗不能记：{text}")
+        elif len(text) > TEXT_MAX:
+            dropped.append(f"老梗太长，不记：{text}")
         else:
-            text = text[:TEXT_CHARS]
             if not any(t.who == who and similar(text, t.text, SIMILAR) for t in self.jokes):
                 self.jokes.append(Trait(text, who=who, since=now))
 
@@ -186,7 +191,9 @@ class Persona:
         if mentions(friends, topic, stance):
             dropped.append(f"看法里有人（人只进老梗）：{topic}——{stance}")
             return
-        topic, stance = topic[:TOPIC_CHARS], stance[:TEXT_CHARS]
+        if len(topic) > TOPIC_MAX or len(stance) > TEXT_MAX:
+            dropped.append(f"看法太长，不记：{topic}——{stance}")
+            return
         for t in self.opinions:
             if similar(topic, t.topic, SIMILAR):
                 if t.text != stance:  # 同一个话题：换成新的立场

@@ -288,6 +288,11 @@ def test_lull_rules_added():
     assert p.index("## 主动开口") < p.index("## 冷场的时候") < p.index("## 身份")
 
 
+def test_lull_rules_mention_earlier_musings():  # 叫醒时附的“之前冷场时你想过…”要有说明，不然照样想“他在忙，我等等”
+    p = brain_prompt(ReplyConfig(), None, lull=True)
+    assert "“之前冷场时你想过”" in p
+
+
 def test_lull_off_no_rules():
     p = brain_prompt(ReplyConfig(), None)
     assert "冷场" not in p

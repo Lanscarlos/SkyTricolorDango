@@ -5,7 +5,7 @@ from conftest import FakeLlm
 
 from skydango.brain.claude import ClaudeError
 from skydango.config import InnerConfig
-from skydango.inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM, Reflector, materials
+from skydango.inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM, Reflector, friend_sections, materials
 
 CFG = InnerConfig()
 T0 = time.mktime((2026, 9, 30, 20, 0, 0, 0, 0, -1))
@@ -139,6 +139,29 @@ def test_materials_keeps_latest_80_lines():
     chat = [(T0 + i, "小明", f"第{i}句") for i in range(100)]
     text = materials(T0, "", "", chat, [], [], [], "", final=False)
     assert "第19句" not in text and "第20句" in text and "第99句" in text
+
+
+FRIENDS_MD = """# 好友
+
+## 懒洋洋大王
+- 本名卡洛，可以叫卡洛
+
+## 番茄炒蛋盖饭
+- 好朋友，女生
+- 卡洛喊她“老登”
+"""
+
+
+def test_friend_sections_picks_named_friends():  # 日记里把女生写成“他”：反思要看到好友名单里写的
+    assert friend_sections(FRIENDS_MD, ["番茄炒蛋盖饭"]) == ["番茄炒蛋盖饭：好朋友，女生；卡洛喊她“老登”"]
+    assert friend_sections(FRIENDS_MD, ["路人"]) == [] and friend_sections("", ["番茄炒蛋盖饭"]) == []
+
+
+def test_materials_friend_profiles():
+    text = materials(T0, "", "", [], [], [], [], "", final=True, profiles=["番茄炒蛋盖饭：好朋友，女生"])
+    assert "好友名单里写的" in text and "番茄炒蛋盖饭：好朋友，女生" in text
+    assert "好友名单里写的" not in materials(T0, "", "", [], [], [], [], "", final=True)
+    assert "性别" in REFLECT_SYSTEM
 
 
 def test_system_prompt_rules():

@@ -42,8 +42,21 @@ def test_add_three_kinds_and_rules():
         CARDS, FRIENDS, T0, CFG)
     assert [t.text for t in p.catchphrases] == ["害，懒得动"]
     assert [(t.who, t.text) for t in p.jokes] == [("小明", "上次把团子带进冥龙嘴里"), ("懒洋洋大王", "路痴带路")]
-    assert (len(p.opinions[0].topic), len(p.opinions[0].text)) == (10, 30)
+    assert (len(p.opinions[0].topic), len(p.opinions[0].text)) == (11, 40)  # 稍微超一点：整句收下，不截半个词
     assert len(dropped) == 4
+
+
+def test_too_long_dropped_not_cut():  # 截在半个词会记下"团子说反应慢但是可"这种话
+    joke = "卡洛问团子啥时候像 neuro sama，团子说反应慢但是可爱"
+    p = Persona()
+    dropped = p.apply(add(
+        catchphrases=["害" * 41],
+        jokes=[{"who": "小明", "text": joke}],
+        opinions=[{"topic": "啊" * 16, "stance": "还行"}, {"topic": "雨林", "stance": "呀" * 41}]),
+        CARDS, FRIENDS, T0, CFG)
+    assert [t.text for t in p.jokes] == [joke]
+    assert p.catchphrases == [] and p.opinions == []
+    assert len(dropped) == 3 and all("太长" in d for d in dropped)
 
 
 def test_soft_friend_gets_no_new_jokes():
