@@ -33,6 +33,7 @@ memory/
 # YOLO 数据集和训练出来的模型（本机私有、体积大）
 datasets/
 models/
+catalog/
 
 # YOLO 训练环境（torch 等）和各种缓存，放仓库里不占 C 盘（见 src/skydango/cachedirs.py）
 .pydeps/

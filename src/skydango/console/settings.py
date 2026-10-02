@@ -66,6 +66,7 @@ FIELDS: tuple[Field, ...] = (
     Field("places.enabled", "认地图", "要配合 YOLO 感知层和 places/ 图库", "bool", "features"),
     Field("appearance.enabled", "认装扮", "按外观接回没读到名字的好友、认回来的陌生人；要配合 YOLO 感知层", "bool", "features"),
     Field("appearance.describe", "描述装扮", "让 Haiku 把团子和身边人的装扮写成一句话（花额度）", "bool", "features"),
+    Field("catalog.enabled", "收集装扮图鉴", "近处的人清楚的整身裁图存进 catalog/inbox/（只存图、不发输入）；要配合 YOLO 感知层", "bool", "features"),
     Field("friend_check.enabled", "好友树核对", "大脑的 check_friend：点人物打开好友树（未在真机核对）", "bool", "features"),
     Field("panels.enabled", "面板识别", "认出画面上开着的面板（只接大脑模式）", "bool", "features"),
     Field("reply.disclosure_prefix", "AI 前缀", "每句话前面加的前缀，比如【AI】；留空就不加", "str", "identity"),

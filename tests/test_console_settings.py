@@ -30,7 +30,7 @@ def test_every_spec_field_is_listed():
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
         "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "lull.enabled", "backstage.enabled", "env.enabled",
         "perception.enabled",
-        "perception.model", "attrs.enabled", "places.enabled", "appearance.enabled", "appearance.describe", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
+        "perception.model", "attrs.enabled", "places.enabled", "appearance.enabled", "appearance.describe", "catalog.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
 
 
@@ -50,6 +50,13 @@ def test_console_has_attrs_switch():
 
     f = KNOWN["attrs.enabled"]
     assert (f.label, f.kind, f.group) == ("人物复核（第二层）", "bool", "features")
+
+
+def test_console_has_catalog_switch():
+    from skydango.console.settings import KNOWN
+
+    f = KNOWN["catalog.enabled"]
+    assert (f.label, f.kind, f.group) == ("收集装扮图鉴", "bool", "features")
 
 
 def test_mask():
