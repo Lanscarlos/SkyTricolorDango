@@ -619,6 +619,15 @@ kbd.k{display:inline-block;min-width:1.7em;padding:0 5px;border:1px solid var(--
 .lb-act.on::after{content:"现在";margin-left:auto;font-size:11px;opacity:.8}
 .lb-undo{align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
 .lb-keys{margin:0;padding:4px 14px 14px;font-size:12px}
+.fm-stage{position:relative;align-self:center;width:min(336px,100%);aspect-ratio:1;margin:6px 0 0;border-radius:10px;overflow:hidden;background:var(--bubble);box-shadow:0 0 0 1px var(--line),0 0 0 6px var(--soft);display:grid;place-items:center}
+.fm-crop{display:block;max-width:100%;max-height:100%;object-fit:contain;image-rendering:auto}
+.fm-ctx{align-self:center;width:min(480px,100%);margin:16px 0 0;min-height:0;overflow:hidden;border-radius:8px;box-shadow:0 0 0 1px var(--line)}
+.fm-ctx img{display:block;width:100%;height:auto}
+.fm-ctx .note{margin:0;padding:10px;text-align:center}
+.fm-item{grid-template-columns:44px minmax(0,1fr) auto}
+.fm-item img{grid-row:1/span 2;width:40px;height:40px;object-fit:contain;border-radius:6px;background:var(--bubble)}
+.fm-item .n,.fm-item .r{grid-column:2}
+.fm-item .tag{grid-column:3}
 
 @media (max-width:999px){  /* 窄屏：恢复整页滚，播放器放最上面，列表给个高度 */
   #page-labeling{height:auto}

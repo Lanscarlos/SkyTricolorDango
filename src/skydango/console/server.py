@@ -30,7 +30,7 @@ from ..vision.viewer import is_local_host, post_guard, static_asset
 from . import probes
 from .devicecheck import run_checks
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
-from .labeling import GestureLabels
+from .labeling import FormLabels, GestureLabels
 from .preflight import preflight, problem
 from .reports import list_reports, read_report
 from .replay import KEEP_NOTE, Recorder, Replayer, safe_name
@@ -264,6 +264,9 @@ class ConsoleServer:
     def gesture_labels(self) -> GestureLabels:
         g = self.store._fallback().gesture
         return GestureLabels(Path(g.dataset), g.labels, g.names)
+
+    def form_labels(self) -> FormLabels:
+        return FormLabels(Path("datasets/attrs"))  # 配置里没有这个路径；和 perception crops 的默认 --out 一致
 
     def replaying(self) -> bool:
         r = self.replayer
@@ -649,6 +652,16 @@ class ConsoleServer:
                         self._json(404, {"ok": False, "text": "没有这一帧"})
                     else:
                         self._send(200, "image/jpeg", data)
+                elif url.path == "/api/form/state":
+                    self._json(200, console.form_labels().state())
+                elif url.path in ("/api/form/crop", "/api/form/context"):
+                    forms = console.form_labels()
+                    name = parse_qs(url.query).get("name", [""])[0]
+                    data = forms.crop(name) if url.path.endswith("/crop") else forms.context(name)
+                    if data is None:
+                        self._json(404, {"ok": False, "text": "没有这张图"})
+                    else:
+                        self._send(200, "image/jpeg", data)
                 elif url.path == "/api/state":
                     self._json(200, console.state())
                 elif url.path == "/api/logs":
@@ -686,6 +699,8 @@ class ConsoleServer:
                     "/api/inner/forget": console.forget,
                     "/api/gesture/label": lambda body: console.gesture_labels().label(str(body.get("clip") or ""), str(body.get("to") or "")),
                     "/api/gesture/undo": lambda body: console.gesture_labels().undo(),
+                    "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or "")),
+                    "/api/form/undo": lambda body: console.form_labels().undo(),
                     "/api/sandbox/start": console.start_sandbox,
                     "/api/sandbox/stop": lambda body: console.stop_sandbox(),
                     "/api/sandbox/reset": lambda body: console.reset_sandbox(),

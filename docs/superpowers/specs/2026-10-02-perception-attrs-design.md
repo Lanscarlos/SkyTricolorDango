@@ -92,7 +92,7 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 
 - YOLO 一侧：这条轨迹最近 `votes` 次检测里 `player_unlit` 的比例（跟踪器跨类匹配，`cross` 里本来就有这两类）
 - 外形一侧：平均概率里 `unlit / (lit + unlit + shared + morph)`（先祖不参加）
-- `u = (yolo_w × YOLO 侧 + (1 − yolo_w) × 外形侧)`，`yolo_w` 默认 0.5；外形还没复核过时只用 YOLO 侧
+- `u = (yolo_w × YOLO 侧 + (1 − yolo_w) × 外形侧)`，`yolo_w` 默认 0.3；外形还没复核过时只用 YOLO 侧。（原来默认 0.5：YOLO 一直认成同一类时 YOLO 侧是 0 或 1，u 最多到 0.5，越不过下面 0.6 / 0.4 的翻转线，外形头永远翻不动 YOLO；0.3 时外形头黑影占比连续几票 > 0.86 能把 player 翻成黑影、< 0.14 能把 player_unlit 翻回点过火）
 
 `data["unlit"]` 滞回：初值按 `u ≥ 0.5`；之后连续 `flip_votes`（3）帧 `u` 都在另一边（> 0.6 或 < 0.4）才翻。
 **下游所有 `t.cls == UNLIT` / `!= UNLIT` 的判断改成读 `is_unlit(t)`**（`enabled = false` 时就是 `t.cls == UNLIT`）：陌生人计数、`_assign_tags`、`far_tags` 的人选、认装扮的人选。`sweep()`（转圈汇总）用的是逐帧检测、没有轨迹，照旧看 YOLO 类别。
@@ -206,7 +206,7 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 | `votes` | 5 | 每条轨迹留几次结果 |
 | `accept` | 0.6 | 低分框放行的概率门槛 |
 | `reject` / `reject_n` | 0.7 / 3 | 撤下高分框 |
-| `yolo_w` | 0.5 | 点没点火里 YOLO 一侧的权重 |
+| `yolo_w` | 0.3 | 点没点火里 YOLO 一侧（最近几帧 `player_unlit` 的比例，不是置信度）的权重；要 < 0.5 外形头才翻得动 YOLO |
 | `flip_votes` | 3 | 黑影滞回要连续几帧 |
 | `max_errors` | 10 | 连续出错几帧关掉 |
 

@@ -62,6 +62,7 @@ FIELDS: tuple[Field, ...] = (
     Field("env.enabled", "识别环境", "后台 OCR 画面：身边有谁、在哪", "bool", "features"),
     Field("perception.enabled", "YOLO 感知层", "开发中；打开后替换定时整图 OCR，要先训练模型", "bool", "features"),
     Field("perception.model", "YOLO 模型", "模型文件路径", "file", "features"),
+    Field("attrs.enabled", "人物复核（第二层）", "YOLO 人物框裁图再判一次：挡误框、捞低分框、认先祖 / 共享空间；要配合 YOLO 感知层和训练好的模型", "bool", "features"),
     Field("places.enabled", "认地图", "要配合 YOLO 感知层和 places/ 图库", "bool", "features"),
     Field("appearance.enabled", "认装扮", "按外观接回没读到名字的好友、认回来的陌生人；要配合 YOLO 感知层", "bool", "features"),
     Field("appearance.describe", "描述装扮", "让 Haiku 把团子和身边人的装扮写成一句话（花额度）", "bool", "features"),

@@ -30,7 +30,7 @@ def test_every_spec_field_is_listed():
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
         "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "lull.enabled", "backstage.enabled", "env.enabled",
         "perception.enabled",
-        "perception.model", "places.enabled", "appearance.enabled", "appearance.describe", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
+        "perception.model", "attrs.enabled", "places.enabled", "appearance.enabled", "appearance.describe", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
 
 
@@ -43,6 +43,13 @@ def test_console_has_appearance_switches():
     desc = KNOWN["appearance.describe"]
     assert (desc.label, desc.help, desc.kind, desc.group) == (
         "描述装扮", "让 Haiku 把团子和身边人的装扮写成一句话（花额度）", "bool", "features")
+
+
+def test_console_has_attrs_switch():
+    from skydango.console.settings import KNOWN
+
+    f = KNOWN["attrs.enabled"]
+    assert (f.label, f.kind, f.group) == ("人物复核（第二层）", "bool", "features")
 
 
 def test_mask():

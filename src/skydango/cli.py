@@ -332,7 +332,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
 
     p = cfg.perception
     want_light = light and cfg.social.enabled and "light" in cfg.social.accept_strangers
-    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, want_light), p.iou, p.device)
+    attrs = _person_attrs(cfg)
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, want_light, attrs=attrs is not None), p.iou, p.device)
     log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
     hardcases = None
@@ -360,8 +361,34 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
         social_cfg=cfg.social, flame=flame,
         light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run),
-        call_window=cfg.call.window, camera_settle=cfg.track.settle,
+        call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
     )
+
+
+def _person_attrs(cfg: Config):
+    """感知层第二层（spec 2026-10-02-perception-attrs）：[attrs] 开着、模型读得进来才建 PersonAttrs；
+    模型不存在 / 打不开 / 主干对不上时 load_model 已经警告过，返回 None（等于没开）。"""
+    if not cfg.attrs.enabled:
+        return None
+    from .vision.attrs import PersonAttrs, load_model
+
+    model = load_model(cfg.attrs, _attrs_device(cfg))
+    if model is None:
+        return None
+    log.info("感知层第二层：%s（主干 %s）", cfg.attrs.model, cfg.attrs.backbone)
+    _warn_attrs_on_cpu(cfg, model)
+    return PersonAttrs(cfg.attrs, model)
+
+
+def _warn_attrs_on_cpu(cfg: Config, model) -> None:
+    """[perception] device = cuda，第二层的主干会话却只有 CPU 后端（onnxruntime 是 CPU 版）：警告一次。
+    实测 CPU 上 DINOv2-small 一张裁图约 32 ms、4 张约 128 ms，会把感知层拖慢一大截。"""
+    get = getattr(getattr(getattr(model, "embedder", None), "session", None), "get_providers", None)
+    if cfg.perception.device != "cuda" or get is None:
+        return
+    if set(get()) <= {"CPUExecutionProvider"}:
+        log.warning("感知层第二层的主干在 CPU 上跑（onnxruntime 是 CPU 版，一张裁图约 30 ms），会拖慢感知层："
+                    "装 onnxruntime-gpu，或者把 [attrs] max_crops 改成 1、every 改成 1.0")
 
 
 def _call_enabled(cfg: Config, env) -> bool:
@@ -657,12 +684,14 @@ def _perception(cfg: Config, args, dev=None):
             setattr(p, key, getattr(args, key))
     if getattr(args, "far_crops", None) is not None:
         p.far_crops = args.far_crops
-    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
+    attrs = _person_attrs(cfg)
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, attrs=attrs is not None), p.iou, p.device)
     icons = _icon_classifier(cfg)
     watcher = PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=False, capture=dev.screenshot if dev is not None else None,
         **_appearance_parts(cfg),  # 只挂记忆簿：不存训练数据、不描述
+        attrs=attrs,
     )
     return detector, watcher
 
@@ -695,6 +724,14 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_gesture_train(cfg, args)
     elif args.action == "gesture-label":
         _perception_gesture_label(cfg, args)
+    elif args.action == "attrs-label":
+        _perception_attrs_label(cfg, args)
+    elif args.action == "crops":
+        _perception_crops(cfg, args)
+    elif args.action == "attrs-train":
+        _perception_attrs_train(cfg, args)
+    elif args.action == "attrs-eval":
+        _perception_attrs_eval(cfg, args)
     elif args.action == "appearance-eval":
         _perception_appearance_eval(cfg, args)
     elif args.action == "halo-eval":
@@ -748,6 +785,217 @@ def _perception_clips(cfg: Config, args) -> None:
           + (f"；数据目录里已有的 {len(names)} 段同名片段没重切" if names else ""))
     print(f"人工看一遍，把片段目录挪进 <数据目录>/<动作>/（{' / '.join(cfg.gesture.labels)}；none = 站着、走路、别的动作），"
           "再用 perception gesture-eval 评估")
+
+
+def _perception_crops(cfg: Config, args) -> None:
+    """第二层外形头的数据：从数据集 / 录像 / 难例目录裁人物图，--writeback 把标注页确认过的人物写回数据集，见 vision/attrs_data.py。"""
+    import glob
+    from datetime import datetime
+
+    from .vision import attrs_data as ad
+
+    sources: list[Path] = []
+    for s in args.source:  # runs/*/hard 可能被 shell 展开了，也可能原样传进来
+        hits = sorted(glob.glob(s)) if any(c in s for c in "*?[") else [s]
+        if not hits:
+            raise SystemExit(f"{s} 没有匹配到任何目录")
+        sources += [Path(h) for h in hits]
+    for src in sources:
+        if not src.is_dir():
+            raise SystemExit(f"{src} 不是目录")
+    out = Path(args.out)
+    is_dataset = lambda d: (d / "images").is_dir() and (d / "labels").is_dir()  # noqa: E731
+    if args.writeback:
+        datasets = [d for d in sources if is_dataset(d)]
+        if not datasets:
+            raise SystemExit("--writeback 要给数据集目录（含 images/ 和 labels/）")
+        for d in datasets:
+            res = ad.writeback(d, out, datetime.now())
+            print(f"{d}: 写回 {res['boxes']} 个框（{res['frames']} 帧）" + ("，原 labels/ 备份在 _backup/" if res["boxes"] else ""))
+        return
+    from .vision.detect import make_detector
+
+    p = cfg.perception
+    detector = make_detector(args.model or p.model, p.classes, p.imgsz, args.conf, p.iou, p.device)
+    for src in sources:
+        if is_dataset(src):
+            counts = ad.crops_from_dataset(src, detector, out, args.conf)
+        else:
+            counts = ad.crops_from_images(src, detector, out, args.conf)
+        print(f"{src}: " + "，".join(f"{k} {v}" for k, v in counts.items()))
+    print(f"裁图在 {out}（_unlabeled/ 等 Claude 初分、标注页确认）")
+
+
+def _attrs_replays(cfg: Config, frames: list, model, notes: list[str]):
+    """在验证帧上回放 0.2 和 [perception] low_conf 两档：([回放结果], 建议阈值)。检测器建不起来 / 没有带标注的帧就返回空。"""
+    from .vision import attrs_train as at
+    from .vision.detect import make_detector
+
+    p, a = cfg.perception, cfg.attrs
+    if not frames:
+        notes.append("没有可回放的验证帧（数据集的 images/val 里没有图），没做整帧回放")
+        return [], None
+    try:
+        detector = make_detector(p.model, p.classes, p.imgsz, 0.2, p.iou, p.device)
+    except Exception as exc:
+        notes.append(f"YOLO 检测器加载失败（{exc}），没做整帧回放")
+        return [], None
+    replays, suggest = [], None
+    for low in sorted({0.2, p.low_conf}):
+        records = at.collect(frames, detector, model, low)
+        if suggest is None or low == p.low_conf:
+            suggest = at.sweep_thresholds(records, p.conf)
+        replays.append({**at.simulate(records, p.conf, a.accept, a.reject, a.yolo_w), "conf_low": low, "conf": p.conf,
+                        "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n, "yolo_w": a.yolo_w})
+    return replays, suggest
+
+
+def _attrs_device(cfg: Config, args=None) -> str:
+    return (getattr(args, "device", None) or cfg.attrs.device or cfg.perception.device) or "cpu"
+
+
+def _perception_attrs_train(cfg: Config, args) -> None:
+    """训练外形头（vision/attrs_train.py）：切分 → 合并类别 → DINOv2 特征（缓存）→ numpy 线性头 → 存 .npz → 报告 tmp/attrs-train/<时间>/report.md。"""
+    import dataclasses
+    import datetime as dt
+    from pathlib import Path
+
+    from .vision import attrs, attrs_train as at
+    from .vision.embed import OnnxEmbedder
+
+    a = cfg.attrs
+    now = dt.datetime.now()
+    out = Path(args.out) if args.out else at.default_out(Path("models"), now)
+    at.check_out(out, a.model, args.force)  # 最终路径（含默认路径）都查
+    data = Path(args.data) if args.data else Path("datasets/attrs")
+    if not (data / "form").is_dir():
+        raise SystemExit(f"{data}/form 不存在：先 perception crops 裁图、attrs-label 初分，再在管理面板「标注」页确认")
+    device = _attrs_device(cfg, args)
+    try:
+        embedder = OnnxEmbedder(a.backbone, norm="imagenet", device=device, what="attrs.backbone")
+    except Exception as exc:
+        raise SystemExit(f"主干 {a.backbone} 加载失败：{exc}") from None
+    try:
+        res = at.run_training(data, embedder, data / "_features")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    ev = res["eval"]
+    print(f"训练 {res['train_n']} 张（加镜像）、验证 {res['val_n']} 张，l2 = {res['l2']:g}，宏平均 F1 {ev['macro_f1']:.3f}")
+    for n in res["notes"]:
+        print(f"  {n}")
+    attrs.save_model(out, {"form": res["head"]}, Path(a.backbone).name, f"{embedder.size}:imagenet", f"{now:%Y%m%d}")
+    print(f"模型 → {out}")
+    model = attrs.load_model(dataclasses.replace(a, model=str(out)), device, embedder)
+    notes: list[str] = []
+    replays, suggest = [], None
+    if model is not None:
+        frames = []
+        for root in sorted({r["dataset"] for r in at.crop_rows(data).values() if r.get("source") == "dataset" and r.get("dataset")}):
+            frames += at.frames_in(Path(root))
+        replays, suggest = _attrs_replays(cfg, frames, model, notes)
+    for r in replays:
+        print(f"回放 conf_low = {r['conf_low']:g}：纯 YOLO 精确率 {r['baseline']['precision']:.0%}、召回率 {r['baseline']['recall']:.0%}；"
+              f"加外形头 {r['second']['precision']:.0%} / {r['second']['recall']:.0%}")
+    for n in notes:
+        print(f"  {n}")
+    folder = Path("tmp") / "attrs-train" / f"{now:%Y%m%d-%H%M%S}"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "report.md").write_text(at.report_md(data=data, model=out, when=now, result=res, replays=replays,
+                                                    suggest=suggest, notes=notes), encoding="utf-8")
+    print(f"报告 → {folder / 'report.md'}" + (f"；建议 accept = {suggest[0]:g}、reject = {suggest[1]:g}" if suggest else ""))
+
+
+def _perception_attrs_eval(cfg: Config, args) -> None:
+    """只跑整帧回放：给数据集（images/val + labels/val）和外形头模型，写报告 tmp/attrs-train/<时间>/report.md。"""
+    import datetime as dt
+    from pathlib import Path
+
+    from .vision import attrs, attrs_train as at
+
+    cfg.attrs.model = args.model
+    model = attrs.load_model(cfg.attrs, _attrs_device(cfg, args))
+    if model is None:
+        raise SystemExit(f"外形头模型 {args.model} 加载失败（原因见上面的警告）")
+    notes: list[str] = []
+    replays, suggest = _attrs_replays(cfg, at.frames_in(Path(args.dataset)), model, notes)
+    now = dt.datetime.now()
+    for r in replays:
+        print(f"conf_low = {r['conf_low']:g}")
+        print("\n".join(at.replay_md(r)))
+    for n in notes:
+        print(n)
+    folder = Path("tmp") / "attrs-train" / f"{now:%Y%m%d-%H%M%S}"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "report.md").write_text(at.report_md(data=Path(args.dataset), model=Path(args.model), when=now, result=None,
+                                                    replays=replays, suggest=suggest, notes=notes), encoding="utf-8")
+    print(f"报告 → {folder / 'report.md'}" + (f"；建议 accept = {suggest[0]:g}、reject = {suggest[1]:g}" if suggest else ""))
+
+
+def _perception_attrs_label(cfg: Config, args) -> None:
+    """第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json，见 vision/attrs_data.py。"""
+    import dataclasses
+
+    from .brain import claude
+    from .imageio import imread
+    from .vision import assist, attrs_data as ad
+
+    out = Path(args.source) if args.source else Path("datasets/attrs")
+    unl = out / "_unlabeled"
+    if not unl.is_dir():
+        raise SystemExit(f"{unl} 不是目录：先 perception crops 裁图，或者把数据目录当参数传进来")
+    existing = ad.load_form_guesses(unl)
+    todo = ad.pending_crops(unl, existing, args.recheck)
+    done = len(ad.pending_crops(unl, {}, True)) - len(todo)
+    if not todo:
+        print(f"没有要初分的裁图（{done} 张已有 {ad.FORM_GUESS_FILE}；要重做加 --recheck）")
+        return
+    base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错
+    a = dataclasses.replace(cfg.assist, batch=2)  # 每批 2 张拼图（32 张裁图）
+    cmd = assist.assist_command(base, a, system=ad.FORM_PROTOCOL.system)
+    work = assist.assist_workdir()
+    cache = Path("tmp") / "attrs-label" / "cache"  # Reviewer 的缓存按拼图名存，这里用不上：续跑靠 claude.json
+    cache.mkdir(parents=True, exist_ok=True)
+    reviewer = assist.Reviewer(
+        lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), cache, a,
+        "attrs", protocol=ad.FORM_PROTOCOL,
+    )
+    print(f"{len(todo)} 张裁图交给 Claude（{a.model}）初分：每张拼图 {ad.FORM_PER_SHEET} 张、每批 {a.batch} 张拼图、{a.jobs} 路并发"
+          + (f"；{done} 张已有 {ad.FORM_GUESS_FILE}，跳过" if done else ""))
+    counts: dict[str, int] = {}
+    failed = 0
+    unreadable: list[str] = []
+    step = ad.FORM_PER_SHEET * a.batch * max(1, a.jobs)  # 每轮并发跑完就写盘：额度用完 / 中断最多丢这一轮
+    for c0 in range(0, len(todo), step):
+        sheets: list[assist.FrameInput] = []
+        for s0 in range(c0, min(c0 + step, len(todo)), ad.FORM_PER_SHEET):
+            names, crops = [], []
+            for n in todo[s0 : s0 + ad.FORM_PER_SHEET]:
+                try:  # 裁图可能刚在标注页被挪走或者坏了：跳过这张
+                    crops.append(imread(unl / n))
+                    names.append(n)
+                except (OSError, RuntimeError, ValueError):
+                    unreadable.append(n)
+            if names:
+                sheets.append(ad.make_sheet_input(names, crops))
+        batch_new: dict[str, ad.Guess] = {}
+        try:
+            for got in (reviewer.review(sheets) if sheets else {}).values():
+                batch_new.update(got or {})
+        except assist.AssistLimit:
+            raise SystemExit(f"订阅额度用完了：已初分的裁图存好了，额度恢复后重跑同一条命令会接着做（{unl / ad.FORM_GUESS_FILE}）") from None
+        asked = {n for s in sheets for n in s.hints}
+        failed += len(asked - set(batch_new))
+        batch_new = {n: g for n, g in batch_new.items() if (unl / n).is_file()}  # 初分期间被标注页挪走的不写
+        ad.write_form_guesses(unl, batch_new, a.model)
+        for g in batch_new.values():
+            counts[g.label] = counts.get(g.label, 0) + 1
+        print(f"  {min(c0 + step, len(todo))}/{len(todo)} 张")
+    print("初分：" + ("、".join(f"{k}×{v}" for k, v in sorted(counts.items())) or "没有") + f"；没初分成 {failed} 张")
+    if unreadable:
+        print(f"读不了 {len(unreadable)} 张（裁图没了或者坏了，跳过）")
+    u = reviewer.usage
+    print(f"用量（参考，订阅不按它计费）：输入 {u['input_tokens'] + u['cache_creation_input_tokens'] + u['cache_read_input_tokens']}（含图片）、输出 {u['output_tokens']} token")
+    print("下一步：管理面板「标注」页确认外形，再 perception crops --writeback")
 
 
 def _perception_gesture_label(cfg: Config, args) -> None:
@@ -1033,7 +1281,9 @@ def _perception_track_eval(cfg: Config, args) -> None:
     out = Path(args.output or f"tmp/track-eval/{time.strftime('%Y%m%d-%H%M%S')}")
     out.mkdir(parents=True, exist_ok=True)
     _, current = _perception(cfg, args)  # 先建当前配置（--model 等覆盖写进 cfg.perception），基线照抄它再关开关
-    _, base = _perception(dataclasses.replace(cfg, perception=baseline(cfg.perception)), args)
+    # 基线也不接第二层（[attrs] 开着时当前配置接、基线不接，才比得出升级的效果）
+    _, base = _perception(dataclasses.replace(cfg, perception=baseline(cfg.perception),
+                                              attrs=dataclasses.replace(cfg.attrs, enabled=False)), args)
     kept = list(subsample(timed, args.fps))
     print(f"{len(timed)} 帧里按 {args.fps:g} 帧 / 秒抽了 {len(kept)} 帧（{kept[0][0]:.1f}~{kept[-1][0]:.1f} s），基线和当前配置各跑一遍 → {out}")
 
@@ -1204,8 +1454,26 @@ def _perception_bench(cfg: Config, args) -> None:
     for d in watcher.last_dets:
         counts[d.cls] = counts.get(d.cls, 0) + 1
     print("最后一帧检测到：" + ("、".join(f"{k}×{v}" for k, v in counts.items()) or "（无）"))
+    if getattr(args, "attrs", False):
+        _bench_attrs(cfg, args, detector, frames, dev)
     if dev is not None:
         print("提示：测速时看一下游戏画面有没有变卡（模拟器也在用这张显卡）")
+
+
+def _bench_attrs(cfg: Config, args, detector, frames: list, dev) -> None:
+    """bench --attrs：同样的帧上，只检测 vs 检测 + 最多 [attrs] max_crops 张人物裁图过外形头，各多少 fps。模型加载不上就说明原因、跳过。"""
+    from .vision import attrs, attrs_train as at
+
+    model = attrs.load_model(cfg.attrs, _attrs_device(cfg, args))
+    if model is None:
+        print(f"--attrs：外形头模型 {cfg.attrs.model} 没加载上（原因见上面的警告），只测了上面这些")
+        return
+    plain, withattrs = at.bench_attrs(lambda i: frames[i % len(frames)] if frames else dev.screenshot(),
+                                      detector, model, args.n, 5, cfg.attrs.max_crops)
+    fps = lambda ms: 1000 / (sum(ms) / len(ms))  # noqa: E731
+    print(f"外形头（每帧最多 {cfg.attrs.max_crops} 张裁图）：")
+    print(f"  只检测           {_stats(plain)}  -> {fps(plain):.1f} fps")
+    print(f"  检测 + 外形头    {_stats(withattrs)}  -> {fps(withattrs):.1f} fps")
 
 
 def _perception_detect(cfg: Config, args) -> None:
@@ -2601,6 +2869,7 @@ def main(argv: list[str] | None = None) -> None:
             q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关）")
             q.add_argument("--images", help="用这个目录 / 这张图测（默认实时截图）")
             q.add_argument("-n", type=int, default=200, help="测多少帧")
+            q.add_argument("--attrs", action="store_true", help="再测一遍加第二层外形头（每帧最多 [attrs] max_crops 张人物裁图）的 fps")
         else:
             q.add_argument("image", nargs="?", help="图片路径；不填则实时截屏")
             q.add_argument("-o", "--output", default="tmp/perception.png")
@@ -2658,6 +2927,25 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
     q.add_argument("--force", action="store_true",
                    help="这段录像切过也接着切：数据目录里哪儿都还没有的片段才写（已标过、挪走的不会再造一份）")
+    q = psub.add_parser("crops", help="第二层外形头的数据：从数据集 / 录像 / 难例目录裁人物图到 datasets/attrs；--writeback 把标注页确认的人物写回数据集")
+    q.add_argument("source", nargs="+", help="来源目录：含 images/ 和 labels/ 的是数据集，其余当图片目录（支持 runs/*/hard 这样的通配）")
+    q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q.add_argument("--conf", type=float, default=0.2, help="检测置信度下限")
+    q.add_argument("--out", default="datasets/attrs", help="输出目录")
+    q.add_argument("--writeback", action="store_true",
+                   help="不裁图：把 form/<人形类>/ 里确认过的数据集人物框写回 labels/（先备份到 <数据集>/_backup/）")
+    q = psub.add_parser("attrs-label", help="第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json")
+    q.add_argument("source", nargs="?", help="数据目录（默认 datasets/attrs）")
+    q.add_argument("--recheck", action="store_true", help="已有 claude.json 的裁图也重新初分")
+    q = psub.add_parser("attrs-train", help="训练外形头：form/ 里确认过的裁图 -> DINOv2 特征 + numpy 线性头 -> models/attrs-<日期>.npz，整帧回放评估、写报告")
+    q.add_argument("data", nargs="?", help="数据目录（默认 datasets/attrs）")
+    q.add_argument("--out", help="模型输出路径（默认 models/attrs-<日期>.npz；是 [attrs] model 时要加 --force）")
+    q.add_argument("--force", action="store_true", help="允许 --out 直接覆盖 [attrs] model 正在用的模型")
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"], help="主干提特征用的后端（默认 [attrs] device，空 = 跟 [perception]）")
+    q = psub.add_parser("attrs-eval", help="外形头只做整帧回放：数据集 images/val 上比较纯 YOLO 和加外形头复核，写报告")
+    q.add_argument("dataset", help="YOLO 数据集目录（含 images/val 和 labels/val）")
+    q.add_argument("--model", required=True, help="外形头 .npz")
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"])
     q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
     q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的片段也重新初分")

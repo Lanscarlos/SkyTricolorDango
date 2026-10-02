@@ -55,3 +55,11 @@ def test_describe_person_motion():
     assert describe_people([P(motion="走远", sure=False)]) == "像小明（没看到名字，左边·中，正在走远）"
     assert describe_people([P(kind="stranger", name=None, sid="陌生人A", look="白斗篷", motion="往右走")]) == \
         "陌生人A（白斗篷，左边·中，正在往右走）"
+
+
+def test_describe_spirit_and_shared():
+    """外形头认出的先祖 / 共享空间的人：不是陌生人，写成"一个先祖""一个共享空间的人"（spec 2026-10-02-perception-attrs §3.5）。"""
+    out = describe_people([P(), P(kind="spirit", name=None, side="右边", distance="远"),
+                           P(kind="shared", name=None, side="前面", motion="往左走")])
+    assert out == "小明（左边·中）、一个先祖（右边·远）、一个共享空间的人（前面·中，正在往左走）"
+    assert P().form is None and P().form_p == 0.0

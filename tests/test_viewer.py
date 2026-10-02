@@ -640,6 +640,16 @@ def test_click_picks_friend_name():
     assert json.loads(_node(script)) == ["ming", "bai", None, None]  # 标签用英文：node 输出在 Windows 上按 GBK 解码
 
 
+def test_reviewed_prefix_only_when_drawing():
+    # 靠第二层复核放行的框（reviewed）：画字时前面加"复核·"，点人取名字（nameAt）还是干净的名字
+    boxes = [{"x": 100, "y": 100, "w": 200, "h": 500, "kind": "friend", "label": "ming", "score": 0.3, "reviewed": True},
+             {"x": 900, "y": 100, "w": 200, "h": 500, "kind": "friend", "label": "bai", "score": 0.9}]
+    script = f"const S=require({json.dumps(str(_stage_path()))});" + \
+        f"const B={json.dumps(boxes, ensure_ascii=False)};const P='\\u590d\\u6838\\u00b7';" + \
+        "console.log(JSON.stringify([S.nameAt(B,150,300),S.boxText(B[0])===P+'ming 0.30',S.boxText(B[1])]));"
+    assert json.loads(_node(script)) == ["ming", True, "bai 0.90"]
+
+
 def test_page_retries_control_options():
     # 控制对象要等身体建好才挂上：拿到 404 过 3 秒再试，不能像时间线那样就此放弃
     script = _control_script()

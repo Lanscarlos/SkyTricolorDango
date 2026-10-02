@@ -192,6 +192,40 @@ v8（`tmp/yolo/sky-v8/weights/best.pt`，816 帧、yolo11n、120 epoch、约 42 
 - 动作：`perception clips <录像目录>` 切 16 帧片段 → 分到 `datasets/gesture/<动作>/`。**还缺两样，要先设计**：
   让 Claude 帮着初分片段（拼成长图给它看，像标人那样）、动作模型的训练脚本（三期 spec 只做了数据工具、评估和运行时接口）
 
+## 第二层（10-02）：裁图复核 + 外形头
+
+设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。**代码都写完了（`[attrs] enabled` 默认关），还没有训练数据和模型，没上真机。**
+
+**测速**（10-02，`models/dinov2-small.onnx`，输入 224×224，随机图，预热 10 次、60 轮取中位数）：
+**CUDA 没用上**——这台机器的 onnxruntime 是 CPU 版（没有 `CUDAExecutionProvider`，`OnnxEmbedder` 警告后退回 CPU），所以下面是 **CPU 的数**，5070 Ti 上的要装 `onnxruntime-gpu` 后重测：
+
+| | 单张 | 4 张逐张 |
+|---|---|---|
+| CPU | 31.6 ms | 127.9 ms |
+
+逐张 4 张 > 40 ms：真要在 GPU 上也超，就得**导出带动态 batch 维的主干**（`models/dinov2-small-b.onnx`），不在这一期做。
+上线门槛第 3 条（`bench --attrs` 帧率降不超过 10%）要等装好 GPU 版 onnxruntime 再量。
+
+**真数据跑裁图**（`perception crops … --model models/sky-yolo-v7.pt`，默认 `--conf 0.2`，输出 `datasets/attrs/`；没调 Claude、没写回、没动 `datasets/sky`）：
+- `datasets/sky`：已标注的人物框 lit（点过火）1178、unlit（黑影）385、spirit（先祖）0；对不上标注的框 `_unlabeled` 175
+- `runs/*/hard`（17 次运行）：全是 `_unlabeled`，共 1892（每次 15~465，最多的是 `20261001-215011-live-brain` 465）
+- 所以要人确认的约 2067 张；`not_person` / `shared` / `morph` 等类别现在一张都没有，要靠初分 + 标注页确认攒出来
+- `datasets/sky` 的 `player` 标注里混着共享空间 / 变身玩家，导进来全当成了 `form/lit`：标注页上要抽查 `form/lit`，把这些挪到 `shared` / `morph`
+
+**上线门槛**（spec §7，四条全满足才建议把 `[attrs] enabled` 打开）：
+1. 整帧回放：人物精确率不低于只用 YOLO；召回明显上去（目标漏检 31% → 20% 以下，估的，第一份报告出来后按实际改）
+2. 点没点火认反的数比只用 YOLO 少
+3. 5070 Ti 上 `perception bench --attrs`：感知层帧率降不超过 10%
+4. 真机三步：`view --images <录像>` 看灰框 / 复核框（茶座、开花的树、篝火那几段）→ `run --dry-run` 10 分钟 `[attrs]` 开 / 关各一次比 `stranger` / `approach` 事件数和 `hard/` 里的 `attrs_*` → 有黑影来时点亮陌生人链路照常
+
+**剩下要人做的**（按顺序）：
+1. `pip` 装 `onnxruntime-gpu` 重测速（或决定导出带 batch 的主干）
+2. `perception attrs-label`（花 Claude 额度，初分 `datasets/attrs/_unlabeled`）
+3. 管理面板「标注」页的「外形」标签页逐张确认
+4. `perception crops datasets/sky --writeback`（确认是人的框写回 `datasets/sky`，先自动备份）
+5. `perception attrs-train`，看 `report.md` 对门槛 1~3；`perception attrs-eval` 复评
+6. 晚上真机三步（门槛 4），都过了再开 `[attrs] enabled`
+
 ## 没做完 / 待办（按建议顺序）
 
 1. **用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，

@@ -231,7 +231,7 @@
     </div>
   </section>
   <section id="page-labeling" class="page" hidden>
-    <div class="page-title"><h1>标注</h1><span class="note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
+    <div class="page-title"><h1>标注</h1><span class="seg" id="lb-tabs" role="group" aria-label="标注哪一种"><button type="button" data-tab="gesture" aria-pressed="true">动作</button><button type="button" data-tab="form" aria-pressed="false">外形</button></span><span class="note" id="lb-note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
     <div class="banner warn" id="lb-empty" hidden></div>
     <div class="cols lb-cols" id="lb-cols">
       <section class="pane lb-listpane" aria-label="片段列表">
@@ -259,6 +259,28 @@
         <h3>标成</h3>
         <div class="pane-body lb-actions" id="lb-actions"></div>
         <p class="note lb-keys">选完自动跳下一段；已确认的再按一次别的类别就是改类别。</p>
+      </section>
+    </div>
+    <div class="banner warn" id="fm-empty" hidden></div>
+    <div class="cols lb-cols" id="fm-cols" hidden>
+      <section class="pane lb-listpane" aria-label="裁图列表">
+        <h3>裁图<span class="grow"></span><select id="fm-filter" aria-label="筛选裁图"></select></h3>
+        <div class="lb-counts" id="fm-counts"></div>
+        <div class="lb-list" id="fm-list"></div>
+      </section>
+      <section class="pane lb-player" aria-label="裁图">
+        <h3><span class="lb-title" id="fm-title">—</span><span class="grow"></span><span class="lb-pos" id="fm-pos"></span></h3>
+        <div class="fm-stage"><img id="fm-crop" class="fm-crop" alt="人物裁图"><p class="lb-stage-note" id="fm-crop-note" hidden></p></div>
+        <div class="fm-ctx"><img id="fm-ctx" alt="来源画面（红框是这张裁图）"><p class="note" id="fm-ctx-note" hidden>没有原图（来源画面读不到）</p></div>
+      </section>
+      <section class="pane lb-side" aria-label="Claude 的猜测和标注">
+        <h3>Claude 猜</h3>
+        <div class="pane-body" id="fm-guess"></div>
+        <h3>这一张</h3>
+        <div class="pane-body"><dl class="lb-meta" id="fm-meta"></dl></div>
+        <h3>标成</h3>
+        <div class="pane-body lb-actions" id="fm-actions"></div>
+        <p class="note lb-keys">选完自动跳下一张；已确认的再按一次别的类别就是改类别。</p>
       </section>
     </div>
   </section>
