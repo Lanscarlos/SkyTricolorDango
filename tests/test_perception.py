@@ -2075,7 +2075,8 @@ def test_lit_false_when_self_box_lost(monkeypatch):
 
 
 def test_lit_uses_scan_time_not_frame_time(monkeypatch):
-    """process() 处理新一帧的途中（检测器里）身体线程调 lit：要按最近一次真扫描的时间判，不能拿新帧时间去比旧扫描结果。"""
+    """process() 处理新一帧的途中（帧已经开始、扫描还没做）身体线程调 lit：要按最近一次真扫描的时间判。
+    以前按帧时间判：两帧隔 > DISK_GAP 时拿新帧时间去比旧扫描找到人的时间，人明明还在却判成 None（走了）。"""
     w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
     monkeypatch.setattr(perception_mod, "find_flame", lambda *a: None)
     monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.1)
@@ -2083,15 +2084,15 @@ def test_lit_uses_scan_time_not_frame_time(monkeypatch):
     run_frames(w, clock, 3.2, 4.5)
     assert w.lit(cid, 0.0) is True
     seen = []
-    real_detect = det.detect
+    real_far_tags = w._far_tags
 
-    def detect_and_ask(img):
-        seen.append(w.lit(cid, 0.0))  # 这一帧（4.8）刚开始处理、扫描还没做
-        return real_detect(img)
+    def far_tags_and_ask(*args, **kwargs):  # 在 _watch_flames 之前被调用：这一帧的扫描还没做
+        seen.append(w.lit(cid, 0.0))
+        return real_far_tags(*args, **kwargs)
 
-    det.detect = detect_and_ask
-    run(w, 4.8, clock)
-    assert seen == [True]
+    w._far_tags = far_tags_and_ask
+    run(w, 5.7, clock)  # 卡了 1.2 秒才来下一帧（> DISK_GAP）
+    assert seen == [False]  # 扫描太旧：拿不准，等等；不能是 None
 
 
 def test_lit_false_when_last_scan_found_nobody(monkeypatch):
