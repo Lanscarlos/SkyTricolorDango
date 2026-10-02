@@ -457,6 +457,26 @@ class AttrsConfig:
 
 
 @dataclass
+class CatalogConfig:
+    """装扮图鉴第 1 期（spec 2026-10-02-catalog-collect）：运行时把近处的人清楚的整身裁图存进 catalog/inbox/。
+
+    只截图存盘、不发输入，所以默认开；要配合 [perception]。门槛是估的，用 `catalog collect` 在录像上定。"""
+
+    enabled: bool = True
+    dir: str = "catalog"  # 存储目录（相对当前目录，gitignore）
+    every: float = 0.5  # 每条轨迹多久看一次（秒）
+    min_height: float = 0.25  # 框高至少占画面多少（估的）
+    edge: int = 8  # 框离画面四边至少几像素（人没被画面切掉）
+    pad: float = 0.1  # 裁图四周放宽的比例
+    sharp_min: float = 50.0  # 清晰度门槛：裁图缩到高 256 后拉普拉斯方差（估的）
+    dark_max: float = 0.5  # 陌生人的框有多黑（candle.black）到这个就不收：多半是 YOLO 认成 player 的黑影（只对陌生人，好友披黑斗篷照收）
+    per_who: int = 6  # 每个身份每次运行最多存几张
+    gap: float = 3.0  # 留下的图两两至少隔几秒
+    flush_every: float = 300.0  # 多久写一次盘（秒）
+    max_per_run: int = 300  # 每次运行最多存几张
+
+
+@dataclass
 class FriendCheckConfig:
     """大脑的 check_friend 工具：点一下人物打开右侧的好友树面板，截图给大脑看是不是好友，再关掉。
 
@@ -799,6 +819,7 @@ class Config:
     assist: AssistConfig = field(default_factory=AssistConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
     attrs: AttrsConfig = field(default_factory=AttrsConfig)
+    catalog: CatalogConfig = field(default_factory=CatalogConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     panels: PanelsConfig = field(default_factory=PanelsConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)

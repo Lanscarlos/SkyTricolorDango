@@ -31,6 +31,20 @@ def _inter(a: Rect, b: Rect) -> int:
     return w * h if w > 0 and h > 0 else 0
 
 
+def clear_box(box: Rect, others: list[Rect], blocked: list[Rect], max_overlap: float) -> bool:
+    """框没被别的人 / 团子盖住、没压在 blocked（聊天面板）上：认装扮的好样本和图鉴收集共用。空框算不行。"""
+    area = box.w * box.h
+    if box.w <= 0 or box.h <= 0:
+        return False
+    for o in others:
+        if iou(box, o) > max_overlap or _inter(box, o) / area > max_overlap:
+            return False
+    for b in blocked:
+        if _inter(box, b) / area > max_overlap:
+            return False
+    return True
+
+
 def good_crop(
     frame: np.ndarray, box: Rect, others: list[Rect], blocked: list[Rect], min_height: float, max_overlap: float
 ) -> np.ndarray | None:
@@ -38,13 +52,8 @@ def good_crop(
     fh, fw = frame.shape[:2]
     if box.w <= 0 or box.h <= 0 or box.h < min_height * fh:
         return None
-    area = box.w * box.h
-    for o in others:
-        if iou(box, o) > max_overlap or _inter(box, o) / area > max_overlap:
-            return None
-    for b in blocked:
-        if _inter(box, b) / area > max_overlap:
-            return None
+    if not clear_box(box, others, blocked, max_overlap):
+        return None
     margin = int(round(box.w * 0.2))
     crop = Rect(box.x + margin, box.y, box.w - 2 * margin, box.h)
     x1, y1, x2, y2 = max(0, crop.x), max(0, crop.y), min(fw, crop.x2), min(fh, crop.y2)

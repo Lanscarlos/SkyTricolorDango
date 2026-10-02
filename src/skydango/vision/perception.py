@@ -47,6 +47,7 @@ from .appearance import describe_crop, good_crop
 from .attrs import unlit_score
 from .candle import black, find_flame, white_ring
 from .bubbles import Rect, roi_rect
+from .catalog import Who, stranger_key
 from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
@@ -62,6 +63,8 @@ log = logging.getLogger(__name__)
 
 UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
+SELF_MEMORY = 1.0  # 图鉴收集：团子框这么久内出现过的位置上冒出来的"陌生人"按团子算（YOLO 有的帧不给团子出 self 框）
+SELF_IOU = 0.3  # 和团子框重叠这么多就算团子（_is_self 用 0.5，团子身上的 player 框常比 self 框大一圈）
 DISK_EVERY = 0.3  # 团子周围最多隔这么久找一次火焰
 DISK_GAP = 1.0  # 火焰断开不超过这么久算同一条线索（火焰会晃）
 SELF_HOLD = 3.0  # 团子框丢了（黑影贴着团子时 YOLO 常认不出 self）最多沿用最近的框这么久：镜头跟着团子，屏幕位置几乎不变
@@ -279,6 +282,7 @@ class PerceptionWatcher:
         call_window: float = 6.0,  # 按 Q 喊一声的窗口秒数（[call] window）
         camera_settle: float = 0.6,  # 镜头缩放 / 走路 / 转圈后这么久画面才稳（同 [track] settle）
         attrs=None,  # vision.attrs.PersonAttrs：第二层（复核低分框、撤下误框、点没点火两边投票；None = 不接，行为照旧）
+        catalog=None,  # vision.catalog.CatalogCollector：图鉴收集（None = 不收，行为照旧）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -320,6 +324,8 @@ class PerceptionWatcher:
         self.embedder = embedder
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
         self.saver = saver
+        self.catalog = catalog
+        self._self_seen: tuple[float, list[Rect]] | None = None  # 最近一次看到团子框的时间和框（图鉴收集认团子用）
         self.call_window = call_window
         self._call: CallSeen | None = None  # 最近一次呼喊窗口（只留一次）；self._lock 保护
         self._call_span = (float("-inf"), float("-inf"))  # 窗口 [开始, 结束]：暂停时跟着往后挪（at 不变，身体拿它取结果）
@@ -592,6 +598,11 @@ class PerceptionWatcher:
 
     def stop(self) -> None:
         self._stop.set()
+        if self.catalog is not None:
+            try:
+                self.catalog.close()
+            except Exception:
+                log.exception("图鉴收集收尾出错")
 
     # ---- 一帧 ----
     def process(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
@@ -615,6 +626,11 @@ class PerceptionWatcher:
             if shift is None:
                 # 转了镜头、又估不出转了多少：原来屏幕位置上的人已经不是原来那个了。轨迹全作废（不记失踪），按名字重新认
                 log.debug("转过镜头、估不出平移：%d 条轨迹的位置作废", len(self.tracker.tracks))
+                if self.catalog is not None:
+                    try:
+                        self.catalog.dropped(list(self.tracker.tracks.values()))
+                    except Exception:
+                        log.exception("图鉴收集出错")
                 self.tracker.tracks.clear()
                 self._lost.clear()
         tracks = self.tracker.update(dets, now, low=low if self.cfg.track_low or attrs_on else (), shift=shift)
@@ -800,6 +816,17 @@ class PerceptionWatcher:
                 self.hardcases.check(frame, now, tracks, low, set(seen), panel_visible)
             except Exception:
                 log.exception("收集难例出错")
+        if self.catalog is not None:
+            try:
+                if self.tracker.dropped:
+                    self.catalog.dropped(self.tracker.dropped)
+                if not self.paused:
+                    panel = roi_rect(self.log_roi, width, height) if panel_visible else None
+                    if selfs:
+                        self._self_seen = (now, [s.box for s in selfs])
+                    self.catalog.update(frame, players, selfs, now, panel, self.place, self._catalog_who)
+            except Exception:
+                log.exception("图鉴收集出错")
         self.timings.append(((detected - started) * 1000, (time.perf_counter() - started) * 1000))
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))
@@ -823,6 +850,33 @@ class PerceptionWatcher:
     def _admitted(t: Track) -> bool:
         """第二层放没放行这条人物轨迹（没接第二层时不写这个键 = 都放行）。"""
         return t.data.get("admitted", True)
+
+    def _catalog_who(self, t: Track) -> Who | None:
+        """图鉴收集的身份（spec 2026-10-02-catalog-collect §2）：团子 / 名字标签证实的好友 / 感知层判过的陌生人（或"像小明"）；黑影不收。
+        陌生人不比感知层判得早（data["stranger"] 在调收集器之前算好）；有标签但不在好友名单里的不收（unknown_names 记）。
+        process() 交给收集器的 players 已经去掉了第二层没放行和先祖 / 共享空间的。"""
+        if t.cls == "self":
+            return Who("团子", "self", True)
+        if self._unlit(t):
+            return None
+        d = t.data
+        tagged = d.get("tagged")
+        if tagged and d.get("name"):
+            return Who(d["name"], "friend", True)
+        if self._near_dango(t):
+            return None  # 团子身上的 player 框（这一帧没 self 框、或者重叠不到 _is_self 的 0.5）：团子自己有一份，不当陌生人收
+        if tagged:
+            return None
+        if d.get("stranger") or d.get("maybe"):
+            return Who(stranger_key(t.id), "stranger", False, d.get("maybe"))
+        return None
+
+    def _near_dango(self, t: Track) -> bool:
+        """这条人物轨迹是不是落在团子刚待过的地方（SELF_MEMORY 秒内的团子框、重叠 ≥ SELF_IOU）。"""
+        if self._self_seen is None:
+            return False
+        at, boxes = self._self_seen
+        return t.last - at <= SELF_MEMORY and any(iou(t.box, b) >= SELF_IOU for b in boxes)
 
     def _review(self, frame: np.ndarray, tracks: list[Track], strong: int, now: float,
                 width: int, height: int, panel_visible: bool) -> None:

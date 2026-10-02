@@ -195,6 +195,22 @@ yolo_w = 0.3                    # 点没点火的黑影分里 YOLO 一侧（最�
 flip_votes = 3                  # 形态要翻转，新形态至少连续几票
 max_errors = 10                 # 推理连续出错这么多次就自己关掉
 
+[catalog]
+# 装扮图鉴第 1 期：运行时把近处的人清楚的整身裁图存进 catalog/inbox/<日期>/<运行>/<身份>/（只截图存盘、不发输入）。
+# 要配合 [perception]；门槛是估的，用 `python -m skydango catalog collect <录像目录>` 在录像上定
+enabled = true
+dir = "catalog"                 # 存储目录（gitignore）
+every = 0.5                     # 每条轨迹多久看一次（秒）
+min_height = 0.25               # 框高至少占画面多少
+edge = 8                        # 框离画面四边至少几像素
+pad = 0.1                       # 裁图四周放宽的比例
+sharp_min = 50.0                # 清晰度门槛（裁图缩到高 256 后的拉普拉斯方差）
+dark_max = 0.5                  # 陌生人框里很暗的像素占比到这个就不收（YOLO 认错的黑影；10-02 量过黑影 0.61~0.93、点过火的人 ≤ 0.26）
+per_who = 6                     # 每个身份每次运行最多几张
+gap = 3.0                       # 留下的图两两至少隔几秒
+flush_every = 300.0             # 多久写一次盘（秒）
+max_per_run = 300               # 每次运行最多几张
+
 [assist]
 # Claude 辅助标注：python -m skydango perception label <录像目录> --assist
 # 检测器出人物候选框 → 隔离的 claude -p 核对（令牌、配置目录同 [brain]）→ 和名字标签 / 圆圈弱标注合并写进数据集

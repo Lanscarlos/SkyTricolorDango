@@ -33,6 +33,8 @@ memory/
 # YOLO 数据集和训练出来的模型（本机私有、体积大）
 datasets/
 models/
+# 图鉴收集的原始图（只在本机，见 CLAUDE.md「装扮图鉴」）；加 / 只忽略仓库根，免得以后 src/…/catalog/ 包也被忽略
+/catalog/
 
 # YOLO 训练环境（torch 等）和各种缓存，放仓库里不占 C 盘（见 src/skydango/cachedirs.py）
 .pydeps/

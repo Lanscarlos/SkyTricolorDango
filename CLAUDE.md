@@ -93,6 +93,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/console/labeling.py` | 「标注」页的后端（`/api/gesture/*`）：片段状态、取帧、确认 / 改类别 / 丢弃 = 挪文件夹、撤销，记在 `_labels.jsonl` |
 | `src/skydango/vision/embed.py` `onnxrt.py` | 特征模型的公共部分：`OnnxEmbedder`、`unit` / `cosine`（认地图、认装扮共用）；`onnxrt.py` 按 device（cuda / dml / cpu）选 onnxruntime 后端、建会话（YOLO、特征模型、动作模型共用） |
 | `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己、关系卡旧特征、`assign_friends`、换装判定）、攒训练数据 `CropSaver` |
+| `src/skydango/vision/catalog.py` | 装扮图鉴第 1 期（见「装扮图鉴」）：运行时把近处的人清楚的整身裁图存进 `catalog/inbox/`（门槛、每人留最好几张、写盘、索引）、离线工具的总览拼图 |
 | `src/skydango/vision/wardrobe.py` | 装扮描述器：排队、优先级、每小时额度，一次性 `claude -p --model haiku` 把人物裁图写成一句话 |
 | `src/skydango/vision/appearance_eval.py` | 认装扮的离线标定（`perception appearance-eval`）：收集轨迹特征、相似度分布、建议门槛、藏标签重放、报告 |
 | `src/skydango/vision/halo.py` `halo_eval.py` | 按 Q 喊一声的呼唤光圈：头顶区域、按键后连拍认团子（`HaloWatch`，纯计算）；离线标定 `perception halo-eval` |
@@ -274,6 +275,16 @@ dir = "private/sandbox"
 - **已知限制**：颜色直方图不看亮度，白 / 灰 / 黑发色、同色深浅分不开；不同地图、白天晚上光照差得多，跨天靠关系卡认人弱（所以 `card_match` 更严）；撞衫（季节装扮、默认斗篷）会认错；身高没做；没点火的黑影没有外观
 - `enabled = false` 照旧：系统提示词的规矩、事件、status、`people()` / 识别框逐字一样；只有 `look_person` 工具说明里总写着能传「陌生人A」（关着时找不到、照常报没找到，无害）；管理面板有 `appearance.enabled`、`appearance.describe` 两个开关
 - 中途换装（`outfit_change` 开着时）：好友 / 团子的平均特征离上次描述（或上次换装稳下来时）低于 `changed` 就记一次换装（好友发 `changed`），平均特征挪稳到新那套之前不再判；不看描述有没有回来（描述关了、没挂描述器、描述器放弃了照样判），最多 `redescribe_max` 次
+
+## 装扮图鉴（`[catalog]`，要配合 `[perception]`）
+
+设计见 `docs/superpowers/specs/2026-10-02-catalog-collect-design.md`（开头有五期路线图：收集 → 归类 + 部位 + 管理面板起名 → 游戏里主动问 → 用图鉴认 → 地图 / 先祖 / 物品），计划 `docs/superpowers/plans/2026-10-02-catalog-collect.md`。
+目标是让团子认出好友身上发型 / 斗篷 / 面具的**俗称**：图鉴从团子自己的经历里长出来，认法是 DINOv2 特征检索 + Claude 对图确认（新加单品不用重训）。**这一期只做收集，还没在真机上跑过，门槛是估的**。
+- `run`（dry-run 和 live 都算）时感知层每帧把人物框交给 `CatalogCollector`：够大（`min_height`）、不贴边、没被别人 / 聊天面板挡（和认装扮共用 `clear_box`）、清楚（拉普拉斯方差 ≥ `sharp_min`）才收；
+  好友（名字标签证实的）、团子、感知层判过陌生人（`data["stranger"]`）的点过火的人收，有名字标签但不在好友名单里的不收，黑影 / 先祖 / 共享空间 / 第二层没放行的不收；"像小明"的按陌生人存、索引记 `maybe`；陌生人框太黑（`dark_max`，YOLO 认错的黑影）不收，团子身上多出来的 player 框按团子算
+- 每个身份每次运行留最好的 `per_who` 张、两两隔 `gap` 秒；陌生人轨迹断了写出、每 `flush_every` 秒和退出时全部写出；存进 `catalog/inbox/<日期>/<运行>/<身份>/<名次>.jpg` + 同目录 `index.jsonl`（`catalog/` 不进 git，只在本机；第 2 期起完名的精选图才进私有仓库）；**`catalog/` 不会自动清理**（不像 `runs/` 只留最近 20 次），一晚几 MB，要清自己删
+- 和认装扮（`[appearance]`）完全分开，不带它的副作用；`enabled = false` 时感知层逐字照旧；管理面板有 `catalog.enabled`
+- 定门槛：`catalog collect <录像目录>` → `tmp/catalog/<时间>/`（`sheet.jpg` 总览、`candidates.jsonl` 每个候选过没过哪条门槛）
 
 ## 识别可视化（`[viewer]`，`view` / `run --view`）
 
@@ -589,6 +600,7 @@ python -m skydango perception attrs-eval datasets/sky --model models/attrs-<日�
 python -m skydango perception bench --attrs [--model …]  # 测速时再测一遍加第二层后的 fps
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
 python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
+python -m skydango catalog collect <录像目录> [--model 模型] [--fps 6.5]  # 装扮图鉴：录像上试跑收集 → tmp/catalog/<时间>/（sheet.jpg、candidates.jsonl），定 min_height / sharp_min
 python -m skydango perception clips <录像目录> [--force]  # 动作识别的数据：按人物轨迹切 16 帧片段 → datasets/gesture/_unlabeled；这段录像切过就拒绝，--force 只切数据目录里哪儿都还没有的片段
 python -m skydango perception gesture-label [片段目录] [--blind]  # Claude 初分动作片段（默认 datasets/gesture/_unlabeled），再去管理面板「标注」页确认；--blind 不给录像名提示、写 claude-blind.json（标注页优先显示），看名字时它常照名字判
 python -m skydango perception gesture-train [数据目录] [--epochs 60] [--out 路径] [--device cuda|cpu]  # 训练动作模型 → models/gesture-<日期>.onnx + tmp/gesture-train/<时间>/report.md（旁边复制一份 _split.json）；--out 是 [gesture] model 时要加 --force
