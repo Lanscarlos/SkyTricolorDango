@@ -47,6 +47,7 @@ from .appearance import describe_crop, good_crop
 from .attrs import unlit_score
 from .candle import black, find_flame, white_ring
 from .bubbles import Rect, roi_rect
+from .catalog import Who, stranger_key
 from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
@@ -279,6 +280,7 @@ class PerceptionWatcher:
         call_window: float = 6.0,  # 按 Q 喊一声的窗口秒数（[call] window）
         camera_settle: float = 0.6,  # 镜头缩放 / 走路 / 转圈后这么久画面才稳（同 [track] settle）
         attrs=None,  # vision.attrs.PersonAttrs：第二层（复核低分框、撤下误框、点没点火两边投票；None = 不接，行为照旧）
+        catalog=None,  # vision.catalog.CatalogCollector：图鉴收集（None = 不收，行为照旧）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -320,6 +322,7 @@ class PerceptionWatcher:
         self.embedder = embedder
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
         self.saver = saver
+        self.catalog = catalog
         self.call_window = call_window
         self._call: CallSeen | None = None  # 最近一次呼喊窗口（只留一次）；self._lock 保护
         self._call_span = (float("-inf"), float("-inf"))  # 窗口 [开始, 结束]：暂停时跟着往后挪（at 不变，身体拿它取结果）
@@ -592,6 +595,8 @@ class PerceptionWatcher:
 
     def stop(self) -> None:
         self._stop.set()
+        if self.catalog is not None:
+            self.catalog.close()
 
     # ---- 一帧 ----
     def process(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
@@ -800,6 +805,15 @@ class PerceptionWatcher:
                 self.hardcases.check(frame, now, tracks, low, set(seen), panel_visible)
             except Exception:
                 log.exception("收集难例出错")
+        if self.catalog is not None:
+            try:
+                if self.tracker.dropped:
+                    self.catalog.dropped(self.tracker.dropped)
+                if not self.paused:
+                    panel = roi_rect(self.log_roi, width, height) if panel_visible else None
+                    self.catalog.update(frame, players, selfs, now, panel, self.place, self._catalog_who)
+            except Exception:
+                log.exception("图鉴收集出错")
         self.timings.append(((detected - started) * 1000, (time.perf_counter() - started) * 1000))
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))
@@ -823,6 +837,18 @@ class PerceptionWatcher:
     def _admitted(t: Track) -> bool:
         """第二层放没放行这条人物轨迹（没接第二层时不写这个键 = 都放行）。"""
         return t.data.get("admitted", True)
+
+    def _catalog_who(self, t: Track) -> Who | None:
+        """图鉴收集的身份（spec 2026-10-02-catalog-collect §2）：团子 / 名字标签证实的好友 / 其余点过火的按陌生人；黑影不收。
+        process() 交给收集器的 players 已经去掉了第二层没放行和先祖 / 共享空间的。"""
+        if t.cls == "self":
+            return Who("团子", "self", True)
+        if self._unlit(t):
+            return None
+        d = t.data
+        if d.get("tagged") and d.get("name"):
+            return Who(d["name"], "friend", True)
+        return Who(stranger_key(t.id), "stranger", False, d.get("maybe"))
 
     def _review(self, frame: np.ndarray, tracks: list[Track], strong: int, now: float,
                 width: int, height: int, panel_visible: bool) -> None:
