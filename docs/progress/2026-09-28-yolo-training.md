@@ -210,6 +210,7 @@ v8（`tmp/yolo/sky-v8/weights/best.pt`，816 帧、yolo11n、120 epoch、约 42 
 - `datasets/sky`：已标注的人物框 lit（点过火）1178、unlit（黑影）385、spirit（先祖）0；对不上标注的框 `_unlabeled` 175
 - `runs/*/hard`（17 次运行）：全是 `_unlabeled`，共 1892（每次 15~465，最多的是 `20261001-215011-live-brain` 465）
 - 所以要人确认的约 2067 张；`not_person` / `shared` / `morph` 等类别现在一张都没有，要靠初分 + 标注页确认攒出来
+- `datasets/sky` 的 `player` 标注里混着共享空间 / 变身玩家，导进来全当成了 `form/lit`：标注页上要抽查 `form/lit`，把这些挪到 `shared` / `morph`
 
 **上线门槛**（spec §7，四条全满足才建议把 `[attrs] enabled` 打开）：
 1. 整帧回放：人物精确率不低于只用 YOLO；召回明显上去（目标漏检 31% → 20% 以下，估的，第一份报告出来后按实际改）

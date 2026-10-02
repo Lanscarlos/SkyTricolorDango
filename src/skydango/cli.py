@@ -376,7 +376,19 @@ def _person_attrs(cfg: Config):
     if model is None:
         return None
     log.info("感知层第二层：%s（主干 %s）", cfg.attrs.model, cfg.attrs.backbone)
+    _warn_attrs_on_cpu(cfg, model)
     return PersonAttrs(cfg.attrs, model)
+
+
+def _warn_attrs_on_cpu(cfg: Config, model) -> None:
+    """[perception] device = cuda，第二层的主干会话却只有 CPU 后端（onnxruntime 是 CPU 版）：警告一次。
+    实测 CPU 上 DINOv2-small 一张裁图约 32 ms、4 张约 128 ms，会把感知层拖慢一大截。"""
+    get = getattr(getattr(getattr(model, "embedder", None), "session", None), "get_providers", None)
+    if cfg.perception.device != "cuda" or get is None:
+        return
+    if set(get()) <= {"CPUExecutionProvider"}:
+        log.warning("感知层第二层的主干在 CPU 上跑（onnxruntime 是 CPU 版，一张裁图约 30 ms），会拖慢感知层："
+                    "装 onnxruntime-gpu，或者把 [attrs] max_crops 改成 1、every 改成 1.0")
 
 
 def _call_enabled(cfg: Config, env) -> bool:

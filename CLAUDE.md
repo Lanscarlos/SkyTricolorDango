@@ -243,6 +243,7 @@ dir = "private/sandbox"
   ③ 先祖 / 共享空间不算陌生人，变身照常认人。`enabled = false` 逐字是原来的行为；`[perception] enabled = false` 时不生效；主干和 npz 对不上 / 连续出错自动关掉。
   数据：`perception crops` → `perception attrs-label`（花额度）→ 管理面板「标注」页的「外形」标签页确认 → `crops --writeback` → `perception attrs-train` → `attrs-eval`；
   识别可视化画灰色虚线（被撤）/ "复核"（靠复核放行），难例多 `attrs_reject` / `attrs_disagree` 两种原因。上线门槛四条和剩下要人做的步骤见 `docs/progress/2026-09-28-yolo-training.md`「第二层」
+  **本机 onnxruntime 是 CPU 版**（DINOv2-small 一张裁图约 32 ms、4 张约 128 ms）：装 onnxruntime-gpu 之前别开，或者 `max_crops = 1`、`every = 1.0`（`[perception] device = "cuda"` 而主干只在 CPU 上跑时启动会警告）
 - **核显 / 没有 N 卡的机器**（`device = "dml"`，`vision/onnxrt.py`，**未在 Windows 核显上验证**）：在 GPU 机器上导出 `.onnx`（`.pydeps\bin\yolo.exe export model=models/sky-yolo-v7.pt format=onnx imgsz=960`）拷过去，
   `pip uninstall onnxruntime` 再 `pip install onnxruntime-directml`（两个包都叫 `onnxruntime` 模块，只能装一个；以后 `pip install -e ".[ocr]"` 会把 onnxruntime 装回来盖掉，要重装 directml；`pip check` 报 skydango 缺 onnxruntime 是正常的）。
   先 `perception bench --model models/sky-yolo.onnx --images <录像目录>` 看后端是不是 `DmlExecutionProvider`、每帧多少 ms，再按实测把 `fps` 降下来（估计 2~3）。

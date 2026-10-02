@@ -247,6 +247,42 @@ def test_cli_builds_attrs_only_when_model_loads(tmp_path, monkeypatch):
     assert isinstance(pa, PersonAttrs) and pa.enabled and seen["device"] == "cuda"  # device 空 = 跟 [perception]
 
 
+def test_cli_warns_when_attrs_backbone_runs_on_cpu(monkeypatch, caplog):
+    """[perception] device = cuda、第二层的主干会话却只有 CPU 后端（本机 onnxruntime 是 CPU 版）：建的时候警告一次。"""
+    import logging
+    from types import SimpleNamespace
+
+    from skydango import cli
+    from skydango.config import Config
+    from skydango.vision import attrs as attrs_mod
+
+    providers = ["CPUExecutionProvider"]
+
+    def fake_load(acfg, device, embedder=None):
+        m = FakeModel({})
+        m.embedder = SimpleNamespace(session=SimpleNamespace(get_providers=lambda: list(providers)))
+        return m
+
+    monkeypatch.setattr(attrs_mod, "load_model", fake_load)
+    cfg = Config()
+    cfg.attrs.enabled = True
+    cfg.perception.device = "cuda"
+
+    def warnings():
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="skydango"):
+            assert cli._person_attrs(cfg) is not None
+        return [r for r in caplog.records if r.levelno == logging.WARNING and "CPU" in r.getMessage()]
+
+    (rec,) = warnings()
+    assert "max_crops" in rec.getMessage() and "onnxruntime-gpu" in rec.getMessage()
+    providers[:] = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    assert warnings() == []
+    providers[:] = ["CPUExecutionProvider"]
+    cfg.perception.device = "cpu"  # 本来就要 CPU：不啰嗦
+    assert warnings() == []
+
+
 def test_attrs_errors_turn_off_open_low():
     img, model = scene({1000: probs(lit=0.9)})
     model.fail = True
