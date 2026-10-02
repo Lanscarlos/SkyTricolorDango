@@ -488,6 +488,53 @@ def cmd_places(cfg: Config, args) -> None:
         _places_bench(cfg, args.model or [cfg.places.model])
 
 
+def cmd_catalog(cfg: Config, args) -> None:
+    """图鉴收集的离线工具（spec 2026-10-02-catalog-collect §6）：录像上跑感知层 + 收集器（录像时间当时钟），
+    存下的图和运行时同样的结构，另写 candidates.jsonl（每个看过的候选过没过门槛）和 sheet.jpg，用来定 min_height / sharp_min。"""
+    import json
+    from collections import Counter
+
+    from .vision.catalog import CatalogCollector, contact_sheet
+    from .vision.compare import timed_files
+    from .vision.trackeval import subsample
+
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    out = Path(args.output or f"tmp/catalog/{time.strftime('%Y%m%d-%H%M%S')}")
+    _, watcher = _perception(cfg, args)
+    now = [0.0]
+    watcher.clock = lambda: now[0]
+    collector = CatalogCollector(cfg.catalog, out, Path(args.source).name, "offline", wall=lambda: now[0], trace=True)
+    watcher.catalog = collector
+    kept = list(subsample(timed, args.fps))
+    print(f"{len(timed)} 帧里按 {args.fps:g} 帧 / 秒抽了 {len(kept)} 帧 → {out}")
+    for n, (t, path) in enumerate(kept, 1):
+        now[0] = t
+        frame = imread(path)
+        watcher.process(frame, t, _panel_open(cfg, frame))
+        if n % 100 == 0:
+            print(f"  {n}/{len(kept)}")
+    watcher.stop()  # 收集器全部写出
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "candidates.jsonl").write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in collector.candidates), encoding="utf-8")
+    fails = Counter(r["fail"] or "收下" for r in collector.candidates)
+    print(f"看了 {len(collector.candidates)} 个候选：" + "、".join(f"{k} {v}" for k, v in fails.most_common()))
+    made = contact_sheet(collector.folder)
+    if made is None:
+        print("一张都没存下（看 candidates.jsonl 是哪条门槛挡住的）")
+        return
+    sheet, legend = made
+    imwrite(out / "sheet.jpg", sheet)
+    print(f"存了 {collector.saved} 张 → {collector.folder}；总览 {out / 'sheet.jpg'}")
+    for i, line in enumerate(legend, 1):
+        print(f"  第 {i} 行：{line}")
+
+
 def _places_bench(cfg: Config, models: list[str]) -> None:
     """留一法：图库里每张图拿去和其余的图比，看认对 / 认错 / 不说各多少、每张多久。"""
     import dataclasses
@@ -2996,6 +3043,17 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("bench", help="图库上留一法：每个模型认对 / 认错 / 不说多少、多快")
     q.add_argument("--model", action="append", help="特征模型，可以给多个（默认 places.model）")
     p.set_defaults(func=cmd_places)
+
+    p = sub.add_parser("catalog", help="装扮图鉴：在录像上试跑收集（定门槛用）")
+    psub = p.add_subparsers(dest="action", required=True)
+    q = psub.add_parser("collect", help="录像上跑感知层 + 图鉴收集器，输出存下的图、candidates.jsonl、sheet.jpg")
+    q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
+    q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"])
+    q.add_argument("--imgsz", type=int)
+    q.add_argument("--fps", type=float, default=6.5, help="按录像时间每秒抽几帧（模拟 run 时身体截图，默认 6.5）")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/catalog/<时间>）")
+    p.set_defaults(func=cmd_catalog)
 
     p = sub.add_parser("panels", help="面板识别的核对工具：逐张看特征分数、细读面板、裁模板（不往游戏里发输入）")
     psub = p.add_subparsers(dest="action", required=True)

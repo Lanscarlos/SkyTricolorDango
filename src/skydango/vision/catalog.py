@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from ..config import CatalogConfig
-from ..imageio import imwrite
+from ..imageio import imread, imwrite
 from .appearance import _folder_name, clear_box
 from .bubbles import Rect
 from .track import Track
@@ -262,3 +262,32 @@ class CatalogCollector:
             self._closed = True
             if self._saved():
                 log.info("图鉴收集：存了 %d 张 → %s", self._saved(), self.folder)
+
+
+def contact_sheet(folder: Path, cell: int = 240) -> tuple[np.ndarray, list[str]] | None:
+    """一次运行存下的图拼成一张：每个身份一行、按名次排，每格 cell×cell（等比缩放、灰底补齐），左上角标清晰度。
+    返回 (拼图, 每一行是谁)；没有索引 / 没有图返回 None。中文名字 cv2 画不了，所以名字放在 legend 里由调用方打印。"""
+    index = Path(folder) / "index.jsonl"
+    if not index.exists():
+        return None
+    groups: dict[str, list[dict]] = {}
+    for line in index.read_text(encoding="utf-8").splitlines():
+        r = json.loads(line)
+        groups.setdefault(r["who"], []).append(r)
+    if not groups:
+        return None
+    root = Path(folder).parents[2]  # <root>/inbox/<day>/<run>
+    cols = max(len(rs) for rs in groups.values())
+    sheet = np.full((cell * len(groups), cell * cols, 3), 40, np.uint8)
+    legend = []
+    for row, (who, rs) in enumerate(groups.items()):
+        legend.append(f"{who}（{len(rs)} 张）")
+        for col, r in enumerate(rs):
+            img = imread(root / r["file"])
+            scale = min(cell / img.shape[0], cell / img.shape[1])
+            small = cv2.resize(img, (max(1, int(img.shape[1] * scale)), max(1, int(img.shape[0] * scale))))
+            y, x = row * cell, col * cell
+            sheet[y:y + small.shape[0], x:x + small.shape[1]] = small
+            cv2.putText(sheet, f"s{r['sharp']:.0f} h{r['height']:.2f}", (x + 4, y + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+    return sheet, legend

@@ -255,3 +255,15 @@ def test_closed_collector_ignores_updates(tmp_path, brightness):
     c.update(frame(), [track(1)], [], 0.0, None, "", friend)
     c.dropped([track(1)])
     assert c.total == 0
+
+
+def test_contact_sheet_one_row_per_identity(tmp_path, brightness):
+    c = collector(tmp_path)
+    c.update(frame(100), [track(1)], [], 0.0, None, "", friend)
+    c.update(frame(120), [track(1)], [], 5.0, None, "", friend)
+    c.update(frame(140), [track(2, x=1300)], [], 0.0, None, "", stranger)
+    c.close()
+    sheet, legend = cat.contact_sheet(c.folder, cell=100)
+    assert legend == ["懒洋洋大王（2 张）", "陌生人-t2（1 张）"]
+    assert sheet.shape == (2 * 100, 2 * 100, 3)  # 2 行；最多的一行 2 张
+    assert cat.contact_sheet(tmp_path / "nothing") is None
