@@ -249,7 +249,7 @@ def test_call_config_defaults():
 
     c = Config()
     assert (c.call.enabled, c.call.auto, c.call.min_gap, c.call.window, c.call.burst) == (True, True, 20.0, 6.0, 1.0)
-    assert (c.call.auto_quota, c.call.auto_window, c.call.auto_after_leave) == (3, 600.0, 30.0)
+    assert (c.call.auto_quota, c.call.auto_window, c.call.auto_after_leave) == (3, 60.0, 30.0)
     assert (c.call.halo, c.call.halo_rise, c.call.halo_center) == (False, 25.0, 0.35)
     assert c.perception.sticky_names is True and c.perception.edge_band == 0.06
 

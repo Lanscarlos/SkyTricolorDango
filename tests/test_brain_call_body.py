@@ -281,6 +281,7 @@ def test_auto_call_after_friend_leaves_with_unnamed_people(clock):
 
 def test_auto_call_once_per_leave_and_quota(clock):
     b, device, env, _ = call_body(clock)
+    b.cfg.call.auto_window = 600.0  # 窗口拉长，测额度本身（默认 60 秒时 min_gap 20 秒已经差不多卡到 3 次）
     left(b, clock)
     b._watch_call(clock())
     env.results[b.last_call.at] = CallSeen(b.last_call.at, {}, ended=True)
@@ -297,7 +298,11 @@ def test_auto_call_once_per_leave_and_quota(clock):
         if b.last_call is not None:
             env.results[b.last_call.at] = CallSeen(b.last_call.at, {}, ended=True)
         b._watch_call(clock())
-    assert pressed(device) == 3  # 10 分钟最多 3 次
+    assert pressed(device) == 3  # 窗口里最多 3 次
+    clock.advance(600)  # 最早那次出了窗口：又能喊
+    left(b, clock, name="好友9")
+    b._watch_call(clock())
+    assert pressed(device) == 4
 
 
 def test_auto_call_skipped_when_busy(clock):
