@@ -17,6 +17,7 @@ function controlLine(action, args, res) {
   else if (action === "check_friend") what = `看人 (${a.x}, ${a.y})`;
   else if (action === "track") what = `盯着${a.name}（${a.seconds} 秒）`;
   else if (action === "stop_task") what = "停下";
+  else if (action === "call") what = "喊一声";
   else what = action;
   return `${what} → ${res.text}`;
 }
@@ -35,6 +36,8 @@ function lock() {
   const pick = $("lc-pick");
   pick.disabled = b || !opts.friend_check; pick.classList.toggle("on", K.picking);
   $("lc-pick-tip").textContent = !o ? "" : !opts.friend_check ? "没开（[friend_check] enabled = false）" : K.picking ? "点一下画面上的人" : "";
+  $("lc-call").disabled = b || !opts.call;  // 按 Q 喊一声：要开 [call] 和感知层
+  $("lc-call-tip").textContent = o && !opts.call ? "要开 [call] 和感知层（[perception]）" : "";
   const tr = !!opts.track;
   $("lc-track-name").disabled = $("lc-track-sec").disabled = $("lc-track-pick").disabled = b || !tr;
   $("lc-track-go").disabled = b || !tr || !$("lc-track-name").value.trim(); $("lc-stop").disabled = b;
@@ -102,6 +105,7 @@ function bind() {
   $("lc-panel-read").onclick = () => send("panel_read", {});
   $("lc-panel-close").onclick = () => send("panel_close", {});
   $("lc-stop").onclick = () => send("stop_task", {});
+  $("lc-call").onclick = () => send("call", {});  // 身体按完键后要等约 6 秒的呼喊窗口才回结果
   $("lc-track-name").oninput = lock;
   $("lc-track-go").onclick = () => {
     const name = $("lc-track-name").value.trim(); if (!name) return;

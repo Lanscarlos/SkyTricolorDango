@@ -240,7 +240,7 @@ def test_live_manual_control():
     page = (STATIC / "console.html").read_text(encoding="utf-8")
     ctl = page.split('id="lv-ctl"', 1)[1].split("</section>", 1)[0]
     for id_ in ("lc-warn", "lc-none", "lc-busy", "lc-say-text", "lc-count", "lc-say-go", "lc-emote-name", "lc-emote-go", "lc-camera",
-                "lc-steps", "lc-reset", "lc-around", "lc-pick", "lc-pick-tip", "lc-track-name", "lc-track-pick", "lc-track-sec",
+                "lc-steps", "lc-reset", "lc-around", "lc-pick", "lc-pick-tip", "lc-call", "lc-call-tip", "lc-track-name", "lc-track-pick", "lc-track-sec",
                 "lc-track-go", "lc-stop", "lc-track-tip", "lc-panels", "lc-panel-read", "lc-panel-close", "lc-log"):
         assert f'id="{id_}"' in ctl, id_
     assert page.index('src="console/static/livectl.js"') < page.index('src="console/static/live.js"')
@@ -254,9 +254,9 @@ def test_live_control_line():  # 操作记录一行：做了什么 → 结果
     node = shutil.which("node") or pytest.skip("没有 node")
     js = (f"const C=require({json.dumps(str(STATIC / 'livectl.js'))});console.log(JSON.stringify(["
           "C.controlLine('say',{text:'hi'},{text:'ok'}),C.controlLine('camera',{action:'left',steps:2},{text:'ok'}),"
-          "C.controlLine('track',{name:'ming',seconds:30},{text:'ok'}),C.controlLine('check_friend',{x:1,y:2},{text:'ok'})]))")
+          "C.controlLine('track',{name:'ming',seconds:30},{text:'ok'}),C.controlLine('check_friend',{x:1,y:2},{text:'ok'}),C.controlLine('call',{},{text:'ok'})]))")
     out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
-    assert out == ["说「hi」 → ok", "左转 ×2 → ok", "盯着ming（30 秒） → ok", "看人 (1, 2) → ok"]
+    assert out == ["说「hi」 → ok", "左转 ×2 → ok", "盯着ming（30 秒） → ok", "看人 (1, 2) → ok", "喊一声 → ok"]
 
 
 def _fn_body(js: str, head: str) -> str:  # 取 live.js 里某个函数的函数体（到下一个顶层 function 为止）
