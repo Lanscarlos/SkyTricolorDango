@@ -121,3 +121,23 @@ def test_press_refuses_when_input_box_open(library):
     wheel, device, _ = make_wheel(library, shown=True)
     with pytest.raises(WheelError, match="输入框"):
         wheel.press(3)
+
+
+def test_slot_threshold_has_margin_over_measured_scores():
+    """10-02 真机实测（tmp/manual-wheel-before.txt）：欢呼在格子里只有 0.72、空 / 锁定格子 0.47；
+    门槛原来正好是 0.72，第二次启动就认不出欢呼。两边都要留余量。"""
+    t = WheelConfig().slot_match_threshold
+    assert 0.47 + 0.08 <= t <= 0.72 - 0.08
+
+
+def test_refresh_logs_every_slot_score(library, caplog, monkeypatch):
+    wheel, _, _ = make_wheel(library)
+    monkeypatch.setattr(wheel, "open_editor", lambda: np.zeros((1080, 1920, 3), np.uint8))
+    monkeypatch.setattr(wheel, "close_editor", lambda: None)
+    scores = {s: (None, 0.47) for s in range(1, 9)}
+    scores[1], scores[6] = ("鞠躬", 0.93), ("欢呼", 0.72)
+    monkeypatch.setattr(wheel, "read_slots", lambda frame: scores)
+    with caplog.at_level("INFO", logger="skydango.game.wheel"):
+        wheel.refresh()
+    assert "1 鞠躬 0.93" in caplog.text and "6 欢呼 0.72" in caplog.text and "3 ? 0.47" in caplog.text
+    assert wheel.slots[6] == "欢呼" and wheel.slots[3] is None
