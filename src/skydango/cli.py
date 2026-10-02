@@ -835,9 +835,9 @@ def _perception_attrs_train(cfg: Config, args) -> None:
     from .vision.embed import OnnxEmbedder
 
     a = cfg.attrs
-    if args.out and Path(args.out).resolve() == Path(a.model).resolve() and not args.force:
-        raise SystemExit(f"--out {args.out} 就是 [attrs] model 正在用的模型：没评估过的新模型别直接覆盖它。"
-                         "换个路径训练、看完报告达标再复制过去；确实要覆盖就加 --force")
+    now = dt.datetime.now()
+    out = Path(args.out) if args.out else at.default_out(Path("models"), now)
+    at.check_out(out, a.model, args.force)  # 最终路径（含默认路径）都查
     data = Path(args.data) if args.data else Path("datasets/attrs")
     if not (data / "form").is_dir():
         raise SystemExit(f"{data}/form 不存在：先 perception crops 裁图、attrs-label 初分，再在管理面板「标注」页确认")
@@ -846,7 +846,6 @@ def _perception_attrs_train(cfg: Config, args) -> None:
         embedder = OnnxEmbedder(a.backbone, norm="imagenet", device=device, what="attrs.backbone")
     except Exception as exc:
         raise SystemExit(f"主干 {a.backbone} 加载失败：{exc}") from None
-    now = dt.datetime.now()
     try:
         res = at.run_training(data, embedder, data / "_features")
     except ValueError as exc:
@@ -855,7 +854,6 @@ def _perception_attrs_train(cfg: Config, args) -> None:
     print(f"训练 {res['train_n']} 张（加镜像）、验证 {res['val_n']} 张，l2 = {res['l2']:g}，宏平均 F1 {ev['macro_f1']:.3f}")
     for n in res["notes"]:
         print(f"  {n}")
-    out = Path(args.out) if args.out else Path("models") / f"attrs-{now:%Y%m%d}.npz"
     attrs.save_model(out, {"form": res["head"]}, Path(a.backbone).name, f"{embedder.size}:imagenet", f"{now:%Y%m%d}")
     print(f"模型 → {out}")
     model = attrs.load_model(dataclasses.replace(a, model=str(out)), device, embedder)

@@ -152,7 +152,7 @@ def test_replay_counts(tmp_path):
     })
     model = FakeModel([
         [0.0, 1.0, 0.0],     # f1 A：lit
-        [0.0, 0.0, 1.0],     # f1 B：unlit
+        [0.01, 0.01, 0.98],  # f1 B：unlit
         [0.9, 0.05, 0.05],   # f1 C 低分假框：不是人
         [0.1, 0.8, 0.1],     # f2 低分真框：lit .8
         [0.95, 0.03, 0.02],  # f2 高分假框：不是人 .95
@@ -162,7 +162,9 @@ def test_replay_counts(tmp_path):
     assert (b["tp"], b["fp"], b["fn"]) == (2, 1, 1)  # 基线：A、B 对，高分假框错，低分真框漏
     assert (s["tp"], s["fp"], s["fn"]) == (3, 0, 0)
     assert (b["pairs"], b["mismatch"]) == (2, 1)  # B 被 YOLO 认成 player（亮）
-    assert (s["pairs"], s["mismatch"]) == (3, 0)  # 外形头说是黑影，两边平均 ≥ 0.5
+    # 单帧局限：player 框要外形头黑影占比恰好 1.0 才翻成黑影，0.98 翻不了 -> 第二层的认反数就是 YOLO 自己的
+    assert (s["pairs"], s["mismatch"]) == (3, 1)
+    assert "基本就是 YOLO 自己的答案" in "\n".join(at.replay_md(r))
     assert r["frames"] == 2 and r["gt"] == 3
 
 
@@ -174,7 +176,7 @@ def det_again():
 
 
 def model_queue():
-    return [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.9, 0.05, 0.05], [0.1, 0.8, 0.1], [0.95, 0.03, 0.02]]
+    return [[0.0, 1.0, 0.0], [0.01, 0.01, 0.98], [0.9, 0.05, 0.05], [0.1, 0.8, 0.1], [0.95, 0.03, 0.02]]
 
 
 def test_sweep_picks_best_recall_not_below_baseline_precision(tmp_path):
@@ -225,3 +227,38 @@ def test_run_training_end_to_end(tmp_path):
     assert out.is_file()
     md = at.report_md(data=root, model=out, when=__import__("datetime").datetime(2026, 10, 2), result=res, replays=[], suggest=None, notes=[])
     assert "混淆矩阵" in md and "not_person" in md
+
+
+def test_default_out_and_final_path_guard(tmp_path, monkeypatch):
+    import datetime as dt
+    now = dt.datetime(2026, 10, 2, 9, 8, 7)
+    assert at.default_out(tmp_path, now) == tmp_path / "attrs-20261002.npz"
+    (tmp_path / "attrs-20261002.npz").write_bytes(b"x")
+    assert at.default_out(tmp_path, now) == tmp_path / "attrs-20261002-090807.npz"
+    with pytest.raises(SystemExit, match="--force"):
+        at.check_out(tmp_path / "attrs-20261002.npz", str(tmp_path / "attrs-20261002.npz"), False)
+    at.check_out(tmp_path / "attrs-20261002.npz", str(tmp_path / "attrs-20261002.npz"), True)
+    # 默认路径恰好是 [attrs] model（当天还没有这个文件）：CLI 也要拒绝
+    monkeypatch.chdir(tmp_path)
+    cfg = Config()
+    cfg.attrs.model = str(tmp_path / "models" / f"attrs-{dt.datetime.now():%Y%m%d}.npz")
+    (tmp_path / "d" / "form").mkdir(parents=True)
+    with pytest.raises(SystemExit, match="--force"):
+        cli._perception_attrs_train(cfg, Namespace(data=str(tmp_path / "d"), out=None, force=False, device="cpu"))
+
+
+def test_split_pins_non_dataset_group_to_dataset_recording_split(tmp_path):
+    root = tmp_path / "attrs"
+    rows: list[dict] = []
+    _touch(root, "lit", "ds_val.jpg", {"source": "dataset", "split": "val", "group": "recX"}, rows)
+    _touch(root, "lit", "ds_tr.jpg", {"source": "dataset", "split": "train", "group": "recX"}, rows)
+    _touch(root, "lit", "ds_tr2.jpg", {"source": "dataset", "split": "train", "group": "recY"}, rows)
+    for i in range(4):
+        _touch(root, "unlit", f"x{i}.jpg", {"source": "images", "split": None, "group": "recX"}, rows)
+        _touch(root, "unlit", f"y{i}.jpg", {"source": "images", "split": None, "group": "recY"}, rows)
+    (root / "_crops.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    for seed in range(5):
+        sp = at.split_crops(root, seed=seed, val_ratio=0.5)
+        assert all(f"unlit/x{i}.jpg" in sp["val"] for i in range(4))
+        assert all(f"unlit/y{i}.jpg" in sp["train"] for i in range(4))
+        assert sp["pinned"] == {"recX": "val", "recY": "train"}

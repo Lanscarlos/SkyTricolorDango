@@ -62,6 +62,10 @@ def split_crops(root: Path, seed: int = 0, val_ratio: float = 0.2) -> dict:
     rows = crop_rows(root)
     fixed: dict[str, str] = {}
     groups: dict[str, list[str]] = {}
+    ds_splits: dict[str, set[str]] = {}  # 数据集来源的录像 group -> 它那些行的 split（防止同一段录像的近似帧跨集）
+    for r in rows.values():
+        if r.get("source") == "dataset" and r.get("split") in ("train", "val") and r.get("group"):
+            ds_splits.setdefault(str(r["group"]), set()).add(r["split"])
     for p, form in list_samples(root):
         name = f"{form}/{p.name}"
         r = rows.get(p.name)
@@ -80,13 +84,32 @@ def split_crops(root: Path, seed: int = 0, val_ratio: float = 0.2) -> dict:
         val_groups.add(keys[i])
         got += len(groups[keys[i]])
     sp = {"train": [], "val": []}
+    pinned: dict[str, str] = {}
     for name, which in fixed.items():
         sp[which].append(name)
     for k, names in groups.items():
-        sp["val" if k in val_groups else "train"] += names
-    sp = {"train": sorted(sp["train"]), "val": sorted(sp["val"])}
+        if k in ds_splits:  # 和数据集某段录像同名的非数据集裁图：那段录像有帧在验证集 -> 整组进验证集，否则进训练集
+            which = "val" if "val" in ds_splits[k] else "train"
+            pinned[k] = which
+        else:
+            which = "val" if k in val_groups else "train"
+        sp[which] += names
+    sp = {"train": sorted(sp["train"]), "val": sorted(sp["val"]), "pinned": pinned}
     (root / SPLIT_FILE).write_text(json.dumps({**sp, "seed": seed, "val_ratio": val_ratio}, ensure_ascii=False, indent=1), encoding="utf-8")
     return sp
+
+
+def default_out(models: Path, now) -> Path:
+    """默认输出 models/attrs-<日期>.npz；同一天已经有了就带上时分秒。"""
+    path = Path(models) / f"attrs-{now:%Y%m%d}.npz"
+    return path if not path.exists() else Path(models) / f"attrs-{now:%Y%m%d-%H%M%S}.npz"
+
+
+def check_out(out: Path, configured: str, force: bool) -> None:
+    """最终输出路径就是 [attrs] model 正在用的模型、又没加 --force：拒绝覆盖。"""
+    if Path(out).resolve() == Path(configured).resolve() and not force:
+        raise SystemExit(f"输出 {out} 就是 [attrs] model 正在用的模型：没评估过的新模型别直接覆盖它。"
+                         "换个路径训练、看完报告达标再复制过去；确实要覆盖就加 --force")
 
 
 def merge_labels(counts: dict[str, int], min_per_class: int) -> tuple[dict[str, str | None], list[str]]:
@@ -220,6 +243,9 @@ def run_training(root: Path, embedder, cache: Path, min_per_class: int = MIN_PER
     ex, ey = (features(ptr, embedder, cache, False), ytr) if on_train else (Xva, yva)
     ev = evaluate(list(map(int, ey)), [int(i) for i in (ex @ W + b).argmax(1)], labels)
     head = {"W": W, "b": b, "labels": labels, "applies_to": list(PERSON_DETS), "pad": attrs.CROP_PAD}
+    if sp.get("pinned"):
+        notes.append("这些录像在数据集和裁图里都有，按数据集的切分整组定了训练 / 验证（避免近似帧跨集）："
+                     + "、".join(f"{g}→{w}" for g, w in sp["pinned"].items()))
     return {"head": head, "labels": labels, "split": sp, "counts": counts, "mapping": mapping, "notes": notes,
             "l2": l2, "eval": ev, "on_train": on_train, "train_n": len(ytr), "val_n": len(yva)}
 
@@ -310,7 +336,7 @@ def simulate(records: list[dict], conf: float, accept: float, reject: float) -> 
                 if not (p and p.get("not_person", 0.0) >= reject):
                     second.append({**d, "unlit": _unlit_second(d)})
             elif p:
-                top = max(p, key=p.get)
+                top = max(p, key=p.get)  # 和运行时 PersonAttrs.admit 一致：最高类要是人形、概率 ≥ accept
                 if top in PERSON_FORMS and p[top] >= accept:
                     second.append({**d, "unlit": _unlit_second(d)})
         for key, preds in (("baseline", base), ("second", second)):
@@ -386,6 +412,8 @@ def replay_md(r: dict) -> list[str]:
         s = r[key]
         lines.append(f"| {name} | {s['tp']} | {s['fp']} | {s['fn']} | {_pct(s['precision'])} | {_pct(s['recall'])} | "
                      f"{s['mismatch']} / {s['pairs']} |")
+    lines.append("注意：单帧回放里「点没点火认反」按 u = 0.5×YOLO + 0.5×外形头 ≥ 0.5 算，YOLO 的 player 框要外形头黑影占比恰好 1.0 才翻、"
+                 "player_unlit 框永远保持黑影，所以第二层这一列基本就是 YOLO 自己的答案，看不出外形头对点火判断的帮助（要看真机投票）。")
     return lines + [""]
 
 
