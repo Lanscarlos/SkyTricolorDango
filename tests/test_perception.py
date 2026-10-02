@@ -200,13 +200,15 @@ def test_far_players_and_self_are_not_strangers():
     assert w.strangers(2.0) == 0
 
 
-def test_unlit_silhouette_is_a_stranger_right_away_even_far_away():
+def test_unlit_silhouette_is_a_stranger_even_far_away():
     det = FakeDetector()
     det.frames = [[Detection("player_unlit", Rect(1400, 500, 20, 50), 0.9), player(1000), tag(990, 110)]]
     w = watcher(det, FakeOcr({110: "懒洋洋大王"}), stranger_after=1.0)
     w.process(frame(), 0.0, panel_visible=False)
-    assert w.strangers(0.0) == 1 and w.unlit(0.0) == 1  # 不用等 stranger_after，也不管离得多远
-    assert "其中 1 个还没点火" in w.describe(0.0)
+    assert w.strangers(0.0) == 0  # 黑影也等 stranger_after（好友偶尔被认成黑影一两帧，10-03 改）
+    w.process(frame(), 1.0, panel_visible=False)
+    assert w.strangers(1.0) == 1 and w.unlit(1.0) == 1  # 不管离得多远
+    assert "其中 1 个还没点火" in w.describe(1.0)
 
 
 def test_lit_stranger_without_tag_is_not_counted_as_unlit():
@@ -441,6 +443,7 @@ def test_hold_freezes_strangers():
     det.frames = [[Detection("player_unlit", Rect(1000, 400, 90, 220), 0.9)]]
     w = watcher(det, clock=clock, keep=5.0)
     w.process(frame(), 0.0, panel_visible=False)
+    w.process(frame(), 1.0, panel_visible=False)  # 黑影也等 stranger_after
     clock.t = 1.0
     w.hold("camera")
     assert w.strangers(30.0) == 1 and w.unlit(30.0) == 1
