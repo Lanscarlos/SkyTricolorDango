@@ -32,9 +32,10 @@ function keyOrder() {  // 按键 1~n 对应的类别：先四个动作，最后"
 }
 function pct(c) { return Math.round((Number(c) || 0) * 100) + "%"; }
 
-/* ---- 列表 ---- */
-function clips() { return (LB.data && LB.data.clips) || []; }
-function byName(clip) { return clip == null ? null : clips().find(c => c.clip === clip) || null; }
+/* ---- 列表 / 标注 / 撤销 / 读数据：动作页和外形页共用一份，差别都写在页面描述 P 里 ----
+ * P = {s 状态对象, tab, itemsKey 数据里条目数组的字段, key 条目名字段, post 标注请求里名字的字段, api 接口前缀, ids 元素 id 前缀, noun,
+ *      labels() 类别（按键顺序）, name(l), whereText(w), short(name), agreeable(guess), select(name), renderSide(), row(c) 列表行的内容,
+ *      rowClass, onCounts(n), onError()} */
 function guessKey(c) { return c.guess ? c.guess.label : "-"; }
 function matches(c, f) {
   if (f === "todo") return c.where === UNL;
@@ -44,97 +45,170 @@ function matches(c, f) {
   return false;
 }
 function rank(c) { return !c.guess ? 1 : c.guess.label === "unsure" ? 0 : 2; }  // 看不清最前，没猜的其次，其余按把握从低到高
-function buildList() {
-  const f = LB.filter, list = clips().filter(c => matches(c, f));
+function pItems(P) { return (P.s.data && P.s.data[P.itemsKey]) || []; }
+function pBy(P, name) { return name == null ? null : pItems(P).find(c => c[P.key] === name) || null; }
+function pBuild(P) {
+  const f = P.s.filter, k = P.key, list = pItems(P).filter(c => matches(c, f));
   if (f === "todo" || f.startsWith("guess:"))
-    list.sort((a, b) => rank(a) - rank(b) || (a.guess ? a.guess.confidence : 0) - (b.guess ? b.guess.confidence : 0) || (a.clip < b.clip ? -1 : a.clip > b.clip ? 1 : 0));
-  LB.list = list;
+    list.sort((a, b) => rank(a) - rank(b) || (a.guess ? a.guess.confidence : 0) - (b.guess ? b.guess.confidence : 0) || (a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0));
+  P.s.list = list;
 }
-function counts() {
+function pCounts(P) {
   const n = {};
-  for (const c of clips()) n[c.where] = (n[c.where] || 0) + 1;
+  for (const c of pItems(P)) n[c.where] = (n[c.where] || 0) + 1;
   return n;
 }
-function validFilter(f) {
-  const labels = (LB.data && LB.data.labels) || [];
+function pValid(P, f) {
+  const labels = P.labels();
   if (f === "todo" || f === "discard") return true;
   if (f.startsWith("done:")) return labels.includes(f.slice(5));
   if (f.startsWith("guess:")) return [...labels, "unsure", "-"].includes(f.slice(6));
   return false;
 }
-
-function renderFilter() {
-  const sel = $("lb-filter"), n = counts(), pending = clips().filter(c => c.where === UNL);
+function pRenderFilter(P) {
+  const sel = $(P.ids + "-filter"), n = pCounts(P), pending = pItems(P).filter(c => c.where === UNL);
   const gn = {}; for (const c of pending) gn[guessKey(c)] = (gn[guessKey(c)] || 0) + 1;
   sel.textContent = "";
   const opt = (v, t) => { const o = el("option", "", t); o.value = v; return o; };
   sel.append(opt("todo", `待确认（${n[UNL] || 0}）`));
   const g1 = el("optgroup"); g1.label = "Claude 猜的（待确认里）";
-  for (const g of [...keyOrder(), "unsure", "-"]) {
+  for (const g of [...P.labels(), "unsure", "-"]) {
     const v = "guess:" + g;
-    if ((gn[g] || 0) || LB.filter === v) g1.append(opt(v, `${g === "-" ? "还没猜" : "猜" + nameOf(g)}（${gn[g] || 0}）`));
+    if ((gn[g] || 0) || P.s.filter === v) g1.append(opt(v, `${g === "-" ? "还没猜" : "猜" + P.name(g)}（${gn[g] || 0}）`));
   }
   if (g1.children.length) sel.append(g1);
   const g2 = el("optgroup"); g2.label = "已确认";
-  for (const l of keyOrder()) g2.append(opt("done:" + l, `${nameOf(l)}（${n[l] || 0}）`));
+  for (const l of P.labels()) g2.append(opt("done:" + l, `${P.name(l)}（${n[l] || 0}）`));
   sel.append(g2);
   sel.append(opt("discard", `丢弃的（${n[DIS] || 0}）`));
-  sel.value = LB.filter;
+  sel.value = P.s.filter;
 }
-function renderCounts() {
-  const box = $("lb-counts"), n = counts();
+function pRenderCounts(P) {
+  const box = $(P.ids + "-counts"), n = pCounts(P);
   box.textContent = "";
   const item = (f, label, k) => {
     const b = el("button", "lb-count"); b.type = "button";
-    b.setAttribute("aria-pressed", String(LB.filter === f));
+    b.setAttribute("aria-pressed", String(P.s.filter === f));
     b.append(label, el("b", "", String(n[k] || 0)));
-    b.onclick = () => setFilter(f);
+    b.onclick = () => pSetFilter(P, f);
     box.append(b);
   };
   item("todo", "待确认", UNL);
-  for (const l of keyOrder()) item("done:" + l, nameOf(l), l);
+  for (const l of P.labels()) item("done:" + l, P.name(l), l);
   item("discard", "丢弃", DIS);
-  const m = $("mark-labeling"); if (m) m.textContent = n[UNL] ? `${n[UNL]} 待确认` : "";
+  P.onCounts(n);
 }
-function guessTag(c) {
+function guessTag(P, c) {
   if (!c.guess) return el("span", "tag", "没猜");
   const g = c.guess;
-  return el("span", "tag " + (g.label === "unsure" ? "warn" : "sakura"), g.label === "unsure" ? "看不清" : `${nameOf(g.label)} ${pct(g.confidence)}`);
+  return el("span", "tag " + (g.label === "unsure" ? "warn" : "sakura"), g.label === "unsure" ? "看不清" : `${P.name(g.label)} ${pct(g.confidence)}`);
 }
-function renderList() {
-  const box = $("lb-list");
+function pRenderList(P) {
+  const box = $(P.ids + "-list");
   box.textContent = "";
-  if (!LB.list.length) {
-    box.append(el("p", "none lb-empty", LB.filter === "todo" ? (clips().length ? "都标完了。" : "还没有片段。") : "这里没有片段。"));
+  if (!P.s.list.length) {
+    box.append(el("p", "none lb-empty", P.s.filter === "todo" ? (pItems(P).length ? "都标完了。" : `还没有${P.noun}。`) : `这里没有${P.noun}。`));
     return;
   }
   const frag = document.createDocumentFragment();
-  for (const c of LB.list) {
-    const b = el("button", "lb-item"); b.type = "button"; b.dataset.clip = c.clip;
-    b.setAttribute("aria-current", String(c.clip === LB.cur));
-    b.title = c.clip;
-    b.append(el("span", "n", shortName(c.clip)), guessTag(c), el("span", "r", c.recording || "（没有录像名）"));
-    b.onclick = () => select(c.clip);
+  for (const c of P.s.list) {
+    const b = el("button", P.rowClass); b.type = "button"; b.dataset.k = c[P.key];
+    b.setAttribute("aria-current", String(c[P.key] === P.s.cur));
+    b.title = c[P.key];
+    b.append(...P.row(c));
+    b.onclick = () => P.select(c[P.key]);
     frag.append(b);
   }
   box.append(frag);
 }
-function markCurrent() {
+function pMarkCurrent(P) {
   let hit = null;
-  for (const b of $("lb-list").querySelectorAll(".lb-item")) {
-    const on = b.dataset.clip === LB.cur;
+  for (const b of $(P.ids + "-list").querySelectorAll(".lb-item")) {
+    const on = b.dataset.k === P.s.cur;
     b.setAttribute("aria-current", String(on));
     if (on) hit = b;
   }
   if (hit) hit.scrollIntoView({block: "nearest"});
 }
-function setFilter(f) {
-  if (!validFilter(f)) f = "todo";
-  LB.filter = f;
-  buildList(); renderFilter(); renderCounts(); renderList();
-  const keep = LB.list.some(c => c.clip === LB.cur);
-  select(keep ? LB.cur : (LB.list[0] ? LB.list[0].clip : null));
+function pRerender(P) { pBuild(P); pRenderFilter(P); pRenderCounts(P); pRenderList(P); }
+function pSetFilter(P, f) {
+  if (!pValid(P, f)) f = "todo";
+  P.s.filter = f;
+  pRerender(P);
+  const keep = P.s.list.some(c => c[P.key] === P.s.cur);
+  P.select(keep ? P.s.cur : (P.s.list[0] ? P.s.list[0][P.key] : null));
 }
+function pApply(P, item) {
+  const c = pBy(P, item[P.key]);
+  if (c) Object.assign(c, item);
+  else pItems(P).push(item);
+}
+function pAdvance(P, old, idx) {  // 选完跳下一条：原列表里排在它后面、还留在新列表里的第一条；后面没了往前找
+  const k = P.key;
+  pRerender(P);
+  const left = new Set(P.s.list.map(c => c[k]));
+  for (let j = idx + 1; j < old.length; j++) if (old[j][k] !== P.s.cur && left.has(old[j][k])) return P.select(old[j][k]);
+  for (let j = idx - 1; j >= 0; j--) if (old[j][k] !== P.s.cur && left.has(old[j][k])) return P.select(old[j][k]);
+  P.select(left.has(P.s.cur) ? P.s.cur : (P.s.list[0] ? P.s.list[0][k] : null));
+}
+async function pLabel(P, to) {
+  const c = pBy(P, P.s.cur);
+  if (!c || P.s.busy) return;
+  const old = P.s.list.slice(), idx = old.findIndex(x => x[P.key] === c[P.key]);
+  if (c.where === (to === "discard" ? DIS : to)) { pAdvance(P, old, idx); return; }  // 已经是这一类：当作确认过，跳下一条
+  P.s.busy = true; P.renderSide();
+  let r;
+  try { r = await post(P.api + "/label", {[P.post]: c[P.key], to}); }
+  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
+  P.s.busy = false;
+  if (!r.data.ok) {
+    toast(r.data.text || "没标上", "bad");
+    if (r.status === 409) pLoad(P); else P.renderSide();
+    return;
+  }
+  pApply(P, r.data);
+  pAdvance(P, old, idx);
+}
+function pAgree(P) {
+  const c = pBy(P, P.s.cur);
+  if (c && c.guess && P.agreeable(c.guess)) pLabel(P, c.guess.label);  // 看不清 / 没猜：不动
+}
+async function pUndo(P) {
+  if (P.s.busy) return;
+  P.s.busy = true; P.renderSide();
+  let r;
+  try { r = await post(P.api + "/undo"); }
+  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
+  P.s.busy = false;
+  if (!r.data.ok) { toast(r.data.text || "没撤销成", r.status === 409 ? "warn" : "bad"); P.renderSide(); return; }
+  pApply(P, r.data);
+  pRerender(P); P.select(r.data[P.key]);
+  toast(`撤销了：${P.short(r.data[P.key])} 回到「${P.whereText(r.data.where)}」`, "ok");
+}
+async function pLoad(P) {
+  const s = P.s;
+  if (s.loading) return;
+  s.loading = true;
+  let d;
+  try { d = await getJSON(P.api + "/state"); }
+  catch (e) { d = {ok: false, text: `读不到${P.noun}（面板停了？）`}; }
+  finally { s.loading = false; }
+  const banner = $(P.ids + "-empty");
+  if (!d || !d.ok) {
+    s.data = null; s.list = []; s.cur = null;
+    banner.textContent = ""; banner.append(el("span", "", (d && d.text) || `读不到${P.noun}`));
+    banner.hidden = LB.tab !== P.tab; $(P.ids + "-cols").hidden = true;
+    if (P.onError) P.onError();
+    return;
+  }
+  s.data = d; banner.hidden = true; $(P.ids + "-cols").hidden = LB.tab !== P.tab;
+  if (!pValid(P, s.filter)) s.filter = "todo";
+  pRerender(P);
+  const keep = pBy(P, s.cur);
+  P.select(keep ? s.cur : (s.list[0] ? s.list[0][P.key] : null));
+}
+
+
 
 /* ---- 帧：每段 16 张 Image 预加载，canvas 画（接口是 no-store，换 img.src 会重新下载） ---- */
 function frameUrl(clip, i) { return `api/gesture/frame?clip=${encodeURIComponent(clip)}&i=${i}`; }
@@ -219,7 +293,7 @@ function seek(i) {
 function select(clip) {
   if (clip !== LB.cur) LB.i = 0;
   LB.cur = clip || null;
-  preload(); markCurrent(); renderHead(); renderSide(); draw();
+  preload(); pMarkCurrent(G); renderHead(); renderSide(); draw();
 }
 function renderHead() {
   const at = LB.list.findIndex(c => c.clip === LB.cur);
@@ -276,181 +350,10 @@ function renderSide() {
   acts.append(undoBtn);
 }
 
-/* ---- 标注 / 撤销 ---- */
-function apply(item) {
-  const c = byName(item.clip);
-  if (c) { c.where = item.where; c.guess = item.guess; c.recording = item.recording; }
-  else clips().push({clip: item.clip, recording: item.recording, where: item.where, guess: item.guess});
-}
-function rerender() { buildList(); renderFilter(); renderCounts(); renderList(); }
-function advance(old, idx) {  // 选完跳下一段：原列表里排在它后面、还留在新列表里的第一段；后面没了往前找
-  rerender();
-  const left = new Set(LB.list.map(c => c.clip));
-  for (let j = idx + 1; j < old.length; j++) if (old[j].clip !== LB.cur && left.has(old[j].clip)) return select(old[j].clip);
-  for (let j = idx - 1; j >= 0; j--) if (old[j].clip !== LB.cur && left.has(old[j].clip)) return select(old[j].clip);
-  select(left.has(LB.cur) ? LB.cur : (LB.list[0] ? LB.list[0].clip : null));
-}
-async function label(to) {
-  const c = byName(LB.cur);
-  if (!c || LB.busy) return;
-  const old = LB.list.slice(), idx = old.findIndex(x => x.clip === c.clip);
-  if (c.where === (to === "discard" ? DIS : to)) { advance(old, idx); return; }  // 已经是这一类：当作确认过，跳下一段
-  LB.busy = true; renderSide();
-  let r;
-  try { r = await post("api/gesture/label", {clip: c.clip, to}); }
-  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
-  LB.busy = false;
-  if (!r.data.ok) {
-    toast(r.data.text || "没标上", "bad");
-    if (r.status === 409) load(); else renderSide();
-    return;
-  }
-  apply(r.data);
-  advance(old, idx);
-}
-function agreeClaude() {
-  const c = byName(LB.cur);
-  if (c && c.guess && c.guess.label !== "unsure") label(c.guess.label);
-}
-async function undo() {
-  if (LB.busy) return;
-  LB.busy = true; renderSide();
-  let r;
-  try { r = await post("api/gesture/undo"); }
-  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
-  LB.busy = false;
-  if (!r.data.ok) { toast(r.data.text || "没撤销成", r.status === 409 ? "warn" : "bad"); renderSide(); return; }
-  apply(r.data);
-  rerender(); select(r.data.clip);
-  toast(`撤销了：${shortName(r.data.clip)} 回到「${whereText(r.data.where)}」`, "ok");
-}
-
-/* ---- 读数据 ---- */
-async function load() {
-  if (LB.loading) return;
-  LB.loading = true;
-  let d;
-  try { d = await getJSON("api/gesture/state"); }
-  catch (e) { d = {ok: false, text: "读不到片段（面板停了？）"}; }
-  finally { LB.loading = false; }
-  const banner = $("lb-empty");
-  if (!d || !d.ok) {
-    LB.data = null; LB.list = []; LB.cur = null;
-    banner.textContent = ""; banner.append(el("span", "", (d && d.text) || "读不到片段"));
-    banner.hidden = LB.tab !== "gesture"; $("lb-cols").hidden = true;
-    const m = $("mark-labeling"); if (m) m.textContent = "";
-    return;
-  }
-  LB.data = d; banner.hidden = true; $("lb-cols").hidden = LB.tab !== "gesture";
-  if (!validFilter(LB.filter)) LB.filter = "todo";
-  rerender();
-  const keep = byName(LB.cur);
-  select(keep ? LB.cur : (LB.list[0] ? LB.list[0].clip : null));
-}
-
-/* ---- 外形页 ---- */
 function fmName(l) { return l === "discard" || l === DIS ? "不要" : l === UNL ? "待确认" : l === "unsure" ? "看不清" : FORM_NAMES[l] || l; }
 function fmWhereText(w) { return w === UNL ? "待确认" : w === DIS ? "丢弃了" : `已确认：${fmName(w)}`; }
-function fmItems() { return (FM.data && FM.data.items) || []; }
-function fmForms() { return (FM.data && FM.data.forms) || []; }
-function fmBy(name) { return name == null ? null : fmItems().find(c => c.crop === name) || null; }
-function fmGuessKey(c) { return c.guess ? c.guess.label : "-"; }
-function fmMatches(c, f) {
-  if (f === "todo") return c.where === UNL;
-  if (f === "discard") return c.where === DIS;
-  if (f.startsWith("guess:")) return c.where === UNL && fmGuessKey(c) === f.slice(6);
-  if (f.startsWith("done:")) return c.where === f.slice(5);
-  return false;
-}
-function fmValidFilter(f) {
-  if (f === "todo" || f === "discard") return true;
-  if (f.startsWith("done:")) return fmForms().includes(f.slice(5));
-  if (f.startsWith("guess:")) return [...fmForms(), "unsure", "-"].includes(f.slice(6));
-  return false;
-}
-function fmBuildList() {
-  const list = fmItems().filter(c => fmMatches(c, FM.filter));
-  if (FM.filter === "todo" || FM.filter.startsWith("guess:"))
-    list.sort((a, b) => rank(a) - rank(b) || (a.guess ? a.guess.confidence : 0) - (b.guess ? b.guess.confidence : 0) || (a.crop < b.crop ? -1 : a.crop > b.crop ? 1 : 0));
-  FM.list = list;
-}
-function fmCounts() { const n = {}; for (const c of fmItems()) n[c.where] = (n[c.where] || 0) + 1; return n; }
-function fmGuessTag(c) {
-  if (!c.guess) return el("span", "tag", "没猜");
-  const g = c.guess;
-  return el("span", "tag " + (g.label === "unsure" ? "warn" : "sakura"), g.label === "unsure" ? "看不清" : `${fmName(g.label)} ${pct(g.confidence)}`);
-}
-function fmRenderFilter() {
-  const sel = $("fm-filter"), n = fmCounts(), pending = fmItems().filter(c => c.where === UNL);
-  const gn = {}; for (const c of pending) gn[fmGuessKey(c)] = (gn[fmGuessKey(c)] || 0) + 1;
-  sel.textContent = "";
-  const opt = (v, t) => { const o = el("option", "", t); o.value = v; return o; };
-  sel.append(opt("todo", `待确认（${n[UNL] || 0}）`));
-  const g1 = el("optgroup"); g1.label = "Claude 猜的（待确认里）";
-  for (const g of [...fmForms(), "unsure", "-"]) {
-    const v = "guess:" + g;
-    if ((gn[g] || 0) || FM.filter === v) g1.append(opt(v, `${g === "-" ? "还没猜" : "猜" + fmName(g)}（${gn[g] || 0}）`));
-  }
-  if (g1.children.length) sel.append(g1);
-  const g2 = el("optgroup"); g2.label = "已确认";
-  for (const l of fmForms()) g2.append(opt("done:" + l, `${fmName(l)}（${n[l] || 0}）`));
-  sel.append(g2);
-  sel.append(opt("discard", `丢弃的（${n[DIS] || 0}）`));
-  sel.value = FM.filter;
-}
-function fmRenderCounts() {
-  const box = $("fm-counts"), n = fmCounts();
-  box.textContent = "";
-  const item = (f, label, k) => {
-    const b = el("button", "lb-count"); b.type = "button";
-    b.setAttribute("aria-pressed", String(FM.filter === f));
-    b.append(label, el("b", "", String(n[k] || 0)));
-    b.onclick = () => fmSetFilter(f);
-    box.append(b);
-  };
-  item("todo", "待确认", UNL);
-  for (const l of fmForms()) item("done:" + l, fmName(l), l);
-  item("discard", "丢弃", DIS);
-  const t = document.querySelector('#lb-tabs [data-tab="form"]');
-  if (t) t.textContent = n[UNL] ? `外形（${n[UNL]}）` : "外形";
-}
+
 function cropUrl(name) { return `api/form/crop?name=${encodeURIComponent(name)}`; }
-function fmRenderList() {
-  const box = $("fm-list");
-  box.textContent = "";
-  if (!FM.list.length) {
-    box.append(el("p", "none lb-empty", FM.filter === "todo" ? (fmItems().length ? "都标完了。" : "还没有裁图。") : "这里没有裁图。"));
-    return;
-  }
-  const frag = document.createDocumentFragment();
-  for (const c of FM.list) {
-    const b = el("button", "lb-item fm-item"); b.type = "button"; b.dataset.crop = c.crop;
-    b.setAttribute("aria-current", String(c.crop === FM.cur));
-    b.title = c.crop;
-    const im = el("img"); im.loading = "lazy"; im.decoding = "async"; im.alt = ""; im.src = cropUrl(c.crop);
-    b.append(im, el("span", "n", c.crop), fmGuessTag(c), el("span", "r", fmWhereText(c.where)));
-    b.onclick = () => fmSelect(c.crop);
-    frag.append(b);
-  }
-  box.append(frag);
-}
-function fmMarkCurrent() {
-  let hit = null;
-  for (const b of $("fm-list").querySelectorAll(".lb-item")) {
-    const on = b.dataset.crop === FM.cur;
-    b.setAttribute("aria-current", String(on));
-    if (on) hit = b;
-  }
-  if (hit) hit.scrollIntoView({block: "nearest"});
-}
-function fmRerender() { fmBuildList(); fmRenderFilter(); fmRenderCounts(); fmRenderList(); }
-function fmSetFilter(f) {
-  if (!fmValidFilter(f)) f = "todo";
-  FM.filter = f;
-  fmRerender();
-  const keep = FM.list.some(c => c.crop === FM.cur);
-  fmSelect(keep ? FM.cur : (FM.list[0] ? FM.list[0].crop : null));
-}
 function fmShowImages() {
   const im = $("fm-crop"), cx = $("fm-ctx"), n1 = $("fm-crop-note"), n2 = $("fm-ctx-note");
   n1.hidden = n2.hidden = true;
@@ -465,7 +368,7 @@ function fmSelect(name) {
   FM.cur = name || null;
   const at = FM.list.findIndex(c => c.crop === FM.cur);
   for (let j = at + 1; at >= 0 && j <= at + AHEAD && j < FM.list.length; j++) new Image().src = cropUrl(FM.list[j].crop);  // 预加载后几张
-  fmMarkCurrent(); fmShowImages();
+  pMarkCurrent(F); fmShowImages();
   $("fm-title").textContent = FM.cur || "—"; $("fm-title").title = FM.cur || "";
   $("fm-pos").textContent = !FM.cur ? "" : at < 0 ? "（不在当前筛选里）" : `第 ${at + 1} / ${FM.list.length} 张`;
   fmRenderSide();
@@ -509,72 +412,44 @@ function fmRenderSide() {
   undoBtn.disabled = FM.busy;
   acts.append(undoBtn);
 }
-function fmApply(item) {
-  const c = fmBy(item.crop);
-  if (c) { c.where = item.where; c.guess = item.guess; c.image = item.image; c.box = item.box; }
-  else fmItems().push({crop: item.crop, where: item.where, guess: item.guess, image: item.image, box: item.box});
-}
-function fmAdvance(old, idx) {  // 同动作页：跳到原列表里排在后面、还留在新列表里的第一张；后面没了往前找
-  fmRerender();
-  const left = new Set(FM.list.map(c => c.crop));
-  for (let j = idx + 1; j < old.length; j++) if (old[j].crop !== FM.cur && left.has(old[j].crop)) return fmSelect(old[j].crop);
-  for (let j = idx - 1; j >= 0; j--) if (old[j].crop !== FM.cur && left.has(old[j].crop)) return fmSelect(old[j].crop);
-  fmSelect(left.has(FM.cur) ? FM.cur : (FM.list[0] ? FM.list[0].crop : null));
-}
-async function fmLabel(to) {
-  const c = fmBy(FM.cur);
-  if (!c || FM.busy) return;
-  const old = FM.list.slice(), idx = old.findIndex(x => x.crop === c.crop);
-  if (c.where === (to === "discard" ? DIS : to)) { fmAdvance(old, idx); return; }
-  FM.busy = true; fmRenderSide();
-  let r;
-  try { r = await post("api/form/label", {name: c.crop, to}); }
-  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
-  FM.busy = false;
-  if (!r.data.ok) {
-    toast(r.data.text || "没标上", "bad");
-    if (r.status === 409) fmLoad(); else fmRenderSide();
-    return;
-  }
-  fmApply(r.data);
-  fmAdvance(old, idx);
-}
-function fmAgree() {
-  const c = fmBy(FM.cur);
-  if (c && c.guess && fmForms().includes(c.guess.label)) fmLabel(c.guess.label);  // 看不清 / 没猜：不动
-}
-async function fmUndo() {
-  if (FM.busy) return;
-  FM.busy = true; fmRenderSide();
-  let r;
-  try { r = await post("api/form/undo"); }
-  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
-  FM.busy = false;
-  if (!r.data.ok) { toast(r.data.text || "没撤销成", r.status === 409 ? "warn" : "bad"); fmRenderSide(); return; }
-  fmApply(r.data);
-  fmRerender(); fmSelect(r.data.crop);
-  toast(`撤销了：${r.data.crop} 回到「${fmWhereText(r.data.where)}」`, "ok");
-}
-async function fmLoad() {
-  if (FM.loading) return;
-  FM.loading = true;
-  let d;
-  try { d = await getJSON("api/form/state"); }
-  catch (e) { d = {ok: false, text: "读不到裁图（面板停了？）"}; }
-  finally { FM.loading = false; }
-  const banner = $("fm-empty");
-  if (!d || !d.ok) {
-    FM.data = null; FM.list = []; FM.cur = null;
-    banner.textContent = ""; banner.append(el("span", "", (d && d.text) || "读不到裁图"));
-    banner.hidden = LB.tab !== "form"; $("fm-cols").hidden = true;
-    return;
-  }
-  FM.data = d; banner.hidden = true; $("fm-cols").hidden = LB.tab !== "form";
-  if (!fmValidFilter(FM.filter)) FM.filter = "todo";
-  fmRerender();
-  const keep = fmBy(FM.cur);
-  fmSelect(keep ? FM.cur : (FM.list[0] ? FM.list[0].crop : null));
-}
+
+/* ---- 动作页的描述 / 外形页的描述（共用实现在上面的「列表 / 标注 / 撤销」） ---- */
+const G = {
+  s: LB, tab: "gesture", itemsKey: "clips", key: "clip", post: "clip", api: "api/gesture", ids: "lb", noun: "片段",
+  rowClass: "lb-item",
+  labels: keyOrder, name: nameOf, whereText, short: shortName,
+  agreeable: g => g.label !== "unsure",
+  select: clip => select(clip), renderSide: () => renderSide(),
+  row: c => [el("span", "n", shortName(c.clip)), guessTag(G, c), el("span", "r", c.recording || "（没有录像名）")],
+  onCounts: n => { const m = $("mark-labeling"); if (m) m.textContent = n[UNL] ? `${n[UNL]} 待确认` : ""; },
+  onError: () => { const m = $("mark-labeling"); if (m) m.textContent = ""; },
+};
+const F = {
+  s: FM, tab: "form", itemsKey: "items", key: "crop", post: "name", api: "api/form", ids: "fm", noun: "裁图",
+  rowClass: "lb-item fm-item",
+  labels: () => (FM.data && FM.data.forms) || [], name: fmName, whereText: fmWhereText, short: n => n,
+  agreeable: g => F.labels().includes(g.label),
+  select: name => fmSelect(name), renderSide: () => fmRenderSide(),
+  row: c => {
+    const im = el("img"); im.loading = "lazy"; im.decoding = "async"; im.alt = ""; im.src = cropUrl(c.crop);
+    return [im, el("span", "n", c.crop), guessTag(F, c), el("span", "r", fmWhereText(c.where))];
+  },
+  onCounts: n => { const t = document.querySelector('#lb-tabs [data-tab="form"]'); if (t) t.textContent = n[UNL] ? `外形（${n[UNL]}）` : "外形"; },
+};
+function clips() { return pItems(G); }
+function byName(clip) { return pBy(G, clip); }
+function label(to) { return pLabel(G, to); }
+function agreeClaude() { return pAgree(G); }
+function undo() { return pUndo(G); }
+function load() { return pLoad(G); }
+function setFilter(f) { return pSetFilter(G, f); }
+function fmBy(name) { return pBy(F, name); }
+function fmForms() { return F.labels(); }
+function fmLabel(to) { return pLabel(F, to); }
+function fmAgree() { return pAgree(F); }
+function fmUndo() { return pUndo(F); }
+function fmLoad() { return pLoad(F); }
+function fmSetFilter(f) { return pSetFilter(F, f); }
 
 function setTab(tab) {
   LB.tab = tab === "form" ? "form" : "gesture";
