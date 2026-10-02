@@ -158,6 +158,8 @@ class Wheel:
         finally:
             self.close_editor()
         self.slots = {s: name for s, (name, _) in result.items()}
+        log.info("轮盘：%s（门槛 %.2f）", "、".join(f"{s} {name or '?'} {score:.2f}" for s, (name, score) in sorted(result.items())),
+                 self.cfg.slot_match_threshold)
         return result
 
     # ---- 动作列表 ----

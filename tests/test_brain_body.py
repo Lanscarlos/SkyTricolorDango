@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 import base64
 import json
+import logging
 import threading
 from concurrent.futures import Future
 
@@ -311,6 +312,33 @@ def test_call_runs_in_body_thread_and_times_out(clock):
     assert errors and "超时" in errors[0]
     b.step()  # 超时的命令已经取消，不会再执行，也不报错
     assert ran == []  # 真的没有被执行到
+
+
+def test_post_runs_later_without_waiting(clock, caplog):
+    """post：不等结果，交给身体线程下一圈做（大脑交“心里”文字用，身体忙着自动喊时不能卡住 / 报 ERROR）。"""
+    b, _, _, _ = body(clock)
+    ran = []
+    t = threading.Thread(target=lambda: ran.append(b.post(lambda: ran.append(threading.get_ident()))))
+    t.start()
+    t.join(2)
+    assert ran == [True]  # 没人跑 step 也马上返回
+    b.step()
+    assert ran == [True, threading.get_ident()]  # 在身体线程里做
+
+    def boom():
+        raise RuntimeError("坏了")
+
+    t = threading.Thread(target=lambda: b.post(boom))
+    t.start()
+    t.join(2)
+    with caplog.at_level(logging.ERROR):
+        b.step()  # 出错只记日志，不影响身体这一圈
+    assert "坏了" in caplog.text
+
+    b.stopped = True
+    assert b.post(lambda: ran.append("停了还做")) is False
+    b.step()
+    assert "停了还做" not in ran
 
 
 def test_call_timeout_message_uses_actual_timeout_value(clock):

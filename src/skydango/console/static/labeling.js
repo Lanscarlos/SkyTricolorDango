@@ -1,7 +1,9 @@
 /* 标注页（spec 2026-10-01-gesture-labeling-training §3）：左 片段列表（筛选 + 各类计数），中 16 帧动图（canvas 放大 3 倍、按 fps 循环），
  * 右 Claude 的猜测 + 按钮。确认 / 改类别 / 丢弃 / 撤销走 api/gesture/*，后端把片段文件夹挪到对应目录。
- * 键盘（焦点不在输入框、没开对话框时）：Enter 同意 Claude、1~5 = 挥手 / 鞠躬 / 欢呼 / 害羞 / 都不是、0 不要、Z 撤销、空格 暂停、← → 逐帧（暂停时）。
- * 页顶「动作 / 外形」两个标签：外形页标人物裁图（api/form/*，Enter / 1~6 = 外形类别 / 0 不要 / Z 撤销，只在外形页开着时有效）。
+ * 键盘（焦点不在输入框、没开对话框时）：1~5 = 挥手 / 鞠躬 / 欢呼 / 害羞 / 都不是、0 不要、Z 撤销、空格 暂停、← → 逐帧（暂停时）。
+ * 动作页没有「同意 Claude」（10-03 去掉：Claude 初分认不出动作，直接人工标）；有旧的猜测照样显示、按钮上标出来。
+ * 页顶「动作 / 外形 / 动作名」三个标签：外形页标人物裁图（api/form/*，Enter / 1~6 = 外形类别 / 0 不要 / Z 撤销，只在外形页开着时有效）；
+ * 动作名页给动作图标起名（emotenames.js，这里只管切过去和刷新，开着时这里的按键都不生效）。
  * 模型写的理由一律 textContent。 */
 (function () {
 "use strict";
@@ -312,7 +314,7 @@ function renderSide() {
   // 猜测
   const gbox = $("lb-guess"); gbox.textContent = "";
   if (!c) gbox.append(el("p", "none", "—"));
-  else if (!c.guess) gbox.append(el("p", "none", "Claude 还没猜这一段（跑 perception gesture-label）"));
+  else if (!c.guess) gbox.append(el("p", "none", "没有 Claude 的猜测（它认不准动作，直接按键标）"));
   else {
     const g = c.guess, main = el("div", "lb-guess-main" + (g.label === "unsure" ? " unsure" : ""));
     main.append(el("b", "", nameOf(g.label)), el("span", "lb-conf", `把握 ${pct(g.confidence)}`));
@@ -330,10 +332,7 @@ function renderSide() {
   }
   // 按钮
   const acts = $("lb-actions"); acts.textContent = "";
-  const off = !c || LB.busy, g = c && c.guess, canAgree = !!g && g.label !== "unsure";
-  const agree = kbdBtn("btn go lb-agree", canAgree ? `同意 Claude：${nameOf(g.label)}` : "同意 Claude", "Enter", agreeClaude);
-  agree.disabled = off || !canAgree;
-  acts.append(agree);
+  const off = !c || LB.busy, g = c && c.guess;
   const grid = el("div", "lb-grid");
   keyOrder().forEach((l, k) => {
     const b = kbdBtn("btn lb-act", nameOf(l), String(k + 1), () => label(l));
@@ -418,7 +417,6 @@ const G = {
   s: LB, tab: "gesture", itemsKey: "clips", key: "clip", post: "clip", api: "api/gesture", ids: "lb", noun: "片段",
   rowClass: "lb-item",
   labels: keyOrder, name: nameOf, whereText, short: shortName,
-  agreeable: g => g.label !== "unsure",
   select: clip => select(clip), renderSide: () => renderSide(),
   row: c => [el("span", "n", shortName(c.clip)), guessTag(G, c), el("span", "r", c.recording || "（没有录像名）")],
   onCounts: n => { const m = $("mark-labeling"); if (m) m.textContent = n[UNL] ? `${n[UNL]} 待确认` : ""; },
@@ -439,7 +437,6 @@ const F = {
 function clips() { return pItems(G); }
 function byName(clip) { return pBy(G, clip); }
 function label(to) { return pLabel(G, to); }
-function agreeClaude() { return pAgree(G); }
 function undo() { return pUndo(G); }
 function load() { return pLoad(G); }
 function setFilter(f) { return pSetFilter(G, f); }
@@ -451,16 +448,28 @@ function fmUndo() { return pUndo(F); }
 function fmLoad() { return pLoad(F); }
 function fmSetFilter(f) { return pSetFilter(F, f); }
 
+const NOTES = {
+  gesture: "确认的片段挪进 datasets/gesture/<动作>/，不要的进 _discard/，每一步记在 _labels.jsonl",
+  form: "确认的裁图挪进 datasets/attrs/form/<类别>/，不要的进 _discard/，每一步记在 _labels.jsonl",
+  names: "只起名，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动才生效",
+};
 function setTab(tab) {
-  LB.tab = tab === "form" ? "form" : "gesture";
+  LB.tab = tab === "form" || tab === "names" ? tab : "gesture";
+  window.LabelingTab = LB.tab;
   for (const b of $("lb-tabs").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.tab === LB.tab));
-  const form = LB.tab === "form";
-  $("lb-note").textContent = form ? "确认的裁图挪进 datasets/attrs/form/<类别>/，不要的进 _discard/，每一步记在 _labels.jsonl"
-    : "确认的片段挪进 datasets/gesture/<动作>/，不要的进 _discard/，每一步记在 _labels.jsonl";
-  $("lb-cols").hidden = form || !LB.data; $("lb-empty").hidden = form || !!LB.data;
+  const form = LB.tab === "form", names = LB.tab === "names", gesture = LB.tab === "gesture";
+  $("lb-note").textContent = NOTES[LB.tab];
+  $("lb-cols").hidden = !gesture || !LB.data; $("lb-empty").hidden = !gesture || !!LB.data;
   $("fm-cols").hidden = !form || !FM.data; $("fm-empty").hidden = !form || !!FM.data;
+  const en = window.EmoteNamesTab, has = !!(en && en.hasData());
+  $("en-cols").hidden = !names || !has; $("en-empty").hidden = !names || has;
   startTimer();  // 动作页之外不放动图
-  if (form) fmLoad(); else load();
+  reload();
+}
+function reload() {
+  if (LB.tab === "form") fmLoad();
+  else if (LB.tab === "names") { if (window.EmoteNamesTab) window.EmoteNamesTab.load(); }
+  else load();
 }
 
 /* ---- 键盘 ---- */
@@ -472,6 +481,7 @@ function onKey(e) {
   const k = e.key;
   if ((k === "Enter" || k === " ") && t && t.closest && t.closest("button,a,summary")) return;  // 键盘移到按钮上时回车 / 空格交给按钮
   let act = null;
+  if (LB.tab === "names") return;  // 动作名页：输入框里回车就是保存，别的键不管
   if (LB.tab === "form") {
     if (k === "Enter") act = fmAgree;
     else if (k === "z" || k === "Z") act = fmUndo;
@@ -479,7 +489,6 @@ function onKey(e) {
     else if (/^[1-9]$/.test(k)) { const l = fmForms()[Number(k) - 1]; if (l) act = () => fmLabel(l); }
   }
   else if (k === " " || k === "Spacebar") act = () => setPlaying(!LB.playing);
-  else if (k === "Enter") act = agreeClaude;
   else if (k === "ArrowLeft") act = () => step(-1);
   else if (k === "ArrowRight") act = () => step(1);
   else if (k === "z" || k === "Z") act = undo;
@@ -503,7 +512,7 @@ Pages.labeling = {
     $("lb-next").onclick = () => step(1);
     for (const b of $("lb-speed").querySelectorAll("button")) b.onclick = () => setSpeed(Number(b.dataset.speed));
     $("lb-filter").onchange = e => { setFilter(e.currentTarget.value); e.currentTarget.blur(); };  // 选完把焦点还给页面，按键才有用
-    $("lb-refresh").onclick = () => (LB.tab === "form" ? fmLoad() : load());
+    $("lb-refresh").onclick = reload;
     $("fm-filter").onchange = e => { fmSetFilter(e.currentTarget.value); e.currentTarget.blur(); };
     for (const b of $("lb-tabs").querySelectorAll("button")) b.onclick = () => setTab(b.dataset.tab);
     // 鼠标点按钮不抢焦点：点完接着按键就行（Tab 过去的按钮照样能用回车 / 空格）
@@ -514,7 +523,7 @@ Pages.labeling = {
     LB.active = true;
     if (!LB.keyBound) { document.addEventListener("keydown", onKey); LB.keyBound = true; }
     startTimer();
-    if (LB.tab === "form") fmLoad(); else load();
+    reload();
   },
   hide() {
     LB.active = false;

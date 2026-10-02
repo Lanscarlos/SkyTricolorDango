@@ -398,6 +398,24 @@ class Body:
                 raise ToolError("身体还在做这件事（已经开始了），别重试，等下次醒来看结果") from None
             raise ToolError(f"身体忙不过来，这个命令超时了（{used:.0f} 秒）") from None
 
+    def post(self, fn: Callable[[], Any]) -> bool:
+        """不等结果地交给身体线程做（大脑交“心里”文字之类）：身体忙着（自动喊要 4 秒）也不卡调用方。
+        身体停了返回 False、不做；出错只记日志。"""
+        if self.stopped:
+            return False
+
+        def run() -> None:
+            try:
+                fn()
+            except Exception:
+                log.exception("身体做交过来的事出错")
+
+        if threading.get_ident() == self._thread:
+            run()
+        else:
+            self._commands.put((run, Future()))
+        return True
+
     def _run_commands(self) -> None:
         while True:
             try:
@@ -2090,10 +2108,11 @@ class Body:
             tracks = [t for t in list(getattr(self.env, "last_tracks", ())) if self.clock() - t.last <= CALL_TRACK_STALE]
             selfs = [t for t in tracks if t.cls == "self"]
             heads = {t.id: t.box for t in selfs}
-            # 和 self 框重叠的 player 框是团子本人（同感知层 _is_self）：别让一个光圈点亮两个区域、判成"别人也在喊"
+            # 感知层认成团子的 player 框（data["dango"]，和 self 框重叠的、self 框没出时落在团子位置上的）是团子本人：
+            # 别让一个光圈点亮两个区域、判成"别人也在喊"
             # 感知层第二层没放行 / 撤下的 player 轨迹（待复核的低分框、树……）不是人，不看它头顶
             heads.update({t.id: t.box for t in tracks if t.cls == "player" and t.data.get("admitted", True)
-                          and not any(iou(t.box, s.box) >= 0.5 for s in selfs)})
+                          and not t.data.get("dango") and not any(iou(t.box, s.box) >= 0.5 for s in selfs)})
             at = self.clock()  # 按键命令发出之前：adb 往返之后才记会把最亮那一下算到窗口之前
             watch = HaloWatch(base, heads, at, cfg)
             self.device.hw_key(LINUX_KEY_Q)

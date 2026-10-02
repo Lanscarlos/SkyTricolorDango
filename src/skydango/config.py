@@ -187,7 +187,9 @@ class WheelConfig:
     list_scroll_from: float = 0.83  # 往下翻：从这个高度拖到 list_scroll_to
     list_scroll_to: float = 0.42
     match_threshold: float = 0.8  # 在动作列表里找图标（和图标库同尺寸）
-    slot_match_threshold: float = 0.72  # 认轮盘格子里的图标（更大，还可能带“2级”之类的字）
+    # 认轮盘格子里的图标（更大，还可能带“2级”之类的字）。10-02 实测：真动作 0.72~0.93（欢呼最低）、空 / 锁定格子 0.47；
+    # 原来是 0.72，欢呼在门槛上来回跳，有时读不出来
+    slot_match_threshold: float = 0.6
     ui_delay: float = 0.8  # 每次操作后等界面动画
 
 

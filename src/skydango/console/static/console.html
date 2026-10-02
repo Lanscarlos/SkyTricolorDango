@@ -232,7 +232,7 @@
     </div>
   </section>
   <section id="page-labeling" class="page" hidden>
-    <div class="page-title"><h1>标注</h1><span class="seg" id="lb-tabs" role="group" aria-label="标注哪一种"><button type="button" data-tab="gesture" aria-pressed="true">动作</button><button type="button" data-tab="form" aria-pressed="false">外形</button></span><span class="note" id="lb-note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
+    <div class="page-title"><h1>标注</h1><span class="seg" id="lb-tabs" role="group" aria-label="标注哪一种"><button type="button" data-tab="gesture" aria-pressed="true">动作</button><button type="button" data-tab="form" aria-pressed="false">外形</button><button type="button" data-tab="names" aria-pressed="false">动作名</button></span><span class="note" id="lb-note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
     <div class="banner warn" id="lb-empty" hidden></div>
     <div class="cols lb-cols" id="lb-cols">
       <section class="pane lb-listpane" aria-label="片段列表">
@@ -284,6 +284,30 @@
         <p class="note lb-keys">选完自动跳下一张；已确认的再按一次别的类别就是改类别。</p>
       </section>
     </div>
+    <div class="banner warn" id="en-empty" hidden></div>
+    <div class="cols en-cols" id="en-cols" hidden>
+      <section class="pane en-gridpane" aria-label="动作图标">
+        <h3>动作图标<span class="grow"></span><span class="seg" id="en-filter" role="group" aria-label="显示哪些"><button type="button" data-f="all" aria-pressed="true">全部</button><button type="button" data-f="todo" aria-pressed="false">只看没名字</button></span></h3>
+        <div class="en-progress"><span id="en-count">已起名 0 / 0</span><div class="lb-bar"><i id="en-bar"></i></div></div>
+        <div class="en-grid" id="en-grid"></div>
+      </section>
+      <section class="pane en-side" aria-label="起名">
+        <h3><span class="lb-title" id="en-title">—</span></h3>
+        <div class="fm-stage en-stage"><img id="en-big" class="en-big" alt="动作图标（放大）"><p class="lb-stage-note" id="en-big-note" hidden></p></div>
+        <form class="en-form" id="en-form" autocomplete="off">
+          <label for="en-name">名字</label>
+          <input id="en-name" type="text" maxlength="12" spellcheck="false" placeholder="比如 鞠躬、欢呼2级">
+          <button class="btn go" type="submit" id="en-save"><span id="en-save-t">保存</span> <kbd class="k">Enter</kbd></button>
+          <button class="btn halt" type="button" id="en-clear">清除名字</button>
+        </form>
+        <div class="banner warn en-refs" id="en-refs" hidden></div>
+        <div class="pane-body en-help">
+          <p class="note">回车保存，自动跳到下一个没名字的；点已有名字的格子能改名或清除。最多 12 个字，不能和别的图标重名：同一个动作不同等级分开起名，比如「欢呼2级」。</p>
+          <p class="note">名字就是图标库 <code id="en-lib">emotes</code>/&lt;名字&gt;.png 的文件名；清除 = 把图挪进 _removed/。要重新扫描在终端跑 <code>python -m skydango emotes scan</code>（会往游戏里按键，这里不放按钮）。</p>
+          <p class="note" id="en-orphans" hidden></p>
+        </div>
+      </section>
+    </div>
   </section>
   <section id="page-settings" class="page" hidden>
     <div class="page-title"><h1>设置</h1><span class="note">面板改的设置写在 console.toml（叠加在 config.toml 之后，config.toml 不会被改），密钥明文写在本机 secrets.toml，别发给别人。</span></div>
@@ -324,6 +348,7 @@
 <script src="console/static/livectl.js"></script>
 <script src="console/static/live.js"></script>
 <script src="console/static/scenarios.js"></script>
+<script src="console/static/emotenames.js"></script>
 <script src="console/static/labeling.js"></script>
 <script src="console/static/settings.js"></script>
 <script src="console/static/device.js"></script>
