@@ -158,6 +158,24 @@ def test_call_halo_self_box_overlapping_player_is_one_person(clock):
     assert b.call_out("brain", live=True).halo == "self"
 
 
+def test_call_halo_ignores_player_not_admitted_by_attrs(clock):
+    # 感知层第二层没放行的 player 轨迹（待复核的低分框 / 撤下的树）不当人头：光圈在那里也不算"团子自己"
+    b, device, env, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()], panel_mode="auto")
+    b.cfg.call.halo = True
+    pending = track(1, "player", MID, clock())
+    pending.data["admitted"] = False
+    env.last_tracks = [pending]
+    r = b.call_out("brain", live=True)
+    assert r.halo == "skipped" and env.self_box is None  # 没有能看的人头：说不准，不报"是团子"
+
+    b2, device2, env2, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()], panel_mode="auto")
+    b2.cfg.call.halo = True
+    ok = track(1, "player", MID, clock())
+    ok.data["admitted"] = True
+    env2.last_tracks = [ok]
+    assert b2.call_out("brain", live=True).halo == "self"  # 放行了的照旧
+
+
 def test_call_halo_skipped_when_chat_panel_was_open(clock):
     # 面板开着：借面板关掉时画面横移、感知层这段时间没新帧，框对不上 → 放弃，不报"没看到"
     b, device, env, _ = call_body(clock, frames=[gray(), lit(), lit(), lit(), gray()])

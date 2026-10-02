@@ -434,6 +434,29 @@ class GestureConfig:
 
 
 @dataclass
+class AttrsConfig:
+    """感知层第二层：人物属性 + 复核（给 YOLO 的人物框裁图，过冻住的 DINOv2 主干 + npz 线性头，判形态等属性、复核低分框）。
+
+    默认关：模型（`perception attrs-train` 训练）过了上线门槛再开。低分框的阈值复用 [perception] low_conf。"""
+
+    enabled: bool = False
+    model: str = "models/attrs.npz"  # 线性头文件（W / b / labels / applies_to / pad）
+    backbone: str = "models/dinov2-small.onnx"  # 冻住的特征主干，文件名要和 npz 里记的一致
+    device: str = ""  # 空 = 跟 [perception] device
+    every: float = 0.5  # 同一条轨迹隔这么久判一次（秒）
+    max_crops: int = 4  # 每一轮最多裁几个框
+    votes: int = 5  # 属性投票看最近几次
+    accept: float = 0.6  # 投票概率到这个才算认定
+    reject: float = 0.7  # 复核判成"不是人"的概率门槛
+    reject_n: int = 3  # 累计复核够这么多次、平均下来"不是人"的概率还 ≥ reject 才撤下（高分框）
+    # 点没点火的黑影分里 YOLO 一侧的权重；YOLO 一侧 = 最近几帧里 player_unlit 的比例（不是 YOLO 置信度）。
+    # 要 < 0.5 外形头才翻得动一直认成同一类的 YOLO：0.3 时外形头黑影占比连续 flip_votes 票 > 0.86 / < 0.14 才翻
+    yolo_w: float = 0.3
+    flip_votes: int = 3  # 形态要翻转，新形态至少连续几票
+    max_errors: int = 10  # 推理连续出错这么多次就自己关掉
+
+
+@dataclass
 class FriendCheckConfig:
     """大脑的 check_friend 工具：点一下人物打开右侧的好友树面板，截图给大脑看是不是好友，再关掉。
 
@@ -774,6 +797,7 @@ class Config:
     appearance: AppearanceConfig = field(default_factory=AppearanceConfig)
     assist: AssistConfig = field(default_factory=AssistConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
+    attrs: AttrsConfig = field(default_factory=AttrsConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     panels: PanelsConfig = field(default_factory=PanelsConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)

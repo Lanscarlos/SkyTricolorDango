@@ -9,7 +9,8 @@ from dataclasses import dataclass
 
 from .bubbles import Rect
 
-WHO = {"stranger": "陌生人", "unlit": "没点火的陌生人"}
+WHO = {"stranger": "陌生人", "unlit": "没点火的陌生人", "spirit": "先祖", "shared": "共享空间的人"}
+OTHERS = ("spirit", "shared")  # 外形头认出的先祖 / 共享空间的人：看得到，但不算陌生人、不挂名字（spec 2026-10-02-perception-attrs §3.5）
 MOVING = ("走近", "走远", "往左走", "往右走")  # 写进 status 的运动方向（站着不写）
 OBJECT_NAMES = {"bench": "座位", "bonfire": "篝火", "instrument": "乐器", "spirit": "先祖"}  # 物品类别 → 中文（顺序即类别顺序）
 
@@ -17,7 +18,7 @@ OBJECT_NAMES = {"bench": "座位", "bonfire": "篝火", "instrument": "乐器", 
 @dataclass(frozen=True)
 class Person:
     track_id: int
-    kind: str  # "friend" / "stranger" / "unlit"
+    kind: str  # "friend" / "stranger" / "unlit" / "spirit" 先祖 / "shared" 共享空间的人（后两种只有第二层开着时才有）
     name: str | None  # 好友才有
     box: Rect  # 整张截图坐标
     side: str  # "左边" / "前面" / "右边"（框中心在画面三等分的哪一份）
@@ -26,6 +27,8 @@ class Person:
     sid: str | None = None  # 点过火的陌生人按外观给的编号（"陌生人A"）
     look: str = ""  # 陌生人的装扮描述（有才有）
     motion: str | None = None  # 走近 / 走远 / 往左走 / 往右走 / 站着（团子画面里的方向）；None = 拿不准
+    form: str | None = None  # 第二层外形头投出的类别（lit / unlit / spirit / shared / morph …）；没开第二层 / 还没投过是 None
+    form_p: float = 0.0  # 这个类别的平均概率
 
 
 def side_of(cx: float, width: int) -> str:
@@ -34,6 +37,8 @@ def side_of(cx: float, width: int) -> str:
 
 def _describe_person(p: Person) -> str:
     where = f"{p.side}·{p.distance}" + (f"，正在{p.motion}" if p.motion in MOVING else "")
+    if p.kind in OTHERS:
+        return f"一个{WHO[p.kind]}（{where}）"
     if p.kind == "friend" and not p.sure:
         return f"像{p.name}（没看到名字，{where}）"
     if p.sid:

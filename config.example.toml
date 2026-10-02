@@ -177,6 +177,24 @@ save = true                     # 攒训练数据
 save_every = 2.0                # 同一条轨迹最多隔几秒存一张
 save_max = 2000                 # 一次运行最多存几张
 
+[attrs]
+# 人物复核（第二层，要先打开 [perception]）：给 YOLO 的人物框裁图再判一次——挡树 / 石像等误框、捞低分框、认先祖 / 共享空间的人、点没点火两边投票。
+# 模型用 `perception attrs-train` 训练，过了上线门槛再打开；数字都是估的，未在真机验证。低分框的阈值复用 [perception] low_conf
+# 本机 onnxruntime 是 CPU 版（一张裁图约 32 ms）：装 onnxruntime-gpu 之前别开，或者 max_crops = 1、every = 1.0
+enabled = false
+model = "models/attrs.npz"      # 线性头文件
+backbone = "models/dinov2-small.onnx"  # 冻住的特征主干，文件名要和 npz 里记的一致
+device = ""                     # 空 = 跟 [perception] device
+every = 0.5                     # 同一条轨迹隔这么久判一次（秒）
+max_crops = 4                   # 每一轮最多裁几个框
+votes = 5                       # 属性投票看最近几次
+accept = 0.6                    # 投票概率到这个才算认定
+reject = 0.7                    # 复核判成"不是人"的概率门槛
+reject_n = 3                    # 累计复核够这么多次、平均下来"不是人"的概率还 ≥ reject 才撤下
+yolo_w = 0.3                    # 点没点火的黑影分里 YOLO 一侧（最近几帧 player_unlit 的比例）的权重；< 0.5 外形头才翻得动 YOLO
+flip_votes = 3                  # 形态要翻转，新形态至少连续几票
+max_errors = 10                 # 推理连续出错这么多次就自己关掉
+
 [assist]
 # Claude 辅助标注：python -m skydango perception label <录像目录> --assist
 # 检测器出人物候选框 → 隔离的 claude -p 核对（令牌、配置目录同 [brain]）→ 和名字标签 / 圆圈弱标注合并写进数据集

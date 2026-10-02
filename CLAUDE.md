@@ -76,6 +76,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/envdiff.py` | 两轮聊天之间环境变了什么（谁来了 / 走了、陌生人数、到了哪），写进那一轮的用户消息、跟着历史走 |
 | `src/skydango/vision/people.py` | `Person`（track_id、好友 / 陌生人 / 黑影、框、左 / 前 / 右、近 / 中 / 远）：感知层的 `people()` 给身体、技能、大脑用 |
 | `src/skydango/vision/detect.py` `track.py` `perception.py` `weaklabel.py` | YOLO 感知层（开发中，默认关）：检测器（ONNX / ultralytics）、追踪（IoU + 低分框续命 + 速度预测 + 画面平移 `estimate_shift`）、`PerceptionWatcher`（接口同 env，多认陌生人；画面被挡时暂停计时；续命、失踪好友接回、运动方向）、弱标注，见下 |
+| `src/skydango/vision/attrs.py` | 感知层第二层运行时（见「感知层第二层」）：`AttrModel`（冻住的 DINOv2 + `.npz` 线性头）、`PersonAttrs`（按轨迹裁图、投票、放行 / 撤下、点没点火）、`load_model`、`crop` |
+| `src/skydango/vision/attrs_data.py` | 第二层的数据：`perception crops`（数据集 / 难例 / 图片目录 → `datasets/attrs/`）、`--writeback`（确认是人的框写回 `datasets/sky`）、`perception attrs-label`（Claude 初分，复用 `assist.Reviewer`） |
+| `src/skydango/vision/attrs_train.py` | 第二层的训练和评估：`perception attrs-train`（提特征 + 线性头 → `models/attrs-<日期>.npz` + 报告）、`attrs-eval`、`bench --attrs` |
 | `src/skydango/vision/trackeval.py` | 追踪和接回的离线评估（`perception track-eval`）：基线（升级开关全关）vs 当前配置，断开原因、假走开、确认冤枉、接回对错、运动方向 |
 | `src/skydango/vision/hardcases.py` `compare.py` `augment.py` | 感知层一期工具：运行时收集难例、离线对比 YOLO 和整图 OCR（`perception compare`）、训练集增强（`perception augment`） |
 | `src/skydango/vision/assist.py` | Claude 辅助标注（`perception label --assist`）：挑帧、人物候选框、`claude -p` 核对（分批并发、缓存、额度用完可续跑）、合并成标注 + 预览 + 待核对清单；`Protocol` 让物品模式复用 |
@@ -234,6 +237,13 @@ dir = "private/sandbox"
   护栏（最终评审后加的）：低分框阶段只认 IoU、只靠低分框续着的轨迹最多续命 5 秒（`LOW_ONLY_MAX`）；跟着镜头一起动的人（配上的是不带平移的预测框）速度和运动方向不减背景平移（`Track.drift`）；
   接回的"像他"30 秒（6 个 `keep`）没被名字标签证实就摘、也不报走近；身体在 `held("camera")` 里转了镜头，恢复后第一帧拿暂停前的缩略图估一次平移（门槛 0.4），估不出就作废所有轨迹的位置、清掉失踪记录；
   开关全关逐字是原来的行为（`camera_moved` 的缩放 / 走路静默期不受开关管）。定阈值：`perception track-eval <录像目录> [--fps 6.5]` → `tmp/track-eval/<时间>/report.md`（基线 vs 当前配置；目标接回证实错 = 0、确认冤枉明显下降）
+- **感知层第二层（`[attrs]`，代码已完成，默认关；还没有训练数据和模型，没上真机）**：设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。
+  YOLO 框出人物后按轨迹裁图，交给冻住的 DINOv2-small + 线性头（`models/attrs-<日期>.npz`，Claude 只当标注老师、不进运行时）判**外形**：不是人 / 点过火 / 黑影 / 先祖 / 共享空间玩家 / 变身。
+  用途：① 复核——YOLO 高分框被稳定判"不是人"就撤下，低分框（`low_conf ~ conf`）等复核说是人才放行（目标是降门槛捞漏检）；② 点没点火和 YOLO 类别投票、带滞回；
+  ③ 先祖 / 共享空间不算陌生人，变身照常认人。`enabled = false` 逐字是原来的行为；`[perception] enabled = false` 时不生效；主干和 npz 对不上 / 连续出错自动关掉。
+  数据：`perception crops` → `perception attrs-label`（花额度）→ 管理面板「标注」页的「外形」标签页确认 → `crops --writeback` → `perception attrs-train` → `attrs-eval`；
+  识别可视化画灰色虚线（被撤）/ "复核"（靠复核放行），难例多 `attrs_reject` / `attrs_disagree` 两种原因。上线门槛四条和剩下要人做的步骤见 `docs/progress/2026-09-28-yolo-training.md`「第二层」
+  **本机 onnxruntime 是 CPU 版**（DINOv2-small 一张裁图约 32 ms、4 张约 128 ms）：装 onnxruntime-gpu 之前别开，或者 `max_crops = 1`、`every = 1.0`（`[perception] device = "cuda"` 而主干只在 CPU 上跑时启动会警告）
 - **核显 / 没有 N 卡的机器**（`device = "dml"`，`vision/onnxrt.py`，**未在 Windows 核显上验证**）：在 GPU 机器上导出 `.onnx`（`.pydeps\bin\yolo.exe export model=models/sky-yolo-v7.pt format=onnx imgsz=960`）拷过去，
   `pip uninstall onnxruntime` 再 `pip install onnxruntime-directml`（两个包都叫 `onnxruntime` 模块，只能装一个；以后 `pip install -e ".[ocr]"` 会把 onnxruntime 装回来盖掉，要重装 directml；`pip check` 报 skydango 缺 onnxruntime 是正常的）。
   先 `perception bench --model models/sky-yolo.onnx --images <录像目录>` 看后端是不是 `DmlExecutionProvider`、每帧多少 ms，再按实测把 `fps` 降下来（估计 2~3）。
@@ -302,7 +312,7 @@ dir = "private/sandbox"
 - **原生 `confirm` / `prompt` / `alert` 全换成页内对话框和提示条**（`ask()` / `toast()`；Claude 桌面版内嵌浏览器里原生弹窗用不了），测试禁止再出现。
 - **预检**：大脑模式下也查 LLM Key；每个问题带 `setting` 跳转目标，「去设置 →」跳到设置页并高亮那一行（樱花底闪一下）。
 - **剧本和报告页**：报告在页内直接读（`console/reports.py`，`GET /api/sandbox/reports[/<name>]`），不用再去翻 `sandbox/reports/`。
-- **「标注」页**（`#labeling`，左栏「数据」组；后端 `console/labeling.py`）：逐段看动作片段的动图和 Claude 的猜测，按键确认（回车 = 同意 Claude、1~9 = 类别、0 = 丢弃、Z = 撤销），片段挪进 `datasets/gesture/<动作>/`，然后 `perception gesture-train`。
+- **「标注」页**（`#labeling`，左栏「数据」组；后端 `console/labeling.py`）：逐段看动作片段的动图和 Claude 的猜测，按键确认（回车 = 同意 Claude、1~9 = 类别、0 = 丢弃、Z = 撤销），片段挪进 `datasets/gesture/<动作>/`，然后 `perception gesture-train`。同一页还有「外形」标签页（第二层，后端同 `console/labeling.py`）：逐张看人物裁图和 Claude 的初分，确认 / 改类别 / 丢弃，裁图挪进 `datasets/attrs/form/<类别>/`。
 - **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
   加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
   `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程
@@ -568,6 +578,12 @@ python -m skydango perception augment datasets/sky  # 训练集加运动模糊 /
 python -m skydango perception compare <录像目录> [--model 模型] [--far-crops 0]  # 同一批录像对比 YOLO 和整图 OCR → tmp/compare/<时间>/report.md（含远处认出率）
 python -m skydango perception halo-eval <录像目录> [--model 模型]  # 呼唤光圈标定：每个人头顶的亮度曲线、建议的 [call] halo_rise → tmp/halo-eval/<时间>/report.md + curves.png
 python -m skydango perception track-eval <录像目录> [--model 模型] [--fps 6.5]  # 追踪升级前后对比：断开和原因、假走开、确认冤枉、接回对错、运动方向 → tmp/track-eval/<时间>/report.md
+python -m skydango perception crops <来源...> [--model 模型] [--conf 0.2] [--out datasets/attrs]  # 第二层的数据：数据集 / 难例目录（支持 runs/*/hard）/ 图片目录 → 人物裁图，已标注的按类别放，对不上的进 _unlabeled/
+python -m skydango perception crops datasets/sky --writeback  # 把标注页确认是人的框写回 datasets/sky 的 labels/（先备份到 <数据集>/_backup/）
+python -m skydango perception attrs-label [datasets/attrs] [--recheck]  # Claude 初分 _unlabeled 裁图（花额度），再去管理面板「标注」页「外形」确认
+python -m skydango perception attrs-train [datasets/attrs] [--out 路径] [--force] [--device cuda|dml|cpu]  # 训练外形头 → models/attrs-<日期>.npz + 报告（是 [attrs] model 时要加 --force）
+python -m skydango perception attrs-eval datasets/sky --model models/attrs-<日期>.npz  # 外形头在 YOLO 数据集验证集上的评估
+python -m skydango perception bench --attrs [--model …]  # 测速时再测一遍加第二层后的 fps
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
 python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
 python -m skydango perception clips <录像目录> [--force]  # 动作识别的数据：按人物轨迹切 16 帧片段 → datasets/gesture/_unlabeled；这段录像切过就拒绝，--force 只切数据目录里哪儿都还没有的片段
