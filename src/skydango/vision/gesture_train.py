@@ -29,6 +29,8 @@ from ..config import GestureConfig
 from .gesture import SUFFIXES, load_clip, recording_of
 
 MIN_PER_CLASS = 20
+VAL_MIN_SHARE = 0.1  # 整段进验证集的录像至少占这个类别的这么多
+TRAIN_MIN_SHARE = 0.5  # 整段录像进验证集后，训练集至少还留着每个类别的这么多
 SPLIT_FILE = "_split.json"
 _START = re.compile(r"_t(\d+(?:\.\d+)?)s$")
 
@@ -82,9 +84,11 @@ def split(
 ) -> dict[str, list]:
     """切训练 / 验证集：同一段录像整个进一边（防止相邻帧泄漏），同样的 seed 结果一样。
 
-    - 每个有样本的类别：有 ≥ 2 段录像就至少有一段录像进验证集（且训练集里也留着一段）；
-      其余录像随机补到验证集样本数约占 val_ratio。
-    - 类别只有一段录像：该录像里这个类别的片段按 start 切——设 n 段按 start 排序，
+    - 每个有样本的类别：有 ≥ 2 段录像就至少有一段录像进验证集；整段进验证集的录像要份量合适：
+      占这个类别 ≥ VAL_MIN_SHARE（别只在验证集里放零星一两段），且它里面每个类别训练集都还留着 ≥ TRAIN_MIN_SHARE。
+      挑不出这样的录像，就把这个类别最多的那段录像当成"唯一的录像"按时间切（10-02：鞠躬录像整段进了验证集、
+      训练集只剩 2 段鞠躬，召回率 0%）。其余录像随机补到验证集样本数约占 val_ratio（同样守 TRAIN_MIN_SHARE）。
+    - 类别只有一段录像（或上一条退回来的）：该录像里这个类别的片段按 start 切——设 n 段按 start 排序，
       c = 第 ceil((1 − val_ratio)·n) 段（至多最后一段）的 start；train = start < c − gap，val = start ≥ c，
       中间 gap 秒内的不用。这段录像里所有类别的片段都按同一个 c 切（几个类别钉在同一段录像上取最小的 c），
       免得同一时刻的画面一边训练一边验证；被 gap 丢掉的段数写进 warnings；这段录像不进整录像验证候选。
@@ -100,23 +104,36 @@ def split(
     recs_of: dict[str, set[str]] = {}
     for s in samples:
         recs_of.setdefault(s.label, set()).add(key(s))
-    pinned = {next(iter(r)) for r in recs_of.values() if len(r) == 1}  # 某类唯一的录像：只按时间切
+    total: dict[str, int] = {}
+    count: dict[tuple[str, str], int] = {}  # (录像, 类别) → 段数
+    for s in samples:
+        total[s.label] = total.get(s.label, 0) + 1
+        count[key(s), s.label] = count.get((key(s), s.label), 0) + 1
+    by_time = {lb for lb, r in recs_of.items() if len(r) == 1}  # 按时间切的类别
+    pinned = {next(iter(recs_of[lb])) for lb in by_time}  # 它们的录像：不整段进验证集
     order = sorted(by_rec)
     rng.shuffle(order)
     val_recs: set[str] = set()
 
-    def train_ok(label: str, extra: str) -> bool:
-        return bool(recs_of[label] - val_recs - {extra})
+    def train_ok(r: str) -> bool:
+        """r 整段进验证集后，它里面每个（不按时间切的）类别训练集都还留着 ≥ TRAIN_MIN_SHARE。"""
+        gone = val_recs | {r}
+        return all(
+            sum(count.get((x, lb), 0) for x in recs_of[lb] - gone) >= TRAIN_MIN_SHARE * total[lb]
+            for lb in {s.label for s in by_rec[r]} if lb not in by_time)
 
     # 覆盖：录像少的类别先挑
     for label in sorted(recs_of, key=lambda lb: (len(recs_of[lb]), lb)):
-        if len(recs_of[label]) < 2 or recs_of[label] & val_recs:
+        if label in by_time or recs_of[label] & val_recs:
             continue
         for r in order:
-            if r in recs_of[label] and r not in pinned and all(
-                    train_ok(lb, r) for lb in {s.label for s in by_rec[r]} if len(recs_of[lb]) >= 2):
+            if (r in recs_of[label] and r not in pinned and count[r, label] >= VAL_MIN_SHARE * total[label]
+                    and train_ok(r)):
                 val_recs.add(r)
                 break
+        else:  # 没有份量合适的录像：最多的那段按时间切
+            by_time.add(label)
+            pinned.add(max(sorted(recs_of[label]), key=lambda x: count[x, label]))
     # 补到比例
     target = val_ratio * len(samples)
     got = sum(len(by_rec[r]) for r in val_recs)
@@ -125,20 +142,19 @@ def split(
             break
         if r in val_recs or r in pinned:
             continue
-        if all(train_ok(lb, r) for lb in {s.label for s in by_rec[r]} if len(recs_of[lb]) >= 2):
+        if train_ok(r):
             val_recs.add(r)
             got += len(by_rec[r])
 
     train: list[str] = []
     val: list[str] = []
-    cut: dict[str, float] = {}  # 只有一段录像的类别所在的录像 → 切点 c（几个类别钉在同一段录像上取最小的）
-    for label, recs in recs_of.items():
-        if len(recs) == 1:
-            starts = sorted(s.start for s in samples if s.label == label)
-            if len(starts) >= 2:
-                c = starts[min(math.ceil((1 - val_ratio) * len(starts)), len(starts) - 1)]
-                rec = next(iter(recs))
-                cut[rec] = min(c, cut.get(rec, c))
+    cut: dict[str, float] = {}  # 按时间切的类别所在的录像 → 切点 c（几个类别钉在同一段录像上取最小的）
+    for label in sorted(by_time):
+        rec = next(r for r in sorted(recs_of[label]) if r in pinned)
+        starts = sorted(s.start for s in samples if s.label == label and key(s) == rec)
+        if len(starts) >= 2:
+            c = starts[min(math.ceil((1 - val_ratio) * len(starts)), len(starts) - 1)]
+            cut[rec] = min(c, cut.get(rec, c))
     dropped: dict[str, int] = {}
     for s in samples:
         rec = key(s)
