@@ -44,6 +44,7 @@ from ..chat.tracker import normalize, similar
 from ..config import AppearanceConfig, EnvConfig, GestureConfig, PerceptionConfig, SocialConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_request
 from .appearance import describe_crop, good_crop
+from .attrs import unlit_score
 from .candle import black, find_flame, white_ring
 from .bubbles import Rect, roi_rect
 from .detect import Detection, Detector
@@ -92,6 +93,7 @@ RELINK_AMBIGUOUS = 1.3  # 一条记录的两个候选，近的要比远的近这
 RELINK_MAX_KEEPS = 6  # 接回的"像他"这么多个 keep 还没被名字标签证实就摘掉（接错了总得有个出口）
 LOW_ONLY_MAX = 5.0  # 只靠低分框续着的轨迹最多续命这么久（低分框可能是石像之类认错的东西）
 TRACKING_SWITCHES = ("sticky_names", "track_low", "track_predict", "track_pan", "relink", "motion")  # 全关 = 原来的追踪
+DISAGREE_SECONDS = 2.0  # 放行的轨迹 YOLO 侧和外形侧对点没点火持续相反这么久，才算 attrs_disagree 难例
 PAN_KINDS = ("zoom", "move", "spin")  # 这几种镜头事件之后 camera_settle 秒内框高会突变：不更新速度、清走近 / 运动历史
 
 
@@ -837,6 +839,45 @@ class PerceptionWatcher:
         for t in tracks:
             if t.cls in ("player", UNLIT):
                 t.data["admitted"] = self.attrs.admit(t)
+        self._report_attrs(frame, tracks, now)
+
+    def _report_attrs(self, frame: np.ndarray, tracks: list[Track], now: float) -> None:
+        """第二层的难例（spec §8）：attrs_reject = 一条高分轨迹被撤下的那一帧；attrs_disagree = 放行的轨迹 YOLO 侧和外形侧
+        对点没点火持续相反 DISAGREE_SECONDS 秒。每条轨迹各报一次；暂停时不报。"""
+        if self.hardcases is None or self.paused:
+            return
+        for t in tracks:
+            if t.cls not in ("player", UNLIT):
+                continue
+            d = t.data
+            if d.get("rejected") and d.get("strong") and not d.get("reject_reported"):
+                d["reject_reported"] = True
+                self._report_hard(frame, now, "attrs_reject", f"高分框 {t.score:.2f} 被第二层撤下（不是人）", tracks)
+            side = self._disagree(t) if d.get("admitted") else None
+            if side is None:
+                d.pop("disagree_since", None)
+            elif d.setdefault("disagree_since", now) <= now - DISAGREE_SECONDS and not d.get("disagree_reported"):
+                d["disagree_reported"] = True
+                self._report_hard(frame, now, "attrs_disagree", side, tracks)
+
+    def _disagree(self, t: Track) -> str | None:
+        """YOLO 侧（最近帧里 player_unlit 的比例）和外形侧（unlit 占 lit / unlit / shared / morph 的比例）分在 0.5 两边时的说明。"""
+        hist, mean = t.data.get("cls_hist"), t.data.get("form_mean")
+        if not hist or not mean or t.data.get("form_n", 0) == 0:
+            return None
+        den = sum(mean.get(k, 0.0) for k in ("lit", "unlit", "shared", "morph"))
+        if den <= 0:
+            return None
+        yolo, form = sum(1 for c in hist if c == UNLIT) / len(hist), mean.get("unlit", 0.0) / den
+        if (yolo > 0.5) == (form > 0.5):
+            return None
+        return f"YOLO 侧黑影占 {yolo:.2f}，外形侧 {form:.2f}，对点没点火意见相反"
+
+    def _report_hard(self, frame: np.ndarray, now: float, reason: str, detail: str, tracks: list[Track]) -> None:
+        try:
+            self.hardcases.report(frame, now, reason, detail, tracks)
+        except Exception:
+            log.exception("收集难例出错")
 
     def _keep_named(self, players: list[Track], now: float) -> None:
         """轨迹续命（spec 2026-10-01-q-call §1.1）：好友稍远一点头顶的名字标签就淡掉，人还在画面里。
@@ -1997,13 +2038,24 @@ class PerceptionWatcher:
     def overlay(self, now: float) -> list[dict]:
         """最近一帧认出了什么：每个框一条 {x, y, w, h, kind, label}（整张截图坐标）。"""
         out = []
+        others = {t.id for t in list(self._others)}  # 同 people()：只有 process 认定的先祖 / 共享空间的人才画成那样
         for t in list(self.last_tracks):
             d = t.data
             person = t.cls in ("player", UNLIT)
+            attrs_on = person and self._attrs_on()
+            mean = d.get("form_mean") if attrs_on else None
             if person and not self._admitted(t):
-                continue  # 没放行 / 被撤下的人物框先不画（画法见 spec §8，后面再加）
+                if not d.get("rejected"):
+                    continue  # 还没复核完的低分框先不画
+                p = (mean or {}).get("not_person", 0.0)
+                b = t.box  # 被第二层撤下的框：灰虚线画出来，看它为什么被撤
+                entry = {"x": b.x, "y": b.y, "w": b.w, "h": b.h, "kind": "rejected", "label": f"不是人 {p:.1f}",
+                         "score": round(t.score, 2)}
+                self._form_entry(entry, t, mean)
+                out.append(entry)
+                continue
             dark = person and self._unlit(t)
-            other = self._other_form(t) if person else None
+            other = self._other_form(t) if person and t.id in others else None
             # 每个键只读一次（同 people()）；who = 装扮描述按谁查
             name, maybe, sid, who = d.get("name"), d.get("maybe"), d.get("sid"), None
             if other:  # 先祖 / 共享空间的人（画法见 spec §8，后面再加）
@@ -2037,6 +2089,10 @@ class PerceptionWatcher:
                 entry["motion"] = motion
             if self.appearance is not None and (desc := self._desc(kind, who)):
                 entry["desc"] = desc
+            if attrs_on:
+                if not d.get("strong"):
+                    entry["label"] = "复核·" + entry["label"]  # 低分框，靠第二层复核才放行的
+                self._form_entry(entry, t, mean)
             out.append(entry)
         with self._lock:
             clue = self._flame
@@ -2045,6 +2101,14 @@ class PerceptionWatcher:
                 out.append({"x": round(x - r), "y": round(y - r), "w": round(2 * r), "h": round(2 * r),
                             "kind": "ring", "label": f"火焰 {clue['score']:.2f}", "score": round(clue["score"], 2)})
         return out
+
+    def _form_entry(self, entry: dict, t: Track, mean: dict | None) -> None:
+        """第二层开着时给人物条目附上外形概率 form 和黑影分 u（悬停显示）；没有就不写。"""
+        if mean:
+            entry["form"] = {k: round(v, 2) for k, v in mean.items()}
+        u = unlit_score(t, self.attrs.cfg.yolo_w)
+        if u is not None:
+            entry["u"] = round(u, 2)
 
     def _desc(self, kind: str, who: str | None) -> str:
         """框对应的人的装扮描述（没有就空）；who = overlay 已经读出来的好友名 / 陌生人编号（不再回去查 data）。"""

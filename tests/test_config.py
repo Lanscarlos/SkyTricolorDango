@@ -210,6 +210,18 @@ def test_example_config_has_appearance():
     assert load_config(ROOT / "config.example.toml").appearance.enabled is False
 
 
+def test_example_config_has_attrs():
+    import dataclasses
+    import tomllib
+
+    from skydango.config import AttrsConfig
+
+    raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))["attrs"]
+    d = AttrsConfig()
+    assert raw == {f.name: getattr(d, f.name) for f in dataclasses.fields(d)}
+    assert load_config(ROOT / "config.example.toml").attrs.enabled is False
+
+
 def test_example_config_has_sandbox():
     import tomllib
 

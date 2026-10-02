@@ -130,7 +130,7 @@ def test_high_score_tree_is_withdrawn():
         assert [p.kind for p in w.people(t)] == ["stranger"], i
     for t in (1.0, 1.5, 2.0, 2.5):
         w.process(img, t, panel_visible=False)
-        assert w.people(t) == [] and w.overlay(t) == []
+        assert w.people(t) == [] and [e["kind"] for e in w.overlay(t)] == ["rejected"]  # 撤下的框画成灰虚线
     (tr,) = w.last_tracks
     assert tr.data["rejected"] and tr.data["admitted"] is False
     assert w.strangers(2.5) == 0 and w.nearest(2.5) is None and w.unnamed(2.5) == 0
@@ -309,3 +309,106 @@ def test_objects_dedupes_spirit():
     things = w2.objects(0.2)
     assert [(o.kind, o.side) for o in things] == [("spirit", "左边"), ("spirit", "右边")]
     assert describe_things(things) == "先祖（左边·远）、先祖（右边·远）"  # 框底边 620：按物品的远近分
+
+
+class RecHard:
+    """记下 report() 调用的假难例收集器。"""
+
+    def __init__(self):
+        self.reports = []
+
+    def check(self, *a, **kw):
+        pass
+
+    def report(self, frame, now, reason, detail, tracks):
+        self.reports.append((now, reason, detail))
+        return True
+
+
+def test_overlay_marks_rejected_and_reviewed():
+    # 高分的树：被撤下后画成灰虚线的 rejected，并带外形概率
+    img, model = scene({1500: probs(not_person=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1500, h=220)]]
+    w = watcher(det, model)
+    for t in (0.0, 0.5, 1.0, 1.5):
+        w.process(img, t, panel_visible=False)
+    (e,) = w.overlay(1.5)
+    assert (e["kind"], e["label"]) == ("rejected", "不是人 0.9")
+    assert e["form"]["not_person"] == 0.9 and "u" in e
+
+    # 低分框：复核之前不画，靠复核放行后画出来，label 前加"复核·"
+    img, model = scene({1500: probs(lit=0.9)})
+    det = FakeDetector()
+    det.frames = [[low_player(1500)]]
+    w = watcher(det, model)
+    w.process(img, 0.0, panel_visible=False)
+    assert w.overlay(0.0) == []
+    w.process(img, 0.5, panel_visible=False)
+    w.process(img, 1.0, panel_visible=False)
+    (e,) = w.overlay(1.0)
+    assert e["kind"] == "stranger" and e["label"].startswith("复核·") and e["form"]["lit"] == 0.9
+
+
+def test_overlay_unchanged_without_attrs():
+    det = FakeDetector()
+    det.frames = [[player(1500)]]
+    w = watcher(det)
+    w.process(frame(), 0.0, panel_visible=False)
+    (e,) = w.overlay(0.0)
+    assert "form" not in e and "u" not in e and not e["label"].startswith("复核")
+
+
+def test_overlay_spirit_requires_membership():
+    # 外形投成先祖，但和团子框重叠所以不在 _others：不画成先祖
+    img, model = scene({1500: probs(spirit=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1500)]]
+    w = watcher(det, model)
+    for t in (0.0, 0.5):
+        w.process(img, t, panel_visible=False)
+    assert [e["kind"] for e in w.overlay(0.5)] == ["spirit"]
+    w._others = []
+    assert [e["kind"] for e in w.overlay(0.5)] != ["spirit"]
+
+
+def test_hardcase_on_reject_once():
+    img, model = scene({1500: probs(not_person=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1500, h=220)]]
+    w = watcher(det, model)
+    w.hardcases = RecHard()
+    for t in (0.0, 0.5, 1.0, 1.5, 2.0, 2.5):
+        w.process(img, t, panel_visible=False)
+    assert [r[1] for r in w.hardcases.reports] == ["attrs_reject"]
+
+
+def test_no_attrs_hardcase_while_paused():
+    img, model = scene({1500: probs(unlit=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1500, h=220)]]
+    w = watcher(det, model)
+    w.hardcases = RecHard()
+    for t in (0.0, 0.5, 1.0):
+        w.process(img, t, panel_visible=False)
+    w.hold("camera")
+    for t in (2.5, 3.0):
+        w.process(img, t, panel_visible=False)
+    assert w.hardcases.reports == []
+
+
+def test_disagree_reported_after_two_seconds():
+    # YOLO 说是点过火的人（player），外形说是黑影（unlit）
+    img, model = scene({1500: probs(unlit=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1500, h=220)]]
+    w = watcher(det, model)
+    w.hardcases = RecHard()
+    for t in (0.0, 0.5, 1.0, 1.5, 1.9):
+        w.process(img, t, panel_visible=False)
+    assert w.hardcases.reports == []
+    for t in (2.0, 2.5, 3.0):
+        w.process(img, t, panel_visible=False)
+    assert [r[1] for r in w.hardcases.reports] == ["attrs_disagree"]
+    (tr,) = w.last_tracks
+    assert tr.data["disagree_reported"] is True
