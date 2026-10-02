@@ -398,6 +398,24 @@ class Body:
                 raise ToolError("身体还在做这件事（已经开始了），别重试，等下次醒来看结果") from None
             raise ToolError(f"身体忙不过来，这个命令超时了（{used:.0f} 秒）") from None
 
+    def post(self, fn: Callable[[], Any]) -> bool:
+        """不等结果地交给身体线程做（大脑交“心里”文字之类）：身体忙着（自动喊要 4 秒）也不卡调用方。
+        身体停了返回 False、不做；出错只记日志。"""
+        if self.stopped:
+            return False
+
+        def run() -> None:
+            try:
+                fn()
+            except Exception:
+                log.exception("身体做交过来的事出错")
+
+        if threading.get_ident() == self._thread:
+            run()
+        else:
+            self._commands.put((run, Future()))
+        return True
+
     def _run_commands(self) -> None:
         while True:
             try:

@@ -2458,7 +2458,13 @@ def _run_brain(
     body.brain_busy = lambda: brain.chat_turn
     body.brain_turn = lambda: brain.last_turn  # 替大脑开的输入框：开框之后的那一轮结束了没说话就关
     if body.lulls is not None:  # 冷场时大脑心里想的（“心里：”）记到身体那边
-        brain.on_text = lambda text: body.call(lambda began=brain.last_turn[0]: body.mused(text, began), timeout=3)
+        def hand_over(text: str) -> None:
+            # 不等身体：身体在自动喊（约 4 秒）时 call 会超时报 ERROR、丢掉这轮的“心里”；退出时身体已停，直接丢掉
+            began = brain.last_turn[0]
+            if not body.post(lambda: body.mused(text, began)):
+                log.debug("身体停了，这轮的文字不交了")
+
+        brain.on_text = hand_over
     if on_ready is not None:
         try:
             on_ready(BrainParts(
