@@ -1,5 +1,5 @@
 /* 识别画面：画图 + 识别框 + 标签 + 十字 + 悬停描述（viewer 网页和管理面板真机页共用，spec 2026-10-01-console-live-page §3.1）。
- * 快照格式见 vision/viewer.py 的 _render：{seq, width, height, image, boxes:[{x,y,w,h,kind,label?,score?,desc?,motion?,form?,u?}], info}。
+ * 快照格式见 vision/viewer.py 的 _render：{seq, width, height, image, boxes:[{x,y,w,h,kind,label?,score?,desc?,motion?,form?,u?,reviewed?}], info}。
  * 标签、描述来自识别 / 模型：只用 fillText 画。顶层不碰 document：node 里 require 它能测 nameAt / toFrame（tests/test_viewer.py）。 */
 (function () {
 "use strict";
@@ -21,6 +21,9 @@ function toFrame(clientX,clientY,rect,width,height){return [Math.round((clientX-
 function formText(b){const f=b.form?Object.entries(b.form).filter(e=>e[1]>=0.05).sort((x,y)=>y[1]-x[1]).map(e=>`${e[0]} ${e[1].toFixed(2)}`).join(" "):"";
   return [f&&`外形 ${f}`,b.u!==undefined&&`黑影分 ${b.u.toFixed(2)}`].filter(Boolean).join(" · ")}
 
+/* 框上画的字：label + 分数；靠第二层复核放行的（reviewed）前面加"复核·"——只在画字时加，nameAt 等取名字的地方用干净的 label */
+function boxText(b){return (b.reviewed&&b.label?"复核·":"")+(b.label||"")+(b.score!==undefined?` ${b.score.toFixed(2)}`:"")}
+
 /* o.boxes = false 只画图（十字照画）；o.mark = 原图坐标的十字；o.hover = 画布像素坐标，落在有 desc / motion / form 的框里时在框下方写一行 */
 function draw(canvas,img,s,o){
   o=o||{};const ctx=canvas.getContext("2d");
@@ -33,7 +36,7 @@ function draw(canvas,img,s,o){
   const boxes=s.boxes||[];
   for(const b of boxes){const col=COLORS[b.kind]||"#fff",x=b.x*k,y=b.y*k,w=b.w*k,h=b.h*k;
     ctx.strokeStyle=col;ctx.lineWidth=b.kind==="request"?4:2;ctx.setLineDash(b.kind.startsWith("panel")?[8,5]:b.kind==="maybe"?[6,4]:b.kind==="rejected"?[4,4]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
-    const t=(b.label||"")+(b.score!==undefined?` ${b.score.toFixed(2)}`:"");if(!t)continue;
+    const t=boxText(b);if(!t)continue;
     const below=b.kind==="ring"||b.kind==="request",tw=ctx.measureText(t).width+8,th=fs+6,ty=(below||y-th<0)?y+h:y-th;
     ctx.fillStyle=col;ctx.fillRect(x,ty,tw,th);ctx.fillStyle="#0b0d12";ctx.fillText(t,x+4,ty+th/2);}
   if(!o.hover)return;
@@ -42,7 +45,7 @@ function draw(canvas,img,s,o){
   if(!hit)return;const t=[hit.desc,hit.motion,formText(hit)].filter(Boolean).join(" · "),tw=ctx.measureText(t).width+8,th=fs+6,x=Math.min(hit.x*k,canvas.width-tw),y=Math.min((hit.y+hit.h)*k,canvas.height-th);
   ctx.fillStyle="rgba(11,13,18,.85)";ctx.fillRect(x,y,tw,th);ctx.fillStyle="#e6e8ee";ctx.fillText(t,x+4,y+th/2)}
 
-const Stage={COLORS,NAMES,nameAt,toFrame,formText,draw};
+const Stage={COLORS,NAMES,nameAt,toFrame,formText,boxText,draw};
 globalThis.Stage=Stage;
 if(typeof module!=="undefined"&&module.exports)module.exports=Stage;
 })();

@@ -350,7 +350,7 @@ def test_overlay_marks_rejected_and_reviewed():
     assert (e["kind"], e["label"]) == ("rejected", "不是人 0.9")
     assert e["form"]["not_person"] == 0.9 and "u" in e
 
-    # 低分框：复核之前不画，靠复核放行后画出来，label 前加"复核·"
+    # 低分框：复核之前不画，靠复核放行后画出来，带 reviewed（"复核·"只在网页画字时加，label 保持干净）
     img, model = scene({1500: probs(lit=0.9)})
     det = FakeDetector()
     det.frames = [[low_player(1500)]]
@@ -360,7 +360,23 @@ def test_overlay_marks_rejected_and_reviewed():
     w.process(img, 0.5, panel_visible=False)
     w.process(img, 1.0, panel_visible=False)
     (e,) = w.overlay(1.0)
-    assert e["kind"] == "stranger" and e["label"].startswith("复核·") and e["form"]["lit"] == 0.9
+    assert (e["kind"], e["label"], e["reviewed"]) == ("stranger", "陌生人", True) and e["form"]["lit"] == 0.9
+
+
+def test_reviewed_friend_label_is_plain_name():
+    """靠复核放行的好友：overlay 的 label 就是名字（给眼睛 / 大脑的 scene_note、网页点人取名字都用它），不带"复核·"、不重复列。"""
+    from skydango.brain.images import scene_note
+
+    img, model = scene({1000: probs(lit=0.9)})
+    det = FakeDetector()
+    det.frames = [[low_player(1000), tag(990, 110)]]
+    w = watcher(det, model, ocr=FakeOcr({110: NAME}), keep=5.0)
+    for t in (0.0, 0.5, 1.0):
+        w.process(img, t, panel_visible=False)
+    friend = [e for e in w.overlay(1.0) if e["kind"] == "friend"]
+    assert [(e["label"], e.get("reviewed")) for e in friend] == [(NAME, True)]
+    note = scene_note(w, 1.0, 1.0)
+    assert "复核" not in note and note.count(NAME) == 1
 
 
 def test_overlay_unchanged_without_attrs():
@@ -369,7 +385,7 @@ def test_overlay_unchanged_without_attrs():
     w = watcher(det)
     w.process(frame(), 0.0, panel_visible=False)
     (e,) = w.overlay(0.0)
-    assert "form" not in e and "u" not in e and not e["label"].startswith("复核")
+    assert "form" not in e and "u" not in e and "reviewed" not in e and not e["label"].startswith("复核")
 
 
 def test_overlay_spirit_requires_membership():

@@ -2091,7 +2091,8 @@ class PerceptionWatcher:
                 entry["desc"] = desc
             if attrs_on:
                 if not d.get("strong"):
-                    entry["label"] = "复核·" + entry["label"]  # 低分框，靠第二层复核才放行的
+                    # 低分框，靠第二层复核才放行的；label 保持干净（scene_note、网页点人取名字都用它），"复核·"由网页画字时加
+                    entry["reviewed"] = True
                 self._form_entry(entry, t, mean)
             out.append(entry)
         with self._lock:
