@@ -53,7 +53,8 @@ catalog/                              # gitignore
 | `sure` | 好友名是不是被名字标签证实（这一期好友一定是 true；"像小明"的按陌生人存） |
 | `maybe` | 按外观 / 位置接回的"像谁"（没有就 null） |
 | `run` | 运行目录名 |
-| `t` | 截图时间（epoch 秒） |
+| `t` | 截图时的感知层时间（感知层的 `now`，monotonic；离线工具里是录像时间） |
+| `wall` | 截图时的 epoch 秒 |
 | `box` | `[x, y, w, h]`，原画面坐标 |
 | `height` | 框高 / 画面高 |
 | `sharp` | 清晰度（§3.1 第 4 条） |
@@ -99,23 +100,24 @@ class CatalogCollector:
 - 得分 `score = sharp × min(height / full_height, 1)`，`full_height` = 0.5（框高到画面一半就不再加分）
 - 缓冲最多 `per_who` 张，两两拍摄时间至少隔 `gap` 秒：
   - 缓冲没满且和已有的都隔够 `gap` → 放进去
-  - 和某张隔不够 `gap`：比那张好就替换它（同一瞬间留最好的），否则丢掉
+  - 和已有的某几张隔不够 `gap`：比这几张都好就把它们换成这一张（同一段时间留最好的），否则丢掉
   - 满了：比最差的那张好、且和其余的都隔够 `gap` → 替换最差的
 - 缓冲里存的是裁图本身（内存里），写盘才压 JPEG
 
 ### 3.3 写盘
 
 - 陌生人的轨迹被追踪器删掉（`tracker.dropped`）→ 写出他那份、清掉缓冲
-- 每 `flush_every` 秒把所有缓冲写一遍（覆盖这次运行里同一个身份之前写的文件；缓冲里的张数只增不减，所以不会留下多余的旧文件），然后重写这次运行的 `index.jsonl`
+- 每 `flush_every` 秒把所有缓冲写一遍（覆盖这次运行里同一个身份之前写的文件；缓冲变少时——一张新图替换掉两张挨得近的——删掉多出来的旧文件），然后重写这次运行的 `index.jsonl`
 - 写出过的陌生人清掉缓冲后，索引里照样留着他那几行（索引按"已写出的全部"重写，不只是当前缓冲）
 - `close()`（感知层 `stop()`）全部写出
 - 写盘在感知层后台线程里做；任何 IO 错误只记一条 WARNING，不抛出、不影响感知
-- 一次运行最多存 `max_per_run` 张（按已写出 + 缓冲里的算）：满了不再开新的陌生人缓冲，已有缓冲照常替换（不增加张数）
+- 一次运行最多存 `max_per_run` 张（按缓冲里的 + 已写出并清掉缓冲的陌生人算）：满了以后任何会让张数增加的放入都不做（新身份开不了缓冲、没满的缓冲也不再加），已有的照常替换（不增加张数）
+- 目录在第一次真的写图时才建（没收到任何图的运行不留空目录）
 
 ## 4. 接线
 
 - `cli._scene_watcher`：`[catalog] enabled`、`[perception] enabled`、有运行目录（`run`，大脑模式和 `--no-brain` 都算）时建 `CatalogCollector(cfg.catalog, Path(cfg.catalog.dir), run.path.name, 运行开始那天)` 传给 `PerceptionWatcher(catalog=…)`；
-  `view`、`perception detect`、沙盒没有运行目录或不走感知层，不建。`[perception]` 没开而 `[catalog]` 开着：启动时一条 WARNING
+  `view`、`perception detect`、沙盒没有运行目录或不走感知层，不建。`[perception]` 没开时不建、不提示（`[catalog]` 默认开，提示会让每个没开感知层的人每次都看到）
 - `PerceptionWatcher.process()`：追踪完、分好 `selfs / players`、名字标签挂好、接回做完之后（陌生人判定那一段之后）调 `catalog.update(…)`；
   `tracker.dropped` 交给 `catalog.dropped(…)`；`stop()` 调 `catalog.close()`。感知暂停（`paused`）时不调 `update`
 - 收集器只读轨迹，不改任何 `data`；`catalog = None` 时感知层行为逐字照旧
