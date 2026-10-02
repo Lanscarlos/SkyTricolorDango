@@ -16,6 +16,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from ..config import AttrsConfig
 from ..imageio import imread
 from . import attrs
 from .attrs import FORMS, PERSON_FORMS
@@ -311,17 +312,18 @@ def _score(preds: list[dict], gt: list[tuple[Rect, int]]) -> tuple[int, int, int
     return len(matched), len(preds) - len(matched), len(gt) - len(matched), both, bad
 
 
-def _unlit_second(d: dict) -> bool:
-    """两边平均：u = 0.5 × YOLO（player_unlit = 1）+ 0.5 × 外形头里 unlit 占 lit / unlit / shared / morph 的比例 ≥ 0.5。"""
+def _unlit_second(d: dict, yolo_w: float = AttrsConfig.yolo_w) -> bool:
+    """两边加权（同运行时 attrs.unlit_score 的第一次判定）：
+    u = yolo_w × YOLO（player_unlit = 1）+ (1 − yolo_w) × 外形头里 unlit 占 lit / unlit / shared / morph 的比例 ≥ 0.5。"""
     yolo = 1.0 if d["cls"] == "player_unlit" else 0.0
     p = d["p"]
     den = sum(p.get(k, 0.0) for k in ("lit", "unlit", "shared", "morph")) if p else 0.0
     if den <= 0:
         return yolo >= 0.5
-    return 0.5 * yolo + 0.5 * p.get("unlit", 0.0) / den >= 0.5
+    return yolo_w * yolo + (1 - yolo_w) * p.get("unlit", 0.0) / den >= 0.5
 
 
-def simulate(records: list[dict], conf: float, accept: float, reject: float) -> dict:
+def simulate(records: list[dict], conf: float, accept: float, reject: float, yolo_w: float = AttrsConfig.yolo_w) -> dict:
     """单帧版的复核：基线 = 分 ≥ conf 的框；第二层 = 分 ≥ conf 且外形头没有 ≥ reject 地说不是人，
     加上 conf_low ≤ 分 < conf、外形头判成人形且 ≥ accept 的框（每框当成复核过 reject_n 次同样的结果）。"""
     tot = {"baseline": [0] * 5, "second": [0] * 5}
@@ -334,11 +336,11 @@ def simulate(records: list[dict], conf: float, accept: float, reject: float) -> 
             if d["score"] >= conf:
                 base.append({**d, "unlit": d["cls"] == "player_unlit"})
                 if not (p and p.get("not_person", 0.0) >= reject):
-                    second.append({**d, "unlit": _unlit_second(d)})
+                    second.append({**d, "unlit": _unlit_second(d, yolo_w)})
             elif p:
                 top = max(p, key=p.get)  # 和运行时 PersonAttrs.admit 一致：最高类要是人形、概率 ≥ accept
                 if top in PERSON_FORMS and p[top] >= accept:
-                    second.append({**d, "unlit": _unlit_second(d)})
+                    second.append({**d, "unlit": _unlit_second(d, yolo_w)})
         for key, preds in (("baseline", base), ("second", second)):
             for i, v in enumerate(_score(preds, rec["gt"])):
                 tot[key][i] += v
@@ -350,11 +352,11 @@ def simulate(records: list[dict], conf: float, accept: float, reject: float) -> 
 
 
 def replay(frames: list[Path], detector, model, conf_low: float, conf: float, accept: float, reject: float,
-           reject_n: int = 3) -> dict:
+           reject_n: int = 3, yolo_w: float = AttrsConfig.yolo_w) -> dict:
     """在带 YOLO 标注的验证帧（<数据集>/images/val/*）上比较"纯 YOLO"和"低分框 + 外形头复核"。
     reject_n 在单帧版里没有作用（相当于每框复核了 reject_n 次同样的结果），只记在结果里。"""
-    r = simulate(collect(frames, detector, model, conf_low), conf, accept, reject)
-    r.update(conf_low=conf_low, conf=conf, accept=accept, reject=reject, reject_n=reject_n)
+    r = simulate(collect(frames, detector, model, conf_low), conf, accept, reject, yolo_w)
+    r.update(conf_low=conf_low, conf=conf, accept=accept, reject=reject, reject_n=reject_n, yolo_w=yolo_w)
     return r
 
 
@@ -404,6 +406,18 @@ def _pct(v: float | None) -> str:
     return "—" if v is None else f"{v:.0%}"
 
 
+def _unlit_note(w: float) -> str:
+    """单帧回放「点没点火认反」那一列怎么算、外形头翻得动 YOLO 的门槛（从 u ≥ 0.5 推出来）。"""
+    head = (f"注意：单帧回放里「点没点火认反」按 u = yolo_w×YOLO + (1−yolo_w)×外形头黑影占比 ≥ 0.5 算（yolo_w = {w:g}；"
+            "运行时只有第一次判定是这条，之后要连续 flip_votes 票越过 0.6 / 0.4 才翻，单帧回放里没有这层滞回）。")
+    if w >= 0.5:
+        return head + ("YOLO 一侧的权重不比外形头小：player 框要外形头黑影占比恰好 1.0 才翻、player_unlit 框永远保持黑影，"
+                       "所以第二层这一列基本就是 YOLO 自己的答案，看不出外形头对点火判断的帮助（要看真机投票）。")
+    up, down = 0.5 / (1 - w), (0.5 - w) / (1 - w)
+    return head + (f"外形头黑影占比 ≥ {up:.2f} 能把 YOLO 的 player 框翻成黑影、< {down:.2f} 能把 player_unlit 框翻成点过火，"
+                   "所以这一列能看出外形头的帮助；但运行时的翻转更严（连续几票、越过 0.6 / 0.4），这里只是单帧的上限。")
+
+
 def replay_md(r: dict) -> list[str]:
     lines = [f"conf_low = {r['conf_low']:g}、conf = {r['conf']:g}、accept = {r['accept']:g}、reject = {r['reject']:g}"
              f"（{r['frames']} 帧、{r['gt']} 个人物标注）", "",
@@ -412,8 +426,7 @@ def replay_md(r: dict) -> list[str]:
         s = r[key]
         lines.append(f"| {name} | {s['tp']} | {s['fp']} | {s['fn']} | {_pct(s['precision'])} | {_pct(s['recall'])} | "
                      f"{s['mismatch']} / {s['pairs']} |")
-    lines.append("注意：单帧回放里「点没点火认反」按 u = 0.5×YOLO + 0.5×外形头 ≥ 0.5 算，YOLO 的 player 框要外形头黑影占比恰好 1.0 才翻、"
-                 "player_unlit 框永远保持黑影，所以第二层这一列基本就是 YOLO 自己的答案，看不出外形头对点火判断的帮助（要看真机投票）。")
+    lines.append(_unlit_note(r.get("yolo_w", AttrsConfig.yolo_w)))
     return lines + [""]
 
 

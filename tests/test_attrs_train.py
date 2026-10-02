@@ -162,10 +162,38 @@ def test_replay_counts(tmp_path):
     assert (b["tp"], b["fp"], b["fn"]) == (2, 1, 1)  # 基线：A、B 对，高分假框错，低分真框漏
     assert (s["tp"], s["fp"], s["fn"]) == (3, 0, 0)
     assert (b["pairs"], b["mismatch"]) == (2, 1)  # B 被 YOLO 认成 player（亮）
-    # 单帧局限：player 框要外形头黑影占比恰好 1.0 才翻成黑影，0.98 翻不了 -> 第二层的认反数就是 YOLO 自己的
-    assert (s["pairs"], s["mismatch"]) == (3, 1)
-    assert "基本就是 YOLO 自己的答案" in "\n".join(at.replay_md(r))
+    # 默认 yolo_w = 0.3：外形头黑影占比 ≥ 0.5 / 0.7 ≈ 0.71 就能把 YOLO 的 player 框翻成黑影，B（0.98）翻对了
+    assert (s["pairs"], s["mismatch"]) == (3, 0)
+    assert r["yolo_w"] == 0.3
+    md = "\n".join(at.replay_md(r))
+    assert "yolo_w = 0.3" in md and "≥ 0.71" in md and "< 0.29" in md and "基本就是 YOLO 自己的答案" not in md
     assert r["frames"] == 2 and r["gt"] == 3
+
+
+def test_replay_yolo_w_half_cannot_flip(tmp_path):
+    """yolo_w = 0.5：player 框要外形头黑影占比恰好 1.0 才翻，0.98 翻不了 -> 第二层的认反数就是 YOLO 自己的。"""
+    frames = _replay_set(tmp_path)
+    r = at.replay(frames, det_again(), FakeModel(model_queue()), conf_low=0.2, conf=0.5, accept=0.6, reject=0.7, yolo_w=0.5)
+    assert (r["second"]["pairs"], r["second"]["mismatch"]) == (3, 1)
+    assert "基本就是 YOLO 自己的答案" in "\n".join(at.replay_md(r))
+
+
+def test_cli_replays_use_configured_yolo_w(tmp_path, monkeypatch):
+    frames = _replay_set(tmp_path)
+    monkeypatch.setattr("skydango.vision.detect.make_detector", lambda *a, **kw: det_again())
+    cfg = Config()
+    cfg.attrs.yolo_w = 0.5
+    cfg.perception.low_conf = 0.2
+    replays, _ = cli._attrs_replays(cfg, frames, FakeModel(model_queue()), [])
+    (r,) = replays
+    assert r["yolo_w"] == 0.5 and (r["second"]["pairs"], r["second"]["mismatch"]) == (3, 1)
+
+
+def test_unlit_second_follows_yolo_w():
+    lit_box = {"cls": "player", "p": {"not_person": 0.0, "lit": 0.25, "unlit": 0.75}}
+    dark_box = {"cls": "player_unlit", "p": {"not_person": 0.0, "lit": 0.8, "unlit": 0.2}}
+    assert at._unlit_second(lit_box, 0.3) is True and at._unlit_second(lit_box, 0.5) is False
+    assert at._unlit_second(dark_box, 0.3) is False and at._unlit_second(dark_box, 0.5) is True
 
 
 def det_again():

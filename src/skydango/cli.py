@@ -833,8 +833,8 @@ def _attrs_replays(cfg: Config, frames: list, model, notes: list[str]):
         records = at.collect(frames, detector, model, low)
         if suggest is None or low == p.low_conf:
             suggest = at.sweep_thresholds(records, p.conf)
-        replays.append({**at.simulate(records, p.conf, a.accept, a.reject), "conf_low": low, "conf": p.conf,
-                        "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n})
+        replays.append({**at.simulate(records, p.conf, a.accept, a.reject, a.yolo_w), "conf_low": low, "conf": p.conf,
+                        "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n, "yolo_w": a.yolo_w})
     return replays, suggest
 
 

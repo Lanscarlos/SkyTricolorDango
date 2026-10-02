@@ -183,11 +183,11 @@ def test_unvoted_weak_track_is_not_kept_alive():
 
 
 def test_dark_cloak_lit_player_not_counted_unlit():
-    """YOLO 一直报黑影、外形头很肯定是点过火的（深色斗篷）：两边投票后算点过火的陌生人。"""
+    """YOLO 一直报黑影、外形头很肯定是点过火的（深色斗篷）：两边投票后算点过火的陌生人（默认 yolo_w 就要做到）。"""
     img, model = scene({1500: probs(lit=0.95, unlit=0.01)})
     det = FakeDetector()
     det.frames = [[Detection("player_unlit", Rect(1500, 400, 90, 220), 0.9)]]
-    w = watcher(det, model, attrs_cfg=AttrsConfig(enabled=True, every=0.0, yolo_w=0.3))
+    w = watcher(det, model)
     for t in (0.0, 0.5, 1.0):
         w.process(img, t, panel_visible=False)
     assert w.unlit(1.0) == 0

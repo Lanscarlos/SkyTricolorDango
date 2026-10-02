@@ -92,7 +92,7 @@ def test_attrs_config_defaults(tmp_path):
     a = Config().attrs
     assert a.enabled is False and a.max_crops == 4 and a.accept == 0.6
     assert (a.model, a.backbone, a.device) == ("models/attrs.npz", "models/dinov2-small.onnx", "")
-    assert (a.every, a.votes, a.reject, a.reject_n, a.yolo_w, a.flip_votes, a.max_errors) == (0.5, 5, 0.7, 3, 0.5, 3, 10)
+    assert (a.every, a.votes, a.reject, a.reject_n, a.yolo_w, a.flip_votes, a.max_errors) == (0.5, 5, 0.7, 3, 0.3, 3, 10)
     f = tmp_path / "c.toml"
     f.write_text("[attrs]\nenabled = true\nmax_crops = 2\n", encoding="utf-8")
     c = load_config(f)
