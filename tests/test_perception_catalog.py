@@ -94,7 +94,8 @@ def test_no_catalog_is_fine():
 
 
 def test_stranger_where_dango_just_was_is_not_collected():
-    """YOLO 这一帧没给团子出 self 框、只出了 player 框：最近 1 秒团子待过的地方冒出来的"陌生人"就是团子，不收。"""
+    """YOLO 这一帧没给团子出 self 框、只出了 player 框：团子待过的地方冒出来的"陌生人"就是团子，不收。
+    感知层把它认成团子（_mark_dango），根本不交给收集器；团子框 30 秒内见过都这样认（DANGO_MEMORY）。"""
     me = Detection("self", Rect(900, 400, 120, 260), 0.9)
     on_me = Detection("player", Rect(905, 405, 118, 255), 0.9)
     far = player(300)
@@ -105,10 +106,10 @@ def test_stranger_where_dango_just_was_is_not_collected():
     w.process(frame(), 0.0, False)
     w.process(frame(), 0.5, False)  # 团子框 0.5 秒前还在：这个 player 是团子
     _, players, _, _, _ = w.catalog.updates[-1]
-    assert players.count(None) == 1 and any(p is not None and p.kind == "stranger" for p in players)
-    w.process(frame(), 1.2, False)  # 超过 1 秒没见过团子框：不再这样认（宁可漏，不靠旧位置瞎猜）
+    assert len(players) == 1 and players[0].kind == "stranger"
+    w.process(frame(), 1.2, False)  # 1 秒以上没见过团子框：还是团子（以前 1 秒后就当陌生人收了）
     _, players, _, _, _ = w.catalog.updates[-1]
-    assert None not in players
+    assert len(players) == 1 and players[0].kind == "stranger"
 
 
 def test_player_overlapping_self_box_in_same_frame_is_not_collected():

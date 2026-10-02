@@ -212,6 +212,9 @@ dir = "private/sandbox"
 - 没点火的陌生人是黑影，单独一类 `player_unlit`，看到就是陌生人；点过火的陌生人外观和好友一样，靠名字标签分：有标签且对得上 friends.md 是好友，一直没标签、离得不远的是陌生人（身体发 `stranger` 事件）
 - `enabled = true` 时替换 env 的定时整图 OCR，接口一样，身体 / 社交 / 眼睛不用改；关掉就退回原来的
 - **画面被挡时暂停计时**：黑屏、转镜头、开好友树、换轮盘、接互动时身体 / Agent 调 `env.held(原因)`；玩家自己开全屏界面靠"集体消失"规则兜底（≥ 2 人同时不见 + 画面大变）。EnvWatcher 是空实现
+- **团子自己**（10-03，`_mark_dango`）：YOLO 在团子身上常常只出 `player`（`self` 只有 0.3 左右或干脆没有），团子在屏幕上的位置随聊天面板开 / 关差约 400 px；
+  按面板开关分别记住最近的高分 `self` 框（`DANGO_MEMORY` 30 秒），落在那里（`same_body`：IoU ≥ 0.45）的人物轨迹打 `data["dango"]`、跟着轨迹走：不判陌生人、不挂名字标签、不算没挂名字的人（自动喊一声）。
+  这一帧有 `self` 框而它不在上面、或者没 `self` 框时横着离开记住的位置超过一个团子框宽就摘掉；贴在团子身前、框把团子包住的陌生人不算（IoU 低）
 - **难例**：运行时把可能认错的画面存进 `runs/<…>/hard/`（旁路整图 OCR 核对、低置信度、闪烁、黑影来回变），下一轮 `perception label --from-runs --model` 预标注后只需修正
 - **二期（代码已完成，见 `…-phase2-design.md`）**：`look_around` 在打开感知层时改成连续转一圈（`Camera.spin`）交给 YOLO 汇总"哪个方向有谁"，不叫眼睛；
   转圈时一直在中间不动的人就是团子（`self_box` 代替 `self_roi`，`perception label --spin` 自动补 `self` 框）；眼睛拿 YOLO 认出的好友 / 陌生人 / 团子位置（`scene_note`）；
