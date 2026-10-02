@@ -95,9 +95,10 @@ TRACKING_SWITCHES = ("sticky_names", "track_low", "track_predict", "track_pan", 
 PAN_KINDS = ("zoom", "move", "spin")  # 这几种镜头事件之后 camera_settle 秒内框高会突变：不更新速度、清走近 / 运动历史
 
 
-def detector_conf(cfg: PerceptionConfig, light: bool = False) -> float:
-    """检测器的出框阈值：收集难例、低分框续轨迹时要看到 low_conf ~ conf 之间的框，点亮陌生人要看到 LIT_LOW 以上的黑影；判定仍按 conf。"""
-    conf = min(cfg.low_conf, cfg.conf) if cfg.hardcases or cfg.track_low else cfg.conf
+def detector_conf(cfg: PerceptionConfig, light: bool = False, *, attrs: bool = False) -> float:
+    """检测器的出框阈值：收集难例、低分框续轨迹、第二层复核低分框（attrs）时要看到 low_conf ~ conf 之间的框，
+    点亮陌生人要看到 LIT_LOW 以上的黑影；判定仍按 conf。"""
+    conf = min(cfg.low_conf, cfg.conf) if cfg.hardcases or cfg.track_low or attrs else cfg.conf
     return min(conf, LIT_LOW) if light else conf
 
 
@@ -275,6 +276,7 @@ class PerceptionWatcher:
         saver=None,  # 攒认人模型的训练数据（CropSaver，None = 不存）
         call_window: float = 6.0,  # 按 Q 喊一声的窗口秒数（[call] window）
         camera_settle: float = 0.6,  # 镜头缩放 / 走路 / 转圈后这么久画面才稳（同 [track] settle）
+        attrs=None,  # vision.attrs.PersonAttrs：第二层（复核低分框、撤下误框、点没点火两边投票；None = 不接，行为照旧）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -325,9 +327,12 @@ class PerceptionWatcher:
         self._describe_want: set[tuple[str, str]] = set()  # 要（重新）描述的好友 / 团子，描述回来才去掉
         self._describe_asked: dict[tuple[str, str], float] = {}  # 上次 request 成功的时间：retry_after 内不再问
         self.keep = cfg.keep  # 身体说"走开了"时用
+        self.attrs = attrs
         self.tracker = Tracker(  # 同一个人可能两类来回变
             cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}),
             center_gate=cfg.track_center_gate if cfg.track_predict else 0.0, predict=cfg.track_predict,
+            # 第二层开着：人物的低分框配不上旧轨迹也开一条待复核的（复核放行前不进 players）
+            open_low=frozenset({"player", UNLIT}) if self._attrs_on() else frozenset(),
         )
         self.camera_settle = camera_settle
         self._quiet_until = float("-inf")  # 镜头缩放 / 走路 / 转圈：这之前的帧不攒走近 / 运动历史
@@ -593,8 +598,9 @@ class PerceptionWatcher:
         dets = one_self(self._filter(self._detect(frame), width, height, panel_visible))
         detected = time.perf_counter()
         low_all = [d for d in dets if d.score < self.cfg.conf]
+        attrs_on = self._attrs_on()
         # 检测器为点亮陌生人放低到 LIT_LOW 后，promote_weak_self / 难例 / last_low 仍只看原来阈值以上的低分框
-        floor = detector_conf(self.cfg)
+        floor = detector_conf(self.cfg, attrs=attrs_on)
         low = [d for d in low_all if d.score >= floor]
         dets = promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low)
         if self._occlusion(frame, dets):
@@ -608,12 +614,14 @@ class PerceptionWatcher:
                 log.debug("转过镜头、估不出平移：%d 条轨迹的位置作废", len(self.tracker.tracks))
                 self.tracker.tracks.clear()
                 self._lost.clear()
-        tracks = self.tracker.update(dets, now, low=low if self.cfg.track_low else (), shift=shift)
+        tracks = self.tracker.update(dets, now, low=low if self.cfg.track_low or attrs_on else (), shift=shift)
         self._frame_at = now
+        if self.attrs is not None:
+            self._review(frame, tracks, len(dets), now, width, height, panel_visible)
         if self.cfg.relink:
             self._note_lost(now)
         selfs = [t for t in tracks if t.cls == "self"]
-        players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs)]
+        players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs) and self._admitted(t)]
         tags = [t for t in tracks if t.cls == "name_tag"]
         rings = [t for t in tracks if t.cls == "social_ring"]
         bubbles = [t for t in tracks if t.cls == "typing"]
@@ -643,7 +651,7 @@ class PerceptionWatcher:
             else:
                 orphans.append(ring)
 
-        tagged = self._assign_tags([p for p in players if p.cls != UNLIT], tags)
+        tagged = self._assign_tags([p for p in players if not self._unlit(p)], tags)
         assigned = {t.id for t in tagged.values()}
         seen = []
         for tag in tags:
@@ -704,11 +712,11 @@ class PerceptionWatcher:
                 for key in ("name", "tagged", "tag_at"):
                     player.data.pop(key, None)
             relinked = player.data.get("maybe_by") == "relink"
-            if relinked and (player.cls == UNLIT or (player.data.get("maybe") in shown and player.id not in tagged)):
+            if relinked and (self._unlit(player) or (player.data.get("maybe") in shown and player.id not in tagged)):
                 player.data.pop("maybe", None)  # 接回的人变成黑影 / 他的标签清清楚楚在别处：不是他
                 player.data.pop("maybe_by", None)
             tag = tagged.get(player.id)
-            if player.cls != UNLIT and tag is not None:
+            if not self._unlit(player) and tag is not None:
                 player.data["tag_at"] = now
                 if tag.data.get("name"):
                     player.data["name"] = tag.data["name"]
@@ -723,7 +731,7 @@ class PerceptionWatcher:
             fresh = self._appearance_features(frame, players, selfs, now, width, height, panel_visible)
             self._appearance_identify(frame, players, selfs, tagged, shown, fresh, now, tracks)
         for player in players:
-            if player.cls == UNLIT:  # 没点火的黑影：一定是陌生人，远近都算
+            if self._unlit(player):  # 没点火的黑影：一定是陌生人，远近都算
                 player.data["stranger"] = True
                 strangers += 1
                 unlit += 1
@@ -782,13 +790,42 @@ class PerceptionWatcher:
         if seen:
             log.debug("旁边看到: %s", "、".join(seen))
 
+    # ---- 第二层（spec 2026-10-02-perception-attrs §3.3、§3.4） ----
+    def _attrs_on(self) -> bool:
+        return self.attrs is not None and self.attrs.enabled
+
+    def _unlit(self, t: Track) -> bool:
+        """人物轨迹是不是没点火的黑影：第二层开着时 YOLO 和外形两边投票，否则就看 YOLO 类别。"""
+        return self.attrs.is_unlit(t) if self._attrs_on() else t.cls == UNLIT
+
+    @staticmethod
+    def _admitted(t: Track) -> bool:
+        """第二层放没放行这条人物轨迹（没接第二层时不写这个键 = 都放行）。"""
+        return t.data.get("admitted", True)
+
+    def _review(self, frame: np.ndarray, tracks: list[Track], strong: int, now: float,
+                width: int, height: int, panel_visible: bool) -> None:
+        """tracker.update 之后：前 strong 条是高分框接上 / 新开的（记 strong，第一次就记），交给第二层复核、投票，
+        再给这一帧的每条人物轨迹写 admitted。感知暂停时不复核（放行沿用上一帧的投票）。推理连续出错关掉后不再开待复核的轨迹。"""
+        for t in tracks[:strong]:
+            t.data["strong"] = True
+        if not self.paused:
+            panel = roi_rect(self.log_roi, width, height) if panel_visible else None
+            self.attrs.update(frame, tracks, now, panel)
+        if not self.attrs.enabled and self.tracker.open_low:
+            log.info("人物属性关掉了：不再开待复核的低分轨迹")  # 关掉的 WARNING attrs 自己记过
+            self.tracker.open_low = frozenset()
+        for t in tracks:
+            if t.cls in ("player", UNLIT):
+                t.data["admitted"] = self.attrs.admit(t)
+
     def _keep_named(self, players: list[Track], now: float) -> None:
         """轨迹续命（spec 2026-10-01-q-call §1.1）：好友稍远一点头顶的名字标签就淡掉，人还在画面里。
         挂过名字标签的轨迹只要这一帧还接得上，就一直算在身边；轨迹断了（track_buffer）才开始算 keep。
         按外观认的（maybe）不算；交叉走过身份换错时，名字跟到另一个人身上，标签再亮时纠正（同名标签在别处就摘名字）。"""
         for p in players:
             name = p.data.get("name")
-            if (p.cls == "player" and name and p.data.get("tagged") and now - p.last <= PEOPLE_STALE
+            if (not self._unlit(p) and name and p.data.get("tagged") and now - p.last <= PEOPLE_STALE
                     and now - p.strong_last <= LOW_ONLY_MAX):  # 只靠低分框续着的最多续 LOW_ONLY_MAX 秒（低分框可能认错）
                 self.last_seen[name] = now
 
@@ -812,11 +849,12 @@ class PerceptionWatcher:
         """最近一帧里没挂名字的点过火的人（陌生人、没归类的远处小人；按外观认的好友不算）。"""
         tracks = [t for t in list(self.last_tracks) if now - t.last <= PEOPLE_STALE]
         selfs = [t for t in tracks if t.cls == "self"]
-        return self._count_unnamed([t for t in tracks if t.cls == "player" and not self._is_self(t, selfs)])
+        return self._count_unnamed([
+            t for t in tracks if t.cls in ("player", UNLIT) and self._admitted(t) and not self._is_self(t, selfs)
+        ])
 
-    @staticmethod
-    def _count_unnamed(players: list[Track]) -> int:
-        return sum(p.cls == "player" and not p.data.get("name") and not p.data.get("maybe") for p in players)
+    def _count_unnamed(self, players: list[Track]) -> int:
+        return sum(not self._unlit(p) and not p.data.get("name") and not p.data.get("maybe") for p in players)
 
     def _offscreen(self, tag: Track, width: int) -> str | None:
         """名字标签中心在最左 / 最右 edge_band 里：好友在画面外，返回在哪边。"""
@@ -855,7 +893,7 @@ class PerceptionWatcher:
         for p in players:
             tag = tagged.get(p.id)
             name = tag.data.get("name") if tag is not None else None
-            if name and p.cls == "player":
+            if name and not self._unlit(p):
                 where = side_of(p.box.x + p.box.w / 2, width)
                 self._call_note(name, Seen(where, distance(p.box.h, ref, self.cfg.near, self.cfg.far)), now)
 
@@ -882,7 +920,7 @@ class PerceptionWatcher:
 
         todo = [
             p for p in players
-            if p.cls == "player" and p.box.h < limit and self._tag_over(p, tags) is None and due(p)
+            if not self._unlit(p) and p.box.h < limit and self._tag_over(p, tags) is None and due(p)
             and not tag_inside(far_region(p.box, width, height))
         ]
         todo.sort(key=lambda p: p.data.get("far_at", float("-inf")))
@@ -923,7 +961,7 @@ class PerceptionWatcher:
         一帧最多算 max_per_frame 个（最久没算的先算）。返回这一帧新算的 {轨迹 id: (这次的特征, 框)}，学进记忆簿时用。"""
         acfg = self.appearance_cfg
         every = max(1, acfg.every)
-        due = [t for t in [p for p in players if p.cls == "player"] + selfs if t.hits % every == 0]
+        due = [t for t in [p for p in players if not self._unlit(p)] + selfs if t.hits % every == 0]
         due.sort(key=lambda t: t.data.get("feat_at", float("-inf")))
         blocked = [roi_rect(self.log_roi, width, height)] if panel_visible else []
         out: dict[int, tuple[np.ndarray, Rect]] = {}
@@ -950,7 +988,7 @@ class PerceptionWatcher:
                       fresh: dict, now: float) -> None:
         """这一帧新算出好样本的人（没点火的、团子不要）：裁图连同元数据交给 saver 攒训练数据，出错只记日志。"""
         for p in players:
-            if p.cls != "player" or p.id not in fresh:
+            if self._unlit(p) or p.id not in fresh:
                 continue
             feat, box = fresh[p.id]
             try:
@@ -1083,7 +1121,7 @@ class PerceptionWatcher:
         cands: dict[int, np.ndarray] = {}
         for p in players:
             d = p.data
-            if p.cls != "player":  # 变成黑影了：没有外观可比
+            if self._unlit(p):  # 变成黑影了：没有外观可比
                 d.pop("maybe", None)
                 d.pop("maybe_by", None)
                 d.pop("miss", None)
@@ -1134,7 +1172,7 @@ class PerceptionWatcher:
     def _note_lost(self, now: float) -> None:
         """这一帧被追踪器删掉的好友轨迹记成失踪记录（同名只留最新）；过了 keep 的作废。"""
         for t in self.tracker.dropped:
-            if t.cls != "player":
+            if t.cls not in ("player", UNLIT) or self._unlit(t) or not self._admitted(t):  # 被撤下的不接回
                 continue
             d = t.data
             name = d.get("name") if d.get("tagged") else (d.get("maybe") if d.get("maybe_by") == "relink" else None)
@@ -1161,7 +1199,7 @@ class PerceptionWatcher:
             del self._lost[name]  # 他的标签此刻在别处 / 已经在别的轨迹上：这条记录没用了
         cands = [
             p for p in players
-            if p.cls == "player" and not any(p.data.get(k) for k in ("tagged", "name", "maybe"))
+            if not self._unlit(p) and not any(p.data.get(k) for k in ("tagged", "name", "maybe"))
         ]
         pairs: list[tuple[float, str, Track]] = []
         for lost in self._lost.values():
@@ -1466,7 +1504,7 @@ class PerceptionWatcher:
                 owner.data["bubble_start"] = now  # 新的一句
             owner.data["typing_at"] = now
             friend = bool(owner.data.get("name") or owner.data.get("tagged") or owner.data.get("maybe"))
-            self._typing.append((now, owner.id, friend, owner.cls == UNLIT, owner.box.x + owner.box.w / 2, owner.box.h,
+            self._typing.append((now, owner.id, friend, self._unlit(owner), owner.box.x + owner.box.w / 2, owner.box.h,
                                  width, height))
         while self._typing and now - self._typing[0][0] > self.cfg.typing_window:
             self._typing.popleft()
@@ -1512,7 +1550,7 @@ class PerceptionWatcher:
         ref = self._ref_height(height)
         for p in players:
             name = p.data.get("name")
-            if p.cls != "player" or not eligible(name, p.box, width, ref, self.cfg.near, self.cfg.far):
+            if self._unlit(p) or not eligible(name, p.box, width, ref, self.cfg.near, self.cfg.far):
                 p.data.pop("clip", None)  # 走开 / 走远了：之前攒的不能和回来后的拼在一起
                 continue
             buf: ClipBuffer = p.data.setdefault("clip", ClipBuffer(cfg.frames, cfg.fps))
@@ -1591,7 +1629,7 @@ class PerceptionWatcher:
         for t in list(self.last_tracks):
             # 每个键只读一次：感知线程随时可能 pop 掉 maybe / sid（别的线程在读）
             who = t.data.get("name") or t.data.get("maybe") or (STRANGER if t.data.get("stranger") else None)
-            if t.cls in ("player", UNLIT) and who:
+            if t.cls in ("player", UNLIT) and self._admitted(t) and who:
                 known.append((t.box.h, who))
         if not known:
             return None
@@ -1608,20 +1646,21 @@ class PerceptionWatcher:
         ref = self._ref_height(self._frame_h)
         out = []
         for t in list(self.last_tracks):
-            if now - t.last > PEOPLE_STALE:
+            if now - t.last > PEOPLE_STALE or t.cls not in ("player", UNLIT) or not self._admitted(t):
                 continue
             d = t.data
             # 每个键只读一次（不 get 完再 []）：身体线程在读的同时，感知线程可能刚好 pop 掉 maybe / sid
             name, maybe, stranger = d.get("name"), d.get("maybe"), d.get("stranger")
             motion = d.get("motion") if self.cfg.motion else None
             sure, sid, look = True, None, ""
-            if t.cls == UNLIT and stranger:  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
+            dark = self._unlit(t)
+            if dark and stranger:  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
                 kind = "unlit"
-            elif t.cls == "player" and name:
+            elif not dark and name:
                 kind = "friend"
-            elif t.cls == "player" and maybe:  # 没看到名字、按外观认的好友
+            elif not dark and maybe:  # 没看到名字、按外观认的好友
                 kind, name, sure = "friend", maybe, False
-            elif t.cls == "player" and stranger:
+            elif not dark and stranger:
                 kind, sid = "stranger", d.get("sid")
                 if sid and self.appearance is not None:
                     look = self.appearance.look("stranger", sid)
@@ -1935,15 +1974,19 @@ class PerceptionWatcher:
         out = []
         for t in list(self.last_tracks):
             d = t.data
+            person = t.cls in ("player", UNLIT)
+            if person and not self._admitted(t):
+                continue  # 没放行 / 被撤下的人物框先不画（画法见 spec §8，后面再加）
+            dark = person and self._unlit(t)
             # 每个键只读一次（同 people()）；who = 装扮描述按谁查
             name, maybe, sid, who = d.get("name"), d.get("maybe"), d.get("sid"), None
-            if t.cls == "player" and maybe and not name:
+            if person and not dark and maybe and not name:
                 kind, label, who = "maybe", f"像{maybe}?", maybe
-            elif t.cls == "player":
+            elif person and not dark:
                 kind = "stranger" if d.get("stranger") else ("friend" if name else "player")
                 label = name or ((sid or "陌生人") if kind == "stranger" else "")
                 who = name if kind == "friend" else sid
-            elif t.cls == UNLIT:
+            elif dark:
                 kind, label = "unlit", "陌生人（没点火）"
             elif t.cls == "self":
                 kind, label = "self", "团子"

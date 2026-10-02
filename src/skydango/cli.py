@@ -332,7 +332,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
 
     p = cfg.perception
     want_light = light and cfg.social.enabled and "light" in cfg.social.accept_strangers
-    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, want_light), p.iou, p.device)
+    attrs = _person_attrs(cfg)
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, want_light, attrs=attrs is not None), p.iou, p.device)
     log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
     hardcases = None
@@ -360,8 +361,22 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
         social_cfg=cfg.social, flame=flame,
         light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run),
-        call_window=cfg.call.window, camera_settle=cfg.track.settle,
+        call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
     )
+
+
+def _person_attrs(cfg: Config):
+    """感知层第二层（spec 2026-10-02-perception-attrs）：[attrs] 开着、模型读得进来才建 PersonAttrs；
+    模型不存在 / 打不开 / 主干对不上时 load_model 已经警告过，返回 None（等于没开）。"""
+    if not cfg.attrs.enabled:
+        return None
+    from .vision.attrs import PersonAttrs, load_model
+
+    model = load_model(cfg.attrs, _attrs_device(cfg))
+    if model is None:
+        return None
+    log.info("感知层第二层：%s（主干 %s）", cfg.attrs.model, cfg.attrs.backbone)
+    return PersonAttrs(cfg.attrs, model)
 
 
 def _call_enabled(cfg: Config, env) -> bool:
@@ -657,12 +672,14 @@ def _perception(cfg: Config, args, dev=None):
             setattr(p, key, getattr(args, key))
     if getattr(args, "far_crops", None) is not None:
         p.far_crops = args.far_crops
-    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p), p.iou, p.device)
+    attrs = _person_attrs(cfg)
+    detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, attrs=attrs is not None), p.iou, p.device)
     icons = _icon_classifier(cfg)
     watcher = PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=False, capture=dev.screenshot if dev is not None else None,
         **_appearance_parts(cfg),  # 只挂记忆簿：不存训练数据、不描述
+        attrs=attrs,
     )
     return detector, watcher
 
