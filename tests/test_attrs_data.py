@@ -2,7 +2,9 @@ import json
 from datetime import datetime
 
 import numpy as np
+import pytest
 
+from skydango.config import AssistConfig
 from skydango.imageio import imread, imwrite
 from skydango.vision import attrs_data as ad
 from skydango.vision.bubbles import Rect
@@ -165,3 +167,86 @@ def test_rows_absolute_paths_and_other_dataset_not_written(tmp_path):
     (out / "_crops.jsonl").write_text(
         "".join(json.dumps({k: v for k, v in r.items() if k != "dataset"}) + "\n" for r in rows), encoding="utf-8")
     assert ad.writeback(root, out, datetime(2026, 10, 2, 9, 0, 0)) == {"frames": 0, "boxes": 0}
+
+
+# ---- Claude 初分 ----
+
+def _fi(names):
+    crops = [np.full((224, 224, 3), 10 * i, np.uint8) for i in range(len(names))]
+    return ad.make_sheet_input(names, crops)
+
+
+def test_form_sheet_size_and_numbers():
+    sheet = ad.form_sheet([np.full((224, 224, 3), 100, np.uint8)] * 16)
+    assert sheet.shape == (640, 640, 3)
+    for i in range(16):  # 每格左上角白底（编号底），格子中间是原色
+        y, x = (i // 4) * 160, (i % 4) * 160
+        assert sheet[y + 1, x + 1].tolist() == [255, 255, 255]
+        assert sheet[y + 100, x + 100].tolist() == [100, 100, 100]
+    partial = ad.form_sheet([np.full((50, 50, 3), 100, np.uint8)] * 3)  # 不足 16 张、尺寸不对也行
+    assert partial.shape == (640, 640, 3) and partial[100, 260].tolist() == [100, 100, 100]
+    assert partial[500, 500].tolist() == [0, 0, 0]
+    with pytest.raises(ValueError):
+        ad.form_sheet([])
+    with pytest.raises(ValueError):
+        ad.form_sheet([np.zeros((9, 9, 3), np.uint8)] * 17)
+
+
+def test_sheet_stem_stable():
+    assert ad.sheet_stem(["a.jpg", "b.jpg"]) == ad.sheet_stem(["a.jpg", "b.jpg"])
+    assert ad.sheet_stem(["a.jpg", "b.jpg"]) != ad.sheet_stem(["b.jpg", "a.jpg"])
+
+
+def test_build_form_message():
+    f = _fi(["a.jpg", "b.jpg"])
+    content = ad.build_form_message([f], AssistConfig())
+    assert [c["type"] for c in content] == ["text", "image"]
+    assert "0=a.jpg" in content[0]["text"] and "1=b.jpg" in content[0]["text"] and f.stem in content[0]["text"]
+    assert "not_person" in ad.FORM_SYSTEM and "morph" in ad.FORM_SYSTEM and ad.FORM_PROTOCOL.system == ad.FORM_SYSTEM
+
+
+def test_parse_form_review():
+    f = _fi(["a.jpg", "b.jpg", "c.jpg"])
+    text = '好的：\n{"a.jpg": {"label": "lit", "confidence": 0.9, "reason": "x"}, "b.jpg": {"label": "dragon"}, "zzz.jpg": {"label": "lit"}}\n完'
+    got = ad.parse_form_review(text, [f])
+    assert list(got) == ["a.jpg"]  # 未知类别 / 对不上的名字 / 缺项（c）都不在
+    assert got["a.jpg"].label == "lit" and got["a.jpg"].confidence == 0.9
+    assert ad.parse_form_review('{"c.jpg": {"label": "unsure", "confidence": 5}}', [f])["c.jpg"].confidence == 1.0
+    assert ad.parse_form_review("没有 json", [f]) == {}
+    assert ad.FORM_PROTOCOL.parse(text, [f]) == {f.stem: got}
+
+
+def test_form_protocol_through_reviewer(tmp_path):
+    from skydango.vision import assist
+
+    f = _fi(["a.jpg", "b.jpg"])
+    seen = []
+
+    def run(content):
+        seen.append(content)
+        return {"result": '{"a.jpg": {"label": "spirit", "confidence": 0.7}, "b.jpg": {"label": "lit"}}', "usage": {"input_tokens": 3}}
+
+    r = assist.Reviewer(run, tmp_path / "cache", AssistConfig(), "attrs", protocol=ad.FORM_PROTOCOL)
+    out = r.review([f])
+    assert out[f.stem]["a.jpg"].label == "spirit" and out[f.stem]["b.jpg"].label == "lit"
+    assert len(seen) == 1 and r.usage["input_tokens"] == 3
+
+
+def test_form_guess_file_skip_and_merge(tmp_path):
+    unl = tmp_path / "_unlabeled"
+    unl.mkdir()
+    for n in ("a.jpg", "b.jpg", "c.jpg"):
+        imwrite(unl / n, np.zeros((8, 8, 3), np.uint8))
+    assert ad.pending_crops(unl, ad.load_form_guesses(unl)) == ["a.jpg", "b.jpg", "c.jpg"]
+    ad.write_form_guesses(unl, {"a.jpg": ad.Guess("lit", 0.9, "r")}, "sonnet")
+    ex = ad.load_form_guesses(unl)
+    assert ex["a.jpg"] == {"label": "lit", "confidence": 0.9, "reason": "r", "model": "sonnet", "version": ad.FORM_PROMPT_VERSION}
+    assert ad.pending_crops(unl, ex) == ["b.jpg", "c.jpg"]
+    assert ad.pending_crops(unl, ex, recheck=True) == ["a.jpg", "b.jpg", "c.jpg"]
+    ex["b.jpg"] = {"label": "lit", "version": ad.FORM_PROMPT_VERSION - 1}  # 旧版提示词的不算
+    assert ad.pending_crops(unl, ex) == ["b.jpg", "c.jpg"]
+    ad.write_form_guesses(unl, {"b.jpg": ad.Guess("unsure", 0.0, "")}, "sonnet")  # 合并：a 还在
+    assert set(ad.load_form_guesses(unl)) == {"a.jpg", "b.jpg"}
+    assert ad.pending_crops(tmp_path / "nope", {}) == []
+    (unl / "claude.json").write_text("坏的", encoding="utf-8")
+    assert ad.load_form_guesses(unl) == {}

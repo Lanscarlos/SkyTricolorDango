@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -17,10 +18,17 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import cv2
+import numpy as np
+
+from ..brain.images import image_block
+from ..config import AssistConfig
 from ..imageio import imread, imwrite
 from . import attrs
+from .assist import FrameInput, Protocol, extract_json
 from .augment import IMAGE_EXTS, SUFFIXES
 from .bubbles import Rect
+from .gesture_label import Guess, _conf
 from .track import iou
 
 KNOWN = {0: "lit", 4: "unlit", 9: "spirit"}  # datasets/sky 类别编号 → 外形
@@ -211,3 +219,120 @@ def writeback(dataset: Path, out: Path, now: datetime) -> dict:
         frames += 1
         boxes += len(lines)
     return {"frames": frames, "boxes": boxes}
+
+
+# ---- Claude 初分（`perception attrs-label`）：≤16 张裁图拼 4×4，Claude 按裁图名逐张判外形 ----
+
+FORM_PROMPT_VERSION = 1
+FORM_LABELS = (*attrs.FORMS, "unsure")
+FORM_CELL = 160  # 拼图每格边长；4×4 → 640×640
+FORM_PER_SHEET = 16
+FORM_GUESS_FILE = "claude.json"  # 在 _unlabeled/ 里：{裁图名: {label, confidence, reason, model, version}}
+
+FORM_SYSTEM = """你是游戏《光·遇》(Sky) 画面里"人物框"的标注员。每张图是一张 4×4 拼图：16 个检测器框出来的裁图，
+顺序是从左到右、从上到下，每格左上角的数字是格号 0~15（消息里会给出格号对应的裁图名）。判断每一格里的东西属于哪一类：
+- not_person：根本不是玩家 —— 树、椅子、UI 图标、篝火、茶壶、雕像、壁画、地面、光效等。
+- lit：点过火的玩家：有头发、衣服、斗篷，样子和外观实心清楚（颜色鲜明、不透明）。
+- unlit：没点火的玩家（黑影）：整个人是深色 / 灰黑的剪影，没有衣服细节。
+- spirit：先祖：身形修长、偏透明、发光。
+- shared：共享空间里的玩家：矮小、蓝色半透明。
+- morph：变身的玩家：雪人、白鹿等变身造型，也是玩家。
+- unsure：太小、被挡住、模糊，没法判断。
+只输出一个 JSON 对象，每格一项，键是裁图名：
+{"<裁图名>": {"label": "lit", "confidence": 0.8, "reason": "一句话说明看到了什么"}}
+label 只能是 not_person / lit / unlit / spirit / shared / morph / unsure；confidence 是 0~1。不要输出别的文字。"""
+
+
+def form_sheet(crops: list[np.ndarray]) -> np.ndarray:
+    """≤16 张裁图 → 4×4 拼图（每格 160×160，不是这个尺寸先缩放），每格左上角白底黑字写格号 0~15；不足 16 张的格子留黑。"""
+    if not 1 <= len(crops) <= FORM_PER_SHEET:
+        raise ValueError(f"拼图要 1~{FORM_PER_SHEET} 张裁图，给了 {len(crops)}")
+    c = FORM_CELL
+    sheet = np.zeros((c * 4, c * 4, 3), np.uint8)
+    for i, f in enumerate(crops):
+        if f.shape[:2] != (c, c):
+            f = cv2.resize(f, (c, c), interpolation=cv2.INTER_AREA)
+        y, x = (i // 4) * c, (i % 4) * c
+        sheet[y : y + c, x : x + c] = f
+        label = str(i)
+        cv2.rectangle(sheet, (x, y), (x + 10 * len(label) + 4, y + 16), (255, 255, 255), -1)
+        cv2.putText(sheet, label, (x + 2, y + 13), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+    return sheet
+
+
+def sheet_stem(names: list[str]) -> str:
+    """拼图的名字：由它包含的裁图名算出，同一组裁图每次都一样。"""
+    return "sheet-" + hashlib.sha1("\n".join(names).encode("utf-8")).hexdigest()[:12]
+
+
+def make_sheet_input(names: list[str], crops: list[np.ndarray]) -> FrameInput:
+    """一张拼图 = Reviewer 的一帧；hints 放格号对应的裁图名。"""
+    return FrameInput(sheet_stem(names), form_sheet(crops), [], hints=list(names))
+
+
+def build_form_message(batch: list[FrameInput], cfg: AssistConfig) -> list[dict]:
+    """一批拼图的内容块：每张一段文字（格号 → 裁图名）加图片。"""
+    content: list[dict] = []
+    for f in batch:
+        cells = "；".join(f"{i}={n}" for i, n in enumerate(f.hints))
+        content.append({"type": "text", "text": f"拼图 {f.stem}，格号对应的裁图：{cells}"})
+        content.append(image_block(f.image, 85))
+    return content
+
+
+def parse_form_review(text: str, batch: list[FrameInput]) -> dict[str, Guess]:
+    """Claude 的回答 → 裁图名 → Guess。只收 FORM_LABELS 里的 label；裁图名对不上、label 不认识的不在结果里（= 没核对）。"""
+    names = {n for f in batch for n in f.hints}
+    data = extract_json(text, names)
+    if data is None:
+        return {}
+    out: dict[str, Guess] = {}
+    for name, item in data.items():
+        if not isinstance(item, dict) or item.get("label") not in FORM_LABELS:
+            continue
+        out[name] = Guess(item["label"], _conf(item.get("confidence")), str(item.get("reason") or "")[:60])
+    return out
+
+
+def _parse_by_sheet(text: str, batch: list[FrameInput]) -> dict[str, dict[str, Guess]]:
+    """Reviewer 要的形状：拼图名 → {裁图名: Guess}（这张拼图一个都没认出来就不在结果里）。"""
+    flat = parse_form_review(text, batch)
+    out = {}
+    for f in batch:
+        got = {n: flat[n] for n in f.hints if n in flat}
+        if got:
+            out[f.stem] = got
+    return out
+
+
+FORM_PROTOCOL = Protocol(FORM_PROMPT_VERSION, FORM_SYSTEM, build_form_message, _parse_by_sheet)
+
+
+def load_form_guesses(unlabeled: Path) -> dict[str, dict]:
+    """读 _unlabeled/claude.json；没有 / 坏了返回空。"""
+    try:
+        d = json.loads((Path(unlabeled) / FORM_GUESS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def pending_crops(unlabeled: Path, existing: dict[str, dict], recheck: bool = False) -> list[str]:
+    """_unlabeled/ 里还要初分的裁图名：没写过、或者写的是旧版提示词（--recheck 全部重做）。"""
+    unlabeled = Path(unlabeled)
+    names = sorted(p.name for p in unlabeled.iterdir() if p.suffix.lower() in IMAGE_EXTS) if unlabeled.is_dir() else []
+    if recheck:
+        return names
+    return [n for n in names if (existing.get(n) or {}).get("version") != FORM_PROMPT_VERSION]
+
+
+def write_form_guesses(unlabeled: Path, new: dict[str, Guess], model: str) -> None:
+    """把这一批的结果并进 claude.json（读旧的再写，Claude 初分期间标注页挪走的裁图也不影响）。"""
+    unlabeled = Path(unlabeled)
+    merged = load_form_guesses(unlabeled)
+    for name, g in new.items():
+        merged[name] = {"label": g.label, "confidence": g.confidence, "reason": g.reason,
+                        "model": model, "version": FORM_PROMPT_VERSION}
+    tmp = unlabeled / (FORM_GUESS_FILE + ".tmp")
+    tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(unlabeled / FORM_GUESS_FILE)
