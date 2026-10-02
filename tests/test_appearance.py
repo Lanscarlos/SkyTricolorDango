@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from skydango.config import AppearanceConfig, Config
-from skydango.vision.appearance import AppearanceBook, ColorEmbedder, CropSaver, describe_crop, good_crop, make_embedder
+from skydango.vision.appearance import AppearanceBook, ColorEmbedder, CropSaver, clear_box, describe_crop, good_crop, make_embedder
 from skydango.vision.bubbles import Rect
 from skydango.vision.embed import cosine, unit
 
@@ -299,3 +299,14 @@ def test_book_best_friend():
     b.learn("friend", "番茄", e.embed(person(WHITE, BLUE)), 0.0)
     name, score = b.best_friend(e.embed(person(WHITE, PINK)))
     assert name == "小明" and score > 0.95
+
+
+def test_clear_box():
+    box = Rect(100, 100, 100, 200)
+    assert clear_box(box, [], [], 0.2)
+    assert clear_box(box, [Rect(500, 100, 100, 200)], [], 0.2)  # 离得远
+    assert not clear_box(box, [Rect(120, 100, 100, 200)], [], 0.2)  # 和别人重叠
+    assert not clear_box(box, [Rect(150, 150, 30, 40)], [], 0.0)  # 小框压在身上，门槛 0 也不行
+    assert not clear_box(box, [], [Rect(0, 0, 160, 1080)], 0.2)  # 压在聊天面板上
+    assert clear_box(box, [], [Rect(0, 0, 105, 1080)], 0.2)  # 面板只碰到一点边
+    assert not clear_box(Rect(0, 0, 0, 10), [], [], 0.2)  # 空框
