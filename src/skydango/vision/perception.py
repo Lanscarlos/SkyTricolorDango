@@ -66,6 +66,7 @@ UNLIT = "player_unlit"  # 没点火的陌生人：黑色剪影
 STRANGER = "陌生人"  # 陌生人头顶没有名字：发起的请求用这个名字（社交规则里按 stranger 处理）
 SELF_MEMORY = 1.0  # 图鉴收集：团子框这么久内出现过的位置上冒出来的"陌生人"按团子算（YOLO 有的帧不给团子出 self 框）
 SELF_IOU = 0.3  # 和团子框重叠这么多就算团子（_mark_dango 用 same_body 更严，团子身上的 player 框常比 self 框大一圈）
+MERGE_IOU = 0.7  # merge_people：player 和 player_unlit 两框重叠这么多就是同一个人（录像里同一人的两框 IoU 0.74~1.0，挨着的两个人 < 0.5）
 SAME_BODY_IOU = 0.45  # same_body：团子身上的 player 框和 self 框
 DANGO_MEMORY = 30.0  # 团子框（按聊天面板开 / 关分别记）这么久内见过：YOLO 没出 self 时，落在那个位置上的人物框就是团子
 SELF_HOLD = 3.0  # 团子框丢了（黑影贴着团子时 YOLO 常认不出 self）最多沿用最近的框这么久：镜头跟着团子，屏幕位置几乎不变
@@ -198,6 +199,28 @@ def promote_weak_self(dets: list[Detection], low: list[Detection]) -> list[Detec
     out = list(dets)
     out[i] = Detection("self", dets[i].box, dets[i].score)
     return out
+
+
+def merge_people(dets: list[Detection]) -> tuple[list[Detection], set[int]]:
+    """同一个人同时出 player 和 player_unlit 两个框（检测器按类别各自 NMS）：合成一个，留分数高的。
+    返回 (合并后的检测, 压掉过一个黑影框的那些检测在结果里的下标)。
+
+    gesture-bow-1：好友鞠躬，player 0.51 / player_unlit 0.38，黑影框新开一条轨迹、当场判成陌生人。
+    真黑影也常是 player 分数更高（candle 录像 p0.61 / u0.32），所以不在这里定"点没点火"：压掉的黑影框记下来，
+    process 写到留下的轨迹上（data["unlit_at"]），点亮陌生人那边用。"""
+    people = sorted((i for i, d in enumerate(dets) if d.cls in ("player", UNLIT)), key=lambda i: -dets[i].score)
+    kept: list[int] = []
+    dropped: dict[int, int] = {}  # 被压掉的 → 压掉它的
+    for i in people:
+        winner = next((k for k in kept if dets[k].cls != dets[i].cls and iou(dets[k].box, dets[i].box) >= MERGE_IOU), None)
+        if winner is None:
+            kept.append(i)
+        else:
+            dropped[i] = winner
+    out = [d for i, d in enumerate(dets) if i not in dropped]
+    index = {id(d): n for n, d in enumerate(out)}
+    flagged = {index[id(dets[w])] for i, w in dropped.items() if dets[i].cls == UNLIT}
+    return out, flagged
 
 
 def same_body(a: Rect, b: Rect) -> bool:
@@ -609,7 +632,8 @@ class PerceptionWatcher:
         started = time.perf_counter()
         height, width = frame.shape[:2]
         self._frame_h, self._frame_w = height, width
-        dets = one_self(self._filter(self._detect(frame), width, height, panel_visible))
+        dets, flagged = merge_people(one_self(self._filter(self._detect(frame), width, height, panel_visible)))
+        unlit_dup = {id(dets[i]) for i in flagged}  # 压掉过黑影框的检测
         detected = time.perf_counter()
         low_all = [d for d in dets if d.score < self.cfg.conf]
         attrs_on = self._attrs_on()
@@ -635,6 +659,9 @@ class PerceptionWatcher:
                 self._lost.clear()
         tracks = self.tracker.update(dets, now, low=low if self.cfg.track_low or attrs_on else (), shift=shift)
         self._frame_at = now
+        for det, t in zip(dets, tracks):
+            if id(det) in unlit_dup:
+                t.data["unlit_at"] = now  # 这一帧 YOLO 也给他出过黑影框（被合掉了）
         if self.attrs is not None:
             self._review(frame, tracks, len(dets), now, width, height, panel_visible)
         if self.cfg.relink:
@@ -732,9 +759,9 @@ class PerceptionWatcher:
         shown = {t.data["name"] for t in tags if t.data.get("name")}
         for player in players:
             name = player.data.get("name")
-            if name in shown and player.id not in tagged:
+            if name in shown and player.id not in tagged and not self._unlit(player):
                 # 这个名字的标签此刻清清楚楚在别处：之前是挂错了（好友从他身后走过），摘掉。
-                # 标签只是被挡住（这一帧没看到）时不摘
+                # 标签只是被挡住（这一帧没看到）时不摘；这一帧被认成黑影的也不摘（黑影挂不上标签，gesture-bow-1 23 s）
                 log.debug("轨迹 %d 不是 %s（标签在别处），摘掉名字", player.id, name)
                 for key in ("name", "tagged", "tag_at"):
                     player.data.pop(key, None)
@@ -758,10 +785,13 @@ class PerceptionWatcher:
             fresh = self._appearance_features(frame, players, selfs, now, width, height, panel_visible)
             self._appearance_identify(frame, players, selfs, tagged, shown, fresh, now, tracks)
         for player in players:
-            if self._unlit(player):  # 没点火的黑影：一定是陌生人，远近都算
-                player.data["stranger"] = True
-                strangers += 1
-                unlit += 1
+            if self._unlit(player):
+                # 没点火的黑影是陌生人，远近都算；但也等 stranger_after（好友偶尔被认成黑影一两帧，walkaway-1002-1），
+                # 挂过名字标签的轨迹不算（好友不会是黑影）
+                dark = not player.data.get("tagged") and now - player.first >= self.cfg.stranger_after
+                player.data["stranger"] = dark
+                strangers += dark
+                unlit += dark
                 continue
             maybe = player.data.get("maybe")
             is_stranger = (
@@ -791,7 +821,8 @@ class PerceptionWatcher:
         hidden = ([t.box for t in tracks if t.cls in ("player", UNLIT) and not self._admitted(t)] + [t.box for t in self._others]
                   if self._attrs_on() else [])
         self._people_boxes = [
-            (d.box, d.cls == UNLIT) for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
+            (d.box, d.cls == UNLIT or id(d) in unlit_dup)  # 合框压掉过黑影框的也算"YOLO 认成黑影"
+            for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
             if d.cls != "self" and not any(iou(d.box, k) >= 0.5 for k in known + hidden)
         ]
         bonfires = [t for t in tracks if t.cls == "bonfire"]

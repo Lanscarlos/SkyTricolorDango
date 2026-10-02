@@ -210,7 +210,9 @@ dir = "private/sandbox"
 设计和 GPU 机器上的操作步骤见 `docs/superpowers/specs/2026-09-28-perception-yolo-architecture-v0.2.md`（§13）。
 **分三期实现**（总表见总纲 §15）：一期 `…-perception-phase1-design.md`（替换现有识别、上线可用）、二期 `…-phase2-design.md`（环绕扫描、认说话人等）、三期 `…-phase3-design.md`（认地图、跟随等）。实现某一期先读总纲 + 那一期的文档。
 - YOLO 做视觉第一道关卡：每帧检测 `player` / `player_unlit` / `name_tag` / `social_ring` / `self`，名字标签只裁小图跑 OCR 识别，身份跟着名字走
-- 没点火的陌生人是黑影，单独一类 `player_unlit`，看到就是陌生人；点过火的陌生人外观和好友一样，靠名字标签分：有标签且对得上 friends.md 是好友，一直没标签、离得不远的是陌生人（身体发 `stranger` 事件）
+- 没点火的陌生人是黑影，单独一类 `player_unlit`，也等 `stranger_after` 才算陌生人（10-03 起，好友偶尔被认成黑影一两帧），挂过名字标签的轨迹不算；点过火的陌生人外观和好友一样，靠名字标签分：有标签且对得上 friends.md 是好友，一直没标签、离得不远的是陌生人（身体发 `stranger` 事件）
+- **同一个人两个框**（10-03，`merge_people`）：检测器按类别各自 NMS，同一个人常同时留下 `player` 和 `player_unlit`（IoU ≥ `MERGE_IOU` 0.7）：合成一个、留分数高的。
+  真黑影也常是 `player` 分数更高（candle 录像 p0.61 / u0.32），所以不在这里定点没点火：被压掉的黑影框记在留下的轨迹上（`data["unlit_at"]`，点亮陌生人用）；`_people_boxes` 只用框，不受影响
 - `enabled = true` 时替换 env 的定时整图 OCR，接口一样，身体 / 社交 / 眼睛不用改；关掉就退回原来的
 - **画面被挡时暂停计时**：黑屏、转镜头、开好友树、换轮盘、接互动时身体 / Agent 调 `env.held(原因)`；玩家自己开全屏界面靠"集体消失"规则兜底（≥ 2 人同时不见 + 画面大变）。EnvWatcher 是空实现
 - **团子自己**（10-03，`_mark_dango`）：YOLO 在团子身上常常只出 `player`（`self` 只有 0.3 左右或干脆没有），团子在屏幕上的位置随聊天面板开 / 关差约 400 px；

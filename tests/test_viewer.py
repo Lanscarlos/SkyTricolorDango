@@ -117,7 +117,8 @@ def test_describe_env_for_both_recognizers():
     w = PerceptionWatcher(ScriptDetector([Detection("player_unlit", Rect(1300, 500, 40, 90), 0.7)]), WidthOcr({}),
                           PerceptionConfig(), EnvConfig(), lambda: [], [0.0, 0.0, 0.3, 0.8], background=False)
     w.process(frame(), 0.0, panel_visible=False)
-    info = describe_env(w, 0.0)
+    w.process(frame(), 1.0, panel_visible=False)  # 黑影也等 stranger_after
+    info = describe_env(w, 1.0)
     assert info["识别"] == "YOLO 感知层" and info["身边的好友"] == "没看到"
     assert info["陌生人"] == "1 个（1 个没点火）" and info["互动请求"] == "没有"
     assert "ms" in info["检测耗时"]

@@ -21,7 +21,7 @@ from skydango.vision.bubbles import Rect
 from skydango.vision.candle import black, find_flames, load_flame
 from skydango.vision.detect import make_detector
 from skydango.vision.lighting import flame_area
-from skydango.vision.perception import LIT_LOW, UNLIT, people_boxes
+from skydango.vision.perception import LIT_LOW, UNLIT, merge_people, people_boxes
 
 CASES = {  # 存图目录 → 实际结果（看存图判的，见 spec §0）
     "20261002-214059-live-brain/light/214229": "lit",
@@ -70,11 +70,13 @@ def main() -> None:
             clean[white] = (90, 90, 90)
             area = flame_area(me, sc, img.shape[1], img.shape[0])
             people = []
-            for x in people_boxes(det.detect(clean)):
+            dets, flagged = merge_people(det.detect(clean))  # 和感知层一样先合框：被压掉的黑影框也算"认成黑影"
+            dup = {id(dets[i]) for i in flagged}
+            for x in people_boxes(dets):
                 if x.cls == "self":
                     continue
                 blk = black(clean, x.box, sc.lit_v, exclude=me)
-                people.append([x.box.x, x.box.y, x.box.w, x.box.h, x.cls == UNLIT, round(x.score, 3),
+                people.append([x.box.x, x.box.y, x.box.w, x.box.h, x.cls == UNLIT or id(x) in dup, round(x.score, 3),
                                None if blk is None else round(blk, 3)])
             frames.append({
                 "file": p.name, "t": offset(p.name), "size": [img.shape[1], img.shape[0]], "me": [me.x, me.y, me.w, me.h],
