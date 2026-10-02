@@ -596,7 +596,7 @@ class CallConfig:
     auto: bool = True  # 身体自动兜底
     min_gap: float = 20.0  # 任意两次之间至少隔几秒（卡洛 # 命令窗口里大脑的 call 不受限）
     auto_quota: int = 3  # 身体自动喊：auto_window 秒里最多几次
-    auto_window: float = 600.0
+    auto_window: float = 60.0  # 10-02 晚用户：10 分钟 3 次太严，改成 1 分钟 3 次
     auto_after_leave: float = 30.0  # 好友走开多少秒内还会为他自动喊（同一次走开只喊一次）
     window: float = 6.0  # 呼喊窗口：按键后这么久里亮出来的名字都算（标签约 5 秒 + 余量）
     burst: float = 1.0  # 按键后连拍几秒看光圈
