@@ -26,7 +26,7 @@ OBJECTS = tuple(OBJECT_NAMES)  # ("bench", "bonfire", "instrument", "spirit")：
 # 这个模式要标的类别 = 物品 + 头顶气泡。typing 不进 OBJECT_NAMES：身体 / 大脑不能把气泡当物品报出来
 LABEL_CLASSES = OBJECTS + ("typing",)
 LABEL_NAMES = {**OBJECT_NAMES, "typing": "气泡"}  # 清单里的中文
-OBJECT_PROMPT_VERSION = 3  # 改了提示词里的规则就加一：缓存按它失效
+OBJECT_PROMPT_VERSION = 4  # 改了提示词里的规则就加一：缓存按它失效
 PEOPLE_CLASSES = ("player", "player_unlit")  # P 编号只数这两类（团子、已经是先祖的不算）
 VERDICTS = LABEL_CLASSES + ("not_object", "duplicate")
 EXISTING = "已标 "  # 候选的 hint 以它开头 = 数据集里已有的标注（可能人工修过）；"猜 " 开头 = 检测器的猜测
@@ -40,6 +40,8 @@ OBJECT_RULES = """下面是游戏《光·遇》(Sky) 的截图，每帧一张，
 
 要标的一共五类：四类物品，加上头顶气泡 typing（气泡不是物品，这一轮一起标）：
 - bench：座位。明显是给人坐的：长椅、石凳、秋千座、摆好的坐垫。台阶、石头、地面不算。
+  框法：一个能坐的地方一个框——每把椅子、每个凳子、每个坐垫各自一个框，一排椅子每把都标（看得到的都标，不要只标两三把）；
+  长椅这种本身连成一件的整件一个框。桌子、桌上的东西（茶壶、蛋糕、摆件）都不框，框只包住坐的那一件。
 - bonfire：篝火。燃着的篝火堆，包括玩家放的篝火道具。蜡烛、烛火堆、灯笼不算。
 - instrument：乐器。摆在场景里、没人拿着的乐器（钢琴、竖琴架……）。玩家手里拿着的不算。
 - spirit：先祖。发光的先祖灵魂（站在原地、没被收集的），以及先祖回忆里半透明的人形。玩家、团子、宠物、跟着玩家的小光团不算。
