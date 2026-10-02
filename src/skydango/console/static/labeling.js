@@ -1,6 +1,7 @@
 /* 标注页（spec 2026-10-01-gesture-labeling-training §3）：左 片段列表（筛选 + 各类计数），中 16 帧动图（canvas 放大 3 倍、按 fps 循环），
  * 右 Claude 的猜测 + 按钮。确认 / 改类别 / 丢弃 / 撤销走 api/gesture/*，后端把片段文件夹挪到对应目录。
  * 键盘（焦点不在输入框、没开对话框时）：Enter 同意 Claude、1~5 = 挥手 / 鞠躬 / 欢呼 / 害羞 / 都不是、0 不要、Z 撤销、空格 暂停、← → 逐帧（暂停时）。
+ * 页顶「动作 / 外形」两个标签：外形页标人物裁图（api/form/*，Enter / 1~6 = 外形类别 / 0 不要 / Z 撤销，只在外形页开着时有效）。
  * 模型写的理由一律 textContent。 */
 (function () {
 "use strict";
@@ -8,7 +9,10 @@ if (typeof document === "undefined") return;
 const FRAMES = 16, FPS = 8, PX = 336, AHEAD = 3, KEEP = 12;  // PX = 112 × 3；AHEAD = 预加载后几段；KEEP = 最多缓存几段的帧
 const UNL = "_unlabeled", DIS = "_discard";
 const LB = {data: null, filter: "todo", list: [], cur: null, i: 0, playing: true, speed: 1, timer: null,
-  busy: false, active: false, loading: false, cache: new Map(), keyBound: false};
+  busy: false, active: false, loading: false, cache: new Map(), keyBound: false, tab: "gesture"};
+/* 外形页（感知层第二层的人物裁图）：条目是单张 jpg，类别 = FORMS（后端给），接口 api/form/*。按键 Enter / 1~6 / 0 / Z 只在外形页开着时有效。 */
+const FM = {data: null, filter: "todo", list: [], cur: null, busy: false, loading: false};
+const FORM_NAMES = {not_person: "不是人", lit: "点亮的人", unlit: "黑影", spirit: "先祖", shared: "共享空间", morph: "变身"};
 
 /* ---- 名字 ---- */
 function nameOf(l) {
@@ -186,7 +190,7 @@ function draw() {
 function stopTimer() { if (LB.timer) { clearInterval(LB.timer); LB.timer = null; } }
 function startTimer() {
   stopTimer();
-  if (!LB.active || !LB.playing) return;
+  if (!LB.active || !LB.playing || LB.tab !== "gesture") return;
   LB.timer = setInterval(() => { if (!LB.cur) return; LB.i = (LB.i + 1) % FRAMES; draw(); }, 1000 / (FPS * LB.speed));
 }
 function setPlaying(p) {
@@ -333,15 +337,255 @@ async function load() {
   if (!d || !d.ok) {
     LB.data = null; LB.list = []; LB.cur = null;
     banner.textContent = ""; banner.append(el("span", "", (d && d.text) || "读不到片段"));
-    banner.hidden = false; $("lb-cols").hidden = true;
+    banner.hidden = LB.tab !== "gesture"; $("lb-cols").hidden = true;
     const m = $("mark-labeling"); if (m) m.textContent = "";
     return;
   }
-  LB.data = d; banner.hidden = true; $("lb-cols").hidden = false;
+  LB.data = d; banner.hidden = true; $("lb-cols").hidden = LB.tab !== "gesture";
   if (!validFilter(LB.filter)) LB.filter = "todo";
   rerender();
   const keep = byName(LB.cur);
   select(keep ? LB.cur : (LB.list[0] ? LB.list[0].clip : null));
+}
+
+/* ---- 外形页 ---- */
+function fmName(l) { return l === "discard" || l === DIS ? "不要" : l === UNL ? "待确认" : l === "unsure" ? "看不清" : FORM_NAMES[l] || l; }
+function fmWhereText(w) { return w === UNL ? "待确认" : w === DIS ? "丢弃了" : `已确认：${fmName(w)}`; }
+function fmItems() { return (FM.data && FM.data.items) || []; }
+function fmForms() { return (FM.data && FM.data.forms) || []; }
+function fmBy(name) { return name == null ? null : fmItems().find(c => c.crop === name) || null; }
+function fmGuessKey(c) { return c.guess ? c.guess.label : "-"; }
+function fmMatches(c, f) {
+  if (f === "todo") return c.where === UNL;
+  if (f === "discard") return c.where === DIS;
+  if (f.startsWith("guess:")) return c.where === UNL && fmGuessKey(c) === f.slice(6);
+  if (f.startsWith("done:")) return c.where === f.slice(5);
+  return false;
+}
+function fmValidFilter(f) {
+  if (f === "todo" || f === "discard") return true;
+  if (f.startsWith("done:")) return fmForms().includes(f.slice(5));
+  if (f.startsWith("guess:")) return [...fmForms(), "unsure", "-"].includes(f.slice(6));
+  return false;
+}
+function fmBuildList() {
+  const list = fmItems().filter(c => fmMatches(c, FM.filter));
+  if (FM.filter === "todo" || FM.filter.startsWith("guess:"))
+    list.sort((a, b) => rank(a) - rank(b) || (a.guess ? a.guess.confidence : 0) - (b.guess ? b.guess.confidence : 0) || (a.crop < b.crop ? -1 : a.crop > b.crop ? 1 : 0));
+  FM.list = list;
+}
+function fmCounts() { const n = {}; for (const c of fmItems()) n[c.where] = (n[c.where] || 0) + 1; return n; }
+function fmGuessTag(c) {
+  if (!c.guess) return el("span", "tag", "没猜");
+  const g = c.guess;
+  return el("span", "tag " + (g.label === "unsure" ? "warn" : "sakura"), g.label === "unsure" ? "看不清" : `${fmName(g.label)} ${pct(g.confidence)}`);
+}
+function fmRenderFilter() {
+  const sel = $("fm-filter"), n = fmCounts(), pending = fmItems().filter(c => c.where === UNL);
+  const gn = {}; for (const c of pending) gn[fmGuessKey(c)] = (gn[fmGuessKey(c)] || 0) + 1;
+  sel.textContent = "";
+  const opt = (v, t) => { const o = el("option", "", t); o.value = v; return o; };
+  sel.append(opt("todo", `待确认（${n[UNL] || 0}）`));
+  const g1 = el("optgroup"); g1.label = "Claude 猜的（待确认里）";
+  for (const g of [...fmForms(), "unsure", "-"]) {
+    const v = "guess:" + g;
+    if ((gn[g] || 0) || FM.filter === v) g1.append(opt(v, `${g === "-" ? "还没猜" : "猜" + fmName(g)}（${gn[g] || 0}）`));
+  }
+  if (g1.children.length) sel.append(g1);
+  const g2 = el("optgroup"); g2.label = "已确认";
+  for (const l of fmForms()) g2.append(opt("done:" + l, `${fmName(l)}（${n[l] || 0}）`));
+  sel.append(g2);
+  sel.append(opt("discard", `丢弃的（${n[DIS] || 0}）`));
+  sel.value = FM.filter;
+}
+function fmRenderCounts() {
+  const box = $("fm-counts"), n = fmCounts();
+  box.textContent = "";
+  const item = (f, label, k) => {
+    const b = el("button", "lb-count"); b.type = "button";
+    b.setAttribute("aria-pressed", String(FM.filter === f));
+    b.append(label, el("b", "", String(n[k] || 0)));
+    b.onclick = () => fmSetFilter(f);
+    box.append(b);
+  };
+  item("todo", "待确认", UNL);
+  for (const l of fmForms()) item("done:" + l, fmName(l), l);
+  item("discard", "丢弃", DIS);
+  const t = document.querySelector('#lb-tabs [data-tab="form"]');
+  if (t) t.textContent = n[UNL] ? `外形（${n[UNL]}）` : "外形";
+}
+function cropUrl(name) { return `api/form/crop?name=${encodeURIComponent(name)}`; }
+function fmRenderList() {
+  const box = $("fm-list");
+  box.textContent = "";
+  if (!FM.list.length) {
+    box.append(el("p", "none lb-empty", FM.filter === "todo" ? (fmItems().length ? "都标完了。" : "还没有裁图。") : "这里没有裁图。"));
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const c of FM.list) {
+    const b = el("button", "lb-item fm-item"); b.type = "button"; b.dataset.crop = c.crop;
+    b.setAttribute("aria-current", String(c.crop === FM.cur));
+    b.title = c.crop;
+    const im = el("img"); im.loading = "lazy"; im.decoding = "async"; im.alt = ""; im.src = cropUrl(c.crop);
+    b.append(im, el("span", "n", c.crop), fmGuessTag(c), el("span", "r", fmWhereText(c.where)));
+    b.onclick = () => fmSelect(c.crop);
+    frag.append(b);
+  }
+  box.append(frag);
+}
+function fmMarkCurrent() {
+  let hit = null;
+  for (const b of $("fm-list").querySelectorAll(".lb-item")) {
+    const on = b.dataset.crop === FM.cur;
+    b.setAttribute("aria-current", String(on));
+    if (on) hit = b;
+  }
+  if (hit) hit.scrollIntoView({block: "nearest"});
+}
+function fmRerender() { fmBuildList(); fmRenderFilter(); fmRenderCounts(); fmRenderList(); }
+function fmSetFilter(f) {
+  if (!fmValidFilter(f)) f = "todo";
+  FM.filter = f;
+  fmRerender();
+  const keep = FM.list.some(c => c.crop === FM.cur);
+  fmSelect(keep ? FM.cur : (FM.list[0] ? FM.list[0].crop : null));
+}
+function fmShowImages() {
+  const im = $("fm-crop"), cx = $("fm-ctx"), n1 = $("fm-crop-note"), n2 = $("fm-ctx-note");
+  n1.hidden = n2.hidden = true;
+  if (!FM.cur) { im.removeAttribute("src"); im.hidden = true; cx.removeAttribute("src"); cx.hidden = true; n1.textContent = FM.data ? (FM.list.length ? "从列表里选一张" : "这个筛选里没有裁图") : ""; n1.hidden = !n1.textContent; return; }
+  im.hidden = cx.hidden = false;
+  im.onerror = () => { im.hidden = true; n1.textContent = "这张图读不到"; n1.hidden = false; };
+  cx.onerror = () => { cx.hidden = true; n2.hidden = false; };
+  im.src = cropUrl(FM.cur);
+  cx.src = `api/form/context?name=${encodeURIComponent(FM.cur)}`;
+}
+function fmSelect(name) {
+  FM.cur = name || null;
+  const at = FM.list.findIndex(c => c.crop === FM.cur);
+  for (let j = at + 1; at >= 0 && j <= at + AHEAD && j < FM.list.length; j++) new Image().src = cropUrl(FM.list[j].crop);  // 预加载后几张
+  fmMarkCurrent(); fmShowImages();
+  $("fm-title").textContent = FM.cur || "—"; $("fm-title").title = FM.cur || "";
+  $("fm-pos").textContent = !FM.cur ? "" : at < 0 ? "（不在当前筛选里）" : `第 ${at + 1} / ${FM.list.length} 张`;
+  fmRenderSide();
+}
+function fmRenderSide() {
+  const c = fmBy(FM.cur);
+  const gbox = $("fm-guess"); gbox.textContent = "";
+  if (!c) gbox.append(el("p", "none", "—"));
+  else if (!c.guess) gbox.append(el("p", "none", "Claude 还没猜这一张（跑 perception attrs-label）"));
+  else {
+    const g = c.guess, main = el("div", "lb-guess-main" + (g.label === "unsure" ? " unsure" : ""));
+    main.append(el("b", "", fmName(g.label)), el("span", "lb-conf", `把握 ${pct(g.confidence)}`));
+    const bar = el("div", "lb-bar"), fill = el("i"); fill.style.width = pct(g.confidence); bar.append(fill);
+    gbox.append(main, bar);
+    if (g.reason) gbox.append(el("p", "lb-reason", g.reason));  // 模型写的：只当纯文本
+  }
+  const meta = $("fm-meta"); meta.textContent = "";
+  if (c) {
+    const row = (k, v) => { meta.append(el("dt", "", k)); const dd = el("dd"); dd.append(v); meta.append(dd); };
+    row("现在", el("span", "tag " + (c.where === UNL ? "" : c.where === DIS ? "bad" : "ok"), fmWhereText(c.where)));
+    row("裁图", el("code", "", c.crop));
+    if (c.image) row("原图", el("code", "", c.image));
+  }
+  const acts = $("fm-actions"); acts.textContent = "";
+  const off = !c || FM.busy, g = c && c.guess, canAgree = !!g && fmForms().includes(g.label);
+  const agree = kbdBtn("btn go lb-agree", canAgree ? `同意 Claude：${fmName(g.label)}` : "同意 Claude", "Enter", fmAgree);
+  agree.disabled = off || !canAgree;
+  acts.append(agree);
+  const grid = el("div", "lb-grid");
+  fmForms().forEach((l, k) => {
+    const b = kbdBtn("btn lb-act", fmName(l), String(k + 1), () => fmLabel(l));
+    if (c && c.where === l) { b.classList.add("on"); b.title = "现在就在这一类"; }
+    if (g && g.label === l) b.classList.add("guess");
+    b.disabled = off; grid.append(b);
+  });
+  const dis = kbdBtn("btn halt lb-act", "不要", "0", () => fmLabel("discard"));
+  if (c && c.where === DIS) dis.classList.add("on");
+  dis.disabled = off; grid.append(dis);
+  acts.append(grid);
+  const undoBtn = kbdBtn("btn sm lb-undo", "撤销上一步", "Z", fmUndo);
+  undoBtn.disabled = FM.busy;
+  acts.append(undoBtn);
+}
+function fmApply(item) {
+  const c = fmBy(item.crop);
+  if (c) { c.where = item.where; c.guess = item.guess; c.image = item.image; c.box = item.box; }
+  else fmItems().push({crop: item.crop, where: item.where, guess: item.guess, image: item.image, box: item.box});
+}
+function fmAdvance(old, idx) {  // 同动作页：跳到原列表里排在后面、还留在新列表里的第一张；后面没了往前找
+  fmRerender();
+  const left = new Set(FM.list.map(c => c.crop));
+  for (let j = idx + 1; j < old.length; j++) if (old[j].crop !== FM.cur && left.has(old[j].crop)) return fmSelect(old[j].crop);
+  for (let j = idx - 1; j >= 0; j--) if (old[j].crop !== FM.cur && left.has(old[j].crop)) return fmSelect(old[j].crop);
+  fmSelect(left.has(FM.cur) ? FM.cur : (FM.list[0] ? FM.list[0].crop : null));
+}
+async function fmLabel(to) {
+  const c = fmBy(FM.cur);
+  if (!c || FM.busy) return;
+  const old = FM.list.slice(), idx = old.findIndex(x => x.crop === c.crop);
+  if (c.where === (to === "discard" ? DIS : to)) { fmAdvance(old, idx); return; }
+  FM.busy = true; fmRenderSide();
+  let r;
+  try { r = await post("api/form/label", {name: c.crop, to}); }
+  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
+  FM.busy = false;
+  if (!r.data.ok) {
+    toast(r.data.text || "没标上", "bad");
+    if (r.status === 409) fmLoad(); else fmRenderSide();
+    return;
+  }
+  fmApply(r.data);
+  fmAdvance(old, idx);
+}
+function fmAgree() {
+  const c = fmBy(FM.cur);
+  if (c && c.guess && fmForms().includes(c.guess.label)) fmLabel(c.guess.label);  // 看不清 / 没猜：不动
+}
+async function fmUndo() {
+  if (FM.busy) return;
+  FM.busy = true; fmRenderSide();
+  let r;
+  try { r = await post("api/form/undo"); }
+  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
+  FM.busy = false;
+  if (!r.data.ok) { toast(r.data.text || "没撤销成", r.status === 409 ? "warn" : "bad"); fmRenderSide(); return; }
+  fmApply(r.data);
+  fmRerender(); fmSelect(r.data.crop);
+  toast(`撤销了：${r.data.crop} 回到「${fmWhereText(r.data.where)}」`, "ok");
+}
+async function fmLoad() {
+  if (FM.loading) return;
+  FM.loading = true;
+  let d;
+  try { d = await getJSON("api/form/state"); }
+  catch (e) { d = {ok: false, text: "读不到裁图（面板停了？）"}; }
+  finally { FM.loading = false; }
+  const banner = $("fm-empty");
+  if (!d || !d.ok) {
+    FM.data = null; FM.list = []; FM.cur = null;
+    banner.textContent = ""; banner.append(el("span", "", (d && d.text) || "读不到裁图"));
+    banner.hidden = LB.tab !== "form"; $("fm-cols").hidden = true;
+    return;
+  }
+  FM.data = d; banner.hidden = true; $("fm-cols").hidden = LB.tab !== "form";
+  if (!fmValidFilter(FM.filter)) FM.filter = "todo";
+  fmRerender();
+  const keep = fmBy(FM.cur);
+  fmSelect(keep ? FM.cur : (FM.list[0] ? FM.list[0].crop : null));
+}
+
+function setTab(tab) {
+  LB.tab = tab === "form" ? "form" : "gesture";
+  for (const b of $("lb-tabs").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.tab === LB.tab));
+  const form = LB.tab === "form";
+  $("lb-note").textContent = form ? "确认的裁图挪进 datasets/attrs/form/<类别>/，不要的进 _discard/，每一步记在 _labels.jsonl"
+    : "确认的片段挪进 datasets/gesture/<动作>/，不要的进 _discard/，每一步记在 _labels.jsonl";
+  $("lb-cols").hidden = form || !LB.data; $("lb-empty").hidden = form || !!LB.data;
+  $("fm-cols").hidden = !form || !FM.data; $("fm-empty").hidden = !form || !!FM.data;
+  startTimer();  // 动作页之外不放动图
+  if (form) fmLoad(); else load();
 }
 
 /* ---- 键盘 ---- */
@@ -353,7 +597,13 @@ function onKey(e) {
   const k = e.key;
   if ((k === "Enter" || k === " ") && t && t.closest && t.closest("button,a,summary")) return;  // 键盘移到按钮上时回车 / 空格交给按钮
   let act = null;
-  if (k === " " || k === "Spacebar") act = () => setPlaying(!LB.playing);
+  if (LB.tab === "form") {
+    if (k === "Enter") act = fmAgree;
+    else if (k === "z" || k === "Z") act = fmUndo;
+    else if (k === "0") act = () => fmLabel("discard");
+    else if (/^[1-9]$/.test(k)) { const l = fmForms()[Number(k) - 1]; if (l) act = () => fmLabel(l); }
+  }
+  else if (k === " " || k === "Spacebar") act = () => setPlaying(!LB.playing);
   else if (k === "Enter") act = agreeClaude;
   else if (k === "ArrowLeft") act = () => step(-1);
   else if (k === "ArrowRight") act = () => step(1);
@@ -378,7 +628,9 @@ Pages.labeling = {
     $("lb-next").onclick = () => step(1);
     for (const b of $("lb-speed").querySelectorAll("button")) b.onclick = () => setSpeed(Number(b.dataset.speed));
     $("lb-filter").onchange = e => { setFilter(e.currentTarget.value); e.currentTarget.blur(); };  // 选完把焦点还给页面，按键才有用
-    $("lb-refresh").onclick = () => load();
+    $("lb-refresh").onclick = () => (LB.tab === "form" ? fmLoad() : load());
+    $("fm-filter").onchange = e => { fmSetFilter(e.currentTarget.value); e.currentTarget.blur(); };
+    for (const b of $("lb-tabs").querySelectorAll("button")) b.onclick = () => setTab(b.dataset.tab);
     // 鼠标点按钮不抢焦点：点完接着按键就行（Tab 过去的按钮照样能用回车 / 空格）
     $("page-labeling").addEventListener("mousedown", e => { if (e.target.closest && e.target.closest("button")) e.preventDefault(); });
     setPlaying(true); setSpeed(1); draw();
@@ -387,7 +639,7 @@ Pages.labeling = {
     LB.active = true;
     if (!LB.keyBound) { document.addEventListener("keydown", onKey); LB.keyBound = true; }
     startTimer();
-    load();
+    if (LB.tab === "form") fmLoad(); else load();
   },
   hide() {
     LB.active = false;

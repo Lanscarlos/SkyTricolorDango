@@ -1,5 +1,6 @@
 import json
 import urllib.parse
+from pathlib import Path
 
 import pytest
 
@@ -193,3 +194,132 @@ def test_failed_rename_does_not_copy(tmp_path, monkeypatch):
     assert code == 409 and "挪不动" in body["text"]
     assert (tmp_path / "_unlabeled" / CLIP).is_dir() and not (tmp_path / "wave" / CLIP).exists()
     assert not (tmp_path / "_labels.jsonl").exists()
+
+
+# ---- 外形页（FormLabels） ----
+CROP = "c0001.jpg"
+
+
+def make_crop(root, where="_unlabeled", name=CROP, guess=None, image=None, box=(10, 20, 30, 40)):
+    d = root / where
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_bytes(b"\xff\xd8crop")
+    if guess:
+        p = root / "_unlabeled" / "claude.json"
+        old = json.loads(p.read_text("utf-8")) if p.exists() else {}
+        old[name] = guess
+        p.write_text(json.dumps(old), encoding="utf-8")
+    with (root / "_crops.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"crop": name, "image": image, "box": list(box)}) + "\n")
+
+
+def test_form_state_lists_items(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, image="/x/a.jpg")
+    make_crop(tmp_path, "form/unlit", "c0002.jpg")
+    (tmp_path / "_unlabeled" / "claude.json").write_text(
+        json.dumps({CROP: {"label": "lit", "confidence": 0.9, "reason": "有光"}, "gone.jpg": {"label": "lit"}}), encoding="utf-8")
+    s = FormLabels(tmp_path).state()
+    assert s["ok"] and s["counts"]["_unlabeled"] == 1 and s["counts"]["unlit"] == 1 and s["counts"]["lit"] == 0
+    assert [i["crop"] for i in s["items"]] == [CROP, "c0002.jpg"]  # claude.json 不算裁图、消失的裁图不列
+    a = s["items"][0]
+    assert a["where"] == "_unlabeled" and a["guess"] == {"label": "lit", "confidence": 0.9, "reason": "有光"}
+    assert a["image"] == "/x/a.jpg" and a["box"] == [10, 20, 30, 40]
+    assert s["items"][1]["where"] == "unlit" and s["items"][1]["guess"] is None
+    assert FormLabels(tmp_path / "nope").state()["ok"] is False
+
+
+def test_form_label_relabel_discard_undo(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path)
+    f = FormLabels(tmp_path)
+    code, item = f.label(CROP, "lit")
+    assert code == 200 and item["where"] == "lit" and (tmp_path / "form" / "lit" / CROP).is_file()
+    assert not (tmp_path / "_unlabeled" / CROP).exists()
+    assert f.label(CROP, "morph")[0] == 200 and (tmp_path / "form" / "morph" / CROP).is_file()
+    assert f.label(CROP, "discard")[0] == 200 and (tmp_path / "_discard" / CROP).is_file()
+    assert f.label(CROP, "discard")[0] == 409
+    assert f.label(CROP, "nonsense")[0] == 400
+    first = log_lines(tmp_path)[0]
+    assert (first["crop"], first["from"], first["to"]) == (CROP, "_unlabeled", "lit")
+    assert f.undo()[1]["where"] == "morph" and (tmp_path / "form" / "morph" / CROP).is_file()
+    assert f.undo()[1]["where"] == "lit"
+    assert f.undo()[1]["where"] == "_unlabeled" and (tmp_path / "_unlabeled" / CROP).is_file()
+    assert f.undo()[0] == 409
+    assert len(log_lines(tmp_path)) == 6 and log_lines(tmp_path)[-1]["undo"] is True
+
+
+def test_form_unknown_names_are_404_without_fs_access(tmp_path, monkeypatch):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path)
+    (tmp_path / "secret.jpg").write_bytes(b"x")
+    f = FormLabels(tmp_path)
+    for bad in ("../secret.jpg", "..\\secret.jpg", "_unlabeled/" + CROP, "con.jpg", "nul.jpg", "claude.json", ""):
+        assert f.crop(bad) is None and f.context(bad) is None
+        assert f.label(bad, "lit")[0] == 409
+    assert f.crop(CROP) == b"\xff\xd8crop"
+    opened = []
+    real = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: (opened.append(self.name), real(self))[1])
+    f.crop("con.jpg")
+    assert opened == []
+
+
+def test_form_context_draws_box_and_scales(tmp_path):
+    import cv2
+    import numpy as np
+
+    from skydango.console.labeling import FormLabels
+
+    src = tmp_path / "frame.png"
+    cv2.imwrite(str(src), np.full((540, 960, 3), 128, np.uint8))
+    make_crop(tmp_path, image=src.as_posix(), box=(100, 100, 200, 200))
+    make_crop(tmp_path, name="c0002.jpg", image=(tmp_path / "missing.png").as_posix())
+    make_crop(tmp_path, name="c0003.jpg", image=None)
+    f = FormLabels(tmp_path)
+    out = cv2.imdecode(np.frombuffer(f.context(CROP), np.uint8), cv2.IMREAD_COLOR)
+    assert out.shape[:2] == (270, 480)
+    assert out[50, 70].tolist() != [128, 128, 128]  # 框的上边在 y≈50（缩放 0.5）
+    assert out[130, 130].tolist() == [128, 128, 128]
+    assert f.context("c0002.jpg") is None and f.context("c0003.jpg") is None
+
+
+def test_form_log_failure_moves_back(tmp_path, monkeypatch):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path)
+    f = FormLabels(tmp_path)
+    monkeypatch.setattr(f, "_log", lambda e: (_ for _ in ()).throw(OSError("disk")))
+    assert f.label(CROP, "lit")[0] == 500
+    assert (tmp_path / "_unlabeled" / CROP).is_file() and not (tmp_path / "form" / "lit" / CROP).exists()
+
+
+def test_form_api_routes(tmp_path, upstream, monkeypatch):  # noqa: F811
+    import urllib.request
+
+    make_crop(tmp_path / "datasets" / "attrs")
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    s = make_server(tmp_path, upstream)
+    try:
+        u = s.url
+        st, d = request(u + "api/form/state")
+        assert st == 200 and d["ok"] and d["counts"]["_unlabeled"] == 1
+        with urllib.request.urlopen(u + "api/form/crop?name=" + CROP, timeout=10) as r:
+            assert r.headers["Content-Type"] == "image/jpeg" and r.read() == b"\xff\xd8crop"
+        assert request(u + "api/form/crop?name=..%2Fx.jpg")[0] == 404
+        assert request(u + "api/form/crop?name=con.jpg")[0] == 404
+        assert request(u + "api/form/context?name=" + CROP)[0] == 404  # 没有原图
+        assert request(u + "api/form/state", headers={"Host": f"evil.com:{s.port}"})[0] == 403
+        body = json.dumps({"name": CROP, "to": "lit"}).encode()
+        assert request(u + "api/form/label", body, {"Content-Type": "application/json"})[0] == 403
+        st, d = request(u + "api/form/label", body, GOOD)
+        assert st == 200 and d["where"] == "lit"
+        assert request(u + "api/form/label", body, GOOD)[0] == 409
+        st, d = request(u + "api/form/undo", b"{}", GOOD)
+        assert st == 200 and d["where"] == "_unlabeled"
+    finally:
+        s.stop()
