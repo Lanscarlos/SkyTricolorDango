@@ -239,6 +239,7 @@ class Body:
         self._arrived_at: dict[str, float] = {}  # 好友来到身边（arrive）的墙钟：刚来时打招呼不受主动开口的间隔限制
         self._call_times: deque[float] = deque()  # 身体自动喊的时间（额度）
         self._auto_called: dict[str, float] = {}  # 好友 → 为他哪一次走开（_left_at 的时间）自动喊过
+        self._auto_found: dict[str, float] = {}  # 好友 → 自动喊一声认回来的时间：auto_again 秒内不再为他自动喊
         self._pending_auto: CallResult | None = None  # 自动喊了、还在等窗口结果
 
     # ---- 主循环 ----
@@ -2198,7 +2199,8 @@ class Body:
             if self._pending_auto is not None:
                 return
             who = [n for n, t in self._left_at.items()
-                   if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t]
+                   if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t
+                   and now - self._auto_found.get(n, float("-inf")) > cfg.auto_again]
             if not who or now - self._call_at < cfg.min_gap:
                 return
             while self._call_times and now - self._call_times[0] > cfg.auto_window:
@@ -2238,6 +2240,8 @@ class Body:
         seen = self.env.call_result(r.at)
         if seen is not None:
             r.seen = seen
+            for name in seen.friends:  # 认回来了：多半一直就站在稍远处，标签淡了而已（画面外的也知道在哪了）
+                self._auto_found[name] = now
             self.events.put("call", call_event_text(seen))
             self._pending_auto = None
         elif now - r.at > self.cfg.call.window + 10:

@@ -602,6 +602,7 @@ class CallConfig:
     auto_quota: int = 3  # 身体自动喊：auto_window 秒里最多几次
     auto_window: float = 60.0  # 10-02 晚用户：10 分钟 3 次太严，改成 1 分钟 3 次
     auto_after_leave: float = 30.0  # 好友走开多少秒内还会为他自动喊（同一次走开只喊一次）
+    auto_again: float = 300.0  # 自动喊认回来（窗口里看到名字）的好友，这么久内不再为他自动喊（10-02 晚站在稍远处的好友 80 秒被喊了 3 声）
     window: float = 6.0  # 呼喊窗口：按键后这么久里亮出来的名字都算（标签约 5 秒 + 余量）
     burst: float = 1.0  # 按键后连拍几秒看光圈
     halo: bool = False  # 光圈认团子：认错会把一个好友当成团子过滤掉，先 perception halo-eval 标定、真机核对再开
