@@ -1269,7 +1269,9 @@ def _perception_track_eval(cfg: Config, args) -> None:
     out = Path(args.output or f"tmp/track-eval/{time.strftime('%Y%m%d-%H%M%S')}")
     out.mkdir(parents=True, exist_ok=True)
     _, current = _perception(cfg, args)  # 先建当前配置（--model 等覆盖写进 cfg.perception），基线照抄它再关开关
-    _, base = _perception(dataclasses.replace(cfg, perception=baseline(cfg.perception)), args)
+    # 基线也不接第二层（[attrs] 开着时当前配置接、基线不接，才比得出升级的效果）
+    _, base = _perception(dataclasses.replace(cfg, perception=baseline(cfg.perception),
+                                              attrs=dataclasses.replace(cfg.attrs, enabled=False)), args)
     kept = list(subsample(timed, args.fps))
     print(f"{len(timed)} 帧里按 {args.fps:g} 帧 / 秒抽了 {len(kept)} 帧（{kept[0][0]:.1f}~{kept[-1][0]:.1f} s），基线和当前配置各跑一遍 → {out}")
 

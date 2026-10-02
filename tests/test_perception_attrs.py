@@ -169,6 +169,22 @@ def test_withdrawn_box_is_not_a_person_under_the_flame():
     assert [b for b, _ in off._people_boxes] == [box]
 
 
+def test_people_boxes_not_hidden_after_attrs_turns_off():
+    """第二层推理连续出错关掉后：留下的待复核轨迹（admitted = False）不再把它的框从 _people_boxes 里藏掉。"""
+    box = Rect(1500, 400, 90, 220)
+    img, model = scene({1500: probs(lit=0.9)})
+    model.fail = True
+    det = FakeDetector()
+    det.frames = [[low_player(1500)]]
+    w = watcher(det, model, attrs_cfg=AttrsConfig(enabled=True, every=0.0, max_errors=2))
+    w.process(img, 0.0, panel_visible=False)
+    assert w.attrs.enabled and w._people_boxes == []  # 还开着：没放行的低分框不算
+    w.process(img, 0.5, panel_visible=False)
+    assert not w.attrs.enabled and w.last_tracks[0].data["admitted"] is False
+    w.process(img, 1.0, panel_visible=False)
+    assert [b for b, _ in w._people_boxes] == [box]  # 关掉了 = 和没接第二层一样
+
+
 def test_unvoted_weak_track_is_not_kept_alive():
     img, model = scene({1500: probs(not_person=0.9)})
     det = FakeDetector()

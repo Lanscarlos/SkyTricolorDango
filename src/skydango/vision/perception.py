@@ -770,9 +770,9 @@ class PerceptionWatcher:
         # 认得出是谁的人（好友）不算"火焰下面那个人"：好友本来就是亮的，站在火焰旁边会被当成点亮了
         known = [t.box for t in players if t.data.get("name") or t.data.get("tagged") or t.data.get("maybe")]
         # 第二层没放行 / 撤下的人物框（树、石像……）也不算（spec 2026-10-02-perception-attrs §3.3）
-        # 先祖 / 共享空间的人身上也不会有能点的火焰
+        # 先祖 / 共享空间的人身上也不会有能点的火焰。第二层出错自己关掉后就不藏了（留下的待复核轨迹 admitted 一直是 False）
         hidden = ([t.box for t in tracks if t.cls in ("player", UNLIT) and not self._admitted(t)] + [t.box for t in self._others]
-                  if self.attrs is not None else [])
+                  if self._attrs_on() else [])
         self._people_boxes = [
             (d.box, d.score) for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
             if d.cls != "self" and not any(iou(d.box, k) >= 0.5 for k in known + hidden)
