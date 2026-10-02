@@ -75,7 +75,7 @@ def stranger_key(track_id: int) -> str:
 
 
 class CatalogCollector:
-    """线程安全（感知线程调 update / dropped，退出时别的线程调 close）。"""
+    """感知线程调 update，别的线程可能同时读 total / saved / buffer。"""
 
     def __init__(self, cfg: CatalogConfig, root: Path, run_name: str, day: str, *,
                  wall: Callable[[], float] = time.time, trace: bool = False) -> None:
@@ -95,17 +95,24 @@ class CatalogCollector:
         self._closed = False
         self._lock = threading.Lock()
 
+    def _total(self) -> int:
+        """内部计算总数（不加锁；仅供 _offer 调用）。"""
+        return self._archived + sum(len(b) for b in self._buffers.values())
+
     @property
     def total(self) -> int:
-        return self._archived + sum(len(b) for b in self._buffers.values())
+        with self._lock:
+            return self._total()
 
     @property
     def saved(self) -> int:
         """现在盘上有几张。"""
-        return sum(len(rows) for rows in self._written.values())
+        with self._lock:
+            return sum(len(rows) for rows in self._written.values())
 
     def buffer(self, key: str) -> list[Shot]:
-        return list(self._buffers.get(key, []))
+        with self._lock:
+            return list(self._buffers.get(key, []))
 
     def update(self, frame: np.ndarray, players: list[Track], selfs: list[Track], now: float,
                panel: Rect | None, place: str, judge: Callable[[Track], Who | None]) -> None:
@@ -169,7 +176,7 @@ class CatalogCollector:
 
     def _offer(self, key: str, shot: Shot) -> None:
         """放进 key 的缓冲：隔不够 gap 的只留更好的；满了换最差的；张数到 max_per_run 后只换不加。"""
-        full = self.total >= self.cfg.max_per_run
+        full = self._total() >= self.cfg.max_per_run
         buf = self._buffers.get(key)
         if buf is None:
             if full:

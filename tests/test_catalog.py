@@ -3,6 +3,7 @@
 import cv2
 import numpy as np
 import pytest
+import threading
 
 from skydango.config import CatalogConfig
 from skydango.vision import catalog as cat
@@ -152,3 +153,29 @@ def test_max_per_run_stops_growth_but_allows_replacement(tmp_path, brightness):
     assert c.total == 2 and c.buffer("陌生人-t2") == []
     c.update(frame(200), [track(1)], [], 15.0, None, "", stranger)  # 但比最差的好：替换
     assert c.total == 2 and max(s.t for s in c.buffer("陌生人-t1")) == 15.0
+
+
+def test_public_readers_take_the_lock(tmp_path, brightness):
+    """证明 total / saved / buffer 读的时候也加锁（别的线程读统计时不撞 update）。"""
+    c = collector(tmp_path, trace=False)
+    # 先放一张
+    c.update(frame(100), [track(1)], [], 0.0, None, "", stranger)
+    assert c.total == 1
+
+    # 开一个线程，试图在主线程持锁期间读 total
+    result = []
+    def reader_thread():
+        result.append(c.total)
+
+    # 主线程持锁，阻止读者获取锁
+    with c._lock:
+        t = threading.Thread(target=reader_thread)
+        t.start()
+        t.join(timeout=0.2)
+        # 在主线程还持锁的情况下，读者线程应该被阻塞（还活着）
+        assert t.is_alive(), "读者线程应该被锁阻塞"
+
+    # 释放锁后，读者线程应该能获取锁并完成
+    t.join(timeout=1.0)
+    assert not t.is_alive(), "读者线程应该能获取锁并完成"
+    assert result == [1], "读者线程应该读到 1"
