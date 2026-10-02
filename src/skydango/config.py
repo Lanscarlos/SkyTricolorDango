@@ -619,6 +619,7 @@ class ProactiveConfig:
     quota_busy: int = 4  # 热闹时窗口内最多主动说几句
     quota_quiet: int = 2  # 安静时窗口内最多主动说几句
     min_gap: float = 60.0  # 两句主动的话之间至少隔几秒
+    greet_window: float = 60.0  # 好友刚来这么多秒内、团子还没开口：打招呼不受 min_gap 限制（额度照旧）
     cold_after: int = 3  # 连续几句主动的话没人接就暂停主动，等有好友说话
     self_names: list[str] = field(default_factory=lambda: ["团子", "三彩"])  # 聊天里出现这些字算“叫了你”
 
