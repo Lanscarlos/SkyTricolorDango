@@ -2417,3 +2417,13 @@ def test_far_crops_ignore_backoff_and_double_in_window():
 
     assert backed_off(False) == 0
     assert backed_off(True) == 5  # 窗口里不退避、每帧最多 3 × 2 块
+
+
+def test_flame_scan_gets_pan_since_last_scan(monkeypatch):
+    """画面平移（转镜头、聊天面板开关）在两次找火焰之间累计的量交给 FlameWatch：他的火焰挪了 200 px 也接得上，不算没了。"""
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    moved = Disk(FLAME.x + 200, FLAME.y, FLAME.r, FLAME.score)
+    monkeypatch.setattr(perception_mod, "find_flames", lambda *a: [moved])
+    w._pan = (w._pan[0] + 200, w._pan[1])  # 这一帧之前画面往右挪了 200（_pan_step 估出来的累计量）
+    run(w, 3.3, clock)
+    assert w.flames.lighting.misses == 0 and w.flames.lighting.pos == (moved.x, moved.y)

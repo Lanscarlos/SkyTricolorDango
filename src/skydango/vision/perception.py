@@ -307,6 +307,7 @@ class PerceptionWatcher:
         self._diag: dict | None = None  # 当前这次点亮的存图：dir / count / next / requested
         self._diag_runs = 0
         self._flame_check = float("-inf")
+        self._flame_pan = (0.0, 0.0)  # 上次找火焰时的累计画面平移（self._pan）：两次之间平移了多少交给 FlameWatch
         self._flame_log = float("-inf")  # DEBUG 日志每秒最多一行
         self._frame_at = float("-inf")  # 最近一帧跑过 tracker.update 的时间（trackeval 用它认出被挡住提前返回的帧）
         self._cooldown_until = float("-inf")  # 没点亮之后这之前不出请求
@@ -1882,7 +1883,9 @@ class PerceptionWatcher:
         with self._lock:
             watch, cooling = self.flames, now < self._cooldown_until
             if me is not None:  # 团子框丢了就没真的找过，不扫（lit() 靠 scan_at 判扫描新不新）
-                watch.scan(now, me, area, flames, self._person_at(frame, me))
+                shift = (self._pan[0] - self._flame_pan[0], self._pan[1] - self._flame_pan[1])
+                watch.scan(now, me, area, flames, self._person_at(frame, me), shift=shift)
+                self._flame_pan = self._pan
             lighting = watch.lighting
             clue = None if cooling else watch.ready(now)
             first = clue is not None and not clue.announced

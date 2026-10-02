@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from statistics import median
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -70,6 +71,7 @@ class Clue:
     black: float | None = None  # 最近一次看到时下面那个人有多黑（None = 没人 / 量不准）
     person: Rect | None = None
     unlit: bool = False  # 最近一次看到时下面那个人 YOLO 认成 player_unlit
+    radii: list[float] = field(default_factory=list)  # 最近 3 次的半高（尺度只有 8 档，判"变小了"取中位数）
     announced: bool = False
     static: bool = False
 
@@ -95,6 +97,7 @@ class Lighting:
     dark_now: bool = False  # 最近一次扫描火焰位置下面的人量得到、还是黑的
     bright: int = 0  # 连着几次扫描看到他变亮（同一个人）
     trail: list[tuple[float, tuple[int, int]]] = field(default_factory=list)  # 火焰最近几次的位置（算速度）
+    radii: list[float] = field(default_factory=list)  # 举起后最近 2 次看到的半高
 
 
 class FlameWatch:
@@ -105,11 +108,17 @@ class FlameWatch:
         self._seq = 0
 
     # ---- 每次扫描 ----
-    def scan(self, now: float, me: Rect, area: Rect, flames: list[Disk], person_at: PersonAt) -> None:
-        """这一帧团子在 me、范围 area 里找到 flames（已经去掉了好友标签下、篝火上、面板挡着的）。"""
-        cfg, h = self.cfg, me.h
+    def scan(self, now: float, me: Rect, area: Rect, flames: list[Disk], person_at: PersonAt,
+             shift: tuple[float, float] = (0.0, 0.0)) -> None:
+        """这一帧团子在 me、范围 area 里找到 flames（已经去掉了好友标签下、篝火上、面板挡着的）。
+        shift：上次扫描以来画面整体平移了多少（转镜头、聊天面板开关；感知层估的背景平移）。不补的话平移超过 light_jump 时
+        他的火焰配不上，会被当成"原地没了"。镜头绕着团子转时，贴着团子的人比远处背景移得少（同追踪接回的 drift），
+        所以配对时按 0 / 一半 / 整个平移三种偏移取最近；没配上的线索（灯笼这种背景）按整个平移挪。"""
+        h = me.h
         self.clues = [c for c in self.clues if self._alive(c, now)]
-        matched = self._match(flames, h)
+        matched = self._match(flames, h, shift)
+        if shift[0] or shift[1]:
+            self._shift_rest(shift, matched)
         for c, d in matched.items():
             self._see(c, d, now, h, person_at)
         for d in flames:
@@ -121,16 +130,30 @@ class FlameWatch:
         if self.lighting is not None:
             self._watch_lighting(now, me, area, matched, person_at)
 
+    def _shift_rest(self, shift: tuple[float, float], matched: dict[Clue, Disk]) -> None:
+        """画面平移了：home 都挪（灯笼跟着背景走，还是"不动"），没配上的线索位置也挪；点亮中他的轨迹作废（速度重新算）。"""
+        mv = lambda p: (round(p[0] + shift[0]), round(p[1] + shift[1]))  # noqa: E731
+        for c in self.clues:
+            c.home = mv(c.home)
+            if c not in matched:
+                c.pos = mv(c.pos)
+        L = self.lighting
+        if L is not None:
+            if not any(c.id == L.clue for c in matched):
+                L.pos = mv(L.pos)
+            L.trail, L.vel = [], (0.0, 0.0)
+
     def _alive(self, c: Clue, now: float) -> bool:
         if self.lighting is not None and c.id == self.lighting.clue:
             return True  # 点亮中他的线索一直留着：火焰原地又出现了要接得上
         return now - c.last <= (STATIC_KEEP if c.static else DISK_GAP)
 
-    def _match(self, flames: list[Disk], h: float) -> dict[int, Disk]:
-        """候选和线索按距离从近到远配对：一条线索一个候选，距离 ≤ light_jump × 框高。返回 {线索下标: 候选}。"""
+    def _match(self, flames: list[Disk], h: float, shift: tuple[float, float] = (0.0, 0.0)) -> dict[Clue, Disk]:
+        """候选和线索按距离从近到远配对：一条线索一个候选，距离 ≤ light_jump × 框高（距离按 0 / 一半 / 整个平移取最近）。"""
         jump = self.cfg.light_jump * h
+        offsets = [(0.0, 0.0)] + ([(shift[0] / 2, shift[1] / 2), shift] if shift[0] or shift[1] else [])
         pairs = sorted(
-            (float(np.hypot(d.x - c.pos[0], d.y - c.pos[1])), i, j)
+            (min(float(np.hypot(d.x - c.pos[0] - ox, d.y - c.pos[1] - oy)) for ox, oy in offsets), i, j)
             for i, c in enumerate(self.clues) for j, d in enumerate(flames)
         )
         used_c, used_d, out = set(), set(), {}
@@ -146,6 +169,7 @@ class FlameWatch:
 
     def _see(self, c: Clue, d: Disk, now: float, h: float, person_at: PersonAt) -> None:
         c.last, c.pos, c.r, c.score, c.best = now, (d.x, d.y), d.r, d.score, max(c.best, d.score)
+        c.radii = c.radii[-2:] + [d.r]
         c.moved = max(c.moved, float(np.hypot(d.x - c.home[0], d.y - c.home[1])))
         person = person_at(c.pos, c.r)
         c.person, c.black, c.unlit = (person[0], person[1], person[2]) if person is not None else (None, None, False)
@@ -162,10 +186,11 @@ class FlameWatch:
             if now - t0 > 1e-6:
                 L.vel = ((mine.pos[0] - p0[0]) / (now - t0), (mine.pos[1] - p0[1]) / (now - t0))
             L.pos, L.r, L.flame_last, L.misses = mine.pos, mine.r, now, 0
-            L.away = self._away(mine.pos, mine.r, L, me, area)
+            L.radii = L.radii[-1:] + [mine.r]
+            L.away = self._away(mine.pos, median(L.radii), L, me, area)
         else:
             L.misses += 1
-            if not L.trail:  # 举起之后还没再看到过：按举起时的位置看在不在边上
+            if not L.radii:  # 举起之后还没再看到过：按举起时的位置看在不在边上
                 L.away = self._away(L.pos, L.r, L, me, area)
         person = person_at(L.pos, L.r)
         if person is None:
@@ -177,13 +202,15 @@ class FlameWatch:
             L.dark_box = box  # 他黑着：记下这时的框，之后变亮的得是他
         L.dark_now = blk is not None and blk >= cfg.lit_black
         # blk 为 None = 被团子挡住大半量不准：人还在，但不算变亮
-        bright = (blk is not None and blk < cfg.lit_black and (L.black0 is None or L.black0 - blk >= cfg.lit_drop)
+        # 只数火焰没了之后的：火焰还在时夜里 black() 一抖攒下的"变亮"不算（再丢一帧就会被当成提前判点亮）
+        bright = (L.misses > 0 and blk is not None and blk < cfg.lit_black
+                  and (L.black0 is None or L.black0 - blk >= cfg.lit_drop)
                   and L.dark_box is not None and iou(box, L.dark_box) >= LIT_SAME_IOU)
         L.bright = L.bright + 1 if bright else 0
 
     def _away(self, pos: tuple[int, int], r: float, L: Lighting, me: Rect, area: Rect) -> bool:
-        """火焰在范围边上（按最后的速度往前推一次扫描）或者缩小了：这时候没了算走开。"""
-        if r <= LIT_SHRINK * L.r0:
+        """火焰在范围边上（按最后的速度往前推一次扫描）或者缩小了（最近两次的中位数 < 举起时的 LIT_SHRINK）：这时候没了算走开。"""
+        if r < LIT_SHRINK * L.r0:
             return True
         x, y = pos[0] + L.vel[0] * DISK_EVERY, pos[1] + L.vel[1] * DISK_EVERY
         mx, my = self.cfg.lit_edge * me.h, LIT_EDGE_Y * me.h
@@ -209,11 +236,11 @@ class FlameWatch:
 
     # ---- 点亮中 ----
     def start(self, clue_id: int, now: float) -> Lighting:
-        """身体举起蜡烛了：认准这条线索的火焰。线索已经没了（举之前刚断）就从 (0, 0) 开始，一直配不上，等身体超时。"""
+        """身体举起蜡烛了：认准这条线索的火焰。线索已经没了（举之前刚断）：不知道火焰在哪，之后没看到就判走开（away）。"""
         cfg, c = self.cfg, self.get(clue_id)
         dark = c is not None and c.person is not None and (c.unlit or (c.black is not None and c.black >= cfg.lit_black - LIT_DARK_MARGIN))
         self.lighting = Lighting(
-            clue=clue_id, raised=now, pos=c.pos if c else (0, 0), r=c.r if c else 20.0, r0=c.r if c else 20.0,
+            clue=clue_id, raised=now, pos=c.pos if c else (0, 0), r=c.r if c else 20.0, r0=median(c.radii) if c else 20.0,
             flame_last=c.last if c else float("-inf"), black0=c.black if c else None, dark_box=c.person if dark else None,
             away=c is None,  # 举之前线索刚断：不知道火焰在哪，没了算走开
         )

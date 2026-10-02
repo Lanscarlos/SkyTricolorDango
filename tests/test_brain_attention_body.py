@@ -131,10 +131,15 @@ def _block(kind, b, env, dev, clock):
         b.camera = None
     elif kind == "no_perception":
         b.env = FakeEnv()
+    elif kind == "candle_raised":  # 举着蜡烛等他亮：转镜头会让火焰在画面里跳走、被当成"原地没了"
+        b._raised = (7, (990, 620), clock())
+    elif kind == "bow_pending":  # 判出点亮、鞠躬还在排队：蜡烛还举着
+        b._bow = (clock() + 0.5, clock() + 5.5, clock() - 2.0)
 
 
 @pytest.mark.parametrize("kind", ["ime", "bubble_box", "skill", "request", "pending_chat", "brain_busy", "blackout",
-                                  "holding", "recent_emote", "disabled", "still_mode", "no_camera", "no_perception"])
+                                  "holding", "recent_emote", "disabled", "still_mode", "no_camera", "no_perception",
+                                  "candle_raised", "bow_pending"])
 def test_blocked_conditions_do_not_press(clock, kind):
     b, dev, reader, events, env, cam = attn_body(clock)
     friend_talking(env, clock())

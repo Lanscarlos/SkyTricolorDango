@@ -41,7 +41,7 @@ def replay(case):
         before.append(dict(next(f for f in frames if f["t"] >= 0 and observe(f)[2]), t=-0.05))
     for f in before:
         watch.scan(f["t"], *observe(f))
-    clue = watch.main(before[-1]["t"])
+    clue = watch.main(before[-1]["t"])  # 不用 ready()：举起前只存了一两张图，凑不够 light_after；真跑时出请求的就是这条
     assert clue is not None, case
     watch.start(clue.id, 0.0)
     for f in frames:

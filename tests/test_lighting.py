@@ -37,11 +37,11 @@ def raised(watch=None, at=HOME, who=nobody):
     return watch, clue.id
 
 
-def scans(watch, start, end, flames=lambda t: [], who=nobody):
-    """从 start 到 end 每 0.3 秒扫一次，返回每次扫完的判定 [(t, 结果)]。"""
+def scans(watch, start, end, flames=lambda t: [], who=nobody, who_at=None):
+    """从 start 到 end 每 0.3 秒扫一次，返回每次扫完的判定 [(t, 结果)]。who_at(t)：随时间变的"下面那个人"。"""
     out, t = [], start
     while t <= end + 1e-9:
-        watch.scan(t, ME, AREA, flames(t), who)
+        watch.scan(t, ME, AREA, flames(t), who_at(t) if who_at else who)
         out.append((round(t, 2), watch.verdict(watch.lighting.clue, 0.0, t, stale=0.8)))
         t += 0.3
     return out
@@ -152,31 +152,15 @@ def test_still_black_under_vanished_flame_waits():
     """火焰没了但下面的人量得到、还是黑的（被挡住 / 镜头晃）：接着等，他亮了再判。"""
     watch, _ = raised(who=person())
     res = scans(watch, 0.1, 4.0, flames=lambda t: [disk()] if t < 0.5 else [],
-                who=lambda pos, r: (DARK, 0.9 if t_now[0] < 2.4 else 0.05, True))
-    assert first_decision(res)[0] >= 2.5  # 2.4 之前一直黑着：火焰早没了也不判
-
-
-t_now = [0.0]
-
-
-@pytest.fixture(autouse=True)
-def _track_time(monkeypatch):
-    """still_black 那条用：who 要知道现在几秒。"""
-    orig = FlameWatch.scan
-
-    def scan(self, now, *a):
-        t_now[0] = now
-        return orig(self, now, *a)
-
-    monkeypatch.setattr(FlameWatch, "scan", scan)
+                who_at=lambda t: person(blk=0.9 if t < 2.4 else 0.05))
+    assert first_decision(res) == (2.5, True)  # 2.4 之前一直黑着：火焰早没了也不判；他一变亮就判
 
 
 def test_still_black_then_brightens_is_lit():
     watch, _ = raised(who=person())
     res = scans(watch, 0.1, 4.0, flames=lambda t: [disk()] if t < 0.5 else [],
-                who=lambda pos, r: (DARK, 0.9 if t_now[0] < 2.4 else 0.05, False))
-    t, r = first_decision(res)
-    assert r is True and t == 2.5  # 变亮的第一次扫描：火焰早就没够 lit_vanish 了
+                who_at=lambda t: person(blk=0.9 if t < 2.4 else 0.05, unlit=False))
+    assert first_decision(res) == (2.5, True)  # 变亮的第一次扫描：火焰早就没够 lit_vanish 了
 
 
 def test_unmeasurable_person_does_not_block():
@@ -265,3 +249,41 @@ def test_shift_moves_times():
     L = watch.lighting
     assert L.raised == 3.0 and L.flame_last == pytest.approx(3.4) and L.scan_at == pytest.approx(3.4)
     assert all(c.last >= 3.0 for c in watch.clues)
+
+
+# ---- 评审后补的 ----
+def test_screen_pan_is_not_vanishing():
+    """举蜡烛时画面整体平移 200 px（转镜头、聊天面板开关）：给了平移量就跟得上，不当成"原地没了"。"""
+    watch, cid = raised()
+    shift = (200, 0)
+    out = []
+    for k, t in enumerate((0.1, 0.4, 0.7, 1.0, 1.3, 1.6, 1.9, 2.2)):
+        moved = k >= 2  # 0.7 起画面往右挪了 200
+        watch.scan(t, ME, AREA, [disk((HOME[0] + 200, HOME[1]) if moved else HOME)], nobody, shift=shift if k == 2 else (0, 0))
+        out.append(watch.verdict(cid, 0.0, t, stale=0.8))
+    assert out == [False] * 8 and watch.lighting.misses == 0
+
+
+def test_brightening_while_flame_still_there_does_not_count():
+    """火焰还在时看到"变亮"（夜里 black() 一抖）不攒：再丢一帧也不能立刻判点亮。"""
+    watch, cid = raised(who=person(blk=0.9))
+    res = scans(watch, 0.1, 1.9, flames=lambda t: [disk()] if t < 1.5 else [], who=person(blk=0.05, unlit=False))
+    assert dict(res)[1.6] is False  # 1.6 第一次没看到火焰：变亮只算这一次
+
+
+def test_pan_near_pivot_person_moves_less_than_background():
+    """镜头绕团子转：背景平移 300 px，贴着团子的他只挪了 150（一半）：照样配得上。"""
+    watch, cid = raised()
+    watch.scan(0.1, ME, AREA, [disk()], nobody)
+    watch.scan(0.4, ME, AREA, [disk((HOME[0] + 150, HOME[1]))], nobody, shift=(300, 0))
+    assert watch.lighting.misses == 0 and watch.lighting.pos == (HOME[0] + 150, HOME[1])
+
+
+def test_pan_keeps_lantern_static():
+    """灯笼是背景：画面平移后它跟着挪，home 一起挪，还是不动的假火焰。"""
+    watch = FlameWatch(CFG)
+    for k in range(20):
+        dx = 200 if k >= 10 else 0
+        watch.scan(0.3 * k, ME, AREA, [disk((LANTERN[0] - 400 + dx, LANTERN[1]), 0.72)], nobody, shift=(200, 0) if k == 10 else (0, 0))
+    (c,) = watch.clues
+    assert c.static and c.moved < 1

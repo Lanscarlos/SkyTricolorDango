@@ -674,6 +674,9 @@ class Body:
             return "在做事"
         if getattr(self.env, "requests", None):
             return "有互动请求"
+        if self._raised is not None or (self._bow is not None and self._bow[2] is not None):
+            # 举着蜡烛等他亮 / 点亮了等鞠躬（light 请求举起时就拿掉了，上一条挡不住）：转镜头会让他的火焰在画面里跳走
+            return "举着蜡烛"
         if self.events.has("chat") or self.events.has("owner_command") or self.brain_busy():
             return "在聊天"
         if self.blackout:
