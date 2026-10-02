@@ -91,6 +91,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/gesture_label.py` | 动作片段的 Claude 初分（`perception gesture-label`）：16 帧拼成 4×4 一张图、提示词、解析，结果写进片段目录的 `claude.json`（复用 `assist.Reviewer`） |
 | `src/skydango/vision/gesture_train.py` | 动作模型训练（`perception gesture-train`）：读确认过的片段、按录像切训练 / 验证集（`_split.json`）、DINOv2-small 冻住提特征（缓存 `_features/`）+ 时序头、导出 ONNX、报告；torch 延迟导入 |
 | `src/skydango/console/labeling.py` | 「标注」页的后端（`/api/gesture/*`）：片段状态、取帧、确认 / 改类别 / 丢弃 = 挪文件夹、撤销，记在 `_labels.jsonl` |
+| `src/skydango/console/emotenames.py` | 「标注 → 动作名」的后端（`/api/emotes/*`）：按剪影把图标库 `emotes/*.png` 配给 `emotes/scan/` 的扫描图标、起名（复制）/ 改名 / 清除（挪进 `_removed/`）、名字检查、提示配置里引用旧名字的地方 |
 | `src/skydango/vision/embed.py` `onnxrt.py` | 特征模型的公共部分：`OnnxEmbedder`、`unit` / `cosine`（认地图、认装扮共用）；`onnxrt.py` 按 device（cuda / dml / cpu）选 onnxruntime 后端、建会话（YOLO、特征模型、动作模型共用） |
 | `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己、关系卡旧特征、`assign_friends`、换装判定）、攒训练数据 `CropSaver` |
 | `src/skydango/vision/catalog.py` | 装扮图鉴第 1 期（见「装扮图鉴」）：运行时把近处的人清楚的整身裁图存进 `catalog/inbox/`（门槛、每人留最好几张、写盘、索引）、离线工具的总览拼图 |
@@ -327,6 +328,9 @@ dir = "private/sandbox"
 - **预检**：大脑模式下也查 LLM Key；每个问题带 `setting` 跳转目标，「去设置 →」跳到设置页并高亮那一行（樱花底闪一下）。
 - **剧本和报告页**：报告在页内直接读（`console/reports.py`，`GET /api/sandbox/reports[/<name>]`），不用再去翻 `sandbox/reports/`。
 - **「标注」页**（`#labeling`，左栏「数据」组；后端 `console/labeling.py`）：逐段看动作片段的动图和 Claude 的猜测，按键确认（回车 = 同意 Claude、1~9 = 类别、0 = 丢弃、Z = 撤销），片段挪进 `datasets/gesture/<动作>/`，然后 `perception gesture-train`。同一页还有「外形」标签页（第二层，后端同 `console/labeling.py`）：逐张看人物裁图和 Claude 的初分，确认 / 改类别 / 丢弃，裁图挪进 `datasets/attrs/form/<类别>/`。
+  第三个标签页「动作名」（`console/emotenames.py` + `static/emotenames.js`）：网格列出 `emotes scan` 扫下来的全部图标，起名 = 把 `scan/NNN.png` 复制成图标库的 `emotes/<名字>.png`，改名 / 清除（挪进 `emotes/_removed/`）；
+  哪个扫描图标叫什么按剪影配（门槛 0.7、每张库图只配一个），不靠编号，重扫不错位。**只起名**，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动生效；
+  改名 / 清除时旧名字还被 `social.after_light` / `emotes.extra` / `gesture.names` / `reflex` 清单引用的只提示、不自动改。没有“重新扫描”按钮（要往游戏里按键，终端跑 `emotes scan`）
 - **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
   加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
   `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程

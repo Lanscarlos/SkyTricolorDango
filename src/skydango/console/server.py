@@ -30,6 +30,7 @@ from ..vision.viewer import is_local_host, post_guard, static_asset
 from . import probes
 from .devicecheck import run_checks
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
+from .emotenames import EmoteNames
 from .labeling import FormLabels, GestureLabels
 from .preflight import preflight, problem
 from .reports import list_reports, read_report
@@ -267,6 +268,10 @@ class ConsoleServer:
 
     def form_labels(self) -> FormLabels:
         return FormLabels(Path("datasets/attrs"))  # 配置里没有这个路径；和 perception crops 的默认 --out 一致
+
+    def emote_names(self) -> EmoteNames:
+        cfg = self.store._fallback()
+        return EmoteNames(Path(cfg.wheel.library_dir), cfg)
 
     def replaying(self) -> bool:
         r = self.replayer
@@ -662,6 +667,14 @@ class ConsoleServer:
                         self._json(404, {"ok": False, "text": "没有这张图"})
                     else:
                         self._send(200, "image/jpeg", data)
+                elif url.path == "/api/emotes/state":
+                    self._json(200, console.emote_names().state())
+                elif url.path == "/api/emotes/icon":
+                    data = console.emote_names().icon(parse_qs(url.query).get("id", [""])[0])
+                    if data is None:
+                        self._json(404, {"ok": False, "text": "没有这个图标"})
+                    else:
+                        self._send(200, "image/png", data)
                 elif url.path == "/api/state":
                     self._json(200, console.state())
                 elif url.path == "/api/logs":
@@ -701,6 +714,8 @@ class ConsoleServer:
                     "/api/gesture/undo": lambda body: console.gesture_labels().undo(),
                     "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or "")),
                     "/api/form/undo": lambda body: console.form_labels().undo(),
+                    "/api/emotes/name": lambda body: console.emote_names().name(body.get("id"), body.get("name")),
+                    "/api/emotes/clear": lambda body: console.emote_names().clear(body.get("id")),
                     "/api/sandbox/start": console.start_sandbox,
                     "/api/sandbox/stop": lambda body: console.stop_sandbox(),
                     "/api/sandbox/reset": lambda body: console.reset_sandbox(),
