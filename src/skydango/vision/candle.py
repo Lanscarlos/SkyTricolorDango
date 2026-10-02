@@ -20,7 +20,7 @@ import numpy as np
 from ..game.social import cream
 from ..imageio import imread
 from .bubbles import Rect
-from .icons import best_match, trim
+from .icons import trim
 
 FLAME = "assets/candle/flame.png"  # 录像 candle-20260930-d 第 16 秒截的，只有火焰
 SCALES = [0.6, 0.7, 0.8, 0.9, 1.0, 1.15, 1.3, 1.5]  # 人远近不同，圆盘大小跟着变
@@ -80,20 +80,40 @@ def white_ring(frame: np.ndarray, cx: int, cy: int, r: float) -> bool:
 def find_flame(frame: np.ndarray, area: Rect, flame: np.ndarray, min_score: float = 0.68) -> Disk | None:
     """在 area（整图坐标，调用方给：团子周围那一块）里找火焰，只取最好的一处；没有返回 None。
     有没有白圈、外环亮不亮都不看（10-01 晚真机）；分数够不够确定由调用方按 disk_sure 看。"""
+    found = find_flames(frame, area, flame, min_score, limit=1)
+    return found[0] if found else None
+
+
+def find_flames(frame: np.ndarray, area: Rect, flame: np.ndarray, min_score: float = 0.68, limit: int = 4) -> list[Disk]:
+    """area 里每一处火焰（分数从高到低，最多 limit 处）：身边可能同时有几个黑影，场景里的灯笼也会混进来，
+    点亮中要认准举蜡烛时那一团（spec 2026-10-03-light-flame-vanish §2）。同一团火焰在相邻位置、不同尺度上都有高分，
+    圆心相距不到较大那个半高的 1.5 倍只留分数高的。"""
     x1, y1 = max(0, area.x), max(0, area.y)
     x2, y2 = min(frame.shape[1], area.x2), min(frame.shape[0], area.y2)
     if x2 - x1 < 16 or y2 - y1 < 16:
-        return None
+        return []
     mask = cv2.GaussianBlur(cream(frame[y1:y2, x1:x2]), (0, 0), BLUR)
     flame = cv2.GaussianBlur(flame, (0, 0), BLUR)
-    best, scale = None, 1.0
-    for s in SCALES:
-        m = best_match(mask, flame, [s])
-        if best is None or m.score > best.score:
-            best, scale = m, s
-    if best is None or best.score < min_score:
-        return None
-    return Disk(x1 + best.x, y1 + best.y, flame.shape[0] * scale / 2, best.score)
+    peaks: list[Disk] = []
+    for s in SCALES:  # 和 icons.best_match 同样的缩放和匹配方法，最好的一处分数和 find_flame 原来一样
+        t = cv2.resize(flame, None, fx=s, fy=s, interpolation=cv2.INTER_NEAREST)
+        th, tw = t.shape[:2]
+        if th < 4 or tw < 4 or th > mask.shape[0] or tw > mask.shape[1] or not t.any():
+            continue
+        result = cv2.matchTemplate(mask, t, cv2.TM_CCOEFF_NORMED)
+        for _ in range(limit):
+            _, score, _, (lx, ly) = cv2.minMaxLoc(result)
+            if score < min_score:
+                break
+            peaks.append(Disk(x1 + lx + tw // 2, y1 + ly + th // 2, flame.shape[0] * s / 2, float(score)))
+            result[max(0, ly - th):ly + th + 1, max(0, lx - tw):lx + tw + 1] = -1.0  # 这一团周围不再取
+    kept: list[Disk] = []
+    for d in sorted(peaks, key=lambda d: -d.score):
+        if all(np.hypot(d.x - k.x, d.y - k.y) >= 1.5 * max(d.r, k.r) for k in kept):
+            kept.append(d)
+            if len(kept) >= limit:
+                break
+    return kept
 
 
 BLACK_MIN_VISIBLE = 0.4  # 扣掉团子后剩下的像素不到区域的这么多：被团子挡住大半，量不准

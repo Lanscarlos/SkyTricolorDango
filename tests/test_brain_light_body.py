@@ -70,10 +70,11 @@ def test_raise_candle_once_then_bow_when_lit(clock):
     env.lit_result = True
     b.step()
     assert [e.kind for e in events.drain()] == ["accepted"]
-    clock.advance(2.0)
+    delay = b.cfg.social.bow_delay
+    clock.advance(delay - 0.2)
     b.step()
     assert emotes.done == []  # 还没到 bow_delay
-    clock.advance(0.6)
+    clock.advance(0.3)
     b.step()
     assert emotes.done == [("鞠躬", True)] and presses(dev) == 1  # 鞠躬放下蜡烛，不按 3
 

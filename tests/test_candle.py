@@ -164,3 +164,45 @@ def test_black_mostly_covered_is_none():
     """团子盖住区域的 70%：剩下的不到 BLACK_MIN_VISIBLE，量不准 → None。"""
     f = np.full((400, 400, 3), (12, 12, 12), np.uint8)
     assert black(f, Rect(0, 0, 200, 400), exclude=Rect(80, 0, 100, 400)) is None
+
+
+# ---- 找出范围里的几处火焰（spec 2026-10-03-light-flame-vanish §1）：跟踪"举蜡烛时那一团"、认出不动的灯笼都要看全 ----
+
+from skydango.vision.candle import find_flames  # noqa: E402
+
+
+def two_figures():
+    """左边黑影胸口一团火焰（990, 620），右边另一个黑影胸口一团（1290, 600）。"""
+    f = figure()
+    cv2.rectangle(f, (1200, 480), (1380, 840), (12, 12, 12), -1)
+    cv2.circle(f, (1290, 600), 52, (20, 20, 20), -1)
+    paste(f, FLAME, 1290, 600)
+    return f
+
+
+WIDE = Rect(810, 284, 700, 576)
+
+
+def test_find_flames_returns_every_flame_best_first():
+    found = find_flames(two_figures(), WIDE, FLAME)
+    assert len(found) == 2
+    assert {(round(d.x, -1), round(d.y, -1)) for d in found} == {(990, 620), (1290, 600)}
+    assert found[0].score >= found[1].score
+
+
+def test_find_flames_one_flame_is_one_candidate():
+    """同一团火焰在相邻位置、不同尺度上都有高分：只算一处。"""
+    found = find_flames(figure(), AREA, FLAME)
+    assert len(found) == 1 and abs(found[0].x - 990) <= 6
+
+
+def test_find_flames_limit_and_empty():
+    assert len(find_flames(two_figures(), WIDE, FLAME, limit=1)) == 1
+    f = figure()
+    cv2.circle(f, (990, 620), 52, (20, 20, 20), -1)
+    assert find_flames(f, AREA, FLAME) == []
+
+
+def test_find_flame_is_the_best_of_find_flames():
+    best = find_flame(two_figures(), WIDE, FLAME)
+    assert best == find_flames(two_figures(), WIDE, FLAME)[0]
