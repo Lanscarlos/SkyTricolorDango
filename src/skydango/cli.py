@@ -699,6 +699,10 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_attrs_label(cfg, args)
     elif args.action == "crops":
         _perception_crops(cfg, args)
+    elif args.action == "attrs-train":
+        _perception_attrs_train(cfg, args)
+    elif args.action == "attrs-eval":
+        _perception_attrs_eval(cfg, args)
     elif args.action == "appearance-eval":
         _perception_appearance_eval(cfg, args)
     elif args.action == "halo-eval":
@@ -791,6 +795,113 @@ def _perception_crops(cfg: Config, args) -> None:
             counts = ad.crops_from_images(src, detector, out, args.conf)
         print(f"{src}: " + "，".join(f"{k} {v}" for k, v in counts.items()))
     print(f"裁图在 {out}（_unlabeled/ 等 Claude 初分、标注页确认）")
+
+
+def _attrs_replays(cfg: Config, frames: list, model, notes: list[str]):
+    """在验证帧上回放 0.2 和 [perception] low_conf 两档：([回放结果], 建议阈值)。检测器建不起来 / 没有带标注的帧就返回空。"""
+    from .vision import attrs_train as at
+    from .vision.detect import make_detector
+
+    p, a = cfg.perception, cfg.attrs
+    if not frames:
+        notes.append("没有可回放的验证帧（数据集的 images/val 里没有图），没做整帧回放")
+        return [], None
+    try:
+        detector = make_detector(p.model, p.classes, p.imgsz, 0.2, p.iou, p.device)
+    except Exception as exc:
+        notes.append(f"YOLO 检测器加载失败（{exc}），没做整帧回放")
+        return [], None
+    replays, suggest = [], None
+    for low in sorted({0.2, p.low_conf}):
+        records = at.collect(frames, detector, model, low)
+        if suggest is None or low == p.low_conf:
+            suggest = at.sweep_thresholds(records, p.conf)
+        replays.append({**at.simulate(records, p.conf, a.accept, a.reject), "conf_low": low, "conf": p.conf,
+                        "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n})
+    return replays, suggest
+
+
+def _attrs_device(cfg: Config, args=None) -> str:
+    return (getattr(args, "device", None) or cfg.attrs.device or cfg.perception.device) or "cpu"
+
+
+def _perception_attrs_train(cfg: Config, args) -> None:
+    """训练外形头（vision/attrs_train.py）：切分 → 合并类别 → DINOv2 特征（缓存）→ numpy 线性头 → 存 .npz → 报告 tmp/attrs-train/<时间>/report.md。"""
+    import dataclasses
+    import datetime as dt
+    from pathlib import Path
+
+    from .vision import attrs, attrs_train as at
+    from .vision.embed import OnnxEmbedder
+
+    a = cfg.attrs
+    if args.out and Path(args.out).resolve() == Path(a.model).resolve() and not args.force:
+        raise SystemExit(f"--out {args.out} 就是 [attrs] model 正在用的模型：没评估过的新模型别直接覆盖它。"
+                         "换个路径训练、看完报告达标再复制过去；确实要覆盖就加 --force")
+    data = Path(args.data) if args.data else Path("datasets/attrs")
+    if not (data / "form").is_dir():
+        raise SystemExit(f"{data}/form 不存在：先 perception crops 裁图、attrs-label 初分，再在管理面板「标注」页确认")
+    device = _attrs_device(cfg, args)
+    try:
+        embedder = OnnxEmbedder(a.backbone, norm="imagenet", device=device, what="attrs.backbone")
+    except Exception as exc:
+        raise SystemExit(f"主干 {a.backbone} 加载失败：{exc}") from None
+    now = dt.datetime.now()
+    try:
+        res = at.run_training(data, embedder, data / "_features")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    ev = res["eval"]
+    print(f"训练 {res['train_n']} 张（加镜像）、验证 {res['val_n']} 张，l2 = {res['l2']:g}，宏平均 F1 {ev['macro_f1']:.3f}")
+    for n in res["notes"]:
+        print(f"  {n}")
+    out = Path(args.out) if args.out else Path("models") / f"attrs-{now:%Y%m%d}.npz"
+    attrs.save_model(out, {"form": res["head"]}, Path(a.backbone).name, f"{embedder.size}:imagenet", f"{now:%Y%m%d}")
+    print(f"模型 → {out}")
+    model = attrs.load_model(dataclasses.replace(a, model=str(out)), device, embedder)
+    notes: list[str] = []
+    replays, suggest = [], None
+    if model is not None:
+        frames = []
+        for root in sorted({r["dataset"] for r in at.crop_rows(data).values() if r.get("source") == "dataset" and r.get("dataset")}):
+            frames += at.frames_in(Path(root))
+        replays, suggest = _attrs_replays(cfg, frames, model, notes)
+    for r in replays:
+        print(f"回放 conf_low = {r['conf_low']:g}：纯 YOLO 精确率 {r['baseline']['precision']:.0%}、召回率 {r['baseline']['recall']:.0%}；"
+              f"加外形头 {r['second']['precision']:.0%} / {r['second']['recall']:.0%}")
+    for n in notes:
+        print(f"  {n}")
+    folder = Path("tmp") / "attrs-train" / f"{now:%Y%m%d-%H%M%S}"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "report.md").write_text(at.report_md(data=data, model=out, when=now, result=res, replays=replays,
+                                                    suggest=suggest, notes=notes), encoding="utf-8")
+    print(f"报告 → {folder / 'report.md'}" + (f"；建议 accept = {suggest[0]:g}、reject = {suggest[1]:g}" if suggest else ""))
+
+
+def _perception_attrs_eval(cfg: Config, args) -> None:
+    """只跑整帧回放：给数据集（images/val + labels/val）和外形头模型，写报告 tmp/attrs-train/<时间>/report.md。"""
+    import datetime as dt
+    from pathlib import Path
+
+    from .vision import attrs, attrs_train as at
+
+    cfg.attrs.model = args.model
+    model = attrs.load_model(cfg.attrs, _attrs_device(cfg, args))
+    if model is None:
+        raise SystemExit(f"外形头模型 {args.model} 加载失败（原因见上面的警告）")
+    notes: list[str] = []
+    replays, suggest = _attrs_replays(cfg, at.frames_in(Path(args.dataset)), model, notes)
+    now = dt.datetime.now()
+    for r in replays:
+        print(f"conf_low = {r['conf_low']:g}")
+        print("\n".join(at.replay_md(r)))
+    for n in notes:
+        print(n)
+    folder = Path("tmp") / "attrs-train" / f"{now:%Y%m%d-%H%M%S}"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "report.md").write_text(at.report_md(data=Path(args.dataset), model=Path(args.model), when=now, result=None,
+                                                    replays=replays, suggest=suggest, notes=notes), encoding="utf-8")
+    print(f"报告 → {folder / 'report.md'}" + (f"；建议 accept = {suggest[0]:g}、reject = {suggest[1]:g}" if suggest else ""))
 
 
 def _perception_attrs_label(cfg: Config, args) -> None:
@@ -1314,8 +1425,26 @@ def _perception_bench(cfg: Config, args) -> None:
     for d in watcher.last_dets:
         counts[d.cls] = counts.get(d.cls, 0) + 1
     print("最后一帧检测到：" + ("、".join(f"{k}×{v}" for k, v in counts.items()) or "（无）"))
+    if getattr(args, "attrs", False):
+        _bench_attrs(cfg, args, detector, frames, dev)
     if dev is not None:
         print("提示：测速时看一下游戏画面有没有变卡（模拟器也在用这张显卡）")
+
+
+def _bench_attrs(cfg: Config, args, detector, frames: list, dev) -> None:
+    """bench --attrs：同样的帧上，只检测 vs 检测 + 最多 [attrs] max_crops 张人物裁图过外形头，各多少 fps。模型加载不上就说明原因、跳过。"""
+    from .vision import attrs, attrs_train as at
+
+    model = attrs.load_model(cfg.attrs, _attrs_device(cfg, args))
+    if model is None:
+        print(f"--attrs：外形头模型 {cfg.attrs.model} 没加载上（原因见上面的警告），只测了上面这些")
+        return
+    plain, withattrs = at.bench_attrs(lambda i: frames[i % len(frames)] if frames else dev.screenshot(),
+                                      detector, model, args.n, 5, cfg.attrs.max_crops)
+    fps = lambda ms: 1000 / (sum(ms) / len(ms))  # noqa: E731
+    print(f"外形头（每帧最多 {cfg.attrs.max_crops} 张裁图）：")
+    print(f"  只检测           {_stats(plain)}  -> {fps(plain):.1f} fps")
+    print(f"  检测 + 外形头    {_stats(withattrs)}  -> {fps(withattrs):.1f} fps")
 
 
 def _perception_detect(cfg: Config, args) -> None:
@@ -2690,6 +2819,7 @@ def main(argv: list[str] | None = None) -> None:
             q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关）")
             q.add_argument("--images", help="用这个目录 / 这张图测（默认实时截图）")
             q.add_argument("-n", type=int, default=200, help="测多少帧")
+            q.add_argument("--attrs", action="store_true", help="再测一遍加第二层外形头（每帧最多 [attrs] max_crops 张人物裁图）的 fps")
         else:
             q.add_argument("image", nargs="?", help="图片路径；不填则实时截屏")
             q.add_argument("-o", "--output", default="tmp/perception.png")
@@ -2757,6 +2887,15 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("attrs-label", help="第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json")
     q.add_argument("source", nargs="?", help="数据目录（默认 datasets/attrs）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的裁图也重新初分")
+    q = psub.add_parser("attrs-train", help="训练外形头：form/ 里确认过的裁图 -> DINOv2 特征 + numpy 线性头 -> models/attrs-<日期>.npz，整帧回放评估、写报告")
+    q.add_argument("data", nargs="?", help="数据目录（默认 datasets/attrs）")
+    q.add_argument("--out", help="模型输出路径（默认 models/attrs-<日期>.npz；是 [attrs] model 时要加 --force）")
+    q.add_argument("--force", action="store_true", help="允许 --out 直接覆盖 [attrs] model 正在用的模型")
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"], help="主干提特征用的后端（默认 [attrs] device，空 = 跟 [perception]）")
+    q = psub.add_parser("attrs-eval", help="外形头只做整帧回放：数据集 images/val 上比较纯 YOLO 和加外形头复核，写报告")
+    q.add_argument("dataset", help="YOLO 数据集目录（含 images/val 和 labels/val）")
+    q.add_argument("--model", required=True, help="外形头 .npz")
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"])
     q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
     q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的片段也重新初分")
