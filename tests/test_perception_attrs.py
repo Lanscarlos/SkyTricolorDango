@@ -6,7 +6,7 @@ from skydango.config import AttrsConfig, EnvConfig, PerceptionConfig
 from skydango.vision.attrs import FORMS, PersonAttrs
 from skydango.vision.bubbles import Rect
 from skydango.vision.detect import Detection
-from skydango.vision.people import Person
+from skydango.vision.people import Person, describe_people, describe_things
 from skydango.vision.perception import PerceptionWatcher, detector_conf
 
 from test_perception import FRIENDS, FakeDetector, FakeOcr, frame, player, tag
@@ -232,3 +232,80 @@ def test_attrs_errors_turn_off_open_low():
     w.process(img, 1.0, panel_visible=False)
     assert len(w.tracker.tracks) == 1  # 新出现的低分框不再开待复核的轨迹
     assert [p.kind for p in w.people(1.0)] == ["stranger"]  # 高分框照旧放行
+
+
+# ---- Task 6：先祖 / 共享空间 / 变身（spec §3.5、§3.6） ----
+def test_spirit_form_is_not_a_stranger():
+    img, model = scene({1500: probs(spirit=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1500)]]
+    w = watcher(det, model)
+    for t in (0.0, 0.5, 1.0, 1.5):
+        w.process(img, t, panel_visible=False)
+    assert w.strangers(1.5) == 0 and w.unlit(1.5) == 0
+    (tr,) = w.last_tracks
+    assert not tr.data.get("stranger")
+    (p,) = w.people(1.5)
+    assert (p.kind, p.name, p.sid, p.side, p.distance) == ("spirit", None, None, "右边", "近")
+    assert p.form == "spirit" and abs(p.form_p - 0.9) < 1e-6
+    assert "一个先祖（右边·近）" in describe_people(w.people(1.5))
+    assert w.nearest(1.5) is None and w.unnamed(1.5) == 0
+    assert [e["kind"] for e in w.overlay(1.5)] == ["spirit"]
+    assert w._others == [tr]
+
+    w.attrs.enabled = False  # 第二层自己关掉了：外形不再算数，照旧当普通人
+    w.process(img, 2.0, panel_visible=False)
+    (p,) = w.people(2.0)
+    assert (p.kind, p.form, p.form_p) == ("stranger", None, 0.0)
+
+
+def test_shared_space_player_not_relinked():
+    img, model = scene({1000: probs(shared=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110)]]
+    w = watcher(det, model, ocr=FakeOcr({110: NAME}), relink=True)
+    for t in (0.0, 0.5, 1.0):
+        w.process(img, t, panel_visible=False)
+    (tr,) = [t for t in w.last_tracks if t.cls == "player"]
+    assert not tr.data.get("name")  # 共享空间的人不挂名字标签
+    assert [(p.kind, p.name) for p in w.people(1.0)] == [("shared", None)]
+    assert describe_people(w.people(1.0)) == "一个共享空间的人（前面·近）"
+    tr.data.update(name=NAME, tagged=True)  # 就算之前挂过名字（外形后来才投成共享空间）
+    det.frames = [[]]
+    for t in (1.5, 2.0, 2.5):
+        w.process(frame(), t, panel_visible=False)
+    assert tr.id not in w.tracker.tracks and w._lost == {}  # 断掉了也不进失踪记录
+
+
+def test_morph_keeps_name_tag():
+    img, model = scene({1000: probs(morph=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1000), tag(990, 110)]]
+    w = watcher(det, model, ocr=FakeOcr({110: NAME}))
+    for t in (0.0, 0.5):
+        w.process(img, t, panel_visible=False)
+    (p,) = w.people(0.5)
+    assert (p.kind, p.name, p.form) == ("friend", NAME, "morph") and abs(p.form_p - 0.9) < 1e-6
+    assert w.nearby(0.5) == [NAME] and w._others == []
+
+
+def test_objects_dedupes_spirit():
+    img, model = scene({1500: probs(spirit=0.9)})
+    det = FakeDetector()
+    det.frames = [[player(1500), Detection("spirit", Rect(1505, 405, 90, 220), 0.9)]]  # 同一个位置两边都认出来
+    w = watcher(det, model)
+    for t in (0.0, 0.1, 0.2):
+        w.process(img, t, panel_visible=False)
+    yolo = next(t for t in w.last_tracks if t.cls == "spirit")
+    assert [(o.track_id, o.kind) for o in w.objects(0.2)] == [(yolo.id, "spirit")]
+
+    det2 = FakeDetector()
+    det2.frames = [[player(1500), Detection("spirit", Rect(300, 400, 90, 220), 0.9)]]  # 不重叠：两个先祖
+    w2 = watcher(det2, model)
+    w2.process(img, 0.0, panel_visible=False)
+    w2.process(img, 0.1, panel_visible=False)
+    assert w2.objects(0.1) == []  # 都才看到两帧
+    w2.process(img, 0.2, panel_visible=False)
+    things = w2.objects(0.2)
+    assert [(o.kind, o.side) for o in things] == [("spirit", "左边"), ("spirit", "右边")]
+    assert describe_things(things) == "先祖（左边·远）、先祖（右边·远）"  # 框底边 620：按物品的远近分

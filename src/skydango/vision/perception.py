@@ -50,7 +50,7 @@ from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
 from .ocr import OcrEngine, join_lines
-from .people import OBJECT_NAMES, CallSeen, Person, Seen, Thing, object_distance, side_of
+from .people import OBJECT_NAMES, OTHERS, WHO, CallSeen, Person, Seen, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import PAN_MIN_RESPONSE, PAN_RECHECK_RESPONSE, Track, Tracker, estimate_shift, iou
 from .wardrobe import FRIEND as FRIEND_PRIORITY
@@ -340,6 +340,7 @@ class PerceptionWatcher:
         self._pan_thumb: np.ndarray | None = None  # 上一帧的平移缩略图（暂停恢复后作废）
         self.last_shift: tuple[float, float] | None = None  # 这一帧估出的画面平移（track-eval 用）
         self._lost: dict[str, Lost] = {}  # 名字 → 断掉的好友轨迹（relink）
+        self._others: list[Track] = []  # 这一帧外形是先祖 / 共享空间的放行轨迹（不在 players 里，people() / objects() 用）
         self._camera_held = False  # 这次暂停里有身体转镜头（hold("camera")）
         self._pan_recheck = False  # 恢复后第一帧：拿暂停前的缩略图估一次平移，估不出就作废所有轨迹的位置
         self.requests: dict = {}  # 名字 → game.social.Request
@@ -622,6 +623,13 @@ class PerceptionWatcher:
             self._note_lost(now)
         selfs = [t for t in tracks if t.cls == "self"]
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not self._is_self(t, selfs) and self._admitted(t)]
+        if self.attrs is not None:
+            # 外形是先祖 / 共享空间的：看得到，但不算陌生人、不挂名字、不进接回 / 续命 / 走近 / 运动 / 动作 / 认装扮（spec §3.5）
+            others = [t for t in players if self._other_form(t)]
+            players = [t for t in players if not self._other_form(t)]
+            for t in others:
+                t.data.pop("stranger", None)  # 投成先祖之前可能被当成过陌生人
+            self._others = others
         tags = [t for t in tracks if t.cls == "name_tag"]
         rings = [t for t in tracks if t.cls == "social_ring"]
         bubbles = [t for t in tracks if t.cls == "typing"]
@@ -760,7 +768,8 @@ class PerceptionWatcher:
         # 认得出是谁的人（好友）不算"火焰下面那个人"：好友本来就是亮的，站在火焰旁边会被当成点亮了
         known = [t.box for t in players if t.data.get("name") or t.data.get("tagged") or t.data.get("maybe")]
         # 第二层没放行 / 撤下的人物框（树、石像……）也不算（spec 2026-10-02-perception-attrs §3.3）
-        hidden = ([t.box for t in tracks if t.cls in ("player", UNLIT) and not self._admitted(t)]
+        # 先祖 / 共享空间的人身上也不会有能点的火焰
+        hidden = ([t.box for t in tracks if t.cls in ("player", UNLIT) and not self._admitted(t)] + [t.box for t in self._others]
                   if self.attrs is not None else [])
         self._people_boxes = [
             (d.box, d.score) for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
@@ -800,6 +809,13 @@ class PerceptionWatcher:
     def _unlit(self, t: Track) -> bool:
         """人物轨迹是不是没点火的黑影：第二层开着时 YOLO 和外形两边投票，否则就看 YOLO 类别。"""
         return self.attrs.is_unlit(t) if self._attrs_on() else t.cls == UNLIT
+
+    def _other_form(self, t: Track) -> str | None:
+        """第二层开着、外形投票是先祖 / 共享空间的人物轨迹：返回外形（"spirit" / "shared"），否则 None。"""
+        if not self._attrs_on():
+            return None
+        form = t.data.get("form")
+        return form[0] if form and form[0] in OTHERS else None
 
     @staticmethod
     def _admitted(t: Track) -> bool:
@@ -853,7 +869,8 @@ class PerceptionWatcher:
         tracks = [t for t in list(self.last_tracks) if now - t.last <= PEOPLE_STALE]
         selfs = [t for t in tracks if t.cls == "self"]
         return self._count_unnamed([
-            t for t in tracks if t.cls in ("player", UNLIT) and self._admitted(t) and not self._is_self(t, selfs)
+            t for t in tracks
+            if t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and not self._is_self(t, selfs)
         ])
 
     def _count_unnamed(self, players: list[Track]) -> int:
@@ -1175,7 +1192,8 @@ class PerceptionWatcher:
     def _note_lost(self, now: float) -> None:
         """这一帧被追踪器删掉的好友轨迹记成失踪记录（同名只留最新）；过了 keep 的作废。"""
         for t in self.tracker.dropped:
-            if t.cls not in ("player", UNLIT) or self._unlit(t) or not self._admitted(t):  # 被撤下的不接回
+            # 被撤下的、先祖 / 共享空间的不接回
+            if t.cls not in ("player", UNLIT) or self._unlit(t) or not self._admitted(t) or self._other_form(t):
                 continue
             d = t.data
             name = d.get("name") if d.get("tagged") else (d.get("maybe") if d.get("maybe_by") == "relink" else None)
@@ -1632,7 +1650,7 @@ class PerceptionWatcher:
         for t in list(self.last_tracks):
             # 每个键只读一次：感知线程随时可能 pop 掉 maybe / sid（别的线程在读）
             who = t.data.get("name") or t.data.get("maybe") or (STRANGER if t.data.get("stranger") else None)
-            if t.cls in ("player", UNLIT) and self._admitted(t) and who:
+            if t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and who:
                 known.append((t.box.h, who))
         if not known:
             return None
@@ -1640,7 +1658,7 @@ class PerceptionWatcher:
         return who, distance(h, self._ref_height(self._frame_h), self.cfg.near, self.cfg.far)
 
     def people(self, now: float) -> list[Person]:
-        """最近一帧里认得出是谁的人（好友 / 陌生人 / 没点火的黑影），左到右、同一边的近的在前。
+        """最近一帧里认得出是谁的人（好友 / 陌生人 / 没点火的黑影；第二层开着时还有先祖 / 共享空间的人），左到右、同一边的近的在前。
 
         暂停中、或者这一帧已经过时（被挡住 / 没跑检测）返回空：别让技能盯着暂停前的人。
         """
@@ -1648,6 +1666,7 @@ class PerceptionWatcher:
             return []
         ref = self._ref_height(self._frame_h)
         out = []
+        others = {t.id for t in list(self._others)}  # process 认定的先祖 / 共享空间的人（和团子框重叠的不算）
         for t in list(self.last_tracks):
             if now - t.last > PEOPLE_STALE or t.cls not in ("player", UNLIT) or not self._admitted(t):
                 continue
@@ -1656,8 +1675,11 @@ class PerceptionWatcher:
             name, maybe, stranger = d.get("name"), d.get("maybe"), d.get("stranger")
             motion = d.get("motion") if self.cfg.motion else None
             sure, sid, look = True, None, ""
+            form, form_p = (d.get("form") or (None, 0.0)) if self._attrs_on() else (None, 0.0)
             dark = self._unlit(t)
-            if dark and stranger:  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
+            if form in OTHERS and t.id in others:  # 先祖 / 共享空间的人：不挂名字，运动方向没算过（不在 players 里）
+                kind, name, motion = form, None, None
+            elif dark and stranger:  # 和团子框重叠的黑影不算（process 里没给它记 stranger）
                 kind = "unlit"
             elif not dark and name:
                 kind = "friend"
@@ -1672,7 +1694,7 @@ class PerceptionWatcher:
             side = side_of(t.box.x + t.box.w / 2, self._frame_w)
             out.append(Person(t.id, kind, name if kind == "friend" else None, t.box, side,
                               distance(t.box.h, ref, self.cfg.near, self.cfg.far), sure=sure, sid=sid, look=look,
-                              motion=motion))
+                              motion=motion, form=form, form_p=form_p))
         order = {"左边": 0, "前面": 1, "右边": 2}
         return sorted(out, key=lambda p: (order[p.side], -p.box.h))
 
@@ -1981,9 +2003,12 @@ class PerceptionWatcher:
             if person and not self._admitted(t):
                 continue  # 没放行 / 被撤下的人物框先不画（画法见 spec §8，后面再加）
             dark = person and self._unlit(t)
+            other = self._other_form(t) if person else None
             # 每个键只读一次（同 people()）；who = 装扮描述按谁查
             name, maybe, sid, who = d.get("name"), d.get("maybe"), d.get("sid"), None
-            if person and not dark and maybe and not name:
+            if other:  # 先祖 / 共享空间的人（画法见 spec §8，后面再加）
+                kind, label = other, WHO[other]
+            elif person and not dark and maybe and not name:
                 kind, label, who = "maybe", f"像{maybe}?", maybe
             elif person and not dark:
                 kind = "stranger" if d.get("stranger") else ("friend" if name else "player")
@@ -2039,11 +2064,18 @@ class PerceptionWatcher:
         if self.paused:
             return []
         out = []
-        for t in list(self.last_tracks):
-            if t.cls not in OBJECT_NAMES or now - t.last > PEOPLE_STALE or t.hits < self.cfg.object_min_hits:
-                continue
+        seen = [t for t in list(self.last_tracks) if now - t.last <= PEOPLE_STALE and t.hits >= self.cfg.object_min_hits]
+        found = [(t, t.cls) for t in seen if t.cls in OBJECT_NAMES]
+        ids = {t.id for t in seen}
+        # 外形头认出的先祖也算；和 YOLO 自己的先祖框重叠（IoU ≥ 0.5）的是同一个，只报 YOLO 那个（spec §3.5）
+        found += [
+            (t, "spirit") for t in list(self._others)
+            if t.id in ids and self._other_form(t) == "spirit"
+            and not any(kind == "spirit" and iou(o.box, t.box) >= 0.5 for o, kind in found)
+        ]
+        for t, kind in found:
             side = side_of(t.box.x + t.box.w / 2, self._frame_w)
-            out.append(Thing(t.id, t.cls, t.box, side,
+            out.append(Thing(t.id, kind, t.box, side,
                              object_distance(t.box.y2, self._frame_h, self.cfg.object_near, self.cfg.object_far)))
         order = {"左边": 0, "前面": 1, "右边": 2}
         return sorted(out, key=lambda o: (order[o.side], -o.box.y2))
