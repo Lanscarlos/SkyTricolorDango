@@ -72,9 +72,10 @@ def descriptions(sweep: bool) -> dict[str, str]:
 
 TOOL_NAMES = list(DESCRIPTIONS)
 # 幕后（spec 2026-10-01-backstage §2）：[backstage] enabled 时才注册，不进 DESCRIPTIONS / TOOL_NAMES / ACTIONS
-INTROSPECT_TOPICS = ("精力", "反思", "性格", "日记", "眼睛")
+INTROSPECT_TOPICS = ("精力", "反思", "性格", "日记", "眼睛", "改动")
 INTROSPECT_DESCRIPTION = (
-    "查你自己现在的内心细节：精力 / 反思 / 性格 / 日记 / 眼睛。别人问你为什么困、心情为什么这样、你怎么记事时先查再答；"
+    "查你自己现在的内心细节：精力 / 反思 / 性格 / 日记 / 眼睛 / 改动（最近几天你被改了什么）。"
+    "别人问你为什么困、心情为什么这样、你怎么记事、最近被改了什么时先查再答；"
     "查到的数字别原样念，用自己的话说。"
 )
 # 按 Q 喊一声（spec 2026-10-01-q-call §3.1）：[call] enabled 且开了感知层才注册（look_around 后面），不进 DESCRIPTIONS / TOOL_NAMES

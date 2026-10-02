@@ -15,6 +15,7 @@ from ..config import LullConfig
 
 ME = "我"  # body.chat 里团子自己的说话人
 QUOTE_MAX = 30  # 引用的话最多几个字
+EARLIER = 2  # 新的冷场第一次叫醒时，附上之前几次冷场想过的几句（沙盒里每次都想“他在忙，我等等”）
 _MUSING = re.compile(r"^\s*心里\s*[：:]\s*(.+?)\s*$", re.M)
 
 Chat = Sequence[tuple[float, str, str]]
@@ -65,6 +66,7 @@ class LullTracker:
         self._finished: list[Lull] = []
         self._done_t0 = float("-inf")  # 上一次情况①冷场的 t0：同一句“最后一句”不再开始
         self._last_wall: float | None = None
+        self._earlier: list[tuple[tuple[Lull, ...], str]] = []  # 想过的话（挂在哪几个冷场上, 想法），新的在后
 
     # ---- 每圈 ----
     def tick(self, wall: float, nearby: Sequence[str], chat: Chat, paused: bool = False) -> list[Cue]:
@@ -84,7 +86,7 @@ class LullTracker:
             if not lull.announced:
                 if wall - lull.t0 >= self.cfg.leave_grace:
                     lull.announced = True
-                    cues.append(Cue(lull.opening, False))
+                    cues.append(Cue(lull.opening + self._earlier_note(lull), False))
                 continue
             cue = self._advance(lull, wall)
             if cue is not None:
@@ -172,7 +174,14 @@ class LullTracker:
         if not passed or passed[-1] <= lull.stage:
             return None
         lull.stage = passed[-1]  # 一次跳过几个节点（快进）只发最新的
-        return Cue(self._cue_text(lull, wall), lull.stage == len(stages) - 1)
+        return Cue(self._cue_text(lull, wall) + self._earlier_note(lull), lull.stage == len(stages) - 1)
+
+    def _earlier_note(self, lull: Lull) -> str:
+        """这次冷场还没想过：附上之前冷场想过的最近几句；想过了状态里有“在想”，不再附。"""
+        if lull.musings:
+            return ""
+        thoughts = [text for owners, text in self._earlier if not any(x is lull for x in owners)][-EARLIER:]
+        return "之前冷场时你想过" + "".join(f"「{_q(t)}」" for t in thoughts) + "，这次换个想法。" if thoughts else ""
 
     # ---- 文字 ----
     def _obj(self, lull: Lull) -> str:
@@ -258,6 +267,8 @@ class LullTracker:
         targets = [lull for lull in self._live() if since is None or lull.created <= since]
         for lull in targets:
             lull.musings.append((wall, wall - lull.t0, text))
+        if targets:
+            self._earlier = self._earlier[-(EARLIER * 3):] + [(tuple(targets), text)]
         return bool(targets)
 
     def _live(self) -> list[Lull]:

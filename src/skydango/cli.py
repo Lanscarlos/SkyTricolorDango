@@ -2055,9 +2055,11 @@ def _run_brain(
             on_news=body.news,
         )
         body.friend_names = _friend_names(cfg)
-        if store is not None:  # 反思用的人设和笔记（dry-run 也读）
+        if store is not None:  # 反思用的人设、笔记和好友名单（dry-run 也读）
             body.profile_text = lambda: store.profile() or cfg.reply.persona
             body.memory_notes = lambda: f"{store.notes()}\n{store.inbox()}"
+            body.friends_text = store.friends
+        body.recent_changes = _recent_changes(cfg)
         events.subscribe(eyes.notice)
         # recall 只读，dry-run 也给
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
@@ -2311,6 +2313,25 @@ def _backstage_prompt(cfg: Config, store, now: float | None = None, run=None, re
     except Exception:
         log.exception("拼「幕后」一节出错")
         return ""
+
+
+def _recent_changes(cfg: Config, run=None, repo=None, now=time.time):
+    """introspect(改动) 用（spec 2026-10-01-backstage）：不看标记、按最近 changelog_days 天取提交；幕后关着返回 None。
+    提示词里的更新记录只给没告诉过的，告诉过一次再问就得靠这个查。时间用真实时间（同 _backstage_prompt）。"""
+    if not cfg.backstage.enabled:
+        return None
+    from .brain.backstage import changelog, git_runner, repo_root
+
+    if run is None:
+        repo = repo if repo is not None else repo_root()
+        run = git_runner(repo) if repo is not None else None
+
+    def lines() -> list[str]:
+        if run is None:
+            return []
+        return changelog(run, None, now(), cfg.backstage.changelog_max, cfg.backstage.changelog_days)[0]
+
+    return lines
 
 
 def _final_timeout(cfg: Config) -> float:

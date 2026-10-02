@@ -3,7 +3,7 @@
 import json
 
 from skydango.chat.memory import MemoryStore
-from skydango.cli import _backstage_prompt
+from skydango.cli import _backstage_prompt, _recent_changes
 from skydango.config import Config
 
 HEAD = "a" * 40
@@ -66,3 +66,16 @@ def test_backstage_prompt_uses_real_time_not_world_clock(tmp_path, monkeypatch):
     monkeypatch.setattr("skydango.cli.time.time", lambda: NOW)
     out = _backstage_prompt(_cfg(dry_run=True), MemoryStore(tmp_path), run=fake_runner([]))
     assert "- 今天 feat(brain): 会查自己了" in out
+
+
+def test_recent_changes_ignores_seen(tmp_path):  # introspect(改动)：不管告诉过没有，按最近几天查
+    (tmp_path / "inner").mkdir()
+    (tmp_path / "inner" / "backstage.json").write_text(json.dumps({"seen": HEAD}), encoding="utf-8")
+    calls = []
+    lines = _recent_changes(_cfg(), run=fake_runner(calls), now=lambda: NOW)()
+    assert lines == ["- 今天 feat(brain): 会查自己了"]
+    assert not any(c[0] == "merge-base" for c in calls)
+
+
+def test_recent_changes_off():
+    assert _recent_changes(_cfg(enabled=False), run=fake_runner([])) is None

@@ -137,6 +137,11 @@ def test_section_with_owner():
     assert "{" not in s
 
 
+def test_section_owner_tier_points_to_changes():  # 告诉过一次就不再写进提示词：再问时要去查，别说“没人告诉我”
+    assert "introspect(改动)" in section("卡洛", "sonnet", "haiku", "sonnet", [])
+    assert "introspect(改动)" not in section("", "sonnet", "haiku", "sonnet", [])
+
+
 def test_section_without_owner():
     s = section("", "sonnet", "haiku", "sonnet", ["- 昨天 feat: x"])
     assert "做出你的人是" not in s and "（聊天里名字一字不差）" not in s and "{owner}" not in s

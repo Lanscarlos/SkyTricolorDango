@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 LIMIT_RETRY = 600.0  # 额度用完后多久不再反思（同 [brain] limit_retry 默认）
 MAX_CHAT = 80  # 材料里最多带几行聊天
 
-REFLECT_SYSTEM = """你是《光遇》里的三彩团子（人设见材料），现在回头想想刚才这段时间，更新自己的内心状态。材料里有：现在几点、精力、你现在心里的状态、这段时间的聊天原话（“我”是你自己说的）、谁来了谁走了、相关好友的关系卡和笔记。
+REFLECT_SYSTEM = """你是《光遇》里的三彩团子（人设见材料），现在回头想想刚才这段时间，更新自己的内心状态。材料里有：现在几点、精力、你现在心里的状态、这段时间的聊天原话（“我”是你自己说的）、谁来了谁走了、相关好友的关系卡、好友名单里写的和笔记。
 
 按人设和发生的事来想：
 - 心情（mood）：level 只能是 开心 / 平常 / 低落 / 烦 之一；text 是一句带原因的口语（不超过 40 字），比如“有点闷，小明说好来又没来”。别凭空大起大落，没什么事就保持原样。
@@ -34,7 +34,7 @@ REFLECT_SYSTEM = """你是《光遇》里的三彩团子（人设见材料），
 {"mood": {"level": "...", "text": "..."}, "grudge": "keep", "wants_add": [{"kind": "...", "text": "...", "who": "..."}], "wants_done": ["..."], "diary": "", "memos": []}
 字符串里引用别人的话用「」，不要用英文双引号（会把 JSON 弄坏）。
 
-材料最后说“这是今天下线前的最后一次”时，再写：diary = 一段第一人称日记（不超过 200 字，口语，写今天和谁玩了什么、心情怎么样）；memos = 给以后的自己的要点（不超过 5 条，每条不超过 30 字，写清楚是谁、具体日期，只记以后用得上的）。其他时候这两项留空。"""
+材料最后说“这是今天下线前的最后一次”时，再写：diary = 一段第一人称日记（不超过 200 字，口语，写今天和谁玩了什么、心情怎么样；写到好友时称呼和性别照好友名单里写的，女生用“她”，拿不准就直接叫名字）；memos = 给以后的自己的要点（不超过 5 条，每条不超过 30 字，写清楚是谁、具体日期，只记以后用得上的）。其他时候这两项留空。"""
 
 # 第 3 期（spec 2026-09-30-inner-phase3 §3）：persona 开着时接在 REFLECT_SYSTEM 后面
 PERSONA_SYSTEM = """顺便想想你自己的性格（材料里“你攒下的性格”是已经记下的）：
@@ -52,6 +52,20 @@ def _block(title: str, lines: list[str]) -> str:
     return f"{title}\n" + ("\n".join(lines) if lines else "（没有）")
 
 
+def friend_sections(friends_md: str, names: list[str]) -> list[str]:
+    """friends.md 里这几个好友的那一节，每人一行“名字：条目；条目”（称呼、性别、关系；反思写日记要用）。"""
+    sections: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in (friends_md or "").splitlines():
+        if line.startswith("## "):
+            current = sections.setdefault(line[3:].strip(), [])
+        elif line.startswith("#"):
+            current = None
+        elif current is not None and line.strip():
+            current.append(line.strip().removeprefix("- ").strip())
+    return [f"{n}：" + "；".join(sections[n]) for n in names if sections.get(n)]
+
+
 def materials(
     now: float,
     energy_note: str,
@@ -63,6 +77,7 @@ def materials(
     persona: str,
     final: bool,
     traits: str | None = None,  # 第 3 期：已经攒下的性格（Persona.section()）；None = 不写这一段，"" = 还没有
+    profiles: list[str] | None = None,  # friends.md 里相关好友那一节（friend_sections）；None = 不写这一段
 ) -> str:
     """拼给反思的材料（一条 user 消息）。"""
     d = time.localtime(now)
@@ -79,6 +94,7 @@ def materials(
         parts.append("你攒下的性格：\n" + ("\n".join(body) if body else "（还没有）"))
     parts += [
         _block("相关的好友：", cards),
+        *([_block("好友名单里写的（称呼、性别以这里为准）：", profiles)] if profiles is not None else []),
         _block("笔记里提到他们的：", notes),
     ]
     if final:
