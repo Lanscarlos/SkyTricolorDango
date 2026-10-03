@@ -3,7 +3,7 @@
 import numpy as np
 
 from skydango.config import AppearanceConfig, EnvConfig, PerceptionConfig
-from skydango.vision.appearance import AppearanceBook, ColorEmbedder
+from skydango.vision.appearance import AppearanceBook, ColorEmbedder, DinoGuard
 from skydango.vision.bubbles import Rect
 from skydango.vision.detect import Detection
 from skydango.vision.embed import unit
@@ -41,6 +41,19 @@ def paint(*items):
     return img
 
 
+class FakeDino:
+    size = 224
+
+    def __init__(self):
+        self.calls = 0
+
+    def embed(self, img):
+        self.calls += 1
+        v = np.zeros(8, np.float32)
+        v[3] = 1.0
+        return v
+
+
 class FakeSaver:
     def __init__(self, fail=False):
         self.calls, self.fail = [], fail
@@ -52,7 +65,7 @@ class FakeSaver:
         return True
 
 
-def make(appearance=True, hardcases=None, acfg_kw=None, saver=None, clock=None, **cfg):
+def make(appearance=True, hardcases=None, acfg_kw=None, saver=None, clock=None, dino=None, **cfg):
     cfg.setdefault("stranger_after", 1.0)
     cfg.setdefault("keep", 5.0)
     det = FakeDetector()
@@ -60,7 +73,7 @@ def make(appearance=True, hardcases=None, acfg_kw=None, saver=None, clock=None, 
     extra = {"clock": clock} if clock is not None else {}
     if appearance:
         emb = ColorEmbedder()
-        extra |= dict(appearance=AppearanceBook(acfg, emb.key, keep=cfg["keep"]), embedder=emb, appearance_cfg=acfg)
+        extra |= dict(appearance=AppearanceBook(acfg, emb.key, keep=cfg["keep"]), embedder=emb, appearance_cfg=acfg, dino=dino)
     w = PerceptionWatcher(
         det, FakeOcr(OCR), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
         log_roi=[0.0, 0.0, 0.335, 0.855], background=False, hardcases=hardcases, saver=saver, **extra,
@@ -589,3 +602,33 @@ def test_outfit_change_off_keeps_description_even_if_features_moved():
     w.pop_outfits()
     w.on_described("friend", XIAOMING, "粉色长斗篷", solid_feat(GREEN))  # 颜色特征飘得厉害：不当成上一套的描述丢掉
     assert [n.state for n in w.pop_outfits()] == ["described"] and w.looks([XIAOMING]) == {XIAOMING: "粉色长斗篷"}
+
+
+def test_features_store_sample_on_track():
+    dino = FakeDino()
+    w, det = make(dino=DinoGuard(dino))
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 1.0)
+    (p,) = players(w)
+    smp = p.data["sample"]
+    assert smp.dino is not None and smp.color.shape == p.data["feat"].shape and not smp.pinned
+    assert p.data["samples"] >= 3 and dino.calls >= 3
+
+
+def test_features_without_dino_have_color_only():
+    w, det = make()
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 1.0)
+    (p,) = players(w)
+    assert p.data["sample"].dino is None and p.data["samples"] >= 3
+
+
+def test_dango_and_self_tracks_get_samples_once_per_frame():
+    dino = FakeDino()
+    w, det = make(dino=DinoGuard(dino))
+    me = Detection("self", Rect(550, 470, 165, 395), 0.9)
+    on_me = Detection("player", Rect(549, 468, 287, 399), 0.8)
+    run(w, det, [(me, PINK), (on_me, PINK)], 0.0, 0.5)
+    dangos = [t for t in w.last_tracks if t.data.get("dango")]
+    selfs = [t for t in w.last_tracks if t.cls == "self"]
+    assert len(dangos) == 1 and len(selfs) == 1
+    assert dangos[0].data["sample"].dino is not None and selfs[0].data["sample"].dino is not None
+    assert dino.calls == dangos[0].data["samples"] + selfs[0].data["samples"]  # 每次好样本只算一次，没重复处理

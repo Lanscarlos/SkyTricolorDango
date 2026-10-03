@@ -4,7 +4,17 @@ import numpy as np
 import pytest
 
 from skydango.config import AppearanceConfig, Config
-from skydango.vision.appearance import AppearanceBook, ColorEmbedder, CropSaver, clear_box, describe_crop, good_crop, make_embedder
+from skydango.vision.appearance import (
+    AppearanceBook,
+    ColorEmbedder,
+    CropSaver,
+    DinoGuard,
+    clear_box,
+    describe_crop,
+    good_crop,
+    make_embedder,
+    make_sample,
+)
 from skydango.vision.bubbles import Rect
 from skydango.vision.embed import cosine, unit
 
@@ -371,3 +381,79 @@ def test_clear_box():
     assert not clear_box(box, [], [Rect(0, 0, 160, 1080)], 0.2)  # 压在聊天面板上
     assert clear_box(box, [], [Rect(0, 0, 105, 1080)], 0.2)  # 面板只碰到一点边
     assert not clear_box(Rect(0, 0, 0, 10), [], [], 0.2)  # 空框
+
+
+class FakeDino:
+    size = 224
+
+    def __init__(self, fail=False):
+        self.fail, self.calls, self.shapes = fail, 0, []
+
+    def embed(self, img):
+        self.calls += 1
+        self.shapes.append(img.shape)
+        if self.fail:
+            raise RuntimeError("推理挂了")
+        return _basis(3)
+
+
+def _frame_with(box, color=(150, 80, 220)):
+    img = np.zeros((1080, 1920, 3), np.uint8)
+    img[box.y:box.y2, box.x:box.x2] = color
+    return img
+
+
+def test_make_sample_both_features():
+    box = Rect(400, 400, 90, 220)
+    frame = _frame_with(box)
+    cfg = AppearanceConfig()
+    dino = DinoGuard(FakeDino())
+    s = make_sample(frame, box, [], [], cfg, ColorEmbedder(), dino, 12.5)
+    assert s is not None
+    assert np.allclose(s.dino, _basis(3))
+    crop = good_crop(frame, box, [], [], cfg.min_height, cfg.max_overlap)
+    assert np.allclose(s.color, ColorEmbedder().embed(crop))
+    assert s.h == pytest.approx(220 / 1080) and s.t == 12.5 and not s.pinned
+    assert dino.size == 224
+    assert dino._embedder.shapes == [(224, 224, 3)]  # attrs.crop 补成正方形缩到 size
+
+
+def test_make_sample_without_dino():
+    box = Rect(400, 400, 90, 220)
+    s = make_sample(_frame_with(box), box, [], [], AppearanceConfig(), ColorEmbedder(), None, 1.0)
+    assert s is not None and s.dino is None
+
+
+def test_make_sample_none_when_not_good_crop():
+    box = Rect(400, 400, 90, 40)  # 太矮
+    dino = DinoGuard(FakeDino())
+    assert make_sample(_frame_with(box), box, [], [], AppearanceConfig(), ColorEmbedder(), dino, 1.0) is None
+    assert dino._embedder.calls == 0  # 不好的样本不白算 DINOv2
+
+
+def test_dino_errors_disable_only_dino(caplog):
+    dino = DinoGuard(FakeDino(fail=True), max_errors=3)
+    img = np.zeros((10, 10, 3), np.uint8)
+    for _ in range(3):
+        assert dino.enabled and dino.embed(img) is None
+    assert dino.enabled is False
+    n = dino._embedder.calls
+    assert dino.embed(img) is None and dino._embedder.calls == n  # 关了以后不再调
+    assert sum("DINOv2" in r.message for r in caplog.records if r.levelname == "WARNING") == 1
+    box = Rect(400, 400, 90, 220)
+    s = make_sample(_frame_with(box), box, [], [], AppearanceConfig(), ColorEmbedder(), dino, 1.0)
+    assert s is not None and s.dino is None  # 颜色照旧
+
+
+def test_dino_success_resets_error_count():
+    class Flaky(FakeDino):
+        def embed(self, img):
+            self.calls += 1
+            if self.calls % 3:
+                raise RuntimeError("偶尔出错")
+            return _basis(3)
+
+    dino = DinoGuard(Flaky(), max_errors=3)
+    img = np.zeros((10, 10, 3), np.uint8)
+    res = [dino.embed(img) for _ in range(9)]
+    assert dino.enabled and sum(r is not None for r in res) == 3  # 连续才算

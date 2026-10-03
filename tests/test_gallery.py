@@ -89,3 +89,33 @@ def test_samples_is_a_copy():
     g.add(S(V_PINK))
     g.samples.clear()
     assert len(g) == 1
+
+
+def test_same_color_different_dino_kept_as_two():
+    g = Gallery(10)
+    g.add(S(V_PINK, t=0, dino=_basis(3)))
+    g.add(S(near(V_PINK, 0.99), t=1, dino=_basis(4)))
+    assert len(g) == 2
+
+
+def test_same_color_near_same_dino_is_dup():
+    g = Gallery(10)
+    g.add(S(V_PINK, t=0, dino=_basis(3)))
+    g.add(S(near(V_PINK, 0.99), t=5, dino=near(_basis(3), 0.98)))
+    assert len(g) == 1
+    assert g.samples[0].t == 5
+
+
+def test_one_side_without_dino_dedups_by_color():
+    g = Gallery(10)
+    g.add(S(V_PINK, t=0, dino=_basis(3)))
+    g.add(S(near(V_PINK, 0.99), t=5, dino=None))
+    assert len(g) == 1
+
+
+def test_pinned_new_sample_never_deduped():
+    g = Gallery(10)
+    g.add(S(V_PINK, t=0))
+    g.add(S(near(V_PINK, 0.99), t=1, pinned=True))
+    assert len(g) == 2
+    assert g.pinned_count == 1

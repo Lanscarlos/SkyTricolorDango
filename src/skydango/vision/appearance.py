@@ -19,6 +19,7 @@ import numpy as np
 from ..config import AppearanceConfig
 from ..imageio import imwrite
 from .bubbles import Rect
+from .attrs import crop as square_crop
 from .embed import OnnxEmbedder, cosine, unit
 from .gallery import Gallery, Sample
 from .track import iou
@@ -104,6 +105,49 @@ def make_embedder(cfg: AppearanceConfig):
     if cfg.model.lower().endswith(".onnx"):
         return OnnxEmbedder(cfg.model, cfg.size, cfg.norm, cfg.device, what="appearance.model")
     raise ValueError(f"appearance.model 只能是 \"color\" 或 .onnx 路径：{cfg.model}")
+
+
+class DinoGuard:
+    """DINOv2 特征模型的保险：推理出错返回 None 并计数，连续 max_errors 次后关掉这一路（颜色特征不受影响）。"""
+
+    def __init__(self, embedder, max_errors: int = 10) -> None:
+        self._embedder = embedder
+        self.max_errors = max_errors
+        self.errors = 0
+        self.enabled = True
+
+    @property
+    def size(self) -> int:
+        return self._embedder.size
+
+    def embed(self, img: np.ndarray) -> np.ndarray | None:
+        if not self.enabled:
+            return None
+        try:
+            feat = unit(self._embedder.embed(img))
+        except Exception:
+            self.errors += 1
+            log.debug("DINOv2 特征出错（连续第 %d 次）", self.errors, exc_info=True)
+            if self.errors >= self.max_errors:
+                self.enabled = False
+                log.warning("DINOv2 特征连续出错 %d 次，这一路关掉，只用颜色特征", self.errors)
+            return None
+        self.errors = 0
+        return feat
+
+
+def make_sample(
+    frame: np.ndarray, box: Rect, others: list[Rect], blocked: list[Rect], cfg: AppearanceConfig,
+    color_embedder, dino: DinoGuard | None, now: float,
+) -> Sample | None:
+    """一次裁图出两个特征：颜色用 good_crop 的裁图，DINOv2 用补成正方形的整框。不是好样本返回 None；
+    DINOv2 没开 / 出错时 Sample.dino 是 None（颜色照旧）；颜色特征出错向上抛。"""
+    crop = good_crop(frame, box, others, blocked, cfg.min_height, cfg.max_overlap)
+    if crop is None:
+        return None
+    color = unit(color_embedder.embed(crop))
+    feat = dino.embed(square_crop(frame, box, 0.0, dino.size)) if dino is not None and dino.enabled else None
+    return Sample(color=color, dino=feat, t=now, h=box.h / frame.shape[0])
 
 
 @dataclass

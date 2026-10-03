@@ -43,7 +43,8 @@ from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
 from ..config import AppearanceConfig, EnvConfig, GestureConfig, PerceptionConfig, SocialConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_request
-from .appearance import describe_crop, good_crop
+from .appearance import describe_crop, make_sample
+from .gallery import Sample
 from .attrs import unlit_score
 from .candle import black, find_flames, white_ring
 from .bubbles import Rect, roi_rect
@@ -307,6 +308,7 @@ class PerceptionWatcher:
         light_dir: Path | None = None,  # 点亮陌生人每次存图 / summary.json 的目录（None = 不存）
         appearance=None,  # vision.appearance.AppearanceBook：认装扮（None = 不认，行为照旧）
         embedder=None,  # 外观特征模型（appearance.make_embedder）
+        dino=None,  # vision.appearance.DinoGuard：DINOv2 特征（None = 不算，只有颜色）
         appearance_cfg: AppearanceConfig | None = None,
         saver=None,  # 攒认人模型的训练数据（CropSaver，None = 不存）
         call_window: float = 6.0,  # 按 Q 喊一声的窗口秒数（[call] window）
@@ -350,6 +352,7 @@ class PerceptionWatcher:
         self._gesture_at: dict[tuple[str, str], float] = {}
         self.appearance = appearance
         self.embedder = embedder
+        self.dino = dino
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
         self.saver = saver
         self.catalog = catalog
@@ -679,6 +682,7 @@ class PerceptionWatcher:
             self._note_lost(now)
         selfs = [t for t in tracks if t.cls == "self"]
         self._mark_dango(tracks, selfs, now, panel_visible)
+        dangos = [t for t in tracks if t.cls in ("player", UNLIT) and t.data.get("dango") and self._admitted(t)]
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not t.data.get("dango") and self._admitted(t)]
         if self.attrs is not None:
             # 外形是先祖 / 共享空间的：看得到，但不算陌生人、不挂名字、不进接回 / 续命 / 走近 / 运动 / 动作 / 认装扮（spec §3.5）
@@ -793,7 +797,7 @@ class PerceptionWatcher:
             self._relink(players, shown, now)
         fresh = {}
         if self.appearance is not None:
-            fresh = self._appearance_features(frame, players, selfs, now, width, height, panel_visible)
+            fresh = self._appearance_features(frame, players, selfs, dangos, now, width, height, panel_visible)
             self._appearance_identify(frame, players, selfs, tagged, shown, fresh, now, tracks)
         for player in players:
             if self._unlit(player):
@@ -1116,33 +1120,39 @@ class PerceptionWatcher:
         return self.tracker.update(fresh, now, prune=False) if fresh else []  # 同一帧第二次：不删、不冲掉 dropped
 
     # ---- 认装扮（设计 §3.2、§4） ----
-    def _appearance_features(self, frame: np.ndarray, players: list[Track], selfs: list[Track], now: float,
-                             width: int, height: int, panel_visible: bool) -> dict[int, tuple[np.ndarray, Rect]]:
-        """点过火的人和团子：每 every 帧裁一次好样本、算特征，平滑进 data["feat"]、好样本数进 data["samples"]。
-        一帧最多算 max_per_frame 个（最久没算的先算）。返回这一帧新算的 {轨迹 id: (这次的特征, 框)}，学进记忆簿时用。"""
+    def _appearance_features(self, frame: np.ndarray, players: list[Track], selfs: list[Track], dangos: list[Track], now: float,
+                             width: int, height: int, panel_visible: bool) -> dict[int, tuple[Sample, Rect]]:
+        """点过火的人、团子（self 框和身上打了 data["dango"] 的 player 框）：每 every 帧裁一次好样本、算颜色和 DINOv2 两个特征，
+        颜色平滑进 data["feat"]、好样本数进 data["samples"]、这一次的样本放 data["sample"]。
+        一帧最多算 max_per_frame 个（最久没算的先算）。返回这一帧新算的 {轨迹 id: (这次的样本, 框)}，学进记忆簿时用。"""
         acfg = self.appearance_cfg
         every = max(1, acfg.every)
-        due = [t for t in [p for p in players if not self._unlit(p)] + selfs if t.hits % every == 0]
+        pool: dict[int, Track] = {}
+        for t in [p for p in players if not self._unlit(p)] + selfs + dangos:
+            pool.setdefault(t.id, t)  # 同一条轨迹只算一次
+        due = [t for t in pool.values() if t.hits % every == 0]
         due.sort(key=lambda t: t.data.get("feat_at", float("-inf")))
         blocked = [roi_rect(self.log_roi, width, height)] if panel_visible else []
-        out: dict[int, tuple[np.ndarray, Rect]] = {}
+        body_ids = {t.id for t in selfs} | {t.id for t in dangos}  # 团子的 self 框和 player 框是同一个身体，互相不算遮挡
+        out: dict[int, tuple[Sample, Rect]] = {}
         for t in due:
             if len(out) >= acfg.max_per_frame:
                 break
             t.data["feat_at"] = now
-            others = [o.box for o in players + selfs if o.id != t.id]
-            crop = good_crop(frame, t.box, others, blocked, acfg.min_height, acfg.max_overlap)
-            if crop is None:
-                continue
+            mine = t.id in body_ids
+            others = [o.box for o in players + selfs + dangos if o.id != t.id and not (mine and o.id in body_ids)]
             try:
-                feat = unit(self.embedder.embed(crop))
+                sample = make_sample(frame, t.box, others, blocked, acfg, self.embedder, self.dino, now)
             except Exception:
                 log.exception("算外观特征出错")
                 continue
+            if sample is None:
+                continue
             old = t.data.get("feat")
-            t.data["feat"] = feat if old is None else unit((1 - acfg.ema) * old + acfg.ema * feat)
+            t.data["feat"] = sample.color if old is None else unit((1 - acfg.ema) * old + acfg.ema * sample.color)
             t.data["samples"] = t.data.get("samples", 0) + 1
-            out[t.id] = (feat, t.box)
+            t.data["sample"] = sample
+            out[t.id] = (sample, t.box)
         return out
 
     def _save_samples(self, frame: np.ndarray, players: list[Track], tagged: dict[int, Track],
@@ -1151,7 +1161,8 @@ class PerceptionWatcher:
         for p in players:
             if self._unlit(p) or p.id not in fresh:
                 continue
-            feat, box = fresh[p.id]
+            sample, box = fresh[p.id]
+            feat = sample.color
             try:
                 tag = tagged.get(p.id)
                 name = (tag.data.get("name") if tag is not None else None) or None
@@ -1164,9 +1175,9 @@ class PerceptionWatcher:
             except Exception:
                 log.exception("存认装扮训练数据出错")
 
-    def _learn(self, kind: str, who: str, sample: tuple[np.ndarray, Rect], frame: np.ndarray, now: float) -> None:
-        feat, box = sample
-        p = self.appearance.learn(kind, who, feat, now, crop=(box.h, describe_crop(frame, box).copy()))
+    def _learn(self, kind: str, who: str, sample: tuple[Sample, Rect], frame: np.ndarray, now: float) -> None:
+        smp, box = sample
+        p = self.appearance.learn(kind, who, smp.color, now, crop=(box.h, describe_crop(frame, box).copy()), dino=smp.dino, h=smp.h)
         self._outfit_triggers(kind, who, p, box, frame.shape[0], now)
 
     # ---- 装扮描述（设计 §3.3、§4.4）：学到新的好样本时才判断，不是每帧 ----

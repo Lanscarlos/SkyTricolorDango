@@ -1,7 +1,8 @@
 """一个身份的多张样本底库（认装扮：每人留一组外观样本，而不是一个平均特征）。
 
-样本的特征都是单位向量，余弦 = 点积。去重只看颜色特征（DINOv2 可能没开）；
-满了挤掉最冗余的（和别的样本最像的）一张，钉住的样本（名字标签证实过的）永远不挤。"""
+样本的特征都是单位向量，余弦 = 点积。去重：颜色余弦 ≥ DUP，并且（任一边没有 DINOv2，或 DINOv2 余弦也 ≥ DUP）才算重复——
+同一身衣服不同角度颜色直方图几乎一样，团子靠 DINOv2 认，只看颜色会把转圈登记压成一张；新来的钉住样本（转圈登记）从不去重，直接加。
+满了挤掉最冗余的（和别的样本颜色最像的）一张，钉住的样本（名字标签证实过的）永远不挤。"""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-DUP = 0.97  # 颜色特征余弦 ≥ 这个算重复：只刷新那张的时间
+DUP = 0.97  # 颜色（有 DINOv2 时还要 DINOv2）余弦 ≥ 这个算重复：只刷新那张的时间
 
 
 @dataclass
@@ -17,7 +18,7 @@ class Sample:
     color: np.ndarray  # 颜色特征（单位向量）
     dino: np.ndarray | None  # DINOv2 特征（单位向量），没开 / 算不出就是 None
     t: float  # 采集时间
-    h: float  # 采样时的框高（像素）
+    h: float  # 采样时的框高 / 画面高
     pinned: bool = False  # 钉住的不会被挤掉
 
 
@@ -39,16 +40,22 @@ class Gallery:
         return list(self._samples)
 
     def add(self, s: Sample) -> None:
-        """加一张样本：和已有的颜色太像（≥ DUP）就只刷新那张；超过上限挤掉最冗余的未钉住样本。"""
+        """加一张样本：和已有的某张重复（颜色余弦 ≥ DUP，且任一边没 DINOv2 或 DINOv2 余弦也 ≥ DUP）就只刷新那张；
+        钉住的新样本从不算重复；超过上限挤掉最冗余的未钉住样本。"""
         best, best_cos = None, -1.0
-        for old in self._samples:
-            c = float(np.dot(old.color, s.color)) if old.color.shape == s.color.shape else -1.0
-            if c > best_cos:
+        if not s.pinned:
+            for old in self._samples:
+                c = float(np.dot(old.color, s.color)) if old.color.shape == s.color.shape else -1.0
+                if c < DUP or c <= best_cos:
+                    continue
+                if old.dino is not None and s.dino is not None and (
+                    old.dino.shape != s.dino.shape or float(np.dot(old.dino, s.dino)) < DUP
+                ):
+                    continue
                 best, best_cos = old, c
-        if best is not None and best_cos >= DUP:
+        if best is not None:
             best.t = max(best.t, s.t)
             best.h = s.h
-            best.pinned = best.pinned or s.pinned
             if best.dino is None and s.dino is not None:
                 best.dino = s.dino
             return
