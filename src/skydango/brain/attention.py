@@ -156,8 +156,10 @@ class Attention:
         return pick
 
     # ---- 每圈 ----
-    def think(self, targets: list[Target], now: float, scale: float = 1.0, obs: Obs | None = None) -> Thought:
-        """scale：环顾间隔的倍数（心情精力）；obs：这一圈的感知结果（None = 画面暂停 / 不知道，不发起环顾）。"""
+    def think(self, targets: list[Target], now: float, scale: float = 1.0, obs: Obs | None = None,
+              scan_ok: bool = True) -> Thought:
+        """scale：环顾间隔的倍数（心情精力）；obs：这一圈的感知结果（None = 画面暂停 / 不知道，不发起环顾）；
+        scan_ok：False = 现在别发起环顾（技能在转镜头）。"""
         dt = min(max(now - self._last_now, 0.0), self.cfg.max_step)
         self._last_now = now
         self._note_empty(obs, now)
@@ -180,7 +182,7 @@ class Attention:
         step = event = None
         passive = cur is not None and not (cur.kind == "friend_present" and self.search is not None)  # 站着的好友不打断找
         if not passive and self.mode != "别动":
-            step, event = self._search_step(obs, now, scale)
+            step, event = self._search_step(obs, now, scale, scan_ok)
             if step is not None:
                 action = step.turn if step.state == "press" else None
         if self.mode == "别动":
@@ -202,8 +204,9 @@ class Attention:
         gap = self.cfg.scan_every * scale * SCAN_MODE[self.mode]
         return now - self._empty_since >= self.cfg.scan_after - EPS and now - self._scan_end >= gap - EPS
 
-    def _search_step(self, obs: Obs | None, now: float, scale: float) -> tuple[SearchStep | None, str | None]:
-        if self.search is None and self._scan_due(now, scale):
+    def _search_step(self, obs: Obs | None, now: float, scale: float,
+                     scan_ok: bool = True) -> tuple[SearchStep | None, str | None]:
+        if self.search is None and scan_ok and self._scan_due(now, scale):
             prefer = "right" if self._scan_side == "left" else "left"
             self.search = Search.scan(self.cfg, self.track, self.heading, self.rng, prefer, now)
             self._scan_side = self.search.side or prefer
@@ -219,10 +222,9 @@ class Attention:
         s, self.search = self.search, None
         self.last_search = (s, now)
         event = event_text(s, self._scan_empty)
-        if s.kind == "scan":
-            self._scan_end = now
-            if not s.aborted:
-                self._scan_empty = s.state == "empty"
+        self._scan_end = now  # 刚环顾过 / 刚找过：同一片地方，隔 scan_every 再环顾
+        if s.kind == "scan" and not s.aborted:
+            self._scan_empty = s.state == "empty"
         return event
 
     def start_lost(self, who: str, side: str | None, edge_exit: bool, can_call: bool, now: float) -> bool:
@@ -248,6 +250,7 @@ class Attention:
         self._streak_dir, self._streak_n = None, 0
         self._stuck.clear()
         self._last_press = max(self._last_press, now)
+        self._scan_end = max(self._scan_end, now)  # 别人刚四处看过（找 / 环视 / 换角度）：算环顾过了
         self.heading.reset(now)
 
     def _turn(self, cur: Target) -> Turn | None:

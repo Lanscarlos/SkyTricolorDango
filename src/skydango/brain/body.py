@@ -870,7 +870,8 @@ class Body:
         if self.cfg.attention.search:
             self._start_lost_search(now)
         who = a.search.who if a.search is not None else None
-        th = a.think(self._attention_targets(now), now, self.effects().wander, self.search_obs(who, now))
+        th = a.think(self._attention_targets(now), now, self.effects().wander, self.search_obs(who, now),
+                    scan_ok=self.skills.active is None)  # 技能在转镜头时不发起环顾
         if th.event:
             self.events.put("search", th.event)
         self._attention_look_first(th, now)

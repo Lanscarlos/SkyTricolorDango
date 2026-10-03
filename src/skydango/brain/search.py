@@ -319,6 +319,8 @@ class Search:
     def result_line(self) -> str:
         """status 里"刚才…"那一句。"""
         if self.kind == "scan":
+            if self.aborted:
+                return f"想往{self.where}看看，被打断了"
             return f"往{self.where}看了看：{self.note}"
         if self.state == "found":
             return f"找到了{self.note}"
@@ -339,11 +341,14 @@ def event_text(s: Search, prev_empty: bool) -> str | None:
     if s.aborted or s.state == "running":
         return None
     if s.kind == "lost":
-        act = f"往{s.dirs()}找了找" if s.dirs() else ("喊了一声找" if s._called_once else "找了找")
+        if not s.dirs() and not s._called_once:
+            return None  # 没转没喊（这一声被拦了、画面里又有没挂名字的人不转）：没什么可说的，只留在 status
+        act = f"往{s.dirs()}找了找" if s.dirs() else "喊了一声找"
         if s.state == "maybe":
             return f"你{act}刚走开的{s.who}，那边有个人可能是他（没看到名字）"
         if s.state == "none":
-            return f"你{act}刚走开的{s.who}，没看到他"
+            crowd = f"（画面里还有 {s._crowd} 个没挂名字的人，可能就是他）" if s._crowd else ""
+            return f"你{act}刚走开的{s.who}，没看到他{crowd}"
         return None  # 找到了：他回到身边，走现有的 return
     if s.kind == "scan" and s.state == "seen" and not s.friends and prev_empty:
         return f"你往{s.where}看了看：有 {s.strangers} 个陌生人"

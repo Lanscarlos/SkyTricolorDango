@@ -387,3 +387,30 @@ def test_passive_turn_moves_heading_too():
     th = a.think([tgt("t:1", "talk_friend", 1600, "小明", 0.0)], 0.0)
     a.pressed(th.action, 0.0)
     assert a.heading.deg > 0.0  # 按右
+
+
+def test_no_scan_right_after_lost_search_ends():
+    a = attn(scan_segments=[2, 2])
+    a.start_lost("小明", "left", True, False, 0.0)
+    log = run_idle(a, 0.0, 100.0, obs=empty)
+    end = next(t for t, th in log if th.search is not None and th.search.state == "none")
+    scans = [t for t, th in log if t > end and th.action is not None]
+    assert scans and scans[0] >= end + Config().attention.scan_every - 0.7  # 刚找过：隔 scan_every 才环顾
+
+
+def test_external_move_counts_as_looking_around():
+    a = attn(scan_segments=[2, 2])
+    a.external_move(20.0)  # 别人（find / look_around / camera）刚转过镜头
+    log = run_idle(a, 0.0, 100.0, obs=empty)
+    first = next(t for t, th in log if th.action is not None)
+    assert first >= 20.0 + Config().attention.scan_every - 0.7
+
+
+def test_scan_not_started_when_scan_ok_false():
+    a = attn(scan_segments=[2, 2])
+    t = 0.0
+    while t <= 90.0:
+        assert a.think([], t, obs=Obs(), scan_ok=False).action is None
+        t += 0.7
+    assert a.search is None
+    assert a.think([], 91.0, obs=Obs()).action is not None  # 放开了就环顾

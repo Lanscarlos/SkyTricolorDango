@@ -134,7 +134,28 @@ def test_lost_middle_with_unnamed_people_does_not_turn_away():
     log = run(s, lambda t: Obs(strangers=1))
     assert presses(log) == []
     assert log[-1][1].state == "none" and "1 个没挂名字的人" in s.note
-    assert event_text(s, False) == "你找了找刚走开的小明，没看到他"
+    assert event_text(s, False) is None  # 没转没喊（这一声被拦了）：什么都没做，不报事件，只留在 status
+    assert "1 个没挂名字的人" in s.result_line()
+
+
+def test_lost_called_with_unnamed_people_event_mentions_them():
+    a, tr = cfgs()
+    s = Search.lost("小明", "right", False, True, a, tr, heading(), 0.0)
+
+    def sent(s, t):
+        s.call_sent(t)
+        s.called(CallSeen(t, {}), t + 6.0)  # 喊了、没认出他
+
+    log = run(s, lambda t: Obs(strangers=2), on_call=sent)
+    assert presses(log) == [] and log[-1][1].state == "none"
+    assert event_text(s, False) == "你喊了一声找刚走开的小明，没看到他（画面里还有 2 个没挂名字的人，可能就是他）"
+
+
+def test_lost_nothing_done_gives_no_event():
+    a, tr = cfgs()
+    s = Search.lost("小明", None, False, False, a, tr, heading(), 0.0)  # 不能喊、没有线索
+    s.step(Obs(strangers=1), 0.0)
+    assert s.state == "none" and event_text(s, False) is None
 
 
 def test_lost_middle_alone_turns_toward_his_side_after_call():
@@ -176,6 +197,14 @@ def test_search_gives_up_when_not_advanced_for_resume_within():
     st = s.step(Obs(), 10.2)
     assert st.state == "none" and s.aborted and event_text(s, False) is None
     assert s.result_line() == "找小明，被打断太久，不找了"
+
+
+def test_aborted_scan_does_not_claim_it_looked():
+    a, tr = cfgs(scan_segments=[2, 2])
+    s = Search.scan(a, tr, heading(), random.Random(1), "left", 0.0)
+    assert s.step(Obs(), 0.0).state == "press"
+    assert s.step(Obs(), 10.5).state == "none" and s.aborted
+    assert s.result_line() == f"想往{s.where}看看，被打断了"
 
 
 def test_scan_turns_toward_stalest_and_reports_empty():

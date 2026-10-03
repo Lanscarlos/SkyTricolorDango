@@ -13,7 +13,6 @@ XIAOMING = Person(9, "friend", "小明", Rect(1500, 400, 100, 300), "右边", "�
 def find_body(clock, **kw):
     b, dev, reader, events, env, cam = attn_body(clock, **kw)
     b.cfg.panel.idle_peek = 1e9
-    b.cfg.attention.scan_after = 1e9  # 找完后注意力不接着环顾：这里只数 find 自己按的键
     b.cfg.call.enabled = False  # 不喊：只转（喊一声的路线在 search 单测里）
     return b, events, env, cam
 
@@ -55,3 +54,21 @@ def test_find_found_mid_way(clock):
     steps(b, clock, 2)
     assert done_events(events) == [("task_done", "找小明：找到了小明（右边·近）")]
     assert b.skills.active is None
+
+
+def test_no_scan_during_or_right_after_find(clock):
+    b, events, env, cam = find_body(clock)
+    b.cfg.attention.scan_after = 5.0  # 空画面五秒就该环顾：找的时候和刚找完都不许
+    b.find("小明", 60)
+    for _ in range(60):
+        steps(b, clock, 1)
+        if b.skills.active is not None:
+            assert "在看看周围" not in b.status()
+        else:
+            break
+    assert b.skills.active is None and done_events(events)
+    n = len(cam.nudges)
+    steps(b, clock, 60)  # 约 42 s：不到 scan_every（60 s）
+    assert len(cam.nudges) == n and "在看看周围" not in b.status()
+    steps(b, clock, 80)  # 又过了 56 s：该环顾了
+    assert len(cam.nudges) > n
