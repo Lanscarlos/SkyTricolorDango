@@ -205,15 +205,21 @@ _FENCE = re.compile(r"```[a-zA-Z]*")
 
 
 def parse_reflection(text: str | None) -> dict | None:
-    """反思的回答 → dict；容忍 ```json 围栏、前后有字；不是 JSON 对象就 None。"""
+    """反思的回答 → dict；容忍 ```json 围栏、前后有字；不是 JSON 对象就 None。
+    模型有时把一份回答拆成几个对象回（10-03：心情 / 日记一个、性格一个），按顺序合并，坏的跳过。"""
     if not text:
         return None
     text = _FENCE.sub("", text)
-    i, j = text.find("{"), text.rfind("}")
-    if i < 0 or j < i:
-        return None
-    try:
-        data = json.loads(text[i : j + 1])
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
+    dec = json.JSONDecoder()
+    data: dict | None = None
+    i = text.find("{")
+    while i >= 0:
+        try:
+            obj, end = dec.raw_decode(text, i)
+        except ValueError:
+            i = text.find("{", i + 1)
+            continue
+        if isinstance(obj, dict):
+            data = {**(data or {}), **obj}
+        i = text.find("{", end)
+    return data

@@ -28,6 +28,18 @@ def test_claude_env_isolates_from_user_login(monkeypatch, tmp_path):
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok" and env["CLAUDE_CONFIG_DIR"] == str(tmp_path.resolve())
 
 
+def test_claude_env_drops_endpoint_and_model_overrides(monkeypatch, tmp_path):
+    # 10-03 晚：起团子的会话把 ANTHROPIC_BASE_URL 指到 DeepSeek，一次性 claude -p 拿着 Claude 令牌去打 DeepSeek，全部 401
+    for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+              "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.setenv("SKYDANGO_KEEP_ME", "1")
+    env = claude_env("tok", tmp_path)
+    assert not [k for k in env if k.upper().startswith("ANTHROPIC_")]
+    assert "CLAUDE_CODE_USE_BEDROCK" not in env and "CLAUDE_CODE_USE_VERTEX" not in env
+    assert env["SKYDANGO_KEEP_ME"] == "1" and env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok"
+
+
 def test_resolve_claude_reports_missing():
     with pytest.raises(RuntimeError, match="找不到 Claude Code"):
         resolve_claude("definitely-not-a-command-xyz")

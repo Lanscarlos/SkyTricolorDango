@@ -22,6 +22,8 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 LIMIT_WORDS = ("limit", "上限", "额度")
+# 子进程不继承的（ANTHROPIC_* 另外整个去掉）：用户自己的登录令牌、改走 Bedrock / Vertex 的开关
+_DROP_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
 
 
 class ClaudeError(RuntimeError):
@@ -33,7 +35,10 @@ class ClaudeError(RuntimeError):
 
 
 def claude_env(token: str, config_dir: str | Path) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")}
+    # ANTHROPIC_* 一律去掉：除了密钥，还有 ANTHROPIC_BASE_URL / ANTHROPIC_MODEL 这类改地址、改型号的
+    # （10-03 晚起团子的会话把 BASE_URL 指到了 DeepSeek，子进程继承后拿着 Claude 令牌去打 DeepSeek，全部 401）
+    env = {k: v for k, v in os.environ.items()
+           if not k.upper().startswith("ANTHROPIC_") and k not in _DROP_ENV}
     env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     env["CLAUDE_CONFIG_DIR"] = str(Path(config_dir).resolve())
     # Windows 系统locale 不是 UTF-8（这台机器是 GBK）时子进程的 stdout 默认编码会跟着系统走，
