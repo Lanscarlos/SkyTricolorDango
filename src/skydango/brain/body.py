@@ -37,10 +37,11 @@ from ..vision.halo import HaloWatch
 from ..vision.perception import same_body
 from ..vision.track import iou
 from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
-from ..vision.people import describe_people, describe_things
+from ..vision.people import describe_people, describe_things, side_of
 from .calling import CallResult, call_available, event_text as call_event_text, status_text as call_status_text
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
+from .find import FindSkill
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
@@ -53,8 +54,9 @@ from ..inner.log import ENERGY_EVERY, diff as diff_inner
 from ..inner.lull import Lull, LullTracker, parse_musing
 from ..inner.mind import sounds_upset
 from ..inner.reflect import friend_sections, materials as reflect_materials_text
-from .attention import Attention, Target as AttnTarget
+from .attention import SEARCH_MODES, Attention, Target as AttnTarget
 from .peek import Done as PeekDone, Obs as PeekObs, PeekPlanner, Turn as PeekTurn, occluded, overlap_x, pick_self
+from .search import Obs, SIDE as SEARCH_SIDE
 from .skills import SkillRunner
 from .track import TrackSkill
 
@@ -66,6 +68,7 @@ SCENE_EVENT_COOLDOWN = 10.0
 SHUTDOWN_REFINE = 8.0  # 退出时镜头闭环复位的细调最多花几秒（粗转照做）；控制台 stop_timeout 60 秒
 BUTTON_NOTES = {"retreat": "可以按", "allow": "可以按", "other": "要主人放行", "never": "不能按"}
 OWNER_NOTE = "（主人命令模式）"  # 真用到了主人命令窗口的放宽，结果后面标上（brain.jsonl 里看得出来）
+EXIT_EDGE = 0.15  # 好友走开时名字标签最后在最左 / 最右这么宽里：算从画面边上出去的（spec 2026-10-03-attention-search §1）
 CALL_TRACK_STALE = 1.0  # 喊一声时取感知层最近一帧的人物框：比这旧的不要（同 perception.PEOPLE_STALE）
 PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身体自己打开面板的操作：期间这个面板不算遮挡
 
@@ -180,9 +183,12 @@ class Body:
         self.rng = rng or random.Random()
         self.reflexes = Reflexes(cfg.reflex, self.rng, clock())
         # 空闲注意力（东张西望，spec 2026-09-30-idle-attention）
-        self.attention = Attention(cfg.attention, cfg.track, self.rng, clock())
+        self.attention = Attention(cfg.attention, cfg.track, self.rng, clock(), hfov=cfg.spin.hfov)
         self._attention_pressed_at = float("-inf")  # 注意力上次按键：之后 settle 秒内冒出的"走近"是自己转出来的
         self._attention_why = ""  # 这一圈为什么不动（status / 网页）
+        self._searched_for: dict[str, float] = {}  # 好友 → 为他哪一次走开（_left_at 的时间）找过
+        self._search_call_pending = False  # _pending_auto 是"找走开的好友"喊的那一声
+        self._attn_black = False  # 注意力上一圈看到的是不是黑屏（黑屏一开始就清朝向）
         self._gestures_seen: deque[tuple[str, str, float]] = deque(maxlen=20)  # (谁, 动作, 时间)：回礼反射取走了也留一份
         self._held_pending: str | None = None  # 先看一眼：推迟了哪个面板等待
         self._hold_until = float("-inf")
@@ -309,7 +315,7 @@ class Body:
         if self.cfg.reflex.enabled:
             info["反射"] = self._recent_reflex(now) or "还没有"
         if self._attention_on():
-            info["注意力"] = self.attention.describe() + (f"（先不动：{self._attention_why}）" if self._attention_why else "")
+            info["注意力"] = self.attention.describe(self.clock()) + (f"（先不动：{self._attention_why}）" if self._attention_why else "")
         if self.cfg.proactive.enabled:
             try:
                 o = self.occasion()
@@ -639,7 +645,7 @@ class Body:
         except ValueError:
             raise ToolError("模式只能是：随意 / 好奇 / 专心 / 别动") from None
         log.info("注意力模式：%s%s", mode, f"，关注{self.attention.focus}" if self.attention.focus else "")
-        line = self.attention.describe()
+        line = self.attention.describe(self.clock())
         return line if line.startswith("注意力：") else f"注意力：{mode}（{line}）"
 
     def _self_motion_window(self) -> float:
@@ -675,6 +681,113 @@ class Body:
                 if p.kind == "friend" and p.name:
                     out.append(AttnTarget(f"n:{p.name}", "friend_present", p.box.x + p.box.w / 2, p.name))
         return out
+
+    def search_obs(self, who: str | None, now: float) -> Obs | None:
+        """有意识地找这一圈的感知结果：要找的人在不在（名字证实 / 只是像他）、画面里有哪些好友、几个别的人。
+        画面暂停、黑屏、没有感知层：None。名字标签贴在屏幕边上的是人在画面外，不算找到。"""
+        env = self.env
+        if env is None or not hasattr(env, "people") or getattr(env, "paused", False) or self.blackout:
+            return None
+        width = self.frame_width
+        people = env.people(now)
+        friends = tuple(p.name for p in people if p.kind == "friend" and p.name and p.sure)
+        others = sum(1 for p in people if p.kind in ("stranger", "unlit") or (p.kind == "friend" and not p.sure))
+        target = maybe = None
+        where = ""
+        if who:
+            def same(n):
+                return bool(n) and (n == who or similar(who, n, 0.75))
+
+            for p in people:
+                if p.kind != "friend" or not same(p.name):
+                    continue
+                if p.sure:
+                    target, where = p.box.x + p.box.w / 2, f"{p.side}·{p.distance}"
+                    break
+                if maybe is None:
+                    maybe = p.box.x + p.box.w / 2
+            if target is None:
+                band = self.cfg.perception.edge_band * width
+                for n, (x, _y, w, _h, t) in dict(getattr(env, "labels", {}) or {}).items():
+                    cx = x + w / 2
+                    if same(n) and now - t <= self.cfg.track.max_age and band <= cx <= width - band:
+                        target, where = cx, side_of(cx, width)
+                        break
+        return Obs(width, target, where, maybe, friends, others)
+
+    def _left_where(self, name: str) -> tuple[str | None, bool]:
+        """好友走开时最后在哪：名字标签最后的位置 → (往哪边找 "left" / "right", 是不是从画面边上出去的)；没记录 (None, False)。
+        （失踪记录 Lost 只留 keep 秒，判"走开"时多半已经删了，所以看标签。）"""
+        v = dict(getattr(self.env, "labels", {}) or {}).get(name)
+        if v is None:
+            return None, False
+        x, _y, w, _h, _t = v
+        width = self.frame_width
+        cx = x + w / 2
+        return ("left" if cx < width / 2 else "right"), (cx < EXIT_EDGE * width or cx > (1 - EXIT_EDGE) * width)
+
+    def _search_takes_call(self) -> bool:
+        """好友走开后喊一声的事归注意力的"找走开的好友"管（_watch_call 不再自己判断）。"""
+        return self._attention_on() and self.cfg.attention.search and self.attention.mode in SEARCH_MODES
+
+    def _start_lost_search(self, now: float) -> None:
+        """好友刚走开、还没回来、这次走开没找过：交给注意力去找。一次只找最近走开的那一个，同时走开的别人这次不找。"""
+        window = self.cfg.call.auto_after_leave
+        fresh = sorted(((t, n) for n, t in self._left_at.items()
+                        if now - t <= window and n not in self._nearby and self._searched_for.get(n) != t), reverse=True)
+        if not fresh:
+            return
+        for t, n in fresh:
+            self._searched_for[n] = t
+        name = fresh[0][1]
+        side, edge = self._left_where(name)
+        cfg = self.cfg.call
+        can_call = cfg.enabled and cfg.auto and call_available(self.cfg, self.env)
+        if self.attention.start_lost(name, side, edge, can_call, now):
+            log.info("%s 刚走开（最后在%s%s）：找找他", name, SEARCH_SIDE.get(side, "不知道哪边"), "，从画面边上出去的" if edge else "")
+
+    def _search_call(self, now: float) -> None:
+        """找走开的好友那一步"喊一声"：照自动喊的额度（min_gap、auto_quota、auto_again）；喊不了就告诉 search 跳过这一步。"""
+        s, cfg = self.attention.search, self.cfg.call
+        while self._call_times and now - self._call_times[0] > cfg.auto_window:
+            self._call_times.popleft()
+        why = ""
+        if self._pending_auto is not None:
+            why = "上一声还没结果"
+        elif now - self._call_at < cfg.min_gap:
+            why = "刚喊过"
+        elif len(self._call_times) >= cfg.auto_quota:
+            why = "这一阵喊够了"
+        elif s.who and now - self._auto_found.get(s.who, float("-inf")) <= cfg.auto_again:
+            why = "刚喊回来过他"
+        if not why:
+            self._call_times.append(now)
+            if s.who in self._left_at:
+                self._auto_called[s.who] = self._left_at[s.who]
+            log.info("找刚走开的%s：喊一声", s.who)
+            try:
+                r = self.call_out("auto")
+            except Exception:
+                log.exception("找走开的好友时喊一声出错")
+                why = "出错了"
+            else:
+                if r.refused:
+                    why = r.refused
+                elif r.dry:
+                    why = "dry-run"
+                else:
+                    self._pending_auto, self._search_call_pending = r, True
+                    s.call_sent(now)
+                    return
+        log.debug("找%s：这一声不喊（%s）", s.who, why)
+        s.called(None, now)
+
+    def _search_called(self, seen, now: float) -> None:
+        """自动喊的那一声有结果了（或者等不到了）：是找的那一步喊的就交回去。"""
+        s = self.attention.search
+        if self._search_call_pending and s is not None:
+            s.called(seen, now)
+        self._search_call_pending = False
 
     def _attention_blocked(self, now: float, ignore_quiet: bool = False, check_ime: bool = True) -> str:
         """注意力这一圈为什么不能按键（空串 = 能按），顺序同 spec §1。"""
@@ -742,20 +855,37 @@ class Body:
             self._held_pending, self._hold_until = panel.pending, until
 
     def _watch_attention(self, now: float) -> None:
-        """每圈最后：想看什么（dry-run 也算，进 status）；闲着就小步转过去 / 随意看一眼。不借面板、不算"有动静"。"""
+        """每圈最后：想看什么、在找什么（dry-run 也算，进 status）；闲着就小步转过去 / 接着找 / 喊一声。不借面板、不算"有动静"。"""
         if not self._attention_on():
             return
         a = self.attention
         a.width = self.frame_width
-        if self.skills.active is not None:  # 技能（track）在动镜头
+        if self.skills.active is not None:  # 技能（track / find）在动镜头
             self._camera_moved("turn", now)
+        if self.blackout and not self._attn_black:
+            a.lost_bearing(now)
+        self._attn_black = self.blackout
         if self._camera_moved_at > self._attn_seen_move:
             self._attn_seen_move = self._camera_moved_at
             a.external_move(self._camera_moved_at)
-        th = a.think(self._attention_targets(now), now, self.effects().wander)
+        if self.cfg.attention.search:
+            self._start_lost_search(now)
+        who = a.search.who if a.search is not None else None
+        th = a.think(self._attention_targets(now), now, self.effects().wander, self.search_obs(who, now),
+                    scan_ok=self.skills.active is None)  # 技能在转镜头时不发起环顾
+        if th.event:
+            self.events.put("search", th.event)
         self._attention_look_first(th, now)
+        calling = th.search is not None and th.search.state == "call"
+        if calling:  # 喊一声照自动喊的门槛（聊天面板开着也能喊：call_out 自己借面板），不是转镜头那一套
+            self._attention_why = "不方便喊" if self._auto_call_blocked(now) else ""
+            if not self._attention_why:
+                self._search_call(now)
+            return
         self._attention_why = self._attention_blocked(now, check_ime=th.action is not None)
-        if th.action is None or self._attention_why:
+        if self._attention_why:
+            return
+        if th.action is None:
             return
         try:
             self.camera.nudge(th.action.direction, th.action.seconds, record=False)  # 原位挪到这里：不进复位账
@@ -766,7 +896,7 @@ class Body:
         a.pressed(th.action, now)
         self._attention_pressed_at = now
         self._ref_thumb = None  # 自己转的，不算画面大变
-        log.debug("注意力按%s %.2f s（%s）", "右" if th.action.direction == "right" else "左", th.action.seconds, a.describe())
+        log.debug("注意力按%s %.2f s（%s）", "右" if th.action.direction == "right" else "左", th.action.seconds, a.describe(now))
 
     def _watch_bubble(self, now: float) -> None:
         if self._bubble_at is None:
@@ -1661,7 +1791,7 @@ class Body:
         if reflex:
             parts.append("刚才下意识：" + reflex)
         if self._attention_on():
-            parts.append(self.attention.describe())
+            parts.append(self.attention.describe(self.clock()))
         if self.camera is not None:
             parts.append("镜头：" + self.camera.describe())
         parts.append("上次看图：" + (f"{now - self.last_look:.0f} 秒前" if self.last_look > float("-inf") else "还没看过"))
@@ -2109,6 +2239,7 @@ class Body:
         result = self.locomotion.move(direction, steps, max_steps)
         self._ref_thumb = None  # 自己走的，不算画面大变
         self._notify_camera("move")  # 走路时框高会突变：感知层别当成别人在走近走远
+        self.attention.lost_bearing(self.clock())  # 走过就不知道朝哪了（有意识地找的方位记忆）
         self._forget_camera_reference()  # 走过之后转之前那张参照图对不上了：复位时只粗转
         return result + (OWNER_NOTE if relaxed else "")
 
@@ -2197,7 +2328,7 @@ class Body:
             return
         try:
             self._collect_auto_call(now)
-            if self._pending_auto is not None:
+            if self._pending_auto is not None or self._search_takes_call():
                 return
             who = [n for n, t in self._left_at.items()
                    if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t
@@ -2245,9 +2376,11 @@ class Body:
                 self._auto_found[name] = now
             self.events.put("call", call_event_text(seen))
             self._pending_auto = None
+            self._search_called(seen, now)
         elif now - r.at > self.cfg.call.window + 10:
             log.info("自动喊一声的结果一直没等到（感知层暂停了？），不等了")
             self._pending_auto = None
+            self._search_called(None, now)
 
     def stop_task(self) -> str:
         return self.skills.cancel(self, "大脑叫停")
@@ -2296,6 +2429,31 @@ class Body:
             raise ToolError(f"画面里没看到 {name}（{where}）；先 look_around 找找")
         note = self.clear_view("camera", live)
         return self.skills.start(self, TrackSkill(name, seconds)) + note
+
+    def find(self, name: str, seconds: int = 30, live: bool = False) -> str:
+        """开始技能 find：转镜头找这个好友（刚走开过就往他走的方向，没线索先喊一声再转一圈），找到 / 没找到发 task_done / task_failed。"""
+        if self._dry(live):
+            raise ToolError("dry-run 不转镜头找人")
+        if self.camera is None:
+            raise ToolError("没有视角控制，找不了人")
+        if self.env is None or not hasattr(self.env, "people"):
+            raise ToolError("没开感知层（[perception]），认不准人，找不了")
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在找不了")
+        friends = list(self.friend_names())
+        match = next((f for f in friends if f == name), None) or next((f for f in friends if similar(name, f, 0.75)), None)
+        if match is None:
+            raise ToolError(f"好友名单里没有 {name}")
+        seconds = max(5, min(int(seconds), 60))
+        now = self.clock()
+        obs = self.search_obs(match, now)
+        if obs is not None and obs.target_x is not None:
+            return f"{match}就在画面里（{obs.target_where}），不用找"
+        side, edge = None, False
+        if now - self._left_at.get(match, float("-inf")) <= self.cfg.call.auto_after_leave:  # 刚走开：按找走开的好友那样找
+            side, edge = self._left_where(match)
+        note = self.clear_view("camera", live)
+        return self.skills.start(self, FindSkill(match, seconds, side, edge)) + note
 
     def camera_reset(self, live: bool = False) -> str:
         if self.camera is None:

@@ -114,6 +114,10 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     def track(name: str, seconds: int = 30):
         return call("track", name=name, seconds=seconds)
 
+    @srv.tool(name="find", description=DESCRIPTIONS["find"])
+    def find(name: str, seconds: int = 30):
+        return call("find", name=name, seconds=seconds)
+
     @srv.tool(name="stop_task", description=DESCRIPTIONS["stop_task"])
     def stop_task():
         return call("stop_task")

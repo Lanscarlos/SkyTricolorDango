@@ -10,6 +10,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 
 - 用中文回答。
 - 每次任务改完，主动把功能分支合并进 main 并推送到远程。
+- **没有用户许可，禁止在项目主目录（`D:\Lanscarlos\Develop\SkyTricolorDango`）切换到别的分支**（`git checkout` / `switch` 别的分支、`checkout -b` 都算）：
+  几个会话常同时在这个仓库里干活，主目录还是用户和管理面板跑团子的地方（10-02、10-03 晚都有会话在主目录切了分支，别的会话的提交落错分支、团子差点跑上没写完的代码）。
+  要开分支就用 `using-git-worktrees` 开自己的 worktree，改完合并进 main；确实要动主目录的分支，先问用户。也别在主目录留下没提交的改动就走。
 
 ## Skill：动手之前先挑一个
 
@@ -105,7 +108,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/lighting.py` | 点亮陌生人的纯计算（`FlameWatch`）：每处火焰一条线索、认出不动的假火焰（灯笼）、出请求的那条、举蜡烛后火焰怎么没的 → 点亮 / 走开 / 接着等（spec `2026-10-03-light-flame-vanish-design.md`；10-02 晚 6 次存图的回放在 `tests/test_light_replay.py`） |
 | `src/skydango/vision/candle.py` | 火焰：`find_flames` / `find_flame` 在调用方给的范围（团子周围）里找火焰，`black()` 量人物框有多黑（判点亮用），`white_ring` 分孤儿圆圈是举蜡烛请求（有白圈）还是圆盘；火焰圆盘**绝不点** |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
-| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
+| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `search.py` 有意识地找 / `find.py` 找人技能 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`），左侧栏 + 六页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
@@ -367,7 +370,7 @@ dir = "private/sandbox"
 设计见 `docs/superpowers/specs/2026-09-27-brain-claude-code-design.md`（身体部分见 `2026-09-27-brain-design.md`）。
 - **`run` 默认就是大脑模式**；`run --no-brain` 进旧的普通 Agent（`agent.py`），只留作调试（`--brain` 保留兼容，不用加）
 - 大脑 = 常驻的无界面 Claude Code（`claude -p` stream-json，订阅登录，`--model sonnet --effort low`）；身体的工具经本机 MCP 服务（`sky`）给它，
-  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / attention / move / check_friend / track / stop_task / panel_read / panel_press / panel_close
+  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / attention / move / check_friend / track / find / stop_task / panel_read / panel_press / panel_close
 - **和用户自己的 Claude Code 隔离**：单独配置目录 `.brain-claude/` + `claude setup-token` 生成的令牌（用户环境变量 `SKYDANGO_CLAUDE_TOKEN`）。
   沿用用户登录会把用户的插件、钩子、技能一起加载进大脑（实测）。子进程里去掉 `ANTHROPIC_API_KEY`（有它时 `-p` 一定用它）
 - 眼睛 = 一次性 `claude -p --model haiku`：有人来 / 走、画面大变（隔 ≥20 秒）或 3 分钟没看时，把身体最近一帧写成文字；大脑醒来的消息里只有文字，要原图才 `look(image=true)`
@@ -397,12 +400,21 @@ dir = "private/sandbox"
   **`camera_reset` 现在是闭环**：每次离开原位前只拍一张参照缩略图（画面上半、避开聊天面板）；nudge 按时长分别记净次数（转动和时长不成比例、左右对称，D0），
   复位时按同样的时长逐次反向重放，再左右 0.02 s 小步比相似度（最多 30 步），最高相似度 < 0.5 就退回粗转位置、结果里说"没对准"。
   身体走动过、黑屏过之后参照图作废（只粗转）。工具 / 手动控制的 `camera_reset` 等 60 秒（`RESET_TIMEOUT`）；退出时先恢复轮盘、再复位镜头，细调限 8 秒
-- **空闲注意力（东张西望）**（`[attention]`，`brain/attention.py` 纯决策 + `Body._watch_attention`；spec `docs/superpowers/specs/2026-09-30-idle-attention-design.md`、计划 `docs/superpowers/plans/2026-09-30-idle-attention.md`；**未在真机验证，数字都是估的**）：
-  **只在 `[panel] mode = "auto"`、聊天面板关着、身体闲着时动**（always 模式下完全不动）。身体做反射、大脑定模式：候选目标（好友 / 陌生人说话 = 感知层 `talkers()`、走近 = `recent_approaches()`、挥手鞠躬、站着的好友）按
-  基础兴趣 ×（1 − 看腻）挑一个，`Camera.nudge` 小步把他拉向画面中间（中间带 40% 内不动，同 track 的方向和转不动判断）；看腻了 / 转不动就看别的，没什么可看就隔 8~20 s（× 心情精力 `Effects.wander` × 模式）随意往一边看一眼。**不回位**。
-  冒气泡 / 有人走近时**先看一眼再开面板**（`PanelManager.hold_off`，最多 `look_first` 2 s）。不借面板、不走 `clear_view`、不重置反射的闲着计时、不套 `env.held()`；按键后 settle 内冒出的 approach 当成自己转出来的丢掉。
-  输入框开着、技能在跑、有互动请求、在回聊天、黑屏、牵手、别的面板开着、刚做完动作、dry-run 时不按（dry-run 照样算，status 有"在看：…"）。
-  大脑工具 `attention(mode, focus)`：随意 / 好奇（随意看更勤、陌生人说话更有意思）/ 专心（只看好友说话、冲团子来的、关注的人）/ 别动；focus = 更想看谁；**不算"做了事"**（不进 `ACTIONS`）
+- **空闲注意力（东张西望）**（`[attention]`，`brain/attention.py` 纯决策 + `brain/search.py` 怎么找 + `Body._watch_attention`；spec `docs/superpowers/specs/2026-09-30-idle-attention-design.md`、
+  **10-03 改成有意识地找** `docs/superpowers/specs/2026-10-03-attention-search-design.md`、计划 `docs/superpowers/plans/2026-10-03-attention-search.md`；**未在真机验证，数字都是估的**）：
+  **只在 `[panel] mode = "auto"`、聊天面板关着、身体闲着时动**（always 模式下完全不动）。
+  被动注意照旧：候选目标（好友 / 陌生人说话、走近、挥手鞠躬、站着的好友）按基础兴趣 ×（1 − 看腻）挑一个，`Camera.nudge` 小步拉向画面中间；冒气泡 / 有人走近时**先看一眼再开面板**（`PanelManager.hold_off`，最多 `look_first` 2 s）。
+  **随意看删了，没有动机就不转**；没有被动目标时做"找"（`search.py`，分段转：一段 `seg_presses` 下、停 `dwell` 秒）：
+  ① **找刚走开的好友**（身体按 `env.labels` 里他名字标签最后的位置发起）：从画面边上出去的先往那边转 `lost_segments` 段、再按 Q 看名字贴在哪边；在中间淡掉的先按 Q（**自动喊并进来了**，额度照 `[call]`；注意力接管时 `_watch_call` 不再自己判断），画面里还有没挂名字的人就不转；
+  ② **环顾**：画面里 `scan_after` 秒没人、离上次 `scan_every` 秒（× 精力 `Effects.wander` × 模式），往 `Heading` 记的**最久没看过的方位**转 `scan_segments` 段，看到人就停；
+  站着的好友不打断找，有人说话 / 走近打断，`resume_within` 秒没进展就不找了。结果：没找到 / 可能是他、环顾从"没人"变"有人"才发**背景事件 `search`**，其余只写 status（"在找：小明（他刚从左边走了…）""刚才往右后方看了看：附近没人"）。
+  朝向估计（`press_deg` 待 `camera spin` 标定）在走路、黑屏、别人转镜头后清零。输入框开着、技能在跑、有互动请求、在回聊天、黑屏、牵手、别的面板开着、刚做完动作、dry-run 时不按（dry-run 照样算）。
+  大脑工具 `attention(mode, focus)`：随意 / 好奇（环顾更勤、陌生人说话更有意思）/ 专心（只看好友说话、冲团子来的、关注的人，不环顾、照样找走开的好友）/ 别动；**不算"做了事"**。
+  刚找完 / 刚被别人（`find`、`track`、`look_around`、`camera`、`look_person`）转过镜头也算环顾过了，隔 `scan_every` 才环顾，技能在跑时不发起环顾；没转没喊的找走开的好友不发事件、被打断的环顾 status 写“想往…看看，被打断了”。
+  管理面板有 `attention.search` 开关（关掉 = 不找、不环顾，回到只做被动注意；`_watch_call` 照旧自己喊）
+  旧配置里的 `wander_*` 四项加载时跳过并警告（`config.DEPRECATED`）
+- **`find(名字, 秒)`**（技能，`brain/find.py`）：转镜头找某个好友——刚走开过按①找，没线索先按 Q、名字贴边就往那边转、没有就转一圈；找到 / "可能是他"发 `task_done`，没找到 `task_failed`；
+  镜头不复位、要一直盯着由大脑接着调 `track`；dry-run 拒绝；不在好友名单里拒绝；画面里已经有他直接回"就在画面里"
 - `move(direction, steps)`：W/A/S/D 小步走（`brain/locomotion.py`，每步按住 `[brain] move_step` 秒，**步长没在真机标定**）；一次 1~3 步、两次隔 `move_min_interval` 秒，
   牵着手要 `force=true`，走出去没有复位
 - **主人命令窗口**：卡洛（`[brain] owner_name`，精确匹配）发 `#` 开头的消息后 `owner_window` 秒内放宽：`move` 一次最多 6 步、不用等间隔；
@@ -465,7 +477,7 @@ dir = "private/sandbox"
   别人也在喊 / 镜头刚动过 / 喊之前聊天面板开着（关面板时画面横移）/ 没有新鲜的人物框 / 黑屏就放弃，**不为确认再按**。认错 = 把一个好友当成团子过滤掉，所以先 `perception halo-eval tmp/record/q-call-20260930-c` 定 `halo_rise`、真机核对再开
 - **自动兜底**（`[call] auto`，`Body._watch_call`）：好友 `auto_after_leave`（30 秒）内走开、还没回来、这次走开没为他喊过，画面里有没挂名字的人，`auto_window` 1 分钟最多 `auto_quota` 3 次（10-02 晚从 10 分钟改的；还受 `min_gap` 20 秒限制）；喊一声认回来的好友 `auto_again`（5 分钟）内不再为他自动喊（10-03，他多半一直站在稍远处、标签淡了而已）；
   输入框开着、技能在跑、有互动请求、在举蜡烛、别的面板开着、刚做完动作、大脑在回聊天、黑屏都不喊；dry-run 只记日志。喊完不等，窗口结束后放**背景事件** `call`（"你下意识喊了一声：认出 小明（右边·远）…"），
-  认回来的好友照常 `return` 抵消那条 `leave`
+  认回来的好友照常 `return` 抵消那条 `leave`。空闲注意力的找人开着时（`[attention] search`，模式随意 / 好奇 / 专心，面板 auto），好友走开后的这一声改由「找刚走开的好友」当一步去喊（额度同上），`_watch_call` 不再自己喊
 - **大脑工具 `call()`**（`calling.call_available`：`[call] enabled` 且 env 是感知层才注册，在 `look_around` 后面，算"做了事"）：身体按完键就回来，MCP 线程里等窗口结束（最多 `window + 4` 秒），
   返回"喊了一声：认出 …；小红在画面外（左边）；还有 1 个没挂名字的人。光圈：…"；拒绝时返回原因。提示词「视角」一节加一句什么时候喊；status 多一行"上次喊：2 分钟前（认出小明）"；
   网页手动控制"喊一声（Q）"（总是真执行、照样过检查）；管理面板有 `call.enabled` / `call.auto`

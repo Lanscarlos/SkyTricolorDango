@@ -14,7 +14,7 @@ class Effects:
     addressed: float = 1.0  # 被叫到时做小动作的概率
     idle: float = 1.0  # 闲着的小动作间隔（< 1 更勤）
     slow: bool = False  # 没事时醒得慢一档（困）
-    wander: float = 1.0  # 空闲注意力随意看的间隔（> 1 看得少；困了看得少，和 idle 方向相反）
+    wander: float = 1.0  # 空闲注意力环顾的间隔倍数（> 1 看得少；困了看得少，和 idle 方向相反）
 
 
 NEUTRAL = Effects()

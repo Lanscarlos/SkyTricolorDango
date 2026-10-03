@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 SLOTS = range(1, 9)
 LIST_SCALES = [0.9, 1.0, 1.1]  # 图标库就是从列表里截的，尺寸基本一致
 SLOT_SCALES = [1.1, 1.2, 1.25, 1.3, 1.4]  # 编辑界面轮盘里的图标比列表里大约 1.25 倍
+RECENT_BADGE_THRESHOLD = 0.7  # 10-03 真机：时钟角标 0.96~1.0，列表里别处最高 0.30
 
 
 class WheelError(RuntimeError):
@@ -274,10 +275,37 @@ class Wheel:
         return slot
 
     # ---- 建图标库 ----
+    def _recent_bottom(self, crop: np.ndarray, height: int) -> int | None:
+        """列表这一屏里最下面那个「最近使用」时钟角标的中心 y（crop 坐标），没有就 None。"""
+        path = Path(self.cfg.recent_badge)
+        if not path.is_file():
+            log.warning("找不到最近使用的时钟角标模板 %s，扫描不跳过最近使用", path)
+            return None
+        badge = trim(silhouette(imread(path)))
+        if height != 1080:  # 模板按 1920×1080 截的
+            scale = height / 1080
+            badge = cv2.resize(badge, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+        sil = silhouette(crop)
+        if sil.shape[0] < badge.shape[0] or sil.shape[1] < badge.shape[1]:
+            return None
+        score = cv2.matchTemplate(sil.astype(np.float32), badge.astype(np.float32), cv2.TM_CCOEFF_NORMED)
+        ys, _ = np.where(score >= RECENT_BADGE_THRESHOLD)
+        return int(ys.max()) + badge.shape[0] // 2 if len(ys) else None
+
     def scan_list(self, out_dir: str | Path) -> list[Path]:
-        """把动作列表里的所有图标截下来存成 001.png、002.png……，并生成一张带编号的总览图。"""
+        """把动作列表里的所有图标截下来存成 001.png、002.png……，并生成一张带编号的总览图。
+
+        上次扫的编号图和总览图先整批挪进 `_old/<时间>/`：只覆盖 001~N 的话，上次多出来的会混进「动作名」页（10-03）。
+        """
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
+        old = [f for f in out.glob("*.png") if f.is_file() and (f.stem.isdigit() or f.name == "_sheet.png")]
+        if old:
+            backup = out / "_old" / time.strftime("%Y%m%d-%H%M%S")
+            backup.mkdir(parents=True, exist_ok=True)
+            for f in old:
+                f.replace(backup / f.name)
+            log.info("上次扫描的 %d 张图挪进了 %s", len(old), backup)
         saved: list[tuple[Path, np.ndarray, np.ndarray]] = []  # (路径, 彩色图, 剪影)
         self.open_editor()
         try:
@@ -290,10 +318,10 @@ class Wheel:
                 cell = int(0.1 * height)
                 margin = int(0.055 * height)
                 found = find_icons(crop, int(0.025 * height), cell)
-                if prev is None and found:
-                    # 第一屏最上面一行是「最近使用」：全是后面动作的重复，时钟角标和剪影并成一块、截歪了（10-03），整行不要
-                    top = min(r.y + r.h // 2 for r in found)
-                    found = [r for r in found if r.y + r.h // 2 - top > cell // 2]
+                bottom = self._recent_bottom(crop, height)
+                if bottom is not None:
+                    # 「最近使用」（一两行）全是后面动作的重复，时钟角标和剪影并成一块、截歪了（10-03）：最下面那个角标那行及以上都不要
+                    found = [r for r in found if r.y + r.h // 2 > bottom + cell // 2]
                 for r in found:
                     # 列表上下边缘处图标会被裁掉一截；翻一页只滚约 400 像素，每个图标总有一页完整落在中间
                     if r.y < margin or r.y2 > crop.shape[0] - margin:

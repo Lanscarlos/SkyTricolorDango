@@ -41,7 +41,9 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
         "steps 1~4，默认 1。转之前身体会关掉聊天记录面板，转完再打开。"
     ),
     "camera_reset": "把镜头转回原位（按之前转过的反着转回去，再和转之前的画面比对着对准）。",
-    "attention": "改你闲着时东张西望的习惯：mode 随意（默认）/ 好奇（多看看）/ 专心（只看跟你说话、冲你来的人）/ 别动（不转镜头）；focus 填一个名字表示更想看他（空 = 不特别关注）。身体闲着会自己看，只在想改习惯时设，不用每轮设。",
+    "attention": "改你闲着时东张西望的习惯：mode 随意（默认：看说话 / 走近的人，找刚走开的好友，一个人时隔一会儿看看周围）/ "
+                 "好奇（周围看得更勤，陌生人说话也看）/ 专心（只看跟你说话、冲你来的人，不看周围）/ 别动（不转镜头）；"
+                 "focus 填一个名字表示更想看他（空 = 不特别关注）。身体闲着会自己看，只在想改习惯时设，不用每轮设。",
     "move": (
         "小步走动，direction：forward 前进 / back 后退 / left 向左 / right 向右（相对镜头朝向）；steps 1~3，默认 1。"
         "走完用 status / look 看看走到哪了再决定接着走不走；两次之间要隔几秒。走出去回不去（没有复位），"
@@ -55,6 +57,9 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
     "track": "转镜头一直盯着某个好友（让他留在画面中间），做完或跟丢了会用 task_done / task_failed 告诉你。"
              "离你很近的人本来就在画面里，不用盯。name 是好友名字，seconds 盯多久（1~60，默认 30）；看完用 camera_reset 转回来。"
              "想提前结束就 stop_task，或者直接 camera_reset（会自动停下）；盯着的时候转视角、环顾、点人也会先停下。",
+    "find": "找某个好友：身体转镜头找他（他刚走开就往他走的方向找，没线索先喊一声、再转一圈），找到就停下，"
+            "用 task_done / task_failed 告诉你他在哪 / 没找到。name 是好友名字，seconds 最多找多久（5~60，默认 30）。"
+            "画面里已经有他会直接告诉你；找到后要一直盯着用 track，看完想转回来用 camera_reset。",
     "stop_task": "停下身体正在做的事（状态里“正在做：…”那件）。没在做也没关系，会告诉你。",
     "panel_read": "读现在开着的面板（弹框、动作面板、好友树……）：名字、标题、正文和编了号的按钮，按钮后面写着能不能按。"
                   "image=true 时附上面板原图。被面板挡着、或者收到面板事件时先读再决定。",
@@ -82,7 +87,7 @@ INTROSPECT_DESCRIPTION = (
 CALL_DESCRIPTION = "短按 Q 喊一声：稍远的好友头顶会亮出名字约 5 秒，用来找人、看谁还在附近；每喊一次附近的好友都看得到，别常喊。"
 CALL_TIMEOUT = 10.0  # 身体那一步：借面板、按键、连拍约 1~1.3 秒（之后在 MCP 线程里等窗口结束）
 ACTIONS = {
-    "call", "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task", "panel_press",
+    "call", "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "find", "stop_task", "panel_press",
     "panel_close",
 }  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
@@ -92,7 +97,7 @@ RESET_TIMEOUT = 60.0  # 镜头闭环复位：粗转 + 细调最多 60 下、每�
 SANDBOX_NO_PERSON = "沙盒里看不到人，只能靠聊天和场景"
 SANDBOX_NO_IMAGE = "沙盒里没有画面可以放大看，只能靠聊天和场景"
 SANDBOX_MISSING = {  # 沙盒里没有的部件：工具直接回"沙盒里没有这个"（别让大脑以为是身体坏了）
-    "camera": "镜头", "camera_reset": "镜头", "track": "镜头", "look_around": "镜头（转不了身，看场景用 look）",
+    "camera": "镜头", "camera_reset": "镜头", "track": "镜头", "find": "镜头", "look_around": "镜头（转不了身，看场景用 look）",
     "check_friend": "好友树", "panel_read": "面板", "panel_press": "面板", "panel_close": "面板",
     "set_request_policy": "互动请求（牵手、拥抱……）", "call": "喊（Q 键）",
 }
@@ -275,6 +280,9 @@ class ToolBox:
         if name == "track":
             who, seconds = _str(a, "name"), _int(a, "seconds", 30)
             return lambda: b.track(who, seconds)
+        if name == "find":
+            who, seconds = _str(a, "name"), _int(a, "seconds", 30)
+            return lambda: b.find(who, seconds)
         if name == "stop_task":
             return b.stop_task
         if name == "panel_read":

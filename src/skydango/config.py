@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import tomllib
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # 坐标约定：配置里的坐标一律用 0~1 的归一化值（相对截图宽高），
 # 这样换分辨率 / 换模拟器实例不用重新标定。
@@ -186,6 +189,8 @@ class WheelConfig:
     list_scroll_x: float = 0.815
     list_scroll_from: float = 0.83  # 往下翻：从这个高度拖到 list_scroll_to
     list_scroll_to: float = 0.42
+    # 动作列表最上面「最近使用」图标右下角的时钟角标；`emotes scan` 跳过带它的几行（全是后面动作的重复）
+    recent_badge: str = "assets/emotes/recent_clock.png"
     match_threshold: float = 0.8  # 在动作列表里找图标（和图标库同尺寸）
     # 认轮盘格子里的图标（更大，还可能带“2级”之类的字）。10-02 实测：真动作 0.72~0.93（欢呼最低）、空 / 锁定格子 0.47；
     # 原来是 0.72，欢呼在门槛上来回跳，有时读不出来
@@ -690,8 +695,9 @@ class LullConfig:
 
 @dataclass
 class AttentionConfig:
-    """空闲注意力（东张西望，spec 2026-09-30-idle-attention）：闲着时按兴趣小步转镜头看说话 / 走近 / 对团子做事的人，
-    没什么可看就随意看看；只在聊天面板 auto 模式、面板关着时动。数字都是估的，真机调。按键长短、settle、转不动沿用 [track]。"""
+    """空闲注意力（东张西望，spec 2026-09-30-idle-attention、2026-10-03-attention-search）：闲着时按兴趣小步转镜头看说话 / 走近 /
+    对团子做事的人；没有这些时找刚走开的好友、一个人待着时往最久没看过的方向看一片，没有动机就不转。
+    只在聊天面板 auto 模式、面板关着时动。数字都是估的，真机调。按键长短、settle、转不动沿用 [track]。"""
 
     enabled: bool = True
     talk_friend: float = 1.0  # 基础兴趣：好友在说话（头顶气泡）
@@ -709,10 +715,17 @@ class AttentionConfig:
     switch_margin: float = 0.2  # 新目标的实际兴趣要比当前高出这么多才换
     switch_hold: float = 2.0  # 刚换过目标这么多秒内不再换
     look_first: float = 2.0  # 冒气泡 / 有人走近时先看这么久再让聊天面板开
-    wander_min: float = 8.0  # 没什么可看时，隔 wander_min~wander_max 秒（再乘心情精力 / 模式的倍数）随意看一眼
-    wander_max: float = 20.0
-    wander_presses: list[int] = field(default_factory=lambda: [2, 4])  # 随意看一次连按几下
-    wander_same_side: int = 2  # 往同一边连着随意看最多几次
+    # 有意识地找（spec 2026-10-03-attention-search）：找刚走开的好友、一个人时环顾一片；都没有就不转
+    search: bool = True  # 关掉只剩被动注意（有人说话 / 走近 / 对团子做动作就转过去看）
+    press_deg: float = 18.0  # 每下 [track] nudge_max 约转几度（按 [spin] seconds_per_turn 2 秒一圈估的，待 camera spin 标定）
+    seg_presses: int = 3  # 分段转：一段按几下
+    dwell: float = 1.5  # 一段转完停几秒（等 YOLO 出框、名字标签读出来）
+    scan_after: float = 20.0  # 画面里没人多久才环顾
+    scan_every: float = 60.0  # 两次环顾至少隔几秒（再乘心情精力、模式的倍数）
+    scan_segments: list[int] = field(default_factory=lambda: [2, 3])  # 环顾一次转几段（随机取一个）
+    scan_look: float = 3.0  # 环顾看到陌生人停下看几秒
+    lost_segments: int = 2  # 找走开的好友往一边最多转几段（Q 之后看到贴边标签再给同样多）
+    resume_within: float = 10.0  # 找到一半被挡住 / 打断，这么久内接着找，超过就不找了
     max_step: float = 1.0  # 每圈时间差上限（沙盒模拟时钟会一下跳几小时）
 
 
@@ -845,10 +858,19 @@ class Config:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
 
+# 删掉的配置项：旧的 config.toml / console.toml 里还写着时跳过、提醒一句（别的未知键照旧报错）
+DEPRECATED = frozenset({
+    "attention.wander_min", "attention.wander_max", "attention.wander_presses", "attention.wander_same_side",  # 2026-10-03 随意看删了
+})
+
+
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:
     known = {f.name: f for f in dataclasses.fields(obj)}
     for key, value in data.items():
         if key not in known:
+            if f"{path}{key}" in DEPRECATED:
+                log.warning("配置项 %s%s 已经不用了，可以删掉", path, key)
+                continue
             raise ValueError(f"未知配置项: {path}{key}")
         current = getattr(obj, key)
         if dataclasses.is_dataclass(current):
