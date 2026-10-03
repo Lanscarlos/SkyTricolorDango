@@ -100,6 +100,55 @@ def test_pan_feeds_tracker():
             assert w.last_shift[0] == pytest.approx(160, abs=8)
 
 
+def _sky_over_ground(seed=0):
+    """上半是一片夜空（几乎没纹理），下半是地面：10-03 录像里开面板时只看上半估得偏小。"""
+    img = _texture(seed)
+    img[:540] = 40
+    return img
+
+
+def test_pan_full_frame_when_top_is_sky():
+    base = _sky_over_ground()
+    w, det = make(track_predict=False)
+    run(w, det, [player(300)], 0.0, 0.3, img=base)
+    run(w, det, [player(460)], 0.3, 0.4, img=np.roll(base, 160, axis=1))
+    assert w.last_shift is not None and w.last_shift[0] == pytest.approx(160, abs=8)
+
+
+def test_pan_full_frame_ignores_static_center_person():
+    """转镜头：团子站在画面中间不动、背景在动，不能被团子拉成 0。"""
+    base = _texture(3)
+    me = _texture(4)[300:900, 800:1100]
+
+    def img(shift):
+        out = np.roll(base, shift, axis=1)
+        out[300:900, 800:1100] = me
+        return out
+
+    w, det = make(track_predict=False)
+    run(w, det, [player(1400)], 0.0, 0.3, img=img(0))
+    run(w, det, [player(1480)], 0.3, 0.4, img=img(80))
+    assert w.last_shift[0] == pytest.approx(80, abs=8)
+
+
+def test_pan_skips_open_panel():
+    rng = np.random.default_rng(9)
+    base = _texture(6)
+
+    def img(shift):
+        out = np.roll(base, shift, axis=1)
+        out[:, :640] = rng.integers(0, 255, (1080, 640, 3), dtype=np.uint8)  # 面板那块每帧乱变
+        return out
+
+    w, det = make(track_predict=False)
+    for i, t in enumerate((0.0, 0.1, 0.2)):
+        det.frames = [[player(1400)]]
+        w.process(img(0), t, True)
+    det.frames = [[player(1520)]]
+    w.process(img(120), 0.3, True)
+    assert w.last_shift[0] == pytest.approx(120, abs=8)
+
+
 def test_far_tags_second_update_keeps_dropped():
     w, det = make(far_crops=3)
     det.frames = [[player(300)]]

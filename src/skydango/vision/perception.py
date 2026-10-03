@@ -539,24 +539,21 @@ class PerceptionWatcher:
             self._quiet_until = max(self._quiet_until, until)
             self.tracker.calm(until)
 
-    def _pan_step(self, frame: np.ndarray, dets: list[Detection], panel_visible: bool) -> tuple[float, float] | None:
-        """这一帧相对上一帧的画面平移（整图像素）：1/8 灰度缩略图的上半部分，聊天面板开着去掉左边三分之一，
-        人物 / 团子 / 名字标签那块不用（人自己会走）。估出来就累加进 self._pan。"""
+    def _pan_step(self, frame: np.ndarray, panel_visible: bool) -> tuple[float, float] | None:
+        """这一帧相对上一帧的画面平移（整图像素）：1/8 灰度缩略图整张，聊天面板开着去掉左边三分之一。估出来就累加进 self._pan。
+        不遮人物 / 团子 / 名字标签：10-03 录像里遮框的均值块在两帧里是一样的静止方块，把相位相关往 0 拉，
+        开面板时累计只估出 314~368 px，不遮 363~383（真值约 420）；人物只占画面一小块、背景纹理多，不遮也不会被拉偏。
+        也不再只看上半：夜空几乎没纹理（std < 1 估不出），整张才有地面可以对。"""
         height, width = frame.shape[:2]
         gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         small = cv2.resize(gray, (max(8, width // PAN_SCALE), max(8, height // PAN_SCALE)), interpolation=cv2.INTER_AREA)
-        small = small[: small.shape[0] // 2].astype(np.float32)
+        small = small.astype(np.float32)
         prev, self._pan_thumb = self._pan_thumb, small
         if prev is None or prev.shape != small.shape:
             return None
         mask = np.ones(small.shape, bool)
         if panel_visible:
             mask[:, : small.shape[1] // 3] = False
-        for d in dets:
-            if d.cls in ("player", UNLIT, "self", "name_tag", "typing"):
-                b = d.box
-                mask[max(0, b.y // PAN_SCALE): (b.y2 + PAN_SCALE - 1) // PAN_SCALE,
-                     max(0, b.x // PAN_SCALE): (b.x2 + PAN_SCALE - 1) // PAN_SCALE] = False
         shift = estimate_shift(prev, small, mask, PAN_RECHECK_RESPONSE if self._pan_recheck else PAN_MIN_RESPONSE)
         if shift is None:
             return None
@@ -645,7 +642,7 @@ class PerceptionWatcher:
         dets = promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low)
         if self._occlusion(frame, dets):
             return
-        shift = self._pan_step(frame, dets, panel_visible) if self.cfg.track_pan else None
+        shift = self._pan_step(frame, panel_visible) if self.cfg.track_pan else None
         self.last_shift = shift
         if self._pan_recheck:
             self._pan_recheck = False
