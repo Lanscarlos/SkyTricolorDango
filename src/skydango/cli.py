@@ -2290,10 +2290,11 @@ def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
     return _claude_base(cfg, hint)
 
 
-def _fallback_brain(cfg: Config, toolbox, prompt: str):
+def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
     """DeepSeek 备用大脑（spec 2026-10-03-deepseek-fallback-brain §1）：额度用完时 cli 切过去用。
 
-    没开 / 没 Key 返回 None（退化成现在的纯文字备用回复）。"""
+    没开 / 没 Key 返回 None（退化成现在的纯文字备用回复）。on_message 和 BrainSession 同款：
+    把工具调用喂回大脑时间线（trace.chain(log_brain_message)）。"""
     from .brain.deepseek import FALLBACK_NOTE, DeepSeekBrain, build_client
     from .brain.llm_tools import openai_tools
 
@@ -2307,7 +2308,7 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str):
     return DeepSeekBrain(
         client, prompt + "\n\n" + FALLBACK_NOTE, toolbox, openai_tools(toolbox, blind=True),
         model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=cfg.brain.fallback_max_tokens,
-        max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout,
+        max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout, on_message=on_message,
     )
 
 
@@ -2459,7 +2460,7 @@ def _run_brain(
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
     )
-    fallback_session = _fallback_brain(cfg, toolbox, prompt)
+    fallback_session = _fallback_brain(cfg, toolbox, prompt, on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message)
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
         eyes=eyes, clock=clock, wall=wall, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
