@@ -10,6 +10,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 
 - 用中文回答。
 - 每次任务改完，主动把功能分支合并进 main 并推送到远程。
+- **没有用户许可，禁止在项目主目录（`D:\Lanscarlos\Develop\SkyTricolorDango`）切换到别的分支**（`git checkout` / `switch` 别的分支、`checkout -b` 都算）：
+  几个会话常同时在这个仓库里干活，主目录还是用户和管理面板跑团子的地方（10-02、10-03 晚都有会话在主目录切了分支，别的会话的提交落错分支、团子差点跑上没写完的代码）。
+  要开分支就用 `using-git-worktrees` 开自己的 worktree，改完合并进 main；确实要动主目录的分支，先问用户。也别在主目录留下没提交的改动就走。
 
 ## Skill：动手之前先挑一个
 
