@@ -638,6 +638,24 @@ def test_fallback_brain_none_when_no_key(tmp_path, monkeypatch):
     assert cli._fallback_brain(cfg, object(), "p") is None
 
 
+def test_fallback_brain_none_when_openai_missing(tmp_path, monkeypatch):
+    import skydango.brain.deepseek as ds
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(ds, "build_client", lambda llm, key=None: (_ for _ in ()).throw(ImportError("No module named 'openai'")))
+    assert cli._fallback_brain(cfg, _fake_tb(), "p") is None
+
+
+def test_run_brain_survives_missing_openai(tmp_path, monkeypatch):
+    import skydango.brain.deepseek as ds
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(ds, "build_client", lambda llm, key=None: (_ for _ in ()).throw(ImportError("No module named 'openai'")))
+    seen = []
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
+    assert seen[0].fallback_session is None and seen[0].on_fallback is False
+
+
 def test_fallback_brain_built(tmp_path, monkeypatch):
     import skydango.brain.deepseek as ds
 

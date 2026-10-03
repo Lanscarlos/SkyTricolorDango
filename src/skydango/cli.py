@@ -2301,7 +2301,7 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str):
         return None
     try:
         client = build_client(cfg.llm)
-    except RuntimeError as exc:
+    except (RuntimeError, ImportError) as exc:
         log.warning("备用大脑没开（%s）", exc)
         return None
     return DeepSeekBrain(
