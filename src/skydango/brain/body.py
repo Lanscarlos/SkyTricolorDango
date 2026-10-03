@@ -41,6 +41,7 @@ from ..vision.people import describe_people, describe_things, side_of
 from .calling import CallResult, call_available, event_text as call_event_text, status_text as call_status_text
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
+from .find import FindSkill
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
@@ -2426,6 +2427,31 @@ class Body:
             raise ToolError(f"画面里没看到 {name}（{where}）；先 look_around 找找")
         note = self.clear_view("camera", live)
         return self.skills.start(self, TrackSkill(name, seconds)) + note
+
+    def find(self, name: str, seconds: int = 30, live: bool = False) -> str:
+        """开始技能 find：转镜头找这个好友（刚走开过就往他走的方向，没线索先喊一声再转一圈），找到 / 没找到发 task_done / task_failed。"""
+        if self._dry(live):
+            raise ToolError("dry-run 不转镜头找人")
+        if self.camera is None:
+            raise ToolError("没有视角控制，找不了人")
+        if self.env is None or not hasattr(self.env, "people"):
+            raise ToolError("没开感知层（[perception]），认不准人，找不了")
+        if self.blackout:
+            raise ToolError("画面黑着（在切场景），现在找不了")
+        friends = list(self.friend_names())
+        match = next((f for f in friends if f == name), None) or next((f for f in friends if similar(name, f, 0.75)), None)
+        if match is None:
+            raise ToolError(f"好友名单里没有 {name}")
+        seconds = max(5, min(int(seconds), 60))
+        now = self.clock()
+        obs = self.search_obs(match, now)
+        if obs is not None and obs.target_x is not None:
+            return f"{match}就在画面里（{obs.target_where}），不用找"
+        side, edge = None, False
+        if now - self._left_at.get(match, float("-inf")) <= self.cfg.call.auto_after_leave:  # 刚走开：按找走开的好友那样找
+            side, edge = self._left_where(match)
+        note = self.clear_view("camera", live)
+        return self.skills.start(self, FindSkill(match, seconds, side, edge)) + note
 
     def camera_reset(self, live: bool = False) -> str:
         if self.camera is None:

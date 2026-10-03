@@ -251,3 +251,11 @@ def test_describe_progress():
     f.step(Obs(), 0.0)
     f.call_sent(0.0)
     assert f.describe() == "在找：小明（大脑让找的，喊了一声在等）"
+
+
+def test_pressed_wait_keeps_search_alive():
+    a, tr = cfgs()
+    s = Search.lost("小明", "left", True, False, a, tr, heading(), 0.0)
+    for t in range(1, 15):
+        s.pressed_wait(float(t))
+    assert s.step(Obs(), 15.0).state == "press"

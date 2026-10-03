@@ -100,10 +100,10 @@ class FakeEyes:
 def test_tool_names_and_actions():
     assert TOOL_NAMES == [
         "look", "look_at", "look_person", "look_around", "status", "chat_log", "recall", "say", "emote", "set_request_policy", "camera",
-        "camera_reset", "attention", "move", "check_friend", "track", "stop_task", "panel_read", "panel_press", "panel_close",
+        "camera_reset", "attention", "move", "check_friend", "track", "find", "stop_task", "panel_read", "panel_press", "panel_close",
     ]
     assert ACTIONS == {
-        "call", "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "stop_task",
+        "call", "say", "emote", "set_request_policy", "camera", "camera_reset", "move", "check_friend", "track", "find", "stop_task",
         "panel_press", "panel_close",
     }
 
@@ -330,3 +330,19 @@ def test_attention_tool_calls_body():
     assert body.calls[-1] == ("set_attention", "随意", None)
     tb.run("attention", {"mode": "好奇"})
     assert body.calls[-1] == ("set_attention", "好奇", None)
+
+
+def test_tools_find_passes_args():
+    class B(FakeBody):
+        def find(self, name, seconds=30, live=False):
+            self.calls.append(("find", name, seconds))
+            return f"开始找{name}了"
+
+    body = B()
+    tb = ToolBox(body)
+    out, err = tb.run("find", {"name": "小明", "seconds": 20})
+    assert not err and out == "开始找小明了" and tb.acted
+    tb.run("find", {"name": "阿白"})
+    assert body.calls == [("find", "小明", 20), ("find", "阿白", 30)]
+    out, err = ToolBox(B(), FakeEyes(), max_steps=50, sandbox=True).run("find", {"name": "小明"})
+    assert err and "沙盒里没有这个" in out

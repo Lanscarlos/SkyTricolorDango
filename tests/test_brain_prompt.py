@@ -258,6 +258,7 @@ def test_go_on_line_does_not_contradict_proactive():  # 终审：别和“别硬
 def test_prompt_mentions_idle_looking():
     text = static_prompt(ReplyConfig())
     assert "东张西望" in text and "attention" in text
+    assert "find(" in text
 
 
 # ---- 认装扮（spec 2026-10-01-appearance §6） ----

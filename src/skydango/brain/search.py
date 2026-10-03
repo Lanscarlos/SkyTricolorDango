@@ -262,6 +262,10 @@ class Search:
         if self._presses_left <= 0:
             self._dwell_until = now + self.track.settle + self.cfg.dwell  # 最后一下停稳了再停 dwell 秒看
 
+    def pressed_wait(self, now: float) -> None:
+        """调用方在等一件和找无关的事（聊天面板关上）：别算成没进展。"""
+        self._progress = now
+
     def call_sent(self, now: float) -> None:
         """喊出去了，结果还要等呼喊窗口结束。"""
         self._calling, self._called_once, self._progress = True, True, now
