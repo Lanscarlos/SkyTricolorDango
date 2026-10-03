@@ -552,9 +552,12 @@ class Body:
     def _wheel(self) -> list[str]:
         return self.emotes.on_wheel() if self.emotes is not None else []
 
-    def _reflex_emote(self, name: str, why: str, now: float) -> bool:
-        """反射做一个轮盘上的动作：做不了（被挡、在忙、刚做过）就算了，不抛。不占大脑的动作冷却。"""
-        if self.emotes is None or self.blackout or self.skills.active is not None or self._requests or self._raised is not None:
+    def _reflex_emote(self, name: str, why: str, now: float, *, requests_ok: bool = False) -> bool:
+        """反射做一个轮盘上的动作：做不了（被挡、在忙、刚做过）就算了，不抛。不占大脑的动作冷却。
+        requests_ok：挂着互动请求也做（点火后的鞠躬：刚点亮的人头顶的火焰圆盘常挂着、身体不点，等它消失就晚了 3 秒）。"""
+        if self.emotes is None or self.blackout or self.skills.active is not None or self._raised is not None:
+            return False
+        if self._requests and not requests_ok:
             return False
         if now - self.emotes.last_any < self.cfg.reflex.min_gap:
             return False
@@ -1314,7 +1317,7 @@ class Body:
         if self._bow is None or now < self._bow[0]:
             return
         _, give_up, raised_at = self._bow
-        if self._reflex_emote(self.cfg.social.after_light, f"点完火你{self.cfg.social.after_light}了一下", now):
+        if self._reflex_emote(self.cfg.social.after_light, f"点完火你{self.cfg.social.after_light}了一下", now, requests_ok=True):
             self._bow = None
         elif now >= give_up:
             self._bow = None

@@ -1886,9 +1886,11 @@ class PerceptionWatcher:
         cx, cy = self._ring_center(ring)
         return not white_ring(frame, cx, cy, ring.box.w / 2)
 
-    def _self_now(self, now: float) -> Rect | None:
-        """团子现在在哪：最近这一帧有新检测的 self 轨迹里分数最高的。找不到时沿用最近的框最多 SELF_HOLD 秒。
-        黑影贴着团子时 YOLO 常认不出 self；镜头跟着团子，屏幕位置几乎不变，短时间沿用最近的框是安全的。"""
+    def _self_now(self, now: float, panel_visible: bool) -> Rect | None:
+        """团子现在在哪：最近这一帧有新检测的 self 轨迹里分数最高的。找不到时沿用最近的框最多 SELF_HOLD 秒，
+        再不行用这个面板状态下记住的高分团子框（_mark_dango 记的，不限多久）。
+        黑影贴着团子时 YOLO 常认不出 self（10-03 20:45：黑影站在团子身前 3 秒多一直没有 self，过了 SELF_HOLD 不找火焰，
+        举蜡烛晚了约 3 秒）；镜头跟着团子，屏幕位置只随聊天面板开关变（镜头拉近拉远只是框大小不准，范围本来就放得宽）。"""
         # 只用这一帧刚匹配上的 self 轨迹；别的时候都走下面的沿用
         fresh_selfs = [t for t in self.tracker.tracks.values() if t.cls == "self" and now - t.last < 1e-6]
         if fresh_selfs:
@@ -1898,7 +1900,8 @@ class PerceptionWatcher:
         # 没有这一帧的新检测，沿用最近的框（黑影贴着认不出时）
         if self._me_last and now - self._me_last[1] <= SELF_HOLD:
             return self._me_last[0]
-        return None
+        mem = self._dango_mem.get(panel_visible)
+        return mem[0] if mem is not None else None
 
     def _flame_excluded(self, pos: tuple[int, int], tags: list[Track], bonfires: list[Track], width: int, height: int,
                         panel_visible: bool) -> str | None:
@@ -1937,7 +1940,7 @@ class PerceptionWatcher:
             return
         self._flame_check = now
         why, flames = "", []
-        me = self._self_now(now)
+        me = self._self_now(now, panel_visible)
         if me is None:
             why = "没有团子框"
             self._scan = None

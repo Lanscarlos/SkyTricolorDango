@@ -105,7 +105,7 @@ def test_bow_gives_up_and_lowers(clock):
     b.step()
     env.lit_result = True
     b.step()
-    b._reflex_emote = lambda *a: False  # 一直做不了反射动作（被挡着、刚做过……）
+    b._reflex_emote = lambda *a, **k: False  # 一直做不了反射动作（被挡着、刚做过……）
     clock.advance(2.5)
     b.step()
     clock.advance(5.1)
@@ -167,6 +167,28 @@ def test_bow_after_accepting_candle(clock):
     clock.advance(2.6)
     b.step()
     assert emotes.done == [("鞠躬", True)] and presses(dev) == 0
+
+
+def test_bow_not_held_up_by_pending_request(clock):
+    """10-02 21:44 / 10-03 20:45：点亮后他头顶的深色火焰圆盘（candle 请求，身体不点）一直挂着，
+    鞠躬被拖到圆圈消失（判点亮之后 3 秒才鞠躬）。点火后的鞠躬不等挂着的请求。"""
+    b, dev, env, emotes, events = lb(clock)
+    offer(env, clock)
+    b.step()
+    env.requests["陌生人"] = Request("陌生人", "candle", (990, 400), clock())  # 接不了的请求一直挂着
+    env.lit_result = True
+    b.step()
+    clock.advance(b.cfg.social.bow_delay + 0.1)
+    b.step()
+    assert emotes.done == [("鞠躬", True)]
+
+
+def test_other_reflexes_still_wait_for_pending_request(clock):
+    """别的反射照旧：挂着请求时不做（要点圆圈，做动作可能吞掉点击）。"""
+    b, dev, env, emotes, events = lb(clock)
+    env.requests["陌生人"] = Request("陌生人", "candle", (990, 400), clock())
+    b.step()
+    assert b._reflex_emote("挥手", "测试", clock()) is False
 
 
 def test_reflex_waits_while_candle_raised(clock):
@@ -236,7 +258,7 @@ def test_accepting_candle_while_bow_pending_keeps_one_bow_without_lowering(clock
     social.to_handle = ["陌生人:candle"]
     b.step()  # 接受别人点火又要排鞠躬：不能把上一个覆盖掉（点圆圈会放下蜡烛：不用兜底放下了，见最终审查 #4）
     assert b._bow is not None and b._bow[2] is None
-    b._reflex_emote = lambda *a: False
+    b._reflex_emote = lambda *a, **k: False
     clock.advance(2.6)
     b.step()
     clock.advance(5.1)
@@ -287,7 +309,7 @@ def test_accepting_candle_while_raised_stops_waiting_for_lit(clock):
     env.lit_result = True
     b.step()
     assert b._raised is None and b._bow is not None and b._bow[2] is None
-    b._reflex_emote = lambda *a: False
+    b._reflex_emote = lambda *a, **k: False
     clock.advance(2.6)
     b.step()
     clock.advance(5.1)
@@ -346,7 +368,7 @@ def test_accepting_other_interaction_keeps_bow_but_not_lowering(clock):
     b.step()
     env.requests.pop("小明")
     assert b._bow is not None and b._bow[2] is None  # 鞠躬留着，蜡烛当作已经放下
-    b._reflex_emote = lambda *a: False
+    b._reflex_emote = lambda *a, **k: False
     clock.advance(2.6)
     b.step()
     clock.advance(5.1)
