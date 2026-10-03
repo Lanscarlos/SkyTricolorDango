@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -5,7 +7,7 @@ from conftest import FakeDevice
 
 from skydango.config import WheelConfig
 from skydango.game.wheel import SLOT_SCALES, EmoteLibrary, Wheel, WheelError
-from skydango.imageio import imwrite
+from skydango.imageio import imread, imwrite
 from skydango.vision.icons import same_icon, silhouette, trim
 
 CREAM = (220, 235, 245)
@@ -143,25 +145,37 @@ def test_refresh_logs_every_slot_score(library, caplog, monkeypatch):
     assert wheel.slots[6] == "欢呼" and wheel.slots[3] is None
 
 
-def _list_frames(cfg):
-    """合成动作列表：最上面一行是「最近使用」（带时钟角标的人形 + 只在这一行出现的菱形），下面是动作网格。
+ASSETS = Path(__file__).resolve().parents[1] / "assets"
+
+
+def _diamond():
+    img = np.full((90, 90, 3), 30, np.uint8)
+    cv2.fillPoly(img, [np.array([(45, 12), (78, 45), (45, 78), (12, 45)])], CREAM)
+    return img
+
+
+def _list_frames(cfg, recent=True):
+    """合成动作列表：最上面是「最近使用」，两行、每个图标右下角贴着真机截下来的时钟角标（第二行有个只在这里出现的菱形）；
+    recent=False 时最上面一行是不带角标的菱形（没有最近使用）。下面是动作网格。
     按真机的样子翻页：长画布每屏滚 400 像素，最后一屏到底重复一次。"""
     height, width = 1080, 1920
     x1, y1 = int(cfg.list_roi[0] * width), int(cfg.list_roi[1] * height)
     canvas = np.zeros((2000, int(cfg.list_roi[2] * width) - x1, 3), np.uint8)
+    clock = imread(ASSETS / "emotes" / "recent_clock.png")
 
     def put(img, cx, cy):
         h, w = img.shape[:2]
         canvas[cy - h // 2 : cy - h // 2 + h, cx - w // 2 : cx - w // 2 + w] = img
 
-    diamond = np.full((90, 90, 3), 30, np.uint8)
-    cv2.fillPoly(diamond, [np.array([(45, 12), (78, 45), (45, 78), (12, 45)])], CREAM)
-    clocked = icon("person").copy()
-    cv2.circle(clocked, (72, 74), 12, CREAM, 3)  # 右下角的时钟角标
-    put(diamond, 60, 130)
-    put(clocked, 180, 130)
+    if recent:
+        for cy, row in ((130, [icon("person"), icon("circle")]), (250, [_diamond(), icon("cross")])):
+            for col, img in enumerate(row):
+                put(img, 60 + 119 * col, cy)
+                put(clock, 60 + 119 * col + 40, cy + 33)  # 真机上角标在图标中心右下 (40, 33)
+    else:
+        put(_diamond(), 180, 130)
     kinds = ["circle", "cross", "person"]
-    for row, cy in enumerate(range(300, 1950, 119)):
+    for row, cy in enumerate(range(400, 1950, 119)):
         for col in range(4):
             put(icon(kinds[(row + col) % 3]), 60 + 119 * col, cy)
 
@@ -175,16 +189,44 @@ def _list_frames(cfg):
     return [top, top, top, mid, bottom, bottom]
 
 
-def test_scan_list_skips_recently_used_row(library, tmp_path, monkeypatch):
-    """「最近使用」那一行是后面动作的重复，带时钟角标、截歪了（10-03 扫出来的 001 / 002 / 004），整行不要。"""
-    cfg = WheelConfig()
-    device = FakeDevice(_list_frames(cfg))
-    wheel = Wheel(device, cfg, library, sleep=lambda s: None)
+def _scan(library, tmp_path, monkeypatch, recent):
+    cfg = WheelConfig(recent_badge=str(ASSETS / "emotes" / "recent_clock.png"))
+    wheel = Wheel(FakeDevice(_list_frames(cfg, recent)), cfg, library, sleep=lambda s: None)
     monkeypatch.setattr(wheel, "open_editor", lambda: None)
     monkeypatch.setattr(wheel, "close_editor", lambda: None)
     paths = wheel.scan_list(tmp_path / "scan")
-    masks = [trim(silhouette(cv2.imdecode(np.fromfile(p, np.uint8), 1))) for p in paths]
-    diamond = np.full((90, 90, 3), 30, np.uint8)
-    cv2.fillPoly(diamond, [np.array([(45, 12), (78, 45), (45, 78), (12, 45)])], CREAM)
-    assert not any(same_icon(m, trim(silhouette(diamond)), 0.9) for m in masks)
-    assert len(paths) == 3  # 圆、十字、人形各一张
+    return [trim(silhouette(imread(p))) for p in paths]
+
+
+def test_scan_list_skips_recently_used_rows(library, tmp_path, monkeypatch):
+    """「最近使用」是后面动作的重复，带时钟角标、截歪了，有一行也可能两行（10-03 真机：4 + 2 个，
+    只跳第一行时第二行的先祖群、跪坐漏进来成了 001 / 002），带角标的几行都不要。"""
+    masks = _scan(library, tmp_path, monkeypatch, recent=True)
+    assert not any(same_icon(m, trim(silhouette(_diamond())), 0.9) for m in masks)
+    assert len(masks) == 3  # 圆、十字、人形各一张
+
+
+def test_scan_list_keeps_top_row_without_recent_badges(library, tmp_path, monkeypatch):
+    masks = _scan(library, tmp_path, monkeypatch, recent=False)
+    assert any(same_icon(m, trim(silhouette(_diamond())), 0.9) for m in masks)
+    assert len(masks) == 4
+
+
+def test_scan_list_moves_previous_scan_into_old(library, tmp_path, monkeypatch):
+    """重扫只覆盖 001~N：上次多出来的编号图会留下来混进「动作名」页（10-03 晚 178~182）。扫之前整批挪进 _old/<时间>/。"""
+    out = tmp_path / "scan"
+    out.mkdir()
+    for name in ("001.png", "200.png", "_sheet.png"):
+        imwrite(out / name, icon("circle"))
+    (out / "说明.txt").write_text("留着", encoding="utf-8")
+    cfg = WheelConfig(recent_badge=str(ASSETS / "emotes" / "recent_clock.png"))
+    wheel = Wheel(FakeDevice(_list_frames(cfg)), cfg, library, sleep=lambda s: None)
+    monkeypatch.setattr(wheel, "open_editor", lambda: None)
+    monkeypatch.setattr(wheel, "close_editor", lambda: None)
+    paths = wheel.scan_list(out)
+    assert sorted(p.name for p in out.glob("*.png")) == ["001.png", "002.png", "003.png", "_sheet.png"]
+    assert len(paths) == 3
+    backups = list((out / "_old").iterdir())
+    assert len(backups) == 1
+    assert sorted(p.name for p in backups[0].iterdir()) == ["001.png", "200.png", "_sheet.png"]
+    assert (out / "说明.txt").exists()

@@ -186,6 +186,8 @@ class WheelConfig:
     list_scroll_x: float = 0.815
     list_scroll_from: float = 0.83  # 往下翻：从这个高度拖到 list_scroll_to
     list_scroll_to: float = 0.42
+    # 动作列表最上面「最近使用」图标右下角的时钟角标；`emotes scan` 跳过带它的几行（全是后面动作的重复）
+    recent_badge: str = "assets/emotes/recent_clock.png"
     match_threshold: float = 0.8  # 在动作列表里找图标（和图标库同尺寸）
     # 认轮盘格子里的图标（更大，还可能带“2级”之类的字）。10-02 实测：真动作 0.72~0.93（欢呼最低）、空 / 锁定格子 0.47；
     # 原来是 0.72，欢呼在门槛上来回跳，有时读不出来
