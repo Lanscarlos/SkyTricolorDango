@@ -47,10 +47,13 @@ class Brain:
         store=None,  # chat.memory.MemoryStore：live 时退出前把经过记进 inbox.md
         trace=None,  # brain.trace.BrainTrace：可视化网页的大脑时间线（run --brain --view）
         slow: Callable[[], bool] | None = None,  # 困了：没事时醒得慢一档（内心层第 2 期）
+        fallback_session=None,  # brain.deepseek.DeepSeekBrain：Claude 额度用完切过去（spec 2026-10-03-deepseek-fallback-brain）
     ) -> None:
         self.cfg = cfg
         self.chat = chat
         self.session = session
+        self.fallback_session = fallback_session
+        self.on_fallback = False  # 已经在用备用大脑（切过去就不切回）
         self.toolbox = toolbox
         self.events = events
         self.nearby = nearby
@@ -203,6 +206,7 @@ class Brain:
             "failures": self.failures,
             "retry_in": self.backoff_until - now if self.backoff_until > now else None,
             "offline": self.offline(now),
+            "on_fallback": self.on_fallback,
         }
 
     def _trace(self, name: str, *args) -> None:
@@ -219,6 +223,16 @@ class Brain:
         if self.failing_since is None:
             self.failing_since = now
         limit = bool(getattr(exc, "limit", False))
+        if limit and self.fallback_session is not None and not self.on_fallback:
+            # 订阅额度用完：永久切到 DeepSeek 备用大脑，不等 limit_retry（spec 2026-10-03-deepseek-fallback-brain §3）
+            self.session = self.fallback_session
+            self.on_fallback = True
+            self.failures = 0
+            self.failing_since = None
+            self.backoff_until = float("-inf")
+            self.limited = False
+            log.warning("Claude 额度用完，切到 DeepSeek 备用大脑")
+            return
         self.limited = limit
         delay = self.cfg.limit_retry if limit else BACKOFF[min(self.failures, len(BACKOFF)) - 1]
         self.backoff_until = now + delay

@@ -78,12 +78,12 @@ class FakeTrace:
         self._record("fail", error, seconds)
 
 
-def make(clock, session, store=None, run=None, nearby=None, trace=None, **cfg):
+def make(clock, session, store=None, run=None, nearby=None, trace=None, fallback_session=None, **cfg):
     events = EventQueue(clock=clock)
     tb = FakeToolBox()
     near = [] if nearby is None else nearby
     brain = Brain(BrainConfig(**cfg), ChatConfig(), session, tb, events, lambda now: list(near), eyes=FakeEyes(),
-                  clock=clock, wall=lambda: 0.0, run=run, store=store, trace=trace)
+                  clock=clock, wall=lambda: 0.0, run=run, store=store, trace=trace, fallback_session=fallback_session)
     return brain, events, tb, near
 
 
@@ -121,6 +121,40 @@ def test_limit_waits_longer(clock):
     brain, _, _, _ = make(clock, FakeSession(ClaudeError("hit your limit", limit=True)))
     brain.wake(clock(), "heartbeat")
     assert brain.backoff_until == clock() + 600
+
+
+def test_limit_swaps_to_fallback_session(clock):
+    claude = FakeSession(ClaudeError("hit your limit", limit=True))
+    fb = FakeSession(ok("deepseek 说的"))
+    brain, _, _, _ = make(clock, claude, fallback_session=fb)
+    brain.wake(clock(), "heartbeat")
+    assert brain.session is fb and brain.on_fallback is True
+    assert brain.failing_since is None and brain.failures == 0
+    assert brain.backoff_until == float("-inf") and not brain.offline(clock())
+
+
+def test_after_swap_next_wake_uses_fallback(clock):
+    fb = FakeSession(ok("第一句"), ok("第二句"))
+    brain, _, _, _ = make(clock, FakeSession(ClaudeError("limit", limit=True)), fallback_session=fb)
+    brain.wake(clock(), "heartbeat")
+    assert len(fb.sent) == 0  # 这一轮是 Claude 挂的那轮
+    brain.wake(clock(), "heartbeat")
+    assert len(fb.sent) == 1
+
+
+def test_fallback_failure_does_not_switch_back(clock):
+    fb = FakeSession(ClaudeError("deepseek 挂了"))
+    brain, _, _, _ = make(clock, FakeSession(ClaudeError("limit", limit=True)), fallback_session=fb)
+    brain.wake(clock(), "heartbeat")
+    brain.wake(clock(), "heartbeat")  # DeepSeek 失败
+    assert brain.session is fb and brain.on_fallback is True  # 不切回
+    assert brain.offline(clock() + brain.cfg.offline_fallback + 1)
+
+
+def test_limit_without_fallback_still_backs_off(clock):  # Review Focus 4
+    brain, _, _, _ = make(clock, FakeSession(ClaudeError("hit your limit", limit=True)))
+    brain.wake(clock(), "heartbeat")
+    assert brain.backoff_until == clock() + 600 and brain.on_fallback is False
 
 
 def test_heartbeat_backs_off_when_idle_and_resets(clock):
@@ -208,7 +242,7 @@ def test_trace_state(clock):
     brain, _, _, _ = make(clock, FakeSession(ClaudeError("挂了")), trace=trace)
     assert trace.state == brain.trace_state
     cfg = brain.cfg
-    assert brain.trace_state() == {"model": cfg.model, "effort": cfg.effort, "failures": 0, "retry_in": None, "offline": False}
+    assert brain.trace_state() == {"model": cfg.model, "effort": cfg.effort, "failures": 0, "retry_in": None, "offline": False, "on_fallback": False}
     brain.wake(clock(), "heartbeat")
     state = brain.trace_state()
     assert state["failures"] == 1 and state["retry_in"] == 10.0 and state["offline"] is False
