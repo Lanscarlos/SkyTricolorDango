@@ -240,7 +240,8 @@ class Wheel:
             self.close_editor()
 
     def slot_of(self, name: str) -> int | None:
-        return next((s for s, n in self.slots.items() if n == name), None)
+        # 锁定格是道具（3 火 = 举蜡烛、8 门），带动画常被认成某个动作（10-03：火 → 赞赏 0.64）：不当成动作，同 EmotePlayer.on_wheel
+        return next((s for s, n in self.slots.items() if n == name and s not in self.cfg.locked_slots), None)
 
     def _victim(self, candidates: list[int] | None = None) -> int:
         free = self.free_slots()

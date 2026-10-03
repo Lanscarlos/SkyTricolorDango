@@ -126,8 +126,8 @@ def test_press_refuses_when_input_box_open(library):
 
 
 def test_slot_threshold_has_margin_over_measured_scores():
-    """10-02 真机实测（tmp/manual-wheel-before.txt）：欢呼在格子里只有 0.72、空 / 锁定格子 0.47；
-    门槛原来正好是 0.72，第二次启动就认不出欢呼。两边都要留余量。"""
+    """10-02 真机实测（tmp/manual-wheel-before.txt）：邪笑（当时叫欢呼）在格子里只有 0.72、空 / 锁定格子 0.47；
+    门槛原来正好是 0.72，第二次启动就认不出它。两边都要留余量。"""
     t = WheelConfig().slot_match_threshold
     assert 0.47 + 0.08 <= t <= 0.72 - 0.08
 
@@ -137,12 +137,12 @@ def test_refresh_logs_every_slot_score(library, caplog, monkeypatch):
     monkeypatch.setattr(wheel, "open_editor", lambda: np.zeros((1080, 1920, 3), np.uint8))
     monkeypatch.setattr(wheel, "close_editor", lambda: None)
     scores = {s: (None, 0.47) for s in range(1, 9)}
-    scores[1], scores[6] = ("鞠躬", 0.93), ("欢呼", 0.72)
+    scores[1], scores[6] = ("鞠躬", 0.93), ("邪笑", 0.72)
     monkeypatch.setattr(wheel, "read_slots", lambda frame: scores)
     with caplog.at_level("INFO", logger="skydango.game.wheel"):
         wheel.refresh()
-    assert "1 鞠躬 0.93" in caplog.text and "6 欢呼 0.72" in caplog.text and "3 ? 0.47" in caplog.text
-    assert wheel.slots[6] == "欢呼" and wheel.slots[3] is None
+    assert "1 鞠躬 0.93" in caplog.text and "6 邪笑 0.72" in caplog.text and "3 ? 0.47" in caplog.text
+    assert wheel.slots[6] == "邪笑" and wheel.slots[3] is None
 
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
@@ -230,3 +230,16 @@ def test_scan_list_moves_previous_scan_into_old(library, tmp_path, monkeypatch):
     assert len(backups) == 1
     assert sorted(p.name for p in backups[0].iterdir()) == ["001.png", "200.png", "_sheet.png"]
     assert (out / "说明.txt").exists()
+
+
+def test_perform_never_uses_locked_slot_even_if_misread(library):
+    """图标库从 6 个涨到 57 个后，3 号格的火（举蜡烛，带动画）被认成了「赞赏」0.64（10-03 离线核对）：
+    做「赞赏」不能去按 3，得像 on_wheel 一样不算锁定的格子，换到空闲格子上。"""
+    wheel, device, _ = make_wheel(library)
+    wheel.slots[3] = "指向"  # 锁定格被认错
+    assigned = []
+    wheel.assign = lambda slot, name, force=False: assigned.append((slot, name)) or wheel.slots.__setitem__(slot, name)
+    slot = wheel.perform("指向")
+    assert slot != 3 and slot not in wheel.cfg.locked_slots
+    assert assigned == [(slot, "指向")]
+    assert ("hw_key", 4) not in device.calls  # KEY_3
