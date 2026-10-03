@@ -763,15 +763,20 @@ class Body:
             if s.who in self._left_at:
                 self._auto_called[s.who] = self._left_at[s.who]
             log.info("找刚走开的%s：喊一声", s.who)
-            r = self.call_out("auto")
-            if r.refused:
-                why = r.refused
-            elif r.dry:
-                why = "dry-run"
+            try:
+                r = self.call_out("auto")
+            except Exception:
+                log.exception("找走开的好友时喊一声出错")
+                why = "出错了"
             else:
-                self._pending_auto, self._search_call_pending = r, True
-                s.call_sent(now)
-                return
+                if r.refused:
+                    why = r.refused
+                elif r.dry:
+                    why = "dry-run"
+                else:
+                    self._pending_auto, self._search_call_pending = r, True
+                    s.call_sent(now)
+                    return
         log.debug("找%s：这一声不喊（%s）", s.who, why)
         s.called(None, now)
 
@@ -869,11 +874,13 @@ class Body:
             self.events.put("search", th.event)
         self._attention_look_first(th, now)
         calling = th.search is not None and th.search.state == "call"
-        self._attention_why = self._attention_blocked(now, check_ime=th.action is not None or calling)
-        if self._attention_why:
+        if calling:  # 喊一声照自动喊的门槛（聊天面板开着也能喊：call_out 自己借面板），不是转镜头那一套
+            self._attention_why = "不方便喊" if self._auto_call_blocked(now) else ""
+            if not self._attention_why:
+                self._search_call(now)
             return
-        if calling:
-            self._search_call(now)
+        self._attention_why = self._attention_blocked(now, check_ime=th.action is not None)
+        if self._attention_why:
             return
         if th.action is None:
             return

@@ -91,3 +91,50 @@ def test_dry_run_thinks_but_never_presses(clock):
     leave(b, env, clock, x=60)
     steps(b, clock, 3)
     assert cam.nudges == [] and "在找：小明" in b.status() and b._attention_why == "dry-run"
+
+
+def fading_env(env):
+    """有感知层的呼喊接口（call_available 看 hasattr），喊了也没结果。"""
+    env.unnamed = lambda now: 1
+    env.called = lambda at, by_self=True: None
+    env.call_result = lambda at: None
+
+
+def test_call_out_raising_does_not_escape_and_search_moves_on(clock):
+    b, dev, reader, events, env, cam = attn_body(clock)
+    quiet(b)
+    b.cfg.attention.scan_after = 1e9
+    fading_env(env)
+    calls = []
+
+    def boom(reason, live=False):
+        calls.append(reason)
+        raise RuntimeError("adb 断了")
+
+    b.call_out = boom
+    leave(b, env, clock, x=900)
+    steps(b, clock, 3)  # step() 里不能抛出来
+    assert calls == ["auto"]
+    assert "喊了一声在等" not in b.status() and b._pending_auto is None
+    steps(b, clock, 30)  # 喊不了就跳过这一步，接着环顾
+    assert cam.nudges and calls == ["auto"]
+
+
+def test_friend_leaving_while_chat_panel_open_still_calls_but_never_presses(clock):
+    b, dev, reader, events, env, cam = attn_body(clock)
+    quiet(b)
+    b.cfg.attention.scan_after = 1e9
+    fading_env(env)
+    calls = []
+
+    def fake_call_out(reason, live=False):
+        calls.append(reason)
+        b._call_at = clock()
+        return CallResult(clock(), reason)
+
+    b.call_out = fake_call_out
+    reader.state.open = True  # auto 模式读到消息后面板一直开着（安静 45 秒才关）
+    leave(b, env, clock, x=900)
+    steps(b, clock, 6)
+    assert calls == ["auto"]
+    assert cam.nudges == []
