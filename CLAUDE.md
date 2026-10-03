@@ -204,8 +204,8 @@ dir = "private/sandbox"
 扫描时顺带看好友名字下方的圆圈（`[social]`）：图标变成牵手 / 拥抱 / 击掌就记为请求，主循环里去点圆圈接受
 （原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受举蜡烛给团子点火（头顶没名字的圆圈要有白圈才算，深色火焰圆盘绝不点，见 game-ops §6）；
 输入框开着时不点；dry-run 只打印。`python -m skydango record` 连续截图，用来观察新的界面变化。
-点亮陌生人（只有大脑模式找，普通 Agent 不管 light 请求）：团子框周围（左右 `light_area_x` = 1.4、往上 `light_area_up` = 0.5 倍框高）连续 `light_after`（1.5）秒冒着火焰（`vision/candle.py` 的 `find_flames`，每处火焰一条线索，`vision/lighting.py`；**不管 YOLO 认没认出这个人**；认出名字的好友标签下、聊天面板下、`bonfire` 框里的不算；原地待 4 秒、从没到过 `disk_sure` 的不动火焰（灯笼）不算；团子框丢了沿用最后一个，最多 3 秒），身体按 3 号键举蜡烛（**绝不点那个圆盘**：会跟着人走）；
-**主要看火焰怎么消失**（10-03，spec `2026-10-03-light-flame-vanish-design.md`）：举满 `lit_min`（1 秒）后他那团火焰连着 2 次扫描、`lit_vanish`（0.8 秒）没看到——在范围边上 / 变小了再没的算走了、放下不鞠躬；原地没的算点亮（下面没人、`black()` 量不准也算），只有下面的人量得到、还黑着时接着等；同一个人连续两次变亮可以提前判；点亮后过 `bow_delay`（0.5 秒）鞠躬（顺带放下蜡烛）；`light_timeout` 秒没结果放下；没点亮冷却 `light_cooldown`（60 秒）；
+点亮陌生人（只有大脑模式找，普通 Agent 不管 light 请求）：团子框周围（左右 `light_area_x` = 1.4、往上 `light_area_up` = 0.5 倍框高）连续 `light_after`（1.5）秒冒着火焰（`vision/candle.py` 的 `find_flames`，每处火焰一条线索，`vision/lighting.py`；**不管 YOLO 认没认出这个人**；认出名字的好友标签下、聊天面板下、`bonfire` 框里的不算；原地待 4 秒、从没到过 `disk_sure` 的不动火焰（灯笼）不算；团子框丢了沿用最后一个，最多 3 秒，再久用这个面板状态下记住的高分团子框），身体按 3 号键举蜡烛（**绝不点那个圆盘**：会跟着人走）；
+**主要看火焰怎么消失**（10-03，spec `2026-10-03-light-flame-vanish-design.md`）：举满 `lit_min`（1 秒）后他那团火焰连着 2 次扫描、`lit_vanish`（0.8 秒）没看到——在范围边上 / 变小了再没的算走了、放下不鞠躬；原地没的算点亮（下面没人、`black()` 量不准也算），只有下面的人量得到、还黑着时接着等；同一个人连续两次变亮可以提前判；点亮后过 `bow_delay`（0.5 秒）鞠躬（顺带放下蜡烛；不等挂着的互动请求，别的反射照旧等）；`light_timeout` 秒没结果放下；没点亮冷却 `light_cooldown`（60 秒）；
 鞠躬没做完不再举第二次、举之前先查 `reflex.min_gap`、身体替大脑开着输入框时不举；放下前先关替大脑开的框（按数字键会关掉它）；举着时接受了别的互动（点圆圈会放下蜡烛）或黑过屏（切场景、状态不明）就不再按 3 放下。接受别人点火后也鞠躬。每次存图到 `runs/<…>/light/`。
 大脑能用 `set_request_policy("stranger", "light", false)` 关掉；**未在真机验证**（spec `docs/superpowers/specs/2026-10-01-light-flame-around-self-design.md` §11；数字和录像核对见 game-ops §6）。篝火「点燃」图标也是火焰圆圈，要等 YOLO 学会 `bonfire` 才排除得掉（之前团子站篝火旁可能误举一次）
 

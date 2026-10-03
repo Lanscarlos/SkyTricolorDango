@@ -1709,8 +1709,19 @@ def test_stale_self_track_still_used_within_self_hold(monkeypatch):
     assert len(w.areas) == 2
     run(w, 1.6, clock)  # SELF_HOLD 内（1.6 < 3.0）还在找
     assert len(w.areas) == 3
-    run(w, 3.1, clock)  # 过了 SELF_HOLD（3.1 > 3.0）：不找
-    assert len(w.areas) == 3
+
+
+def test_self_box_remembered_after_hold(monkeypatch):
+    """10-03 20:45：黑影站在团子身前 3 秒多，YOLO 一直认不出 self，过了 SELF_HOLD 就不找火焰，举蜡烛晚了约 3 秒。
+    镜头跟着团子，团子在屏幕上的位置只随聊天面板开关变：过了 SELF_HOLD 用这个面板状态下记住的高分团子框接着找。"""
+    w, det, clock = light_watcher(monkeypatch, [FLAME])
+    det.frames = [[self_det()]]
+    run(w, 0.0, clock)
+    det.frames = [[unlit(1000)]]  # 黑影挡着，没有 self
+    for t in (3.1, 10.0, 60.0):
+        run(w, t, clock)
+        assert w.areas[-1] == w.areas[0]
+    assert len(w.areas) == 4
 
 
 def test_self_box_held_while_hidden(monkeypatch):
@@ -1730,18 +1741,22 @@ def test_self_box_held_while_hidden(monkeypatch):
     assert LIGHT_KEY in w.requests  # 出请求了
 
 
-def test_self_box_hold_expires(monkeypatch):
-    """0.0 有 self，之后一直没有 → 3.0 秒之后不再找（w.areas 不再增加）。"""
+def test_self_box_memory_is_per_panel_state(monkeypatch):
+    """聊天面板开 / 关时团子在屏幕上差约 400 px：面板关着时记住的框，面板开着时不用 → 过了 SELF_HOLD 不再找；面板关上又接着找。"""
     w, det, clock = light_watcher(monkeypatch, [FLAME])
     det.frames = [[self_det()]]
     run(w, 0.0, clock)
     assert len(w.areas) == 1
     det.frames = [[]]  # 之后没有 self
     for t in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0):
-        run(w, t, clock)
+        clock.t = t
+        w.process(frame(), t, panel_visible=True)
     area_count_at_3_0 = len(w.areas)
-    run(w, 3.1, clock)
-    assert len(w.areas) == area_count_at_3_0  # 不再搜索
+    clock.t = 3.1
+    w.process(frame(), 3.1, panel_visible=True)
+    assert len(w.areas) == area_count_at_3_0  # 面板开着时没记过团子框：不再搜索
+    run(w, 3.4, clock)  # 面板关着：用记住的框
+    assert len(w.areas) == area_count_at_3_0 + 1 and w.areas[-1] == w.areas[0]
 
 
 def test_scan_throttled(monkeypatch):
@@ -2093,14 +2108,27 @@ def test_lit_speedup_needs_two_bright_scans(monkeypatch, second, want):
 
 
 def test_lit_false_when_self_box_lost(monkeypatch):
-    """团子框丢了超过 SELF_HOLD 就不再找火焰：火焰"消失"不能自己成立，之后 lit 是 False（不是 True / None）。
-    SELF_HOLD 之内沿用最后的团子框照样真扫描（见 test_self_box_held_while_hidden），那时判出点亮是对的。"""
+    """团子框丢了超过 SELF_HOLD、这个面板状态下也没记过团子框就不再找火焰：火焰"消失"不能自己成立，之后 lit 是 False（不是 True / None）。
+    沿用最后的团子框 / 记住的团子框时照样真扫描（见 test_self_box_held_while_hidden、test_self_box_remembered_after_hold），那时判出点亮是对的。"""
     w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
     no_flames(monkeypatch)
     monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.1)
     det.frames = [[player(1000)]]
-    run_frames(w, clock, 3.2, 7.0)  # 最后一次认出团子是 3.0 秒左右，沿用到 6 秒多就过期
+    for k in range(39):  # 3.2 ~ 7.0：聊天面板开着（团子框只在面板关着时记过）；最后一次认出团子是 3.0 秒左右，沿用到 6 秒多就过期
+        t = round(3.2 + 0.1 * k, 3)
+        clock.t = t
+        w.process(frame(), t, panel_visible=True)
     assert w.lit(cid, 0.0) is False
+
+
+def test_lit_with_remembered_self_box(monkeypatch):
+    """团子框丢了超过 SELF_HOLD，但面板状态没变、记得团子在哪：接着真扫描，火焰原地没了、他亮了 → 点亮。"""
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    no_flames(monkeypatch)
+    monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.1)
+    det.frames = [[player(1000)]]
+    run_frames(w, clock, 3.2, 7.0)
+    assert w.lit(cid, 0.0) is True
 
 
 def test_lit_uses_scan_time_not_frame_time(monkeypatch):
