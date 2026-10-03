@@ -250,7 +250,7 @@ dir = "private/sandbox"
   接回的"像他"30 秒（6 个 `keep`）没被名字标签证实就摘、也不报走近；身体在 `held("camera")` 里转了镜头，恢复后第一帧拿暂停前的缩略图估一次平移（门槛 0.4），估不出就作废所有轨迹的位置、清掉失踪记录；
   开关全关逐字是原来的行为（`camera_moved` 的缩放 / 走路静默期不受开关管）。定阈值：`perception track-eval <录像目录> [--fps 6.5]` → `tmp/track-eval/<时间>/report.md`（基线 vs 当前配置；目标接回证实错 = 0、确认冤枉明显下降）
 - **开关聊天面板不断轨迹**（10-03，计划 `docs/superpowers/plans/2026-10-03-panel-toggle-tracking.md`，录像分析见 `docs/progress/2026-10-03-plan.md` 5b；录像里面板开关是 2 秒的镜头横移动画、有视差）：
-  A `panel_people`（默认开）：面板开着时只丢面板区域里的名字标签 / 气泡 / 圆圈（`PANEL_DROP`），人物框留着，面板后面没挂过标签的点过火的人先不判陌生人（`_under_panel`，黑影照常判）；
+  A `panel_people`（默认开）：面板开着时只丢面板区域里的名字标签 / 气泡 / 圆圈（`PANEL_DROP`），人物框留着，面板后面没挂过标签的点过火的人先不判陌生人（`_under_panel`，黑影照常判；面板关了从关的那一刻起再等 `stranger_after`），面板里的 `self` 框当普通人（开面板时团子在右边，那是误检）、面板后面的人不做远处裁图；
   B 平移估计（`_pan_step`）用整张缩略图、只在面板开着时遮左三分之一，不再遮人物框（受 `track_pan` 管）；C `panel_settle`（2.5 秒，0 = 关）：面板标志翻转 / 按 C（`PanelManager.on_press` → `camera_moved(at, "panel")`）后这段时间速度清零、不攒走近 / 运动历史。
   `panel_people = false`、`panel_settle = 0`、`track_pan = false` 逐字照旧；**只在合成画面里测过，录像回放测试和 track-eval 前后对比还没跑**（要本机的 `tmp/record/panel-toggle-1003-*`，见 5b 末尾「还没做」）
 - **感知层第二层（`[attrs]`，代码已完成，默认关；还没有训练数据和模型，没上真机）**：设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。
