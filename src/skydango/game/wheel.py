@@ -289,7 +289,12 @@ class Wheel:
                 area, crop = self._list_crop(frame)
                 cell = int(0.1 * height)
                 margin = int(0.055 * height)
-                for r in find_icons(crop, int(0.025 * height), cell):
+                found = find_icons(crop, int(0.025 * height), cell)
+                if prev is None and found:
+                    # 第一屏最上面一行是「最近使用」：全是后面动作的重复，时钟角标和剪影并成一块、截歪了（10-03），整行不要
+                    top = min(r.y + r.h // 2 for r in found)
+                    found = [r for r in found if r.y + r.h // 2 - top > cell // 2]
+                for r in found:
                     # 列表上下边缘处图标会被裁掉一截；翻一页只滚约 400 像素，每个图标总有一页完整落在中间
                     if r.y < margin or r.y2 > crop.shape[0] - margin:
                         continue
@@ -301,7 +306,7 @@ class Wheel:
                         continue
                     dup = next((i for i, (_, _, m) in enumerate(saved) if same_icon(m, mask, 0.9)), None)
                     if dup is not None:
-                        # “最近使用”里的图标带时钟角标，干净的版本会被当成它的重复：留剪影小的那个
+                        # 带时钟角标的“最近使用”图标万一漏进来，干净的版本会被当成它的重复：留剪影小的那个
                         path, _, old = saved[dup]
                         if np.count_nonzero(mask) < 0.95 * np.count_nonzero(old):
                             imwrite(path, icon)
