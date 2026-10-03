@@ -179,7 +179,7 @@ class Body:
         self.rng = rng or random.Random()
         self.reflexes = Reflexes(cfg.reflex, self.rng, clock())
         # 空闲注意力（东张西望，spec 2026-09-30-idle-attention）
-        self.attention = Attention(cfg.attention, cfg.track, self.rng, clock())
+        self.attention = Attention(cfg.attention, cfg.track, self.rng, clock(), hfov=cfg.spin.hfov)
         self._attention_pressed_at = float("-inf")  # 注意力上次按键：之后 settle 秒内冒出的"走近"是自己转出来的
         self._attention_why = ""  # 这一圈为什么不动（status / 网页）
         self._gestures_seen: deque[tuple[str, str, float]] = deque(maxlen=20)  # (谁, 动作, 时间)：回礼反射取走了也留一份
@@ -308,7 +308,7 @@ class Body:
         if self.cfg.reflex.enabled:
             info["反射"] = self._recent_reflex(now) or "还没有"
         if self._attention_on():
-            info["注意力"] = self.attention.describe() + (f"（先不动：{self._attention_why}）" if self._attention_why else "")
+            info["注意力"] = self.attention.describe(self.clock()) + (f"（先不动：{self._attention_why}）" if self._attention_why else "")
         if self.cfg.proactive.enabled:
             try:
                 o = self.occasion()
@@ -638,7 +638,7 @@ class Body:
         except ValueError:
             raise ToolError("模式只能是：随意 / 好奇 / 专心 / 别动") from None
         log.info("注意力模式：%s%s", mode, f"，关注{self.attention.focus}" if self.attention.focus else "")
-        line = self.attention.describe()
+        line = self.attention.describe(self.clock())
         return line if line.startswith("注意力：") else f"注意力：{mode}（{line}）"
 
     def _self_motion_window(self) -> float:
@@ -1660,7 +1660,7 @@ class Body:
         if reflex:
             parts.append("刚才下意识：" + reflex)
         if self._attention_on():
-            parts.append(self.attention.describe())
+            parts.append(self.attention.describe(self.clock()))
         if self.camera is not None:
             parts.append("镜头：" + self.camera.describe())
         parts.append("上次看图：" + (f"{now - self.last_look:.0f} 秒前" if self.last_look > float("-inf") else "还没看过"))

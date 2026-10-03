@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -286,3 +287,12 @@ def test_attention_search_defaults():  # spec 2026-10-03-attention-search §4
     assert a.search is True and a.press_deg == 18.0 and a.seg_presses == 3 and a.dwell == 1.5
     assert a.scan_after == 20.0 and a.scan_every == 60.0 and a.scan_segments == [2, 3] and a.scan_look == 3.0
     assert a.lost_segments == 2 and a.resume_within == 10.0
+
+
+def test_removed_wander_keys_are_skipped_with_warning(tmp_path, caplog):  # spec 2026-10-03-attention-search §2
+    p = tmp_path / "c.toml"
+    p.write_text("[attention]\nwander_min = 8.0\nwander_presses = [2, 4]\nsearch = false\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(p)
+    assert not hasattr(cfg.attention, "wander_min") and cfg.attention.search is False
+    assert "attention.wander_min" in caplog.text and "attention.wander_presses" in caplog.text

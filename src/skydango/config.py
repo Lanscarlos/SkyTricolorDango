@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import tomllib
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # 坐标约定：配置里的坐标一律用 0~1 的归一化值（相对截图宽高），
 # 这样换分辨率 / 换模拟器实例不用重新标定。
@@ -708,10 +711,6 @@ class AttentionConfig:
     switch_margin: float = 0.2  # 新目标的实际兴趣要比当前高出这么多才换
     switch_hold: float = 2.0  # 刚换过目标这么多秒内不再换
     look_first: float = 2.0  # 冒气泡 / 有人走近时先看这么久再让聊天面板开
-    wander_min: float = 8.0  # 没什么可看时，隔 wander_min~wander_max 秒（再乘心情精力 / 模式的倍数）随意看一眼
-    wander_max: float = 20.0
-    wander_presses: list[int] = field(default_factory=lambda: [2, 4])  # 随意看一次连按几下
-    wander_same_side: int = 2  # 往同一边连着随意看最多几次
     # 有意识地找（spec 2026-10-03-attention-search）：找刚走开的好友、一个人时环顾一片；都没有就不转
     search: bool = True  # 关掉只剩被动注意（有人说话 / 走近 / 对团子做动作就转过去看）
     press_deg: float = 18.0  # 每下 [track] nudge_max 约转几度（按 [spin] seconds_per_turn 2 秒一圈估的，待 camera spin 标定）
@@ -855,10 +854,19 @@ class Config:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
 
+# 删掉的配置项：旧的 config.toml / console.toml 里还写着时跳过、提醒一句（别的未知键照旧报错）
+DEPRECATED = frozenset({
+    "attention.wander_min", "attention.wander_max", "attention.wander_presses", "attention.wander_same_side",  # 2026-10-03 随意看删了
+})
+
+
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:
     known = {f.name: f for f in dataclasses.fields(obj)}
     for key, value in data.items():
         if key not in known:
+            if f"{path}{key}" in DEPRECATED:
+                log.warning("配置项 %s%s 已经不用了，可以删掉", path, key)
+                continue
             raise ValueError(f"未知配置项: {path}{key}")
         current = getattr(obj, key)
         if dataclasses.is_dataclass(current):

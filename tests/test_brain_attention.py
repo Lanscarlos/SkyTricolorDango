@@ -6,6 +6,7 @@ import pytest
 
 from skydango.brain.attention import Attention, Target
 from skydango.brain.peek import Turn
+from skydango.brain.search import Obs
 from skydango.config import Config
 
 W = 1920
@@ -171,11 +172,11 @@ def test_describe_lines():
 
 # ---- Task 4：随意看、模式、focus ----
 
-def run_idle(a, t0, t1, step=0.7, targets=()):
-    """空转：每圈 think，给了按键就当真按了；返回 [(时间, Thought)]。"""
+def run_idle(a, t0, t1, step=0.7, targets=(), obs=None):
+    """空转：每圈 think，给了按键就当真按了；返回 [(时间, Thought)]。obs 是函数 t → Obs（None：不给，注意力不知道画面里有没有人）。"""
     out, t = [], t0
     while t <= t1:
-        th = a.think(list(targets), t)
+        th = a.think(list(targets), t, obs=obs(t) if obs else None)
         if th.action is not None:
             a.pressed(th.action, t)
         out.append((t, th))
@@ -183,65 +184,17 @@ def run_idle(a, t0, t1, step=0.7, targets=()):
     return out
 
 
-def test_wander_after_random_quiet_interval():
+def test_focused_mode_ignores_low_interest():
     a = attn()
-    log = run_idle(a, 0.0, 40.0)
-    starts = [t for (t, th), (_, prev) in zip(log[1:], log) if th.wandering and not prev.wandering]
-    assert starts and 8.0 <= starts[0] <= 20.0 + 0.7
-    first = [th for t, th in log if th.wandering][:6]
-    assert all(th.action is None or th.action.seconds == Config().track.nudge_max for th in first)
-    presses = 0
-    for (t, th), (_, nxt) in zip(log, log[1:]):
-        presses += th.action is not None
-        if th.wandering and not nxt.wandering:
-            break
-    assert 2 <= presses <= 4
-    assert a.describe() in ("闲着随意看", "没在看什么")
-
-
-def test_wander_never_same_side_more_than_limit():
-    a = attn(wander_min=1.0, wander_max=1.0, wander_presses=[1, 1])
-    sides = [th.action.direction for t, th in run_idle(a, 0.0, 200.0) if th.wandering and th.action is not None]
-    assert len(sides) >= 10
-    run = longest = 1
-    for x, y in zip(sides, sides[1:]):
-        run = run + 1 if x == y else 1
-        longest = max(longest, run)
-    assert longest <= 2
-
-
-def test_target_interrupts_wander():
-    a = attn(wander_min=1.0, wander_max=1.0, wander_presses=[4, 4])
-    log = run_idle(a, 0.0, 3.0)
-    assert any(th.wandering for t, th in log)
-    th = a.think([tgt("t:1", "talk_friend", 1600, "小明", 3.5)], 3.7)
-    assert not th.wandering and th.current.key == "t:1"
-
-
-def first_wander(a):
-    return next(t for t, th in run_idle(a, 0.0, 200.0, step=0.5) if th.wandering)
-
-
-def test_wander_scale_and_curious_mode_shorten_interval():
-    base = first_wander(attn(seed=3))
-    slow = attn(seed=3)
-    assert next(t for t, th in [(t, slow.think([], t, wander_scale=2.0)) for t in [i * 0.5 for i in range(400)]] if th.wandering) > base
-    curious = attn(seed=3)
-    curious.set_mode("好奇", None)
-    assert first_wander(curious) < base
-
-
-def test_focused_mode_ignores_low_interest_and_no_wander():
-    a = attn(wander_min=1.0, wander_max=1.0)
     a.set_mode("专心", None)
     log = run_idle(a, 0.0, 10.0, targets=[tgt("t:1", "friend_present", 1600, "小红")])
-    assert all(th.current is None and th.action is None and not th.wandering for t, th in log)
+    assert all(th.current is None and th.action is None for t, th in log)
     th = a.think([tgt("t:2", "talk_friend", 1600, "小明", 11.0)], 11.0)
     assert th.current.key == "t:2"
 
 
 def test_still_mode_never_moves_nor_looks_first():
-    a = attn(wander_min=1.0, wander_max=1.0)
+    a = attn()
     a.set_mode("别动", None)
     for t, th in run_idle(a, 0.0, 10.0, targets=[tgt("t:1", "talk_friend", 1600, "小明", 0.0)]):
         assert th.action is None and not th.look_first
@@ -315,3 +268,122 @@ def test_external_move_waits_settle_and_resets_streak():  # 评审 5：别人刚
     a.external_move(1.0)
     assert a.think(targets, 1.2).action is None
     assert a.think(targets, 1.7).action is not None
+
+
+# ---- 有意识地找（plan 2026-10-03-attention-search Task 4） ----
+
+def empty(t):
+    return Obs()
+
+
+def test_no_motive_no_press():  # 以前到点就随意看；现在没人、还没到环顾时间就不动
+    a = attn()
+    assert all(th.action is None for t, th in run_idle(a, 0.0, 15.0, obs=empty))
+    assert all(th.action is None for t, th in run_idle(attn(), 0.0, 60.0))  # 不知道画面里有没有人：不环顾
+
+
+def test_scan_after_empty_for_a_while_then_every_interval():
+    a = attn(scan_segments=[2, 2])
+    log = run_idle(a, 0.0, 100.0, obs=empty)
+    pressed = [t for t, th in log if th.action is not None]
+    assert pressed[0] == pytest.approx(Config().attention.scan_after, abs=0.7)
+    ends = [t for t, th in log if th.search is not None and th.search.state == "empty"]
+    assert len(ends) == 2 and ends[1] - ends[0] >= Config().attention.scan_every  # 约 27 s、94 s
+    assert a.describe(ends[1] + 1).startswith("刚才往") and a.describe(ends[1] + 1).endswith("附近没人（1 秒前）")
+
+
+def scan_ends(a, scale=1.0, t1=300.0):
+    """空场景跑 t1 秒（每 0.7 s 一圈、给了按键就当按了），返回每次环顾结束（附近没人）的时间。"""
+    out, t = [], 0.0
+    while t <= t1:
+        th = a.think([], t, scale=scale, obs=Obs())
+        if th.action is not None:
+            a.pressed(th.action, t)
+        if th.search is not None and th.search.state == "empty":
+            out.append(t)
+        t += 0.7
+    return out
+
+
+def test_scan_modes_and_scale():
+    base = scan_ends(attn(scan_segments=[2, 2]))  # 间隔 60 s：约 5 次
+    curious = attn(scan_segments=[2, 2])
+    curious.set_mode("好奇", None)  # 间隔 ×0.5
+    sleepy = scan_ends(attn(scan_segments=[2, 2]), scale=3.0)  # 困了：间隔 ×3
+    assert len(scan_ends(curious)) > len(base) > len(sleepy) >= 1
+    focused = attn()
+    focused.set_mode("专心", None)
+    assert scan_ends(focused) == []
+
+
+def test_passive_target_interrupts_search_and_search_resumes():
+    a = attn()
+    assert a.start_lost("小明", "left", True, False, 0.0)
+    th = a.think([], 0.0, obs=Obs())
+    assert th.action == Turn("left", Config().track.nudge_max)
+    a.pressed(th.action, 0.0)
+    th = a.think([tgt("t:1", "talk_friend", 1600, "小红", 1.0)], 1.0, obs=Obs())
+    assert th.current.key == "t:1" and th.action.direction == "right"  # 有人说话：先看他
+    a.pressed(th.action, 1.0)
+    th = a.think([], 3.0, obs=Obs())
+    assert th.current is None and th.search is not None and a.search is not None  # 说完了：接着找
+
+
+def test_search_dropped_after_long_interruption():
+    a = attn()
+    a.start_lost("小明", "left", True, False, 0.0)
+    for i in range(20):  # 小红一直在说话（每秒新的一句：不腻）
+        a.think([tgt("t:1", "talk_friend", 1000, "小红", float(i))], float(i), obs=Obs())
+    th = a.think([], 20.0, obs=Obs())
+    assert th.search.state == "none" and a.search is None and th.event is None  # 被打断太久：不找了、不报
+
+
+def test_standing_friend_does_not_block_lost_search():
+    a = attn()
+    a.start_lost("小明", "left", True, False, 0.0)
+    th = a.think([tgt("n:小红", "friend_present", 1600, "小红")], 0.0, obs=Obs(friends=("小红",)))
+    assert th.action == Turn("left", Config().track.nudge_max) and a.describe(0.0).startswith("在找：小明")
+
+
+def test_lost_search_finishes_with_event():
+    a = attn()
+    a.start_lost("小明", "left", True, False, 0.0)
+    events = [th.event for t, th in run_idle(a, 0.0, 15.0, obs=empty) if th.event]  # 15 s：还没到环顾
+    assert events == ["你往左边找了找刚走开的小明，没看到他"]
+    assert a.search is None and a.describe(15.0).startswith("刚才往左边找了找，没看到小明（")
+
+
+def test_scan_event_only_after_empty_scan():
+    a = attn(scan_segments=[2, 2])
+    run_idle(a, 0.0, 35.0, obs=empty)  # 第一次环顾：附近没人
+    assert a.last_search[0].state == "empty"
+    log = run_idle(a, 35.7, 120.0, obs=lambda t: Obs(strangers=1) if a.search is not None else Obs())
+    assert [th.event for t, th in log if th.event] == [f"你往{a.last_search[0].where}看了看：有 1 个陌生人"]
+
+
+def test_start_lost_respects_switch_and_mode():
+    assert not attn(search=False).start_lost("小明", "left", True, False, 0.0)
+    a = attn()
+    a.set_mode("别动", None)
+    assert not a.start_lost("小明", "left", True, False, 0.0)
+    b = attn()
+    assert b.start_lost("小明", "left", True, False, 0.0) and not b.start_lost("小明", "left", True, False, 1.0)
+    b.set_mode("别动", None)
+    assert b.search is None  # 改成别动：正在找的也不找了
+
+
+def test_external_move_resets_heading():
+    a = attn()
+    a.start_lost("小明", "left", True, False, 0.0)
+    th = a.think([], 0.0, obs=Obs())
+    a.pressed(th.action, 0.0)
+    assert a.heading.deg != 0.0
+    a.external_move(1.0)
+    assert a.heading.deg == 0.0
+
+
+def test_passive_turn_moves_heading_too():
+    a = attn()
+    th = a.think([tgt("t:1", "talk_friend", 1600, "小明", 0.0)], 0.0)
+    a.pressed(th.action, 0.0)
+    assert a.heading.deg > 0.0  # 按右

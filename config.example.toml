@@ -367,10 +367,6 @@ gain = 0.1                      # 按键秒数 = gain × 偏差（半屏宽算 1
 switch_margin = 0.2             # 新目标要高出这么多才换
 switch_hold = 2.0               # 刚换过目标这么多秒内不换
 look_first = 2.0                # 冒气泡 / 有人走近时先看这么久再让聊天面板开
-wander_min = 8.0                # 没什么可看时，隔 wander_min~wander_max 秒随意看一眼（再乘心情精力 / 模式的倍数）
-wander_max = 20.0
-wander_presses = [2, 4]         # 随意看一次连按几下
-wander_same_side = 2            # 往同一边连着随意看最多几次
 search = true                   # 有意识地找（找刚走开的好友 + 环顾）；关掉只剩上面的"看说话 / 走近的人"
 press_deg = 18.0                # 每下 [track] nudge_max 约转几度（待 camera spin 标定）
 seg_presses = 3                 # 分段转：一段按几下
