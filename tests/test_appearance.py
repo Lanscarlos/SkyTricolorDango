@@ -151,11 +151,11 @@ def test_no_maybe_when_two_friends_look_alike():
     assert b.assign_friends({1: V_PINK}, set()) == {}
 
 
-def test_card_only_friend_needs_stricter_threshold():
-    b = book(match=0.85, card_match=0.92)
+def test_card_feature_never_assigns():
+    b = book(match=0.85)
     b.load_cards({"小明": [outfit(V_PINK, key="color-v1")]})
-    assert b.assign_friends({1: near(V_PINK, 0.88)}, set()) == {}
-    assert b.assign_friends({1: near(V_PINK, 0.95)}, set()) == {1: "小明"}
+    assert b.assign_friends({1: V_PINK}, set()) == {}
+    assert b.still_like(V_PINK, "小明") is False
 
 
 def test_card_feature_with_other_key_is_ignored():
@@ -169,18 +169,76 @@ def test_load_cards_takes_last_outfit():
     b = book()
     b.load_cards({"小明": [outfit(V_BLUE, desc="蓝"), outfit(V_PINK, desc="粉")]})
     assert b.look("friend", "小明") == "粉"
-    assert b.assign_friends({1: V_PINK}, set()) == {1: "小明"}
 
 
-def test_still_like_prefers_learned_over_card():
-    b = book(match=0.85, card_match=0.92)
-    b.load_cards({"小明": [outfit(V_PINK)]})
-    assert b.still_like(near(V_PINK, 0.95), "小明") and not b.still_like(near(V_PINK, 0.88), "小明")
-    b.learn("friend", "小明", V_BLUE, 0.0)  # 学到的是蓝：以它为准
-    assert b.still_like(near(V_BLUE, 0.9), "小明") and not b.still_like(V_PINK, "小明")
+def test_still_like_uses_gallery():
+    b = book(match=0.85)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    b.learn("friend", "小明", V_BLUE, 1.0)
+    assert b.still_like(V_BLUE, "小明") and b.still_like(V_PINK, "小明")  # 多张样本，不被平均冲掉
+    assert not b.still_like(V_WHITE, "小明")
     assert not b.still_like(V_PINK, "没有这人")
 
 
+def test_gallery_keeps_two_views_of_one_friend():
+    b = book(match=0.85, margin=0.05)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    b.learn("friend", "小明", V_BLUE, 1.0)  # 两个角度
+    assert b.assign_friends({1: V_BLUE}, set()) == {1: "小明"}  # 平均特征时这会失败
+
+
+def test_unsure_band():
+    b = book(match=0.88, unsure=0.83)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    assert b.unsure_friends({1: near(V_PINK, 0.85)}, set()) == {1: "小明"}
+    assert b.assign_friends({1: near(V_PINK, 0.85)}, set()) == {}
+    assert b.unsure_friends({1: near(V_PINK, 0.80)}, set()) == {}
+    assert b.assign_friends({1: near(V_PINK, 0.80)}, set()) == {}
+    assert b.unsure_friends({1: near(V_PINK, 0.95)}, set()) == {}  # 够 match 的归 assign_friends
+    assert b.unsure_friends({1: near(V_PINK, 0.85)}, {"小明"}) == {}  # 名字被别处占了
+
+
+def test_unsure_friends_one_name_best_track():
+    b = book(match=0.9, unsure=0.8)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    assert b.unsure_friends({1: near(V_PINK, 0.82), 2: near(V_PINK, 0.86)}, set()) == {2: "小明"}
+
+
+def test_friend_scores_sorted():
+    b = book()
+    b.learn("friend", "小明", V_PINK, 0.0)
+    b.learn("friend", "小红", V_BLUE, 0.0)
+    sc = b.friend_scores(near(V_BLUE, 0.9))
+    assert [n for n, _ in sc] == ["小红", "小明"] and sc[0][1] > sc[1][1]
+    assert book().friend_scores(V_PINK) == []
+
+
+def test_looks_like_dango():
+    b = book(dango_match=0.80)
+    assert not b.looks_like_dango(V_PINK)  # 还没有团子底库
+    b.learn("me", "", V_WHITE, 0.0, dino=V_PINK)
+    b.learn("friend", "小明", V_BLUE, 0.0, dino=V_BLUE)
+    assert b.looks_like_dango(near(V_PINK, 0.9))
+    assert not b.looks_like_dango(near(V_PINK, 0.75))
+    assert not b.looks_like_dango(None)
+    b.learn("friend", "小明", V_WHITE, 1.0, dino=near(V_PINK, 0.95))  # 小明也有张和团子很像的
+    assert not b.looks_like_dango(near(V_PINK, 0.9))  # 小明更像：不算团子
+    assert b.looks_like_dango(V_PINK)  # V_PINK 对团子 1.0、对小明 0.95：团子更像才真
+
+
+def test_pinned_me_samples_survive():
+    b = book(gallery_max=2)
+    me = b.learn("me", "", V_PINK, 0.0, pinned=True)
+    for i, v in enumerate((V_WHITE, V_BLUE, _basis(3))):
+        b.learn("me", "", v, 1.0 + i)
+    assert me.gallery.pinned_count == 1 and len(me.gallery) == 2
+
+
+def test_stranger_gets_gallery():
+    b = book(gallery_max=7)
+    b.stranger_id(V_WHITE, 0.0)
+    g = b.strangers["陌生人A"].gallery
+    assert len(g) == 1 and g.max_size == 7 and g.best(V_WHITE, "color") > 0.99
 def test_stranger_ids_reuse_new_back_and_forget():
     b = book(stranger_forget=1800, keep=5.0)
     assert b.stranger_id(V_WHITE, 0.0) == ("陌生人A", False)
