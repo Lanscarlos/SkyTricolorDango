@@ -661,6 +661,10 @@ class BrainConfig:
     move_min_interval: float = 3.0  # 两次 move 调用最小间隔（秒），避免连续走位
     owner_name: str = ""  # 卡洛的游戏昵称，精确匹配；留空 = 主人命令模式关闭
     owner_window: float = 30.0  # 收到一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
+    # DeepSeek 备用大脑（spec 2026-10-03-deepseek-fallback-brain）：Claude 订阅额度用完时顶上
+    fallback: bool = True  # 额度用完切 DeepSeek 备用大脑；[llm] 没 Key 时退回纯文字备用回复
+    fallback_max_tokens: int = 4096  # 备用大脑回复长度（[llm] max_tokens=200 对大脑太短）
+    force_fallback: bool = False  # 调试：从启动就用 DeepSeek 大脑，不等额度真用完
 
 
 @dataclass

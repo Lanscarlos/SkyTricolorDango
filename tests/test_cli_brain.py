@@ -616,3 +616,62 @@ def test_run_brain_switches_ime_and_back_after_body_shutdown(tmp_path, monkeypat
         assert order == ["com.android.adbkeyboard/.AdbIME", "shutdown", "com.sohu.inputmethod.sogou/.SogouIME"]
     else:
         assert order == ["shutdown"]
+
+
+# ---- DeepSeek 备用大脑（spec 2026-10-03-deepseek-fallback-brain） ----
+
+def _fake_tb():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(body=SimpleNamespace(env=None), calling=False, backstage=False)
+
+
+def test_fallback_brain_off_when_disabled(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.brain.fallback = False
+    assert cli._fallback_brain(cfg, object(), "p") is None
+
+
+def test_fallback_brain_none_when_no_key(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("skydango.brain.deepseek.read_key", lambda name: (_ for _ in ()).throw(RuntimeError("没 Key")))
+    assert cli._fallback_brain(cfg, object(), "p") is None
+
+
+def test_fallback_brain_built(tmp_path, monkeypatch):
+    import skydango.brain.deepseek as ds
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    made = {}
+    monkeypatch.setattr(ds, "build_client", lambda llm, key=None: made.update(key=key) or object())
+    brain = cli._fallback_brain(cfg, _fake_tb(), "prompt")
+    assert isinstance(brain, ds.DeepSeekBrain) and brain.system == "prompt\n\n" + ds.FALLBACK_NOTE
+    assert brain.model == cfg.llm.model and brain.max_tokens == cfg.brain.fallback_max_tokens
+
+
+def test_run_brain_passes_fallback_session(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
+    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p: sentinel)
+    seen = []
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
+    assert seen[0].fallback_session is sentinel
+
+
+def test_force_fallback_swaps_session(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.brain.force_fallback = True
+    sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
+    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p: sentinel)
+    seen = []
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
+    assert seen[0].session is sentinel and seen[0].on_fallback is True
+
+
+def test_force_fallback_without_session_is_noop(tmp_path, monkeypatch):  # Review Focus 5
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.brain.force_fallback = True
+    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p: None)
+    seen = []
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
+    assert seen[0].session is not None and seen[0].on_fallback is False

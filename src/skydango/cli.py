@@ -2290,6 +2290,27 @@ def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
     return _claude_base(cfg, hint)
 
 
+def _fallback_brain(cfg: Config, toolbox, prompt: str):
+    """DeepSeek 备用大脑（spec 2026-10-03-deepseek-fallback-brain §1）：额度用完时 cli 切过去用。
+
+    没开 / 没 Key 返回 None（退化成现在的纯文字备用回复）。"""
+    from .brain.deepseek import FALLBACK_NOTE, DeepSeekBrain, build_client
+    from .brain.llm_tools import openai_tools
+
+    if not cfg.brain.fallback:
+        return None
+    try:
+        client = build_client(cfg.llm)
+    except RuntimeError as exc:
+        log.warning("备用大脑没开（%s）", exc)
+        return None
+    return DeepSeekBrain(
+        client, prompt + "\n\n" + FALLBACK_NOTE, toolbox, openai_tools(toolbox, blind=True),
+        model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=cfg.brain.fallback_max_tokens,
+        max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout,
+    )
+
+
 def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
     """真机世界（brain-sandbox spec §2）：接 MuMu 的设备、OCR 读聊天、身边识别、轮盘、镜头……原样搬自 _run_brain。
 
@@ -2425,22 +2446,28 @@ def _run_brain(
         raise
     if trace is None and viewer is not None:
         trace = viewer.brain or BrainTrace()  # 网页上的大脑时间线（一般 _viewer 已经挂好）
+    prompt = brain_prompt(
+        cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns,
+        now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
+        days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
+        persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
+        appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
+        lull=cfg.lull.enabled, call=_call_enabled(cfg, env),
+    )
     session = BrainSession(
-        base, claude_vars, work / "session", server.url, brain_prompt(
-            cfg.reply, store, quick_around=hasattr(env, "sweep"), panel_auto=cfg.panel.mode == "auto", history_turns=cfg.brain.history_turns,
-            now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
-            days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
-            persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
-            appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
-            lull=cfg.lull.enabled, call=_call_enabled(cfg, env),
-        ),
+        base, claude_vars, work / "session", server.url, prompt,
         cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
         on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
     )
+    fallback_session = _fallback_brain(cfg, toolbox, prompt)
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
         eyes=eyes, clock=clock, wall=wall, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
+        fallback_session=fallback_session,
     )
+    if cfg.brain.force_fallback and fallback_session is not None:
+        brain.session = fallback_session
+        brain.on_fallback = True
     if viewer is not None:
         viewer.brain = trace
         from .brain.manual import ManualControl
