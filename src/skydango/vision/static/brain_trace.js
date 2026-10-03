@@ -59,7 +59,8 @@ function mountBrainTrace(root,url){
     const btn=el("button","","复制这一轮");btn.onclick=()=>copy(t,btn);body.append(btn);
     d.append(body);d.hidden=B.acted&&!acted(t);return d}
   function brainState(st){let text=`${st.model??"?"} / ${st.effort??"?"} · 已醒 ${st.turns??0} 轮 · `,cls="";
-    if(st.offline){text+="已转备用回复（DeepSeek）";cls="bad"}
+    if(st.on_fallback){text+="备用大脑（DeepSeek）";cls="bad"}
+    else if(st.offline){text+="已转备用回复（DeepSeek）";cls="bad"}
     else if(st.retry_in!=null){text+=`连续失败 ${st.failures} 次，${Math.ceil(st.retry_in)} 秒后重试`;cls="warn"}
     else text+="在线";stateEl.textContent=text;stateEl.className="brain-state"+(cls?" "+cls:"")}
   function brainRender(changed){
