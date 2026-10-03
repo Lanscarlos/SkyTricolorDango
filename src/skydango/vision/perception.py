@@ -96,6 +96,8 @@ RELINK_AMBIGUOUS = 1.3  # 一条记录的两个候选，近的要比远的近这
 RELINK_MAX_KEEPS = 6  # 接回的"像他"这么多个 keep 还没被名字标签证实就摘掉（接错了总得有个出口）
 LOW_ONLY_MAX = 5.0  # 只靠低分框续着的轨迹最多续命这么久（低分框可能是石像之类认错的东西）
 TRACKING_SWITCHES = ("sticky_names", "track_low", "track_predict", "track_pan", "relink", "motion")  # 全关 = 原来的追踪
+PANEL_SWITCHES = ("panel_people", "panel_settle")  # 聊天面板开 / 关的处理（不进 TRACKING_SWITCHES：_resume 拿它判断要不要 _pan_recheck）；全关 = 照旧
+PANEL_DROP = ("name_tag", "typing", "social_ring")  # 面板开着时，中心在面板里的这几类还是丢（面板里的"- 名字"不是名字标签）
 DISAGREE_SECONDS = 2.0  # 放行的轨迹 YOLO 侧和外形侧对点没点火持续相反这么久，才算 attrs_disagree 难例
 PAN_KINDS = ("zoom", "move", "spin")  # 这几种镜头事件之后 camera_settle 秒内框高会突变：不更新速度、清走近 / 运动历史
 
@@ -797,6 +799,7 @@ class PerceptionWatcher:
             is_stranger = (
                 not player.data.get("tagged")
                 and not maybe
+                and not self._under_panel(player.box, width, height, panel_visible)  # 面板挡着标签：等面板关了再判
                 and now - player.first >= self.cfg.stranger_after
                 and player.box.h >= self.cfg.stranger_min_height * height
                 and self._looks_checked(player, now)
@@ -1457,12 +1460,22 @@ class PerceptionWatcher:
         out = []
         for det in dets:
             c = _center(det.box)
-            if not _inside(c, area) or (panel is not None and _inside(c, panel)):
+            if not _inside(c, area):
+                continue
+            if panel is not None and _inside(c, panel) and (not self.cfg.panel_people or det.cls in PANEL_DROP):
                 continue
             if det.cls in ("player", UNLIT) and any(_inside(c, r) for r in mine):
                 continue
             out.append(det)
         return out
+
+    def _under_panel(self, box: Rect, width: int, height: int, panel_visible: bool) -> bool:
+        """面板开着、人在面板后面：名字标签被面板挡了，没挂标签不等于陌生人。"""
+        return (
+            panel_visible
+            and self.cfg.panel_people
+            and _inside(_center(box), roi_rect(self.log_roi, width, height))
+        )
 
     def _self_areas(self, width: int, height: int) -> list[Rect]:
         """团子所在的区域：转圈认出的团子框（四周各放宽 25%，镜头跟随会有点晃）+ 配置的 self_roi。"""

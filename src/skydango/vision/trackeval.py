@@ -16,16 +16,17 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 
 from ..config import PerceptionConfig
-from .perception import TRACKING_SWITCHES as SWITCHES
+from .perception import PANEL_SWITCHES, TRACKING_SWITCHES
 from .track import Track
 
+SWITCHES = TRACKING_SWITCHES + PANEL_SWITCHES
 CAUSES = ("低分框", "位移", "画面平移", "漏检")
 VERDICTS = ("对", "错", "未证实")
 TIMELINE_MAX = 60  # 报告里最多列几条轨迹的运动方向
 
 
 def baseline(cfg: PerceptionConfig) -> PerceptionConfig:
-    """基线：追踪升级的开关全关（= 升级之前的行为），其余照抄。"""
+    """基线：追踪升级和面板处理的开关全关（= 升级之前的行为），其余照抄。"""
     return dataclasses.replace(cfg, **{k: False for k in SWITCHES})
 
 

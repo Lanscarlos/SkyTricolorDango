@@ -2439,3 +2439,63 @@ def test_people_boxes_remember_merged_unlit_box():
     w = watcher(det, hardcases=False)
     w.process(frame(), 1.0, panel_visible=False)
     assert [(b.x, u) for b, u in w._people_boxes] == [(1000, True)]
+
+
+# ---- 面板后面的人留着（10-03 录像：面板半透明，开面板不该让好友轨迹断掉）----
+
+
+def test_people_under_open_panel_are_kept():
+    det = FakeDetector()
+    det.frames = [[player(200), tag(190, 110), ring(245)]]
+    ocr = FakeOcr({110: "懒洋洋大王"})
+    w = watcher(det, ocr)
+    w.process(frame(), 0.0, panel_visible=True)
+    assert [t.cls for t in w.last_tracks] == ["player"] and ocr.calls == 0  # 人留着，标签 / 圆圈照旧丢
+
+
+def test_named_friend_survives_panel_opening():
+    det, clock = FakeDetector(), Clock()
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), clock=clock)
+    det.frames = [[player(200), tag(190, 110)]]
+    for i in range(10):
+        clock.t = i * 0.1
+        w.process(frame(), clock.t, panel_visible=False)
+    first = [t for t in w.last_tracks if t.cls == "player"][0].id
+    det.frames = [[player(200), tag(190, 110)]]
+    for i in range(10, 40):  # 面板开着 3 秒
+        clock.t = i * 0.1
+        w.process(frame(), clock.t, panel_visible=True)
+    (p,) = [t for t in w.last_tracks if t.cls == "player"]
+    assert p.id == first and p.data.get("name") == "懒洋洋大王" and not p.data.get("stranger")
+    assert w.nearby(clock.t) == ["懒洋洋大王"]
+
+
+def test_untagged_player_under_panel_waits_for_panel_to_close():
+    det, clock = FakeDetector(), Clock()
+    w = watcher(det, clock=clock)
+    det.frames = [[player(200)]]
+    for i in range(30):
+        clock.t = i * 0.1
+        w.process(frame(), clock.t, panel_visible=True)
+    assert not w.last_tracks[0].data.get("stranger")
+    clock.t = 3.0
+    w.process(frame(), 3.0, panel_visible=False)  # 面板关了还是没标签：照常判
+    assert w.last_tracks[0].data.get("stranger") is True
+
+
+def test_unlit_under_panel_still_stranger():
+    det, clock = FakeDetector(), Clock()
+    w = watcher(det, clock=clock)
+    det.frames = [[Detection("player_unlit", Rect(200, 400, 90, 220), 0.9)]]
+    for i in range(15):
+        clock.t = i * 0.1
+        w.process(frame(), clock.t, panel_visible=True)
+    assert w.last_tracks[0].data.get("stranger") is True
+
+
+def test_panel_people_off_drops_people_under_panel():
+    det = FakeDetector()
+    det.frames = [[player(200)]]
+    w = watcher(det, panel_people=False)
+    w.process(frame(), 0.0, panel_visible=True)
+    assert w.last_tracks == []
