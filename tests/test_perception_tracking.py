@@ -149,6 +149,38 @@ def test_pan_skips_open_panel():
     assert w.last_shift[0] == pytest.approx(120, abs=8)
 
 
+def test_pan_masks_panel_of_either_frame(monkeypatch):
+    """面板刚关的那一帧：上一张缩略图的左边三分之一还是面板，也要遮掉（Hanning 窗下相位相关对静止的面板残影不敏感，所以直接看传给估计的遮罩）。"""
+    from skydango.vision import perception as perception_mod
+
+    masks = []
+    real = perception_mod.estimate_shift
+
+    def spy(prev, cur, mask, *a, **k):
+        masks.append(mask)
+        return real(prev, cur, mask, *a, **k)
+
+    monkeypatch.setattr(perception_mod, "estimate_shift", spy)
+    base = _texture(6)
+
+    def img(shift, open_):
+        out = np.roll(base, shift, axis=1)
+        if open_:
+            out[:, :640] = 20  # 面板：深色大块，位置不动
+        return out
+
+    w, det = make(track_predict=False)
+    for t, open_ in ((0.0, True), (0.1, True), (0.2, True), (0.3, False), (0.4, False)):
+        det.frames = [[player(1400)]]
+        w.process(img(120 if t >= 0.3 else 0, open_), t, open_)
+        if t in (0.2, 0.3, 0.4):
+            third = masks[-1].shape[1] // 3
+            assert bool(masks[-1][:, :third].any()) is (t == 0.4)  # 前一帧或这一帧开着面板就遮；两帧都关才不遮
+        if t == 0.3:
+            assert w.last_shift is not None and w.last_shift[0] == pytest.approx(120, abs=8)
+    assert w.last_shift is not None and w.last_shift[0] == pytest.approx(0, abs=8)  # 0.4 和 0.3 之间没动
+
+
 def test_far_tags_second_update_keeps_dropped():
     w, det = make(far_crops=3)
     det.frames = [[player(300)]]
