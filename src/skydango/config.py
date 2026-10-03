@@ -353,6 +353,8 @@ class PerceptionConfig:
     motion_grow: float = 0.15  # 框高变化比例超过这个算走近 / 走远（估的）
     motion_side: float = 0.6  # 横向位移超过这么多个身高算往左 / 往右（估的）
     motion_hold: float = 0.5  # 新结论连续这么久才换（防抖）
+    panel_people: bool = True  # 聊天面板开着时面板后面的人照样认（面板半透明，10-03 录像）；只丢面板里的名字标签 / 气泡 / 圆圈；false = 照旧整块丢
+    panel_settle: float = 2.5  # 聊天面板开 / 关后画面横移的动画约 2 秒（10-03 录像）：这么久内速度清零、不攒走近 / 运动历史；0 = 关
 
 
 @dataclass

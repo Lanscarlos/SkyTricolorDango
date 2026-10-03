@@ -246,7 +246,7 @@ dir = "private/sandbox"
   **标气泡别只靠 Claude**：它标不出好友名字下方叠着的文字气泡，要 OCR 兜底（做法见进度文档 09-30 一节）；
   感知层已在真机 `run` 里用过多次（好友走远、标签淡掉后轨迹断开被判成陌生人，下面「追踪和接回」修的就是它）；**下面这些阈值还没在真机标定**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
 - **追踪和接回**（spec `docs/superpowers/specs/2026-10-01-tracking-relink-motion-design.md`，计划 `docs/superpowers/plans/2026-10-01-tracking-relink-motion.md`；**代码已完成，还没在录像 / 真机上标定**，spec §8 真机验证四步）：
-  追踪器两段匹配（`low_conf ~ conf` 的低分框只续旧轨迹、不开新的；`track_low` 时检测器按 `low_conf` 出框）+ 速度预测 + 中心距离兜底（`track_center_gate`，永远排在 IoU 候选之后）+ 画面平移补偿（1/8 灰度缩略图上半、去掉人物框和面板，`cv2.phaseCorrelate`）；
+  追踪器两段匹配（`low_conf ~ conf` 的低分框只续旧轨迹、不开新的；`track_low` 时检测器按 `low_conf` 出框）+ 速度预测 + 中心距离兜底（`track_center_gate`，永远排在 IoU 候选之后）+ 画面平移补偿（整张 1/8 灰度缩略图、面板开着时遮掉左三分之一，`cv2.phaseCorrelate`）；
   **续命**（`sticky_names`，按 Q 那期先实现了 `_keep_named`，见「按 Q 喊一声」）：挂过名字的轨迹没断就一直刷新 `last_seen`，断了才开始算 `keep`；
   **失踪好友接回**（`relink`）：挂着名字的轨迹被删 → 失踪记录，`keep` 秒内在预测位置附近冒出来的没名字的人接成 `maybe`（`maybe_by = "relink"`，"像小明"，后果同认装扮的 maybe：不判陌生人、刷新在场、不发 arrive / return），有歧义（一人对两条记录 / 两人一样近）不接，标签亮出来名字说了算，认装扮不拿外观否掉它；
   **运动方向**（`motion`）：`motion_hist` 存补偿过平移的中心 x，`motion_of` 出 走近 / 走远 / 往左走 / 往右走 / 站着（防抖 `motion_hold`），`Person.motion`、status"小明（左边·中，正在走远）"、网页悬停；只给数据，track / 注意力 / 冷场还没用它；
@@ -254,6 +254,10 @@ dir = "private/sandbox"
   护栏（最终评审后加的）：低分框阶段只认 IoU、只靠低分框续着的轨迹最多续命 5 秒（`LOW_ONLY_MAX`）；跟着镜头一起动的人（配上的是不带平移的预测框）速度和运动方向不减背景平移（`Track.drift`）；
   接回的"像他"30 秒（6 个 `keep`）没被名字标签证实就摘、也不报走近；身体在 `held("camera")` 里转了镜头，恢复后第一帧拿暂停前的缩略图估一次平移（门槛 0.4），估不出就作废所有轨迹的位置、清掉失踪记录；
   开关全关逐字是原来的行为（`camera_moved` 的缩放 / 走路静默期不受开关管）。定阈值：`perception track-eval <录像目录> [--fps 6.5]` → `tmp/track-eval/<时间>/report.md`（基线 vs 当前配置；目标接回证实错 = 0、确认冤枉明显下降）
+- **开关聊天面板不断轨迹**（10-03，计划 `docs/superpowers/plans/2026-10-03-panel-toggle-tracking.md`，录像分析见 `docs/progress/2026-10-03-plan.md` 5b；录像里面板开关是 2 秒的镜头横移动画、有视差）：
+  A `panel_people`（默认开）：面板开着时只丢面板区域里的名字标签 / 气泡 / 圆圈（`PANEL_DROP`），人物框留着，面板后面没挂过标签的点过火的人先不判陌生人（`_under_panel`，黑影照常判；面板关了从关的那一刻起再等 `stranger_after`），面板里的 `self` 框当普通人（开面板时团子在右边，那是误检）、面板后面的人不做远处裁图；
+  B 平移估计（`_pan_step`）用整张缩略图、只在面板开着时遮左三分之一，不再遮人物框（受 `track_pan` 管）；C `panel_settle`（2.5 秒，0 = 关）：面板标志翻转 / 按 C（`PanelManager.on_press` → `camera_moved(at, "panel")`）后这段时间速度清零、不攒走近 / 运动历史。
+  `panel_people = false`、`panel_settle = 0`、`track_pan = false` 逐字照旧；**只在合成画面里测过，录像回放测试和 track-eval 前后对比还没跑**（要本机的 `tmp/record/panel-toggle-1003-*`，见 5b 末尾「还没做」）
 - **感知层第二层（`[attrs]`，代码已完成，默认关；还没有训练数据和模型，没上真机）**：设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。
   YOLO 框出人物后按轨迹裁图，交给冻住的 DINOv2-small + 线性头（`models/attrs-<日期>.npz`，Claude 只当标注老师、不进运行时）判**外形**：不是人 / 点过火 / 黑影 / 先祖 / 共享空间玩家 / 变身。
   用途：① 复核——YOLO 高分框被稳定判"不是人"就撤下，低分框（`low_conf ~ conf`）等复核说是人才放行（目标是降门槛捞漏检）；② 点没点火和 YOLO 类别投票、带滞回；

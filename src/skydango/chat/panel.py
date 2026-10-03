@@ -53,6 +53,7 @@ class PanelManager:
         self._pending: str | None = None  # 闲着时等着看一眼的原因（冷却中先记着）
         self._missing_since: float | None = None  # 聊天中：面板从什么时候开始不见了
         self._bubble_start = 0.0  # 等气泡：什么时候开始等
+        self.on_press: Callable[[float], None] | None = None  # 按 C 时以按键时刻调用（身体用它先告诉感知层画面要横移了）
         self._pressed_at = float("-inf")  # 上次按开面板的键（self.clock()）：之后 open_timeout 秒内面板可能还在动画里
         self._expect_open = True  # 上次按键后面板应该是开还是关
         self._returned_was_open = True  # 最近一次归还的借出：借之前面板开没开
@@ -326,6 +327,11 @@ class PanelManager:
     def _press(self, expect_open: bool) -> None:
         self.device.hw_key(self.vision.log_open_key)
         self._pressed_at, self._expect_open = self.clock(), expect_open
+        if self.on_press is not None:
+            try:
+                self.on_press(self._pressed_at)
+            except Exception:
+                log.exception("按面板键的回调出错")
 
     def _settle(self) -> None:
         """刚按过键（open_timeout 秒内）：面板可能还在开 / 关的动画里，截图看到的不准 —— 等它变成按键后该有的样子。"""

@@ -96,6 +96,8 @@ RELINK_AMBIGUOUS = 1.3  # 一条记录的两个候选，近的要比远的近这
 RELINK_MAX_KEEPS = 6  # 接回的"像他"这么多个 keep 还没被名字标签证实就摘掉（接错了总得有个出口）
 LOW_ONLY_MAX = 5.0  # 只靠低分框续着的轨迹最多续命这么久（低分框可能是石像之类认错的东西）
 TRACKING_SWITCHES = ("sticky_names", "track_low", "track_predict", "track_pan", "relink", "motion")  # 全关 = 原来的追踪
+PANEL_SWITCHES = ("panel_people", "panel_settle")  # 聊天面板开 / 关的处理（不进 TRACKING_SWITCHES：_resume 拿它判断要不要 _pan_recheck）；全关 = 照旧
+PANEL_DROP = ("name_tag", "typing", "social_ring")  # 面板开着时，中心在面板里的这几类还是丢（面板里的"- 名字"不是名字标签）
 DISAGREE_SECONDS = 2.0  # 放行的轨迹 YOLO 侧和外形侧对点没点火持续相反这么久，才算 attrs_disagree 难例
 PAN_KINDS = ("zoom", "move", "spin")  # 这几种镜头事件之后 camera_settle 秒内框高会突变：不更新速度、清走近 / 运动历史
 
@@ -369,9 +371,11 @@ class PerceptionWatcher:
             open_low=frozenset({"player", UNLIT}) if self._attrs_on() else frozenset(),
         )
         self.camera_settle = camera_settle
-        self._quiet_until = float("-inf")  # 镜头缩放 / 走路 / 转圈：这之前的帧不攒走近 / 运动历史
+        self._quiet_until = float("-inf")  # 镜头缩放 / 走路 / 转圈 / 开关聊天面板：这之前的帧不攒走近 / 运动历史
+        self._last_panel: bool | None = None  # 上一帧聊天面板开没开（翻转 = 画面要横移一阵）
         self._pan = (0.0, 0.0)  # 累计的画面平移（整图像素；失踪记录、运动方向用）
         self._pan_thumb: np.ndarray | None = None  # 上一帧的平移缩略图（暂停恢复后作废）
+        self._pan_panel = False  # 上一帧聊天面板开没开（面板刚关的那一帧，上一张缩略图的左边还是面板）
         self.last_shift: tuple[float, float] | None = None  # 这一帧估出的画面平移（track-eval 用）
         self._lost: dict[str, Lost] = {}  # 名字 → 断掉的好友轨迹（relink）
         self._others: list[Track] = []  # 这一帧外形是先祖 / 共享空间的放行轨迹（不在 players 里，people() / objects() 用）
@@ -465,7 +469,7 @@ class PerceptionWatcher:
             # 暂停期间身体转了镜头：留着暂停前的缩略图，恢复后第一帧估一次平移，估不出再作废位置（process 里）
             self._pan_recheck = True
         else:
-            self._pan_thumb = None  # 平移不能跨暂停估
+            self._pan_thumb, self._pan_panel = None, False  # 平移不能跨暂停估
         self._camera_held = False
         self.tracker.calm(now)  # 速度也不能跨暂停用
         for track in list(self.tracker.tracks.values()):  # 暂停前后的框高不能连起来判"走过来"（镜头可能动过）
@@ -530,31 +534,35 @@ class PerceptionWatcher:
         return False
 
     def camera_moved(self, at: float, kind: str) -> None:
-        """身体动了镜头（turn / zoom / move / spin）。转镜头靠平移估计补偿，什么都不清；
+        """身体动了镜头（turn / zoom / move / spin / panel）。转镜头靠平移估计补偿，什么都不清；
         缩放、走路、转圈时框高会突变：settle 秒内不更新速度、清走近 / 运动历史（不能当成人在走近走远）。"""
-        if kind in PAN_KINDS:
+        if kind == "panel":  # 聊天面板开 / 关：画面横移的动画约 2 秒，这期间的位移不是人在走
+            if self.cfg.panel_settle <= 0:
+                return
+            until = at + self.cfg.panel_settle
+            self._quiet_until = max(self._quiet_until, until)
+            self.tracker.calm(until)
+        elif kind in PAN_KINDS:
             until = at + self.camera_settle
             self._quiet_until = max(self._quiet_until, until)
             self.tracker.calm(until)
 
-    def _pan_step(self, frame: np.ndarray, dets: list[Detection], panel_visible: bool) -> tuple[float, float] | None:
-        """这一帧相对上一帧的画面平移（整图像素）：1/8 灰度缩略图的上半部分，聊天面板开着去掉左边三分之一，
-        人物 / 团子 / 名字标签那块不用（人自己会走）。估出来就累加进 self._pan。"""
+    def _pan_step(self, frame: np.ndarray, panel_visible: bool) -> tuple[float, float] | None:
+        """这一帧相对上一帧的画面平移（整图像素）：1/8 灰度缩略图整张，聊天面板开着（这一帧或上一帧）去掉左边三分之一。估出来就累加进 self._pan。
+        不遮人物 / 团子 / 名字标签：10-03 录像里遮框的均值块在两帧里是一样的静止方块，把相位相关往 0 拉，
+        开面板时累计只估出 314~368 px，不遮 363~383（真值约 420）；人物只占画面一小块、背景纹理多，不遮也不会被拉偏。
+        也不再只看上半：夜空几乎没纹理（std < 1 估不出），整张才有地面可以对。"""
         height, width = frame.shape[:2]
         gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         small = cv2.resize(gray, (max(8, width // PAN_SCALE), max(8, height // PAN_SCALE)), interpolation=cv2.INTER_AREA)
-        small = small[: small.shape[0] // 2].astype(np.float32)
-        prev, self._pan_thumb = self._pan_thumb, small
+        small = small.astype(np.float32)
+        prev, prev_panel = self._pan_thumb, self._pan_panel
+        self._pan_thumb, self._pan_panel = small, panel_visible
         if prev is None or prev.shape != small.shape:
             return None
         mask = np.ones(small.shape, bool)
-        if panel_visible:
+        if panel_visible or prev_panel:  # 面板刚开 / 刚关那一帧：两张里有一张左边是面板
             mask[:, : small.shape[1] // 3] = False
-        for d in dets:
-            if d.cls in ("player", UNLIT, "self", "name_tag", "typing"):
-                b = d.box
-                mask[max(0, b.y // PAN_SCALE): (b.y2 + PAN_SCALE - 1) // PAN_SCALE,
-                     max(0, b.x // PAN_SCALE): (b.x2 + PAN_SCALE - 1) // PAN_SCALE] = False
         shift = estimate_shift(prev, small, mask, PAN_RECHECK_RESPONSE if self._pan_recheck else PAN_MIN_RESPONSE)
         if shift is None:
             return None
@@ -632,6 +640,9 @@ class PerceptionWatcher:
         started = time.perf_counter()
         height, width = frame.shape[:2]
         self._frame_h, self._frame_w = height, width
+        if self._last_panel is not None and panel_visible != self._last_panel:
+            self.camera_moved(now, "panel")  # 别处（别人按的 C）开关的面板身体不知道，这里兜底
+        self._last_panel = panel_visible
         dets, flagged = merge_people(one_self(self._filter(self._detect(frame), width, height, panel_visible)))
         unlit_dup = {id(dets[i]) for i in flagged}  # 压掉过黑影框的检测
         detected = time.perf_counter()
@@ -643,7 +654,7 @@ class PerceptionWatcher:
         dets = promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low)
         if self._occlusion(frame, dets):
             return
-        shift = self._pan_step(frame, dets, panel_visible) if self.cfg.track_pan else None
+        shift = self._pan_step(frame, panel_visible) if self.cfg.track_pan else None
         self.last_shift = shift
         if self._pan_recheck:
             self._pan_recheck = False
@@ -794,10 +805,13 @@ class PerceptionWatcher:
                 unlit += dark
                 continue
             maybe = player.data.get("maybe")
+            if self._under_panel(player.box, width, height, panel_visible):
+                player.data["panel_at"] = now  # 面板挡着标签：等面板关了、从关的那一刻起再等 stranger_after 才判
             is_stranger = (
                 not player.data.get("tagged")
                 and not maybe
-                and now - player.first >= self.cfg.stranger_after
+                and not self._under_panel(player.box, width, height, panel_visible)
+                and now - self._stranger_base(player) >= self.cfg.stranger_after
                 and player.box.h >= self.cfg.stranger_min_height * height
                 and self._looks_checked(player, now)
             )
@@ -1067,6 +1081,7 @@ class PerceptionWatcher:
         todo = [
             p for p in players
             if not self._unlit(p) and p.box.h < limit and self._tag_over(p, tags) is None and due(p)
+            and not self._under_panel(p.box, width, height, panel_visible)  # 面板后面找到的标签 _filter 也会丢，别白裁
             and not tag_inside(far_region(p.box, width, height))
         ]
         todo.sort(key=lambda p: p.data.get("far_at", float("-inf")))
@@ -1387,8 +1402,13 @@ class PerceptionWatcher:
         return (
             self.appearance is None
             or player.data.get("samples", 0) >= self.appearance_cfg.min_samples
-            or now - player.first >= self.cfg.stranger_after + STRANGER_GRACE
+            or now - self._stranger_base(player) >= self.cfg.stranger_after + STRANGER_GRACE
         )
+
+    @staticmethod
+    def _stranger_base(player: Track) -> float:
+        """陌生人宽限从哪算起：出现的时候，或者最后一次躲在面板后面的时候（面板后面的人关面板前不算在"没标签"的时间里）。"""
+        return max(player.first, player.data.get("panel_at", float("-inf")))
 
     def _appearance_stranger(self, frame: np.ndarray, player: Track, players: list[Track], sample, now: float) -> None:
         """判成陌生人的轨迹：好样本够了就编号（认回以前的、或新编号），之后接着学他的外观。"""
@@ -1457,12 +1477,25 @@ class PerceptionWatcher:
         out = []
         for det in dets:
             c = _center(det.box)
-            if not _inside(c, area) or (panel is not None and _inside(c, panel)):
+            if not _inside(c, area):
                 continue
+            if panel is not None and _inside(c, panel) and (not self.cfg.panel_people or det.cls in PANEL_DROP):
+                continue
+            if panel is not None and det.cls == "self" and _inside(c, panel):
+                # 面板开着时团子在右边约 400 px，面板里的 self 基本是误检（10-03 录像 5b ③）：当普通人，别抢走团子标记
+                det = Detection("player", det.box, det.score)
             if det.cls in ("player", UNLIT) and any(_inside(c, r) for r in mine):
                 continue
             out.append(det)
         return out
+
+    def _under_panel(self, box: Rect, width: int, height: int, panel_visible: bool) -> bool:
+        """面板开着、人在面板后面：名字标签被面板挡了，没挂标签不等于陌生人。"""
+        return (
+            panel_visible
+            and self.cfg.panel_people
+            and _inside(_center(box), roi_rect(self.log_roi, width, height))
+        )
 
     def _self_areas(self, width: int, height: int) -> list[Rect]:
         """团子所在的区域：转圈认出的团子框（四周各放宽 25%，镜头跟随会有点晃）+ 配置的 self_roi。"""

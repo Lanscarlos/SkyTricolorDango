@@ -75,6 +75,15 @@ def test_attention_nudge_is_turn(clock):
     assert kinds(env) == ["turn"]
 
 
+def test_panel_press_tells_perception_without_blocking_attention(clock):
+    env = MovedEnv()
+    b, _, _, _ = body(clock, live=True, panel_mode="auto", env=env)
+    env.moved.clear()  # body() 里 panel.start 的动静不算
+    b.panel.ensure_open()
+    assert kinds(env) == ["panel"] and env.moved[0][0] == clock()
+    assert b._camera_moved_at == float("-inf")  # 注意力不让开（同注意力自己的 nudge）
+
+
 def test_env_without_camera_moved_is_fine(clock):
     b, _, _, _ = body(clock, live=True, camera=FakeCamera(), env=FakeEnv())
     b.camera_move("left", 1)  # 不报错

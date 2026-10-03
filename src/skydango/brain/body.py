@@ -174,6 +174,7 @@ class Body:
         self.sleep = sleep
         self.wall = wall
         self.panel = panel if panel is not None else PanelManager(cfg.vision, cfg.panel, device, reader, lambda s: self.sleep(s), clock)
+        self.panel.on_press = lambda at: self._notify_camera("panel", at)  # 按 C 的瞬间先告诉感知层；不设 _camera_moved_at（注意力不用让开）
         self.brain_offline: Callable[[float], bool] = lambda now: False
         self.brain_turn: Callable[[], tuple[float, float]] = lambda: (float("-inf"), float("-inf"))  # 大脑最近一轮的 (开始, 结束)，cli 设
         self.on_blocked: Callable[[str, str], None] | None = None  # say 被过滤 / 主动护栏拦下时调 (原话, 原因)；沙盒记进聊天记录
