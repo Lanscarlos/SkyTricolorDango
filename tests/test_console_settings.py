@@ -28,7 +28,7 @@ def test_every_spec_field_is_listed():
         "device.adb_path", "device.serial", "device.capture", "llm.provider", "llm.base_url", "llm.model", "secret.llm",
         "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model",
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
-        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "lull.enabled", "backstage.enabled", "env.enabled",
+        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "backstage.enabled", "env.enabled",
         "perception.enabled",
         "perception.model", "attrs.enabled", "places.enabled", "appearance.enabled", "appearance.describe", "catalog.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]

@@ -278,3 +278,11 @@ def test_catalog_defaults_and_example():
     assert c.dark_max == 0.5
     ex = load_config(ROOT / "config.example.toml").catalog
     assert ex == CatalogConfig()
+
+
+def test_attention_search_defaults():  # spec 2026-10-03-attention-search §4
+    from skydango.config import Config
+    a = Config().attention
+    assert a.search is True and a.press_deg == 18.0 and a.seg_presses == 3 and a.dwell == 1.5
+    assert a.scan_after == 20.0 and a.scan_every == 60.0 and a.scan_segments == [2, 3] and a.scan_look == 3.0
+    assert a.lost_segments == 2 and a.resume_within == 10.0

@@ -688,8 +688,9 @@ class LullConfig:
 
 @dataclass
 class AttentionConfig:
-    """空闲注意力（东张西望，spec 2026-09-30-idle-attention）：闲着时按兴趣小步转镜头看说话 / 走近 / 对团子做事的人，
-    没什么可看就随意看看；只在聊天面板 auto 模式、面板关着时动。数字都是估的，真机调。按键长短、settle、转不动沿用 [track]。"""
+    """空闲注意力（东张西望，spec 2026-09-30-idle-attention、2026-10-03-attention-search）：闲着时按兴趣小步转镜头看说话 / 走近 /
+    对团子做事的人；没有这些时找刚走开的好友、一个人待着时往最久没看过的方向看一片，没有动机就不转。
+    只在聊天面板 auto 模式、面板关着时动。数字都是估的，真机调。按键长短、settle、转不动沿用 [track]。"""
 
     enabled: bool = True
     talk_friend: float = 1.0  # 基础兴趣：好友在说话（头顶气泡）
@@ -711,6 +712,17 @@ class AttentionConfig:
     wander_max: float = 20.0
     wander_presses: list[int] = field(default_factory=lambda: [2, 4])  # 随意看一次连按几下
     wander_same_side: int = 2  # 往同一边连着随意看最多几次
+    # 有意识地找（spec 2026-10-03-attention-search）：找刚走开的好友、一个人时环顾一片；都没有就不转
+    search: bool = True  # 关掉只剩被动注意（有人说话 / 走近 / 对团子做动作就转过去看）
+    press_deg: float = 18.0  # 每下 [track] nudge_max 约转几度（按 [spin] seconds_per_turn 2 秒一圈估的，待 camera spin 标定）
+    seg_presses: int = 3  # 分段转：一段按几下
+    dwell: float = 1.5  # 一段转完停几秒（等 YOLO 出框、名字标签读出来）
+    scan_after: float = 20.0  # 画面里没人多久才环顾
+    scan_every: float = 60.0  # 两次环顾至少隔几秒（再乘心情精力、模式的倍数）
+    scan_segments: list[int] = field(default_factory=lambda: [2, 3])  # 环顾一次转几段（随机取一个）
+    scan_look: float = 3.0  # 环顾看到陌生人停下看几秒
+    lost_segments: int = 2  # 找走开的好友往一边最多转几段（Q 之后看到贴边标签再给同样多）
+    resume_within: float = 10.0  # 找到一半被挡住 / 打断，这么久内接着找，超过就不找了
     max_step: float = 1.0  # 每圈时间差上限（沙盒模拟时钟会一下跳几小时）
 
 
