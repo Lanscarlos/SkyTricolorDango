@@ -29,6 +29,7 @@ class Person:
     motion: str | None = None  # 走近 / 走远 / 往左走 / 往右走 / 站着（团子画面里的方向）；None = 拿不准
     form: str | None = None  # 第二层外形头投出的类别（lit / unlit / spirit / shared / morph …）；没开第二层 / 还没投过是 None
     form_p: float = 0.0  # 这个类别的平均概率
+    unsure: bool = False  # True = 没看到名字标签、外观只是有点像的好友（"可能是小明"，sure 也是 False）
 
 
 def side_of(cx: float, width: int) -> str:
@@ -39,6 +40,8 @@ def _describe_person(p: Person) -> str:
     where = f"{p.side}·{p.distance}" + (f"，正在{p.motion}" if p.motion in MOVING else "")
     if p.kind in OTHERS:
         return f"一个{WHO[p.kind]}（{where}）"
+    if p.kind == "friend" and p.unsure:
+        return f"可能是{p.name}（没看到名字，{where}）"
     if p.kind == "friend" and not p.sure:
         return f"像{p.name}（没看到名字，{where}）"
     if p.sid:
