@@ -206,7 +206,8 @@ _FENCE = re.compile(r"```[a-zA-Z]*")
 
 def parse_reflection(text: str | None) -> dict | None:
     """反思的回答 → dict；容忍 ```json 围栏、前后有字；不是 JSON 对象就 None。
-    模型有时把一份回答拆成几个对象回（10-03：心情 / 日记一个、性格一个），按顺序合并，坏的跳过。"""
+    模型有时把一份回答拆成几个对象回（10-03：心情 / 日记一个、性格一个），一个接一个往后读、按顺序合并；
+    碰到坏的就停（不往坏对象里面找，免得把里面嵌套的 {"level": …} 当成整份回答）。"""
     if not text:
         return None
     text = _FENCE.sub("", text)
@@ -217,8 +218,7 @@ def parse_reflection(text: str | None) -> dict | None:
         try:
             obj, end = dec.raw_decode(text, i)
         except ValueError:
-            i = text.find("{", i + 1)
-            continue
+            break
         if isinstance(obj, dict):
             data = {**(data or {}), **obj}
         i = text.find("{", end)

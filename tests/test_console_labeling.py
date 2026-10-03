@@ -230,6 +230,17 @@ def test_form_state_lists_items(tmp_path):
     assert FormLabels(tmp_path / "nope").state()["ok"] is False
 
 
+def test_form_state_buttons_only_three_forms(tmp_path):
+    # 10-04 用户：认人阶段只分 不是人 / 点亮的人 / 黑影，先祖 / 共享空间 / 变身不出按钮（训练时本来就并掉）；
+    # 筛选照旧列全部类别，以前标进去的还找得到
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/shared", "c0003.jpg")
+    s = FormLabels(tmp_path).state()
+    assert s["buttons"] == ["not_person", "lit", "unlit"]
+    assert s["forms"] == ["not_person", "lit", "unlit", "spirit", "shared", "morph"] and s["counts"]["shared"] == 1
+
+
 def test_form_label_relabel_discard_undo(tmp_path):
     from skydango.console.labeling import FormLabels
 

@@ -23,6 +23,8 @@ from ..vision.gesture_label import BLIND_FILE, load_guess
 UNLABELED, DISCARD, LOG = "_unlabeled", "_discard", "_labels.jsonl"
 FRAMES = 16
 FORM_DIR = "form"
+# 外形页出按钮的类别（10-04：认人阶段只分这三类；先祖 / 共享空间 / 变身训练时不够数本来就并掉，筛选里照旧列出）
+FORM_BUTTONS = ("not_person", "lit", "unlit")
 CONTEXT_W = 480  # 外形页的原图缩略宽度
 _LOCK = threading.Lock()  # 每个请求现建一个 GestureLabels / FormLabels，所以锁放模块级：label / undo 的 找→挪→记账 整段串行
 
@@ -260,7 +262,7 @@ class FormLabels(_Moves):
             names = self._names(d)
             counts[d] = len(names)
             items.extend(self._item(n, d, rows, guesses) for n in names)
-        return {"ok": True, "forms": list(FORMS), "counts": counts, "items": items}
+        return {"ok": True, "forms": list(FORMS), "buttons": list(FORM_BUTTONS), "counts": counts, "items": items}
 
     def crop(self, name: str) -> bytes | None:
         where = self._find(name)

@@ -12,7 +12,7 @@ const FRAMES = 16, FPS = 8, PX = 336, AHEAD = 3, KEEP = 12;  // PX = 112 × 3；
 const UNL = "_unlabeled", DIS = "_discard";
 const LB = {data: null, filter: "todo", list: [], cur: null, i: 0, playing: true, speed: 1, timer: null,
   busy: false, active: false, loading: false, cache: new Map(), keyBound: false, tab: "gesture"};
-/* 外形页（感知层第二层的人物裁图）：条目是单张 jpg，类别 = FORMS（后端给），接口 api/form/*。按键 Enter / 1~6 / 0 / Z 只在外形页开着时有效。 */
+/* 外形页（感知层第二层的人物裁图）：条目是单张 jpg，类别 = FORMS（后端给），接口 api/form/*。按键 Enter / 1~3（后端的 buttons）/ 0 / Z 只在外形页开着时有效。 */
 const FM = {data: null, filter: "todo", list: [], cur: null, busy: false, loading: false};
 const FORM_NAMES = {not_person: "不是人", lit: "点亮的人", unlit: "黑影", spirit: "先祖", shared: "共享空间", morph: "变身"};
 
@@ -426,7 +426,7 @@ const F = {
   s: FM, tab: "form", itemsKey: "items", key: "crop", post: "name", api: "api/form", ids: "fm", noun: "裁图",
   rowClass: "lb-item fm-item",
   labels: () => (FM.data && FM.data.forms) || [], name: fmName, whereText: fmWhereText, short: n => n,
-  agreeable: g => F.labels().includes(g.label),
+  agreeable: g => fmForms().includes(g.label),
   select: name => fmSelect(name), renderSide: () => fmRenderSide(),
   row: c => {
     const im = el("img"); im.loading = "lazy"; im.decoding = "async"; im.alt = ""; im.src = cropUrl(c.crop);
@@ -441,7 +441,7 @@ function undo() { return pUndo(G); }
 function load() { return pLoad(G); }
 function setFilter(f) { return pSetFilter(G, f); }
 function fmBy(name) { return pBy(F, name); }
-function fmForms() { return F.labels(); }
+function fmForms() { return (FM.data && FM.data.buttons) || F.labels(); }  // 出按钮 / 数字键 / 能同意的类别；筛选照旧用全部
 function fmLabel(to) { return pLabel(F, to); }
 function fmAgree() { return pAgree(F); }
 function fmUndo() { return pUndo(F); }
