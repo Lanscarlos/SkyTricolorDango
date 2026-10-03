@@ -141,3 +141,50 @@ def test_refresh_logs_every_slot_score(library, caplog, monkeypatch):
         wheel.refresh()
     assert "1 鞠躬 0.93" in caplog.text and "6 欢呼 0.72" in caplog.text and "3 ? 0.47" in caplog.text
     assert wheel.slots[6] == "欢呼" and wheel.slots[3] is None
+
+
+def _list_frames(cfg):
+    """合成动作列表：最上面一行是「最近使用」（带时钟角标的人形 + 只在这一行出现的菱形），下面是动作网格。
+    按真机的样子翻页：长画布每屏滚 400 像素，最后一屏到底重复一次。"""
+    height, width = 1080, 1920
+    x1, y1 = int(cfg.list_roi[0] * width), int(cfg.list_roi[1] * height)
+    canvas = np.zeros((2000, int(cfg.list_roi[2] * width) - x1, 3), np.uint8)
+
+    def put(img, cx, cy):
+        h, w = img.shape[:2]
+        canvas[cy - h // 2 : cy - h // 2 + h, cx - w // 2 : cx - w // 2 + w] = img
+
+    diamond = np.full((90, 90, 3), 30, np.uint8)
+    cv2.fillPoly(diamond, [np.array([(45, 12), (78, 45), (45, 78), (12, 45)])], CREAM)
+    clocked = icon("person").copy()
+    cv2.circle(clocked, (72, 74), 12, CREAM, 3)  # 右下角的时钟角标
+    put(diamond, 60, 130)
+    put(clocked, 180, 130)
+    kinds = ["circle", "cross", "person"]
+    for row, cy in enumerate(range(300, 1950, 119)):
+        for col in range(4):
+            put(icon(kinds[(row + col) % 3]), 60 + 119 * col, cy)
+
+    def page(offset):
+        frame = np.zeros((height, width, 3), np.uint8)
+        part = canvas[offset : offset + height - y1]
+        frame[y1 : y1 + part.shape[0], x1 : x1 + part.shape[1]] = part
+        return frame
+
+    top, mid, bottom = page(0), page(400), page(2000 - (height - y1))
+    return [top, top, top, mid, bottom, bottom]
+
+
+def test_scan_list_skips_recently_used_row(library, tmp_path, monkeypatch):
+    """「最近使用」那一行是后面动作的重复，带时钟角标、截歪了（10-03 扫出来的 001 / 002 / 004），整行不要。"""
+    cfg = WheelConfig()
+    device = FakeDevice(_list_frames(cfg))
+    wheel = Wheel(device, cfg, library, sleep=lambda s: None)
+    monkeypatch.setattr(wheel, "open_editor", lambda: None)
+    monkeypatch.setattr(wheel, "close_editor", lambda: None)
+    paths = wheel.scan_list(tmp_path / "scan")
+    masks = [trim(silhouette(cv2.imdecode(np.fromfile(p, np.uint8), 1))) for p in paths]
+    diamond = np.full((90, 90, 3), 30, np.uint8)
+    cv2.fillPoly(diamond, [np.array([(45, 12), (78, 45), (45, 78), (12, 45)])], CREAM)
+    assert not any(same_icon(m, trim(silhouette(diamond)), 0.9) for m in masks)
+    assert len(paths) == 3  # 圆、十字、人形各一张
