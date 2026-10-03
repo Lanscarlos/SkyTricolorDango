@@ -144,3 +144,13 @@ def test_flipping_stranger_count_keeps_first_time_and_no_count(clock):
 
 def test_call_is_background():
     assert "call" in BACKGROUND  # 身体自动喊完：攒着等大脑下次醒来（spec 2026-10-01-q-call §2.3）
+
+
+def test_search_events_are_background_and_keep_latest():
+    t = [0.0]
+    q = EventQueue(clock=lambda: t[0])
+    q.put("search", "你往左边找了找刚走开的小明，没看到他")
+    t[0] = 5.0
+    q.put("search", "你往右前方看了看：有 1 个陌生人")
+    assert "search" in BACKGROUND
+    assert [e.text for e in q.drain()] == ["你往右前方看了看：有 1 个陌生人"]
