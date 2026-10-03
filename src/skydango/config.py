@@ -26,6 +26,11 @@ class DeviceConfig:
     adb_timeout: float = 10.0
     # ADBKeyboard 输入法，用来输入中文（adb shell input text 不支持中文）
     ime_id: str = "com.android.adbkeyboard/.AdbIME"
+    # run 启动时切到 ADBKeyboard、停下时切回来（device/ime.py）；用户自己打字用搜狗，免得每次手动切
+    switch_ime: bool = True
+    # 停下时切回哪个输入法（比如 "com.sohu.inputmethod.sogou/.SogouIME"）；空 = 启动时的那个，
+    # 启动时已经是 ADBKeyboard（上次被强杀没切回）就找装了的搜狗输入法
+    user_ime: str = ""
     # 模拟实体键盘用的输入设备，例如 "/dev/input/event4"；为空自动找带 KEY_ENTER 的设备
     key_device: str = ""
     # 截图方式："auto"（找得到 MuMu 的 external_renderer_ipc.dll 就用 MuMu 原生截图，约 9 ms；

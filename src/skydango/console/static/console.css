@@ -551,6 +551,13 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .checks .detail{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
 .checks .hint{color:var(--amber-ink);font-size:13px}
 .devlist{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.device+.device{margin-top:14px}
+.imes{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.imes li{display:flex;gap:10px;align-items:center;justify-content:space-between}
+.imes li>div{min-width:0}
+.imes b{overflow-wrap:anywhere}
+.imes .id{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.imes .now{color:var(--matcha-ink);font-size:13px;font-weight:600;white-space:nowrap}
 .checks img{display:block;max-width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)}
 @media (prefers-reduced-motion:reduce){.settings-main .row.flash{animation:none}.toggle span,.toggle span::after{transition:none}}
 @media (max-width:999px){

@@ -61,7 +61,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
   CUDA / cuDNN 的 DLL 借 torch 的 `lib` 目录（`vision/onnxrt.py` 建 CUDA 会话前自动 `preload_dlls`）。用户目录的 site-packages 在 `sys.path` 里排在 `.pydeps` 前面：
   **别再往用户目录装 `onnxruntime`**（`pip install -e ".[ocr]"` 会装回来、盖掉 GPU 版，装了就再 `pip uninstall onnxruntime`）；`pip check` 报 skydango 缺 onnxruntime、onnxruntime-gpu 缺 coloredlogs 都不影响
 - `config.toml` 是本机配置（gitignore），模板是 `config.example.toml`；记忆在私有仓库，新电脑先按「记忆」一节克隆到 `private/`
-- 模拟器里装了 ADBKeyboard 并设为当前输入法（输中文用）；用户自己要打字时 `python -m skydango ime off`
+- 模拟器里装了 ADBKeyboard（团子输中文用），用户自己打字用 MuMu 里的搜狗输入法。**`run` 启动时自动切到 ADBKeyboard、停下时切回来**（`device/ime.py`，`[device] switch_ime`，默认开；
+  切回启动时的那个，启动时已经是 ADBKeyboard（上次被强杀没切回）就找装了的搜狗，`[device] user_ime` 可以指定）；被强杀时切不回，在管理面板「设备」页「输入法」一栏手动切，
+  或者 `python -m skydango ime off`（切回搜狗 / `user_ime`，都没有就 `ime reset`）。切换出错只记日志、团子照常跑（打不了中文）。**搜狗的输入法 id 还没在真机核对**（按 id 里有没有 `sogou` 认）
 - 在 Git Bash 里调 `adb shell` 带 `/dev/...` 路径时要 `export MSYS_NO_PATHCONV=1`，否则路径会被改写
 
 ## 代码结构
@@ -353,7 +355,8 @@ dir = "private/sandbox"
   面板到子进程的本机请求都**不走代理**（开着 Clash 时 urllib 默认会把 127.0.0.1 也转走）；`console.toml` / `secrets.toml` 坏了面板照样能开，在设置页和预检里报错
 - **安全**：只监听 127.0.0.1；`/api/*`、`/live/*` 都校验 Host（防 DNS 重绑定）；POST 要 `X-Skydango: 1` + JSON + ≤ 64 KB（和 viewer 共用 `is_local_host` / `post_guard`）。
   浏览器拿不到完整密钥（只显示「已设置（sk-…abcd）」）
-- 团子运行时不能做设备检测（设备归身体线程独占）；运行中改设置照样保存，提示重启后生效
+- 团子运行时不能做设备检测、不能切输入法（设备归身体线程独占）；运行中改设置照样保存，提示重启后生效
+- 设备页「输入法」一栏（`POST /api/device/ime`：`{}` 读、`{"set": id}` 切，只能切 `ime list -a -s` 里有的）：列出装了的输入法、标出当前的，点「切到这个」
 - viewer 为此多了 `/status`（只有状态、不带图）和 `/shutdown`，页面里的请求改成相对路径（放在 `/` 和 `/live/` 下都能用）；大脑模式的状态多了「正在做」「刚说过」
 - **「内心」页**（设计见 `docs/superpowers/specs/2026-09-30-inner-viewer-design.md`；**代码已完成，还没在真机上用过**）：现在（心情 / 精力 / 别扭 / 收着点 / 心愿）、精力曲线 + 心情色带（24 小时 / 7 天，圆点 = 一次反思，点了跳到记录）、
   反思记录（`changes` 逐行、没收下的折叠、下线那次标出）、性格档案（每条能「删」）、关系卡、最近 10 次上线和日记。

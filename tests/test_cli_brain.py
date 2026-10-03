@@ -578,3 +578,41 @@ def test_cmd_run_builds_world_after_token_check(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cli.main(["run", "--no-emotes"])
     assert seen["world"] is None and seen["k"].get("no_emotes") is True  # 世界（连设备）在 _run_brain 里、令牌检查之后建
+
+
+class ImeDevice(FakeDevice):
+    """会切输入法的假设备：切换记进 order（和身体收尾排先后）。"""
+
+    def __init__(self, order, current="com.sohu.inputmethod.sogou/.SogouIME"):
+        super().__init__([scene()])
+        self.order, self.current = order, current
+
+    def current_ime(self):
+        return self.current
+
+    def list_imes(self):
+        return ["com.sohu.inputmethod.sogou/.SogouIME", "com.android.adbkeyboard/.AdbIME"]
+
+    def set_ime(self, ime_id):
+        self.order.append(ime_id)
+        self.current = ime_id
+
+
+@pytest.mark.parametrize("switch", [True, False])
+def test_run_brain_switches_ime_and_back_after_body_shutdown(tmp_path, monkeypatch, switch):
+    from skydango.brain.body import Body
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.device.switch_ime = switch
+    order = []
+    dev = ImeDevice(order)
+    monkeypatch.setattr(cli, "_device", lambda cfg: dev)
+    shutdown = Body.shutdown
+    monkeypatch.setattr(Body, "shutdown", lambda self: (order.append("shutdown"), shutdown(self))[1])
+    during = []
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: during.append(dev.current))
+    if switch:
+        assert during == ["com.android.adbkeyboard/.AdbIME"]
+        assert order == ["com.android.adbkeyboard/.AdbIME", "shutdown", "com.sohu.inputmethod.sogou/.SogouIME"]
+    else:
+        assert order == ["shutdown"]

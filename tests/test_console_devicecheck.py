@@ -124,3 +124,61 @@ def test_capture_handle_is_closed(tmp_path):  # MuMu 截图句柄每次检测都
     dev.capture = Capture()
     run_checks(cfg(tmp_path), lambda c: dev, run=ok_run)
     assert Capture.closed
+
+
+class ImeDev(Dev):
+    def __init__(self, current="com.sohu.inputmethod.sogou/.SogouIME"):
+        super().__init__(ime=current)
+        self.closed, self.sets = False, []
+
+        class Capture:
+            def close(inner):
+                self.closed = True
+
+        self.capture = Capture()
+
+    def list_imes(self):
+        return ["com.sohu.inputmethod.sogou/.SogouIME", "com.android.adbkeyboard/.AdbIME"]
+
+    def set_ime(self, ime_id):
+        self.sets.append(ime_id)
+        self._ime = ime_id
+
+
+def test_ime_state_lists_with_labels(tmp_path):
+    from skydango.console.devicecheck import ime_state
+
+    dev = ImeDev()
+    res = ime_state(cfg(tmp_path), lambda c: dev)
+    assert res["ok"] and res["current"] == "com.sohu.inputmethod.sogou/.SogouIME"
+    assert res["imes"] == [
+        {"id": "com.sohu.inputmethod.sogou/.SogouIME", "label": "搜狗输入法", "adb": False},
+        {"id": "com.android.adbkeyboard/.AdbIME", "label": "ADBKeyboard（团子打字用）", "adb": True},
+    ]
+    assert dev.closed  # MuMu 截图句柄用完就关
+
+
+def test_ime_state_switches(tmp_path):
+    from skydango.console.devicecheck import ime_state
+
+    dev = ImeDev()
+    res = ime_state(cfg(tmp_path), lambda c: dev, "com.android.adbkeyboard/.AdbIME")
+    assert dev.sets == ["com.android.adbkeyboard/.AdbIME"] and res["current"] == "com.android.adbkeyboard/.AdbIME"
+
+
+def test_ime_state_refuses_unknown_ime(tmp_path):  # 只切装了的（别把任意字符串塞进 adb shell）
+    from skydango.console.devicecheck import ime_state
+
+    dev = ImeDev()
+    res = ime_state(cfg(tmp_path), lambda c: dev, "x; reboot")
+    assert not res["ok"] and dev.sets == [] and "没装" in res["text"]
+
+
+def test_ime_state_reports_errors(tmp_path):
+    from skydango.console.devicecheck import ime_state
+
+    def broken(c):
+        raise AdbError("adb 失败")
+
+    res = ime_state(cfg(tmp_path), broken)
+    assert not res["ok"] and "adb 失败" in res["text"]

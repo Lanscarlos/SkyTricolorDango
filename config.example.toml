@@ -6,6 +6,9 @@
 adb_path = "adb"
 # MuMu 12 第一个实例是 127.0.0.1:16384，多开第 N 个是 16384 + 32*N（多开器里可以查看）
 serial = "127.0.0.1:16384"
+# run 启动时切到 ADBKeyboard、停下时切回来；user_ime 指定切回哪个（空 = 启动时的那个，启动时已是 ADBKeyboard 就找搜狗）
+# switch_ime = true
+# user_ime = ""
 
 [vision]
 poll_interval = 0.15

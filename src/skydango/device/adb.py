@@ -186,15 +186,21 @@ class AdbDevice:
     def current_ime(self) -> str:
         return self.shell("settings", "get", "secure", "default_input_method")
 
+    def list_imes(self) -> list[str]:
+        """装了的输入法（包括没启用的）。"""
+        return self.shell("ime", "list", "-a", "-s").split()
+
+    def set_ime(self, ime_id: str) -> None:
+        self.shell("ime", "enable", ime_id)  # 没启用的输入法 set 不上
+        self.shell("ime", "set", ime_id)
+
     def enable_adb_keyboard(self) -> None:
-        installed = self.shell("ime", "list", "-a", "-s")
-        if self.ime_id not in installed.split():
+        if self.ime_id not in self.list_imes():
             raise AdbError(
                 "模拟器里没有安装 ADBKeyboard。下载 https://github.com/senzhk/ADBKeyBoard/releases "
                 "里的 apk，拖进 MuMu 安装后重试。"
             )
-        self.shell("ime", "enable", self.ime_id)
-        self.shell("ime", "set", self.ime_id)
+        self.set_ime(self.ime_id)
 
     def reset_ime(self) -> None:
         self.shell("ime", "reset")

@@ -107,13 +107,13 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def make_server(tmp_path, upstream, secrets="", checks=None, child_port=None):
+def make_server(tmp_path, upstream, secrets="", checks=None, child_port=None, make_device=None):
     if secrets:
         (tmp_path / "secrets.toml").write_text(secrets, encoding="utf-8")
     store = SettingsStore(tmp_path / "config.toml", environ={})
     runner = FakeRunner()
     srv = ConsoleServer(tmp_path / "config.toml", store, runner, port=0, child_port=child_port or upstream.server_address[1],
-                        device_checks=checks or (lambda cfg, make: []), make_device=lambda cfg: None,
+                        device_checks=checks or (lambda cfg, make: []), make_device=make_device or (lambda cfg: None),
                         find_spec=lambda name: object())
     srv.url = srv.start()
     srv.fake_runner, srv.store = runner, store
@@ -289,6 +289,37 @@ def test_state_says_when_emotes_are_off_in_config(tmp_path, upstream):  # spec �
     s = make_server(tmp_path, upstream)
     try:
         assert request(s.url + "api/state")[1]["emotes_allowed"] is False
+    finally:
+        s.stop()
+
+
+def test_ime_refused_while_running(srv):
+    srv.fake_runner.state = "running"
+    status, res = request(srv.url + "api/device/ime", b"{}", GOOD)
+    assert status == 409 and res["text"] == "团子运行中，设备归它用"
+
+
+def test_ime_reads_and_switches(tmp_path, upstream):
+    class Dev:
+        capture = None
+        current = "com.sohu.inputmethod.sogou/.SogouIME"
+
+        def current_ime(self):
+            return self.current
+
+        def list_imes(self):
+            return ["com.sohu.inputmethod.sogou/.SogouIME", "com.android.adbkeyboard/.AdbIME"]
+
+        def set_ime(self, ime_id):
+            self.current = ime_id
+
+    dev = Dev()
+    s = make_server(tmp_path, upstream, make_device=lambda cfg: dev)
+    try:
+        status, res = request(s.url + "api/device/ime", b"{}", GOOD)
+        assert status == 200 and res["current"] == "com.sohu.inputmethod.sogou/.SogouIME" and len(res["imes"]) == 2
+        status, res = request(s.url + "api/device/ime", json.dumps({"set": "com.android.adbkeyboard/.AdbIME"}).encode(), GOOD)
+        assert status == 200 and res["ok"] and dev.current == "com.android.adbkeyboard/.AdbIME"
     finally:
         s.stop()
 

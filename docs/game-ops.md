@@ -111,7 +111,7 @@ MuMu 用的键位方案是 **「PC端操作方案」**：没有任何键位映�
 
 ### 发消息
 1. 输入框没开 → `hw_key(28)`（Enter）打开。实测按键后约 0.07 s 输入框就出现（`ime_shown()` 变 True），不用固定等
-2. ADBKeyboard 输入：`am broadcast -a ADB_INPUT_B64 --es msg <base64>`（支持中文，需 ADBKeyboard 为当前输入法）
+2. ADBKeyboard 输入：`am broadcast -a ADB_INPUT_B64 --es msg <base64>`（支持中文，需 ADBKeyboard 为当前输入法；`run` 启动时自动切过去、停下时切回搜狗，见 `device/ime.py`）
 3. 提交：`am broadcast -a ADB_EDITOR_CODE --ei code 4`（IME_ACTION_SEND）——实测有效
 4. **发送后输入框不会自动关闭**；输入框开着时**自己头顶会一直显示"正在输入"的气泡** → 发完用 BACK 关掉
    （`sender.close_with_back = true`）。关掉后聊天记录面板保持打开，面板变高（见下）

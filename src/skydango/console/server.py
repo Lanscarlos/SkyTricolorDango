@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 from ..config import Config, console_paths, read_secrets
 from ..vision.viewer import is_local_host, post_guard, static_asset
 from . import probes
-from .devicecheck import run_checks
+from .devicecheck import ime_state, run_checks
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
 from .emotenames import EmoteNames
 from .labeling import FormLabels, GestureLabels
@@ -238,6 +238,29 @@ class ConsoleServer:
                 from ..cli import _device as make  # 延迟导入：cli 也导入这个模块
             checks = self.device_checks(cfg, make)
             return 200, {"ok": True, "checks": [dataclasses.asdict(c) for c in checks]}
+        finally:
+            self._checking = False
+
+    def ime(self, body: dict) -> tuple[int, dict]:
+        """设备页「输入法」：{} 读当前和装了的输入法，{"set": id} 切过去。和设备检测一样，团子 / 沙盒在跑时不碰设备。"""
+        set_to = body.get("set")
+        if set_to is not None and not isinstance(set_to, str):
+            return 400, {"ok": False, "text": "set 要是输入法 id"}
+        with self._device_lock:
+            if self._busy():
+                return 409, {"ok": False, "text": "团子运行中，设备归它用"}
+            if self._checking:
+                return 409, {"ok": False, "text": "正在检测设备"}
+            self._checking = True
+        try:
+            try:
+                cfg = self.store.effective()
+            except ValueError as exc:
+                return 200, {"ok": False, "text": str(exc)}
+            make = self.make_device
+            if make is None:
+                from ..cli import _device as make  # 延迟导入：cli 也导入这个模块
+            return 200, ime_state(cfg, make, set_to or None)
         finally:
             self._checking = False
 
@@ -706,6 +729,7 @@ class ConsoleServer:
                     "/api/settings": console.save_settings,
                     "/api/settings/test": console.test_settings,
                     "/api/device": lambda body: console.check_device(),
+                    "/api/device/ime": console.ime,
                     "/api/run/start": console.start_run,
                     "/api/run/stop": lambda body: console.stop_run(),
                     "/api/orphan/stop": console.stop_orphan,

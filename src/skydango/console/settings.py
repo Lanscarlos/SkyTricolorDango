@@ -34,6 +34,7 @@ FIELDS: tuple[Field, ...] = (
     Field("console.duration", "运行时长（秒）", "0 = 一直跑，到点自己退出", "float", "launch"),
     Field("device.adb_path", "adb 路径", "MuMu 安装目录下的 shell\\adb.exe 最稳", "exe", "connect"),
     Field("device.serial", "设备名", "比如 emulator-5554；设备页能列出实际看到的设备", "str", "connect"),
+    Field("device.switch_ime", "自动切输入法", "启动时切到 ADBKeyboard（团子打中文靠它）、停下时切回搜狗；设备页也能手动切", "bool", "connect"),
     Field("device.capture", "截图方式", "auto：有 MuMu 原生截图就用（约 9 ms），否则 adb screencap", "choice", "connect", ("auto", "mumu", "adb")),
     Field("llm.provider", "接口类型", "openai = OpenAI 兼容接口（DeepSeek 等）；echo 不调模型、原样回显", "choice", "llm",
           ("openai", "anthropic", "echo")),

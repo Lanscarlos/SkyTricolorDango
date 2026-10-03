@@ -1,4 +1,4 @@
-"""设备页的「开始检测」：adb、设备在线、截图、输入法、游戏在前台、模拟键盘，逐项给结论和怎么办。
+"""设备页的「开始检测」：adb、设备在线、截图、输入法、游戏在前台、模拟键盘，逐项给结论和怎么办；还有「输入法」一栏手动切换。
 
 团子没运行时才能用（运行时设备归身体线程独占）；前面的项没过，依赖它的后面几项标"跳过"。
 """
@@ -17,6 +17,7 @@ from typing import Any
 import cv2
 
 from ..config import Config
+from ..device.ime import ime_label
 
 THUMB_WIDTH = 480
 GAME_PACKAGE = "com.netease.sky"
@@ -81,8 +82,8 @@ def _check_ime(cfg: Config, dev) -> Check:
     ime = dev.current_ime()
     if ime == cfg.device.ime_id:
         return Check("ime", LABELS["ime"], "ok", ime)
-    return Check("ime", LABELS["ime"], "warn", f"现在是 {ime or '（空）'}",
-                 "输中文要 ADBKeyboard：python -m skydango devices 看当前输入法")
+    return Check("ime", LABELS["ime"], "warn", f"现在是 {ime_label(ime, cfg.device.ime_id) if ime else '（空）'}",
+                 "团子启动时会自动切到 ADBKeyboard、停下时切回来；也可以在下面「输入法」一栏手动切")
 
 
 def _check_game(dev) -> Check:
@@ -133,9 +134,32 @@ def run_checks(
         checks.append(keys)
         return checks
     finally:
-        close = getattr(getattr(dev, "capture", None), "close", None)
-        if close is not None:  # MuMu 原生截图的句柄：每次检测都新建，用完就关
-            try:
-                close()
-            except Exception:
-                pass
+        _close(dev)
+
+
+def _close(dev) -> None:
+    close = getattr(getattr(dev, "capture", None), "close", None)
+    if close is not None:  # MuMu 原生截图的句柄：每次检测都新建，用完就关
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def ime_state(cfg: Config, make_device: Callable[[Config], Any], set_to: str | None = None) -> dict:
+    """设备页「输入法」一栏：读当前输入法和装了的输入法；set_to 不为空时先切过去（只能切装了的）。"""
+    dev = None
+    try:
+        dev = make_device(cfg)
+        installed = dev.list_imes()
+        if set_to:
+            if set_to not in installed:
+                return {"ok": False, "text": f"模拟器里没装 {set_to}"}
+            dev.set_ime(set_to)
+        adb = cfg.device.ime_id
+        return {"ok": True, "current": dev.current_ime(), "adb": adb,
+                "imes": [{"id": i, "label": ime_label(i, adb), "adb": i == adb} for i in installed]}
+    except Exception as exc:
+        return {"ok": False, "text": str(exc) or type(exc).__name__}
+    finally:
+        _close(dev)

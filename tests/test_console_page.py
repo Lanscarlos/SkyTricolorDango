@@ -180,10 +180,11 @@ def test_live_page():  # spec 2026-10-01-console-live-page：顶栏 + 三栏（�
 
 def test_settings_and_device_pages():
     b = bundle()
-    for id_ in ("settings-toc", "groups", "savebar", "save", "discard", "settings-error", "check", "checks", "device-note"):
+    for id_ in ("settings-toc", "groups", "savebar", "save", "discard", "settings-error", "check", "checks", "device-note",
+                "ime-read", "imes", "ime-msg"):
         assert f'id="{id_}"' in b, id_
     assert '"set-"+' in b.replace(" ", "") and 'replaceAll(".","-")' in b.replace(" ", "")
-    for api in ("api/settings", "api/settings/test", "api/device"):
+    for api in ("api/settings", "api/settings/test", "api/device", "api/device/ime"):
         assert api in b
     assert "Pages.settings" in b and "Pages.device" in b
 

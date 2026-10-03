@@ -35,6 +35,7 @@ class World:
     describe: Callable[[list[dict]], str] | None = None  # 眼睛把画面写成文字；None = 用 Haiku
     name: str = "game"
     close: Callable[[], None] = _nothing  # 收尾：停 env、关 panels
+    restore: Callable[[], None] = _nothing  # 身体收尾之后最后做：切回用户的输入法
     text_only: bool = False  # 沙盒：没有画面，look / look_person 只给文字
 
 

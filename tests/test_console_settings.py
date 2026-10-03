@@ -25,7 +25,7 @@ def no_registry(monkeypatch):
 def test_every_spec_field_is_listed():
     assert [f.key for f in FIELDS] == [
         "console.brain", "console.live", "console.emotes", "console.duration",
-        "device.adb_path", "device.serial", "device.capture", "llm.provider", "llm.base_url", "llm.model", "secret.llm",
+        "device.adb_path", "device.serial", "device.switch_ime", "device.capture", "llm.provider", "llm.base_url", "llm.model", "secret.llm",
         "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model",
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
         "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "backstage.enabled", "env.enabled",

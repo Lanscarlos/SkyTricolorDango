@@ -223,3 +223,41 @@ def test_base_hw_key_hold_releases_on_error(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         Dev().hw_key_hold(105, 0.03)
     assert calls == [("down", 105), ("up", 105)]
+
+
+class ImeRunner(Recorder):
+    """ime list 返回装了的输入法，settings get 返回当前输入法。"""
+
+    def __init__(self, current, installed):
+        super().__init__()
+        self.current, self.installed = current, installed
+
+    def __call__(self, cmd, capture_output, timeout):
+        self.cmds.append(cmd)
+        out = b""
+        if cmd[-4:] == ["ime", "list", "-a", "-s"]:
+            out = ("\n".join(self.installed) + "\n").encode()
+        elif "default_input_method" in cmd:
+            out = (self.current + "\n").encode()
+        elif cmd[-3:-1] == ["ime", "set"]:
+            self.current = cmd[-1]
+        return subprocess.CompletedProcess(cmd, 0, out, b"")
+
+
+SOGOU = "com.sohu.inputmethod.sogou/.SogouIME"
+ADBK = "com.android.adbkeyboard/.AdbIME"
+
+
+def test_list_and_set_ime():
+    rec = ImeRunner(SOGOU, [SOGOU, ADBK])
+    dev = AdbDevice("x:1", runner=rec)
+    assert dev.list_imes() == [SOGOU, ADBK]
+    dev.set_ime(ADBK)
+    assert ["ime", "enable", ADBK] == rec.cmds[-2][-3:]  # 没启用的输入法 set 不上：先 enable
+    assert dev.current_ime() == ADBK
+
+
+def test_enable_adb_keyboard_needs_it_installed():
+    dev = AdbDevice("x:1", runner=ImeRunner(SOGOU, [SOGOU]))
+    with pytest.raises(AdbError, match="ADBKeyboard"):
+        dev.enable_adb_keyboard()

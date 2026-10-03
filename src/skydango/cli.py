@@ -54,6 +54,16 @@ def _device(cfg: Config):
     return dev
 
 
+def _ime_switch(cfg: Config, dev):
+    """run 启动时切到 ADBKeyboard（[device] switch_ime），返回的 ImeSwitch 在停下时 stop() 切回去。"""
+    from .device.ime import ImeSwitch
+
+    ime = ImeSwitch(dev, cfg.device.ime_id, cfg.device.user_ime)
+    if cfg.device.switch_ime:
+        ime.start()
+    return ime
+
+
 def _screen_size_fn(device):
     cache: dict[str, tuple[int, int]] = {}
 
@@ -117,11 +127,17 @@ def cmd_detect(cfg: Config, args) -> None:
 
 
 def cmd_ime(cfg: Config, args) -> None:
+    from .device.ime import restore_target
+
     dev = _device(cfg)
     if args.action == "on":
         dev.enable_adb_keyboard()
-    elif args.action == "off":
-        dev.reset_ime()
+    elif args.action == "off":  # 切回搜狗（或 device.user_ime）；找不到就恢复系统默认
+        back = restore_target("", cfg.device.ime_id, dev.list_imes(), cfg.device.user_ime)
+        if back:
+            dev.set_ime(back)
+        else:
+            dev.reset_ime()
     print("当前输入法:", dev.current_ime())
 
 
@@ -2197,6 +2213,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store,
         viewer=viewer, camera=_camera(cfg, dev, panel), panel=panel,
     )
+    ime = _ime_switch(cfg, dev)
     try:
         agent.run(duration)
     except KeyboardInterrupt:
@@ -2212,6 +2229,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             panel.shutdown()  # 按需模式：退出时把聊天面板恢复成开着
         except Exception:
             log.exception("聊天面板没恢复")
+        ime.stop()
 
 
 def _camera(cfg: Config, dev, panel):
@@ -2301,10 +2319,11 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
         if panels is not None:
             panels.close()
 
+    ime = _ime_switch(cfg, dev)  # 最后才切：前面建东西出错时不用切回
     return World(
         device=dev, reader=reader, self_filter=self_filter, panel=panel, env=env, social=social, emotes=emotes, camera=camera,
         locomotion=Locomotion(dev, cfg.brain.move_step), sender=ChatSender(dev, cfg.sender, _screen_size_fn(dev)),
-        friend_checker=friend_checker, panels=panels, panel_ops=panel_ops, close=close,
+        friend_checker=friend_checker, panels=panels, panel_ops=panel_ops, close=close, restore=ime.stop,
     )
 
 
@@ -2402,6 +2421,7 @@ def _run_brain(
         server.start()
     except BaseException:
         world.close()
+        world.restore()
         raise
     if trace is None and viewer is not None:
         trace = viewer.brain or BrainTrace()  # 网页上的大脑时间线（一般 _viewer 已经挂好）
@@ -2485,6 +2505,7 @@ def _run_brain(
         stop.set()
         world.close()  # 停 env、关面板识别
         body.shutdown()  # 先复原镜头、恢复轮盘、让排队的命令失败：不等大脑
+        world.restore()  # 切回用户的输入法（身体收尾时可能还要关输入框，放在它后面）
         brain_thread.join(timeout=5)
         if wardrobe_thread is not None:
             _finish_wardrobe(wardrobe_thread, body)

@@ -1,14 +1,39 @@
-/* 设备页（spec §4.6）：只读检测模拟器连接；团子 / 沙盒在跑时置灰（设备归它们独占）。 */
+/* 设备页（spec §4.6）：只读检测模拟器连接 + 手动切输入法；团子 / 沙盒在跑时置灰（设备归它们独占）。 */
 (function () {
 "use strict";
 if (typeof document === "undefined") return;
 const MARKS = {ok: "✓", fail: "✗", warn: "!", skip: "–"};
-let checking = false;
+let checking = false, imeBusy = false;
 
 function sync(st) {
   const busy = !!st && BUSY.includes(st.run.state);
   $("check").disabled = busy || checking;
   $("device-note").textContent = busy ? "团子（或沙盒）在跑，设备归它独占，先停下再检测。" : "检测只读状态，不会往游戏里发任何输入。";
+  $("ime-read").disabled = busy || imeBusy;
+  for (const b of document.querySelectorAll("#imes button")) b.disabled = busy || imeBusy;
+}
+
+/* 输入法：{} 读，{set: id} 切；切完列表照新的当前输入法重画 */
+async function ime(body) {
+  imeBusy = true; sync(S.state); $("ime-msg").textContent = body.set ? "切换中…" : "读取中…";
+  let r;
+  try { r = await post("api/device/ime", body); } finally { imeBusy = false; }
+  const ul = $("imes"), d = r.data;
+  if (!d.ok) { $("ime-msg").textContent = d.text || "出错了"; sync(S.state); return; }
+  ul.textContent = ""; ul.hidden = false;
+  for (const m of d.imes) {
+    const li = el("li"), name = el("div");
+    name.append(el("b", "", m.label));
+    if (m.label !== m.id) name.append(el("span", "id", m.id));
+    li.append(name);
+    if (m.id === d.current) li.append(el("span", "now", "当前"));
+    else { const b = el("button", "btn sm", "切到这个"); b.type = "button"; b.onclick = () => ime({set: m.id}); li.append(b); }
+    ul.append(li);
+  }
+  const cur = d.imes.find(m => m.id === d.current);
+  $("ime-msg").textContent = body.set ? `已切到 ${cur ? cur.label : d.current}` : (d.imes.some(m => m.adb) ? "" : "模拟器里没装 ADBKeyboard，团子打不了中文");
+  $("ime-read").textContent = "重新读取";
+  sync(S.state);
 }
 
 async function check() {
@@ -37,6 +62,6 @@ async function check() {
 }
 
 Pages.device = {
-  init() { $("check").onclick = check; onState(sync); },
+  init() { $("check").onclick = check; $("ime-read").onclick = () => ime({}); onState(sync); },
 };
 })();
