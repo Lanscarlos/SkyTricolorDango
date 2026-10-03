@@ -81,7 +81,10 @@ def test_make_embedder():
 
 def test_config_has_appearance_defaults():
     c = Config().appearance
-    assert (c.enabled, c.model, c.match, c.card_match, c.margin, c.changed) == (False, "color", 0.85, 0.92, 0.05, 0.40)
+    assert (c.enabled, c.model, c.match, c.card_match, c.margin, c.changed) == (False, "color", 0.88, 0.92, 0.05, 0.40)
+    assert (c.min_height, c.unsure, c.unsure_wait, c.dino, c.dango_match, c.gallery_max, c.enroll_max) == (
+        0.13, 0.83, 2.0, "models/dinov2-small.onnx", 0.80, 40, 16,
+    )
     assert c.outfit_change is False  # 颜色特征判换装太不稳（10-01 标定），默认不判
     assert (c.size, c.norm, c.device, c.quota_wait, c.retry_after, c.describe_timeout) == (224, "imagenet", "cpu", 600.0, 60.0, 60.0)
 
