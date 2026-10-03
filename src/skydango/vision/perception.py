@@ -371,7 +371,8 @@ class PerceptionWatcher:
             open_low=frozenset({"player", UNLIT}) if self._attrs_on() else frozenset(),
         )
         self.camera_settle = camera_settle
-        self._quiet_until = float("-inf")  # 镜头缩放 / 走路 / 转圈：这之前的帧不攒走近 / 运动历史
+        self._quiet_until = float("-inf")  # 镜头缩放 / 走路 / 转圈 / 开关聊天面板：这之前的帧不攒走近 / 运动历史
+        self._last_panel: bool | None = None  # 上一帧聊天面板开没开（翻转 = 画面要横移一阵）
         self._pan = (0.0, 0.0)  # 累计的画面平移（整图像素；失踪记录、运动方向用）
         self._pan_thumb: np.ndarray | None = None  # 上一帧的平移缩略图（暂停恢复后作废）
         self.last_shift: tuple[float, float] | None = None  # 这一帧估出的画面平移（track-eval 用）
@@ -532,9 +533,15 @@ class PerceptionWatcher:
         return False
 
     def camera_moved(self, at: float, kind: str) -> None:
-        """身体动了镜头（turn / zoom / move / spin）。转镜头靠平移估计补偿，什么都不清；
+        """身体动了镜头（turn / zoom / move / spin / panel）。转镜头靠平移估计补偿，什么都不清；
         缩放、走路、转圈时框高会突变：settle 秒内不更新速度、清走近 / 运动历史（不能当成人在走近走远）。"""
-        if kind in PAN_KINDS:
+        if kind == "panel":  # 聊天面板开 / 关：画面横移的动画约 2 秒，这期间的位移不是人在走
+            if self.cfg.panel_settle <= 0:
+                return
+            until = at + self.cfg.panel_settle
+            self._quiet_until = max(self._quiet_until, until)
+            self.tracker.calm(until)
+        elif kind in PAN_KINDS:
             until = at + self.camera_settle
             self._quiet_until = max(self._quiet_until, until)
             self.tracker.calm(until)
@@ -631,6 +638,9 @@ class PerceptionWatcher:
         started = time.perf_counter()
         height, width = frame.shape[:2]
         self._frame_h, self._frame_w = height, width
+        if self._last_panel is not None and panel_visible != self._last_panel:
+            self.camera_moved(now, "panel")  # 别处（别人按的 C）开关的面板身体不知道，这里兜底
+        self._last_panel = panel_visible
         dets, flagged = merge_people(one_self(self._filter(self._detect(frame), width, height, panel_visible)))
         unlit_dup = {id(dets[i]) for i in flagged}  # 压掉过黑影框的检测
         detected = time.perf_counter()

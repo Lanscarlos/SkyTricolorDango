@@ -180,6 +180,31 @@ def test_camera_moved_zoom_clears_hist_and_calms():
     assert len(body(w).data["hist"]) > 2  # 转镜头不清
 
 
+def test_camera_moved_panel_quiets_for_panel_settle():
+    w, det = make()
+    t = run(w, det, walk, 0.0, 1.0)
+    w.camera_moved(t, "panel")
+    t = run(w, det, walk, t, t + 2.0)
+    assert not body(w).data.get("hist") and body(w).vx == 0  # 2.5 秒还没过
+    t = run(w, det, walk, t, t + 1.0)
+    assert body(w).data.get("hist") and body(w).vx != 0
+
+
+def test_panel_flip_quiets_motion_only():
+    """站着的好友，面板一开画面右移 2 秒（黑帧估不出平移）：不报往右走，人照样在身边。"""
+    for settle, moved in ((2.5, False), (0.0, True)):
+        w, det = make(panel_settle=settle)
+        t = run(w, det, [player(800), tag(800)], 0.0, 2.0)
+        x = 800
+        for i in range(20):
+            x += 20
+            det.frames = [[player(x), tag(x)]]
+            w.process(frame(), round(t + i * 0.1, 3), True)
+        end = round(t + 2.0, 3)
+        assert w.nearby(end) == [NAME]
+        assert (body(w).data.get("motion") == "往右走") is moved
+
+
 def test_resume_zeroes_velocity():
     now = [0.0]
     w, det = make(clock=lambda: now[0])

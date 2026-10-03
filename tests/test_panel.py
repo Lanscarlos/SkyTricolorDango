@@ -26,6 +26,21 @@ def test_opens_panel_with_key_when_closed():
     assert device.calls == [("hw_key", 46)]
 
 
+def test_press_reports_to_on_press():
+    m, device = manager([False, True])
+    m.clock = lambda: 12.5
+    seen = []
+    m.on_press = seen.append
+    m.ensure_open()
+    assert seen == [12.5]
+
+
+def test_on_press_error_does_not_break_press():
+    m, device = manager([False, True])
+    m.on_press = lambda at: 1 / 0
+    assert m.ensure_open() is True and device.calls == [("hw_key", 46)]
+
+
 def test_does_not_press_while_typing():
     m, device = manager([False])
     device.shown = True  # 输入框开着时按 C 会打出字母
