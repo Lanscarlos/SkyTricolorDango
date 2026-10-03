@@ -44,6 +44,7 @@ class DeepSeekBrain:
         max_steps: int = 6,
         turn_timeout: float = 120.0,
         clock: Callable[[], float] = time.monotonic,
+        on_message: Callable[[dict], None] | None = None,
     ) -> None:
         self.client = client
         self.system = system
@@ -55,6 +56,7 @@ class DeepSeekBrain:
         self.max_steps = max_steps
         self.turn_timeout = turn_timeout
         self.clock = clock
+        self.on_message = on_message  # 把工具调用喂回大脑时间线（同 BrainSession.on_message，spec 2026-10-03-deepseek-fallback-brain）
         self._names = {t["function"]["name"] for t in tools}
 
     def send(self, text: str) -> dict:
@@ -90,18 +92,25 @@ class DeepSeekBrain:
             rounds += 1
             for tc in tool_calls:
                 name = tc.function.name
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except (ValueError, TypeError):
+                    args = None
+                if self.on_message is not None:  # 工具调用：喂给大脑时间线（TOOL_PREFIX 同 trace._steps）
+                    self.on_message({"type": "assistant", "message": {"content": [
+                        {"type": "tool_use", "id": tc.id, "name": f"mcp__sky__{name}", "input": args}
+                    ]}})
                 if name not in self._names:
-                    out = f"没有这个工具：{name}"
+                    out, is_error = f"没有这个工具：{name}", True
+                elif args is None:
+                    out, is_error = "工具参数不是合法 JSON", True
                 else:
-                    try:
-                        args = json.loads(tc.function.arguments or "{}")
-                    except (ValueError, TypeError):
-                        args = None
-                    if args is None:
-                        out = "工具参数不是合法 JSON"
-                    else:
-                        out, _err = self.toolbox.run(name, args)
+                    out, is_error = self.toolbox.run(name, args)
                 if not isinstance(out, str):
                     out = json.dumps(out, ensure_ascii=False)
+                if self.on_message is not None:
+                    self.on_message({"type": "user", "message": {"content": [
+                        {"type": "tool_result", "tool_use_id": tc.id, "content": out, "is_error": is_error}
+                    ]}})
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
         return {"result": final, "subtype": "success"}

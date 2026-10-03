@@ -670,7 +670,7 @@ def test_fallback_brain_built(tmp_path, monkeypatch):
 def test_run_brain_passes_fallback_session(tmp_path, monkeypatch):
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
-    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p: sentinel)
+    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: sentinel)
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
     assert seen[0].fallback_session is sentinel
@@ -680,7 +680,7 @@ def test_force_fallback_swaps_session(tmp_path, monkeypatch):
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     cfg.brain.force_fallback = True
     sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
-    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p: sentinel)
+    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: sentinel)
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
     assert seen[0].session is sentinel and seen[0].on_fallback is True
@@ -689,7 +689,7 @@ def test_force_fallback_swaps_session(tmp_path, monkeypatch):
 def test_force_fallback_without_session_is_noop(tmp_path, monkeypatch):  # Review Focus 5
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     cfg.brain.force_fallback = True
-    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p: None)
+    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: None)
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
     assert seen[0].session is not None and seen[0].on_fallback is False

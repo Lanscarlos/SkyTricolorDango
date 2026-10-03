@@ -140,3 +140,26 @@ def test_build_client(monkeypatch):
     monkeypatch.setenv("SKYDANGO_TEST_KEY", "k")
     build_client(LlmConfig(base_url="https://api.deepseek.com", api_key_env="SKYDANGO_TEST_KEY"))
     assert made["base_url"] == "https://api.deepseek.com" and made["max_retries"] == 0
+
+
+def test_on_message_records_tool_calls():
+    msgs = []
+    tb = toolbox()
+    brain = DeepSeekBrain(client(calls_then_ok([("say", {"text": "你好"})])), "sys", tb, tools=[say_schema()],
+                          model="deepseek-chat", temperature=0.8, max_tokens=4096, on_message=msgs.append)
+    brain.send("在吗")
+    assert [m["type"] for m in msgs] == ["assistant", "user"]
+    tool_use = msgs[0]["message"]["content"][0]
+    assert tool_use["type"] == "tool_use" and tool_use["name"] == "mcp__sky__say" and tool_use["input"] == {"text": "你好"}
+    tool_result = msgs[1]["message"]["content"][0]
+    assert tool_result["type"] == "tool_result" and tool_result["content"] == "好" and tool_result["is_error"] is False
+
+
+def test_on_message_reports_unknown_tool_as_error():
+    msgs = []
+    tb = toolbox()
+    brain = DeepSeekBrain(client(calls_then_ok([("look", {"image": False})])), "sys", tb, tools=[say_schema()],
+                          model="deepseek-chat", temperature=0.8, max_tokens=4096, on_message=msgs.append)
+    brain.send("在吗")
+    tool_result = msgs[1]["message"]["content"][0]
+    assert tool_result["content"] == "没有这个工具：look" and tool_result["is_error"] is True
