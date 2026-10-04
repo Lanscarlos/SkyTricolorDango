@@ -166,12 +166,21 @@ class PanelManager:
 
     def before_speak(self, now: float) -> None:
         """团子要说话（按 Enter 之前）：面板要开着，说完对方的回复才能马上读到；进聊天中。
-        聊着、跟谁聊的名字标签都还看得见：不开面板（他的回复从头顶气泡读），只刷新活动时间。"""
+        聊着、跟谁聊的名字标签都还看得见：不开面板（他的回复从头顶气泡读），只刷新活动时间；
+        闲着时主动开口、画面里有好友：不开面板，进聊着、跟画面里的好友聊。"""
         if not self.auto:
             return
         if self.state == "talking" and self._talk_with and self._reads_bubbles() and self._in_view(self._talk_with, now):
             self._last_activity = max(self._last_activity, now)
             return
+        if self.state == "idle" and self._reads_bubbles() and not self.visible_now():
+            near = {n for n, t in self._tag_seen.items() if now - t <= TAG_RECENT}
+            if near:
+                self._last_activity = max(self._last_activity, now)
+                self._talk_since = now
+                self._set("talking", "团子要说话，好友在画面里")
+                self._talk_with = near
+                return
         self._last_activity = max(self._last_activity, now)
         self._missing_since = None
         if self.state != "chatting":

@@ -1021,3 +1021,32 @@ def test_a11y_before_speak_uses_recently_seen_tags():
     tick(10.5)  # 5 秒没见过他了
     m.before_speak(10.6)
     assert m.state == "chatting" and presses(dev) == 1
+
+def test_a11y_before_speak_from_idle_with_friend_in_view_keeps_panel_closed():
+    """闲着时团子主动开口、好友在画面里：不开面板，进「聊着」（10-04 晚 19:21：主动说一句面板开了 45 秒）。"""
+    m, dev, state = a11y()
+    m.cfg.chat_peek = 100.0  # 不看一眼，只看安静计时
+    tick = _ticker(m)
+    m.reader.tags = ["小明"]
+    tick(5.0)
+    assert m.state == "idle"
+    m.before_speak(6.0)
+    assert m.state == "talking" and presses(dev) == 0 and state.open is False
+    tick(8.0, [said("嗯嗯")])  # 他从头顶气泡回话：接着聊着
+    assert m.state == "talking" and presses(dev) == 0
+    m.reader.tags = []
+    tick(52.9)
+    assert m.state == "talking"
+    tick(53.0)  # 安静 quiet_close 秒回闲着
+    assert m.state == "idle" and presses(dev) == 0
+
+
+def test_a11y_before_speak_from_idle_without_friend_in_view_opens_panel():
+    m, dev, state = a11y()
+    tick = _ticker(m)
+    m.reader.tags = ["小明"]
+    tick(5.0)
+    m.reader.tags = []
+    tick(8.5)
+    m.before_speak(8.6)  # 3.6 秒没见过他了：照旧开面板
+    assert m.state == "chatting" and presses(dev) == 1 and state.open is True
