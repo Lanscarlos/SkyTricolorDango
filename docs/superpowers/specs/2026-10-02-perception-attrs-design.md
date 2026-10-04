@@ -145,7 +145,8 @@ def update(self, frame, tracks: list[Track], now: float, panel_visible: bool) ->
 - **切分**：按录像（裁图来源帧名里的录像名）切训练 / 验证，写 `datasets/attrs/_split.json`（同 `gesture_train.split`）；`datasets/sky` 的验证帧来的裁图一律进验证
 - **特征**：主干跑一遍、按 `OnnxEmbedder.key` 缓存进 `datasets/attrs/_features/`；训练时左右翻转的特征也缓存一份
 - **头**：带类别权重的多类逻辑回归（numpy 写，几百维 × 几千张，几秒训完，不要 torch）；L2 系数在验证集上从几档里挑
-- **样本不够**：某一类训练样本 < `min_per_class`（20）时，`shared` / `morph` 并进 `lit`（都是点过火的玩家，后果一样）；`spirit` 不够就从头里去掉（训练时丢掉这类样本），运行时先祖照旧只靠 YOLO 的 `spirit` 类。`not_person` / `lit` / `unlit` 任何一类不够就不出模型、报错。报告里写明哪类被并 / 被去掉
+- **样本不够**：某一类训练样本 < `min_per_class`（20）时，`shared` / `morph` 并进 `lit`（都是点过火的玩家，后果一样）；`spirit` 不够就从头里去掉（训练时丢掉这类样本），运行时先祖照旧只靠 YOLO 的 `spirit` 类。
+  **10-04 改**：`spirit` 不够时并进 `not_person`（不再丢掉）：YOLO 把先祖认成 `player` 时第二层判"不是人"撤下，照样不算陌生人；评估时外形头没有 `spirit` 类就不把先祖当要保留的人。标注页只出 不是人 / 点亮的人 / 黑影 / 先祖 四个按钮（共享空间 / 变身按点没点火标）。`not_person` / `lit` / `unlit` 任何一类不够就不出模型、报错。报告里写明哪类被并 / 被去掉
 - **输出**：`models/attrs-<日期>.npz`（不覆盖 `[attrs] model` 指的那个，要覆盖加 `--force`）+ `tmp/attrs-train/<时间>/report.md`：
   - 每类精确率 / 召回率 / 混淆矩阵
   - **整帧回放**：`datasets/sky` 的验证帧上，模拟 §3.3 的放行（单帧版：每个框当成复核了 `reject_n` 次同样的结果），比较"只用 YOLO（门槛 `conf`）"和"YOLO（0.2 和 `low_conf` 两档）+ 复核"的人物精确率 / 召回率，以及点没点火认反几个

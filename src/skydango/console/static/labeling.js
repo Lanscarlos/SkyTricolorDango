@@ -12,7 +12,7 @@ const FRAMES = 16, FPS = 8, PX = 336, AHEAD = 3, KEEP = 12;  // PX = 112 × 3；
 const UNL = "_unlabeled", DIS = "_discard";
 const LB = {data: null, filter: "todo", list: [], cur: null, i: 0, playing: true, speed: 1, timer: null,
   busy: false, active: false, loading: false, cache: new Map(), keyBound: false, tab: "gesture"};
-/* 外形页（感知层第二层的人物裁图）：条目是单张 jpg，类别 = FORMS（后端给），接口 api/form/*。按键 Enter / 1~3（后端的 buttons）/ 0 / Z 只在外形页开着时有效。 */
+/* 外形页（感知层第二层的人物裁图）：条目是单张 jpg，类别 = FORMS（后端给），接口 api/form/*。按键 Enter / 1~4（后端的 buttons）/ 0 / Z 只在外形页开着时有效。 */
 const FM = {data: null, filter: "todo", list: [], cur: null, busy: false, loading: false};
 const FORM_NAMES = {not_person: "不是人", lit: "点亮的人", unlit: "黑影", spirit: "先祖", shared: "共享空间", morph: "变身"};
 

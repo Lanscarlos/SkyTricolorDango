@@ -23,8 +23,9 @@ from ..vision.gesture_label import BLIND_FILE, load_guess
 UNLABELED, DISCARD, LOG = "_unlabeled", "_discard", "_labels.jsonl"
 FRAMES = 16
 FORM_DIR = "form"
-# 外形页出按钮的类别（10-04：认人阶段只分这三类；先祖 / 共享空间 / 变身训练时不够数本来就并掉，筛选里照旧列出）
-FORM_BUTTONS = ("not_person", "lit", "unlit")
+# 外形页出按钮的类别（10-04）：先祖单独标（和共享空间长得像，混进不是人难学；图鉴以后也要），不够数训练时并进不是人；
+# 共享空间 / 变身按点没点火标成 lit / unlit（训练时本来就并进 lit），筛选里照旧列出
+FORM_BUTTONS = ("not_person", "lit", "unlit", "spirit")
 CONTEXT_W = 480  # 外形页的原图缩略宽度
 _LOCK = threading.Lock()  # 每个请求现建一个 GestureLabels / FormLabels，所以锁放模块级：label / undo 的 找→挪→记账 整段串行
 

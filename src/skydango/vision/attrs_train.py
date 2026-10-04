@@ -115,7 +115,7 @@ def check_out(out: Path, configured: str, force: bool) -> None:
 
 def merge_labels(counts: dict[str, int], min_per_class: int) -> tuple[dict[str, str | None], list[str]]:
     """每个外形训练时归到哪一类（None = 丢掉样本）和写进报告的说明。
-    shared / morph 不够 → 并进 lit；spirit 不够 → 丢；not_person / lit / unlit 不够 → ValueError。"""
+    shared / morph 不够 → 并进 lit；spirit 不够 → 并进 not_person（10-04 起，以前丢掉）；not_person / lit / unlit 不够 → ValueError。"""
     need = [f for f in ("not_person", "lit", "unlit") if counts.get(f, 0) < min_per_class]
     if need:
         raise ValueError("这几类确认过的图不够（每类至少 %d 张）：%s" % (
@@ -126,9 +126,9 @@ def merge_labels(counts: dict[str, int], min_per_class: int) -> tuple[dict[str, 
         if counts.get(f, 0) < min_per_class:
             mapping[f] = "lit"
             notes.append(f"{f} 只有 {counts.get(f, 0)} 张（< {min_per_class}），并进 lit")
-    if counts.get("spirit", 0) < min_per_class:
-        mapping["spirit"] = None
-        notes.append(f"spirit 只有 {counts.get('spirit', 0)} 张（< {min_per_class}），样本丢掉不训练")
+    if counts.get("spirit", 0) < min_per_class:  # 先祖不是玩家：不够单独成类时算"不是人"（照样不当陌生人）
+        mapping["spirit"] = "not_person"
+        notes.append(f"spirit 只有 {counts.get('spirit', 0)} 张（< {min_per_class}），并进 not_person")
     return mapping, notes
 
 
@@ -257,11 +257,12 @@ def _label_file(frame: Path) -> Path:
     return frame.parents[2] / "labels" / frame.parent.name / f"{frame.stem}.txt"
 
 
-def _gt_boxes(path: Path, w: int, h: int) -> list[tuple[Rect, int]]:
+def _gt_boxes(path: Path, w: int, h: int, spirit: bool = True) -> list[tuple[Rect, int]]:
+    """spirit = False：外形头没有单独的先祖类（不够数并进了 not_person，会把先祖框撤掉），先祖不算要保留的人。"""
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
         parts = line.split()
-        if len(parts) < 5 or int(parts[0]) not in GT_PERSON:
+        if len(parts) < 5 or int(parts[0]) not in GT_PERSON or (not spirit and int(parts[0]) == 9):
             continue
         cx, cy, bw, bh = (float(v) for v in parts[1:5])
         out.append((Rect(round((cx - bw / 2) * w), round((cy - bh / 2) * h), round(bw * w), round(bh * h)), int(parts[0])))
@@ -281,7 +282,7 @@ def collect(frames: list[Path], detector, model, conf_low: float) -> list[dict]:
         h, w = img.shape[:2]
         dets = [d for d in detector.detect(img) if d.cls in PERSON_DETS and d.score >= conf_low]
         probs = model.predict([(d.cls, attrs.crop(img, d.box, model.pad("form"), model.size)) for d in dets]) if dets else []
-        records.append({"gt": _gt_boxes(lf, w, h), "dets": [
+        records.append({"gt": _gt_boxes(lf, w, h, spirit="spirit" in labels), "dets": [
             {"cls": d.cls, "box": d.box, "score": d.score,
              "p": ({lb: float(v) for lb, v in zip(labels, r["form"])} if "form" in r else None)}
             for d, r in zip(dets, probs)]})
