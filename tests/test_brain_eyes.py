@@ -212,3 +212,15 @@ def test_parse_news_ignores_trailing_summary():
     assert parse_news("新鲜事：\n- 天黑了\n- 下雨了\n总之挺安静的") == "天黑了；下雨了"
     assert parse_news("新鲜事：\n小明：换了斗篷\n阿花：坐下弹琴了\n总之挺热闹") == "小明：换了斗篷；阿花：坐下弹琴了"
     assert parse_news("新鲜事：天黑了\n- 下雨了") == "天黑了；下雨了"
+
+
+def test_eyes_skip_when_unavailable(clock):  # Claude 总闸关了：不看、不报警
+    d = Describer()
+    e = Eyes(BrainConfig(), d, frame, lambda: {}, lambda: False, clock=clock, available=lambda: False)
+    assert e.tick(clock()) is False and d.calls == []
+
+
+def test_eyes_available_true_looks(clock):
+    d = Describer()
+    e = Eyes(BrainConfig(), d, frame, lambda: {}, lambda: False, clock=clock, available=lambda: True)
+    assert e.tick(clock()) is True and len(d.calls) == 1

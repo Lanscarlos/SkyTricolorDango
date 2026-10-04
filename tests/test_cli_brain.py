@@ -694,3 +694,86 @@ def test_force_fallback_without_session_is_noop(tmp_path, monkeypatch):  # Revie
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
     assert seen[0].session is not None and seen[0].on_fallback is False
+
+
+# ---- Claude 总闸（spec 2026-10-04-claude-gate §1 §3 §6）----
+def test_run_brain_shares_one_gate(tmp_path, monkeypatch):
+    from skydango.brain.claude import ClaudeError, ClaudeGate, GatedLlm
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False  # live 才有 NotesKeeper
+    seen = []
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=seen.append)
+    parts = seen[0]
+    gate = parts.brain.gate
+    assert isinstance(gate, ClaudeGate)
+    notes_llm, reflect_llm = parts.body.notes.llm, parts.reflector.llm
+    assert isinstance(notes_llm, GatedLlm) and isinstance(reflect_llm, GatedLlm)
+    assert notes_llm.gate is gate and reflect_llm.gate is gate
+    assert notes_llm.backup is not None and notes_llm.backup is reflect_llm.backup  # 一个 DeepSeek 备用，两处共用
+    assert parts.eyes.available == gate.ok  # 眼睛：闸关了就不看
+    gate.trip("auth", "401")
+    with pytest.raises(ClaudeError):
+        parts.eyes.describe([{"type": "text", "text": "看"}])  # 闸关着：不起 claude 进程，直接抛
+    assert notes_llm.complete("你负责记笔记", [{"role": "user", "content": "整理"}]) == "收到：整理"  # 改走备用（echo）
+
+
+def test_run_brain_sandbox_scene_describe_not_gated(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    world = cli._game_world(cfg, run, True)
+
+    def scene_text(content):
+        return "沙盒场景"
+
+    world.describe = scene_text  # 沙盒自己的场景描述：不走 Claude，闸关了也照样看
+    seen = []
+    cli._run_brain(cfg, run, world, 1.0, on_ready=seen.append)
+    assert seen[0].eyes.describe is scene_text and seen[0].eyes.available is None
+
+
+def test_gated_backup_uses_fallback_max_tokens(tmp_path, monkeypatch):
+    import skydango.chat.llm as llm
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.brain.fallback_max_tokens = 4321
+    made = []
+    monkeypatch.setattr(llm, "make_llm", lambda c: made.append(c) or "client")
+    assert cli._gated_backup(cfg) == "client"
+    assert made[0].max_tokens == 4321 and made[0].model == cfg.llm.model and made[0].max_retries == cfg.llm.max_retries
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("没有找到 API Key"), ImportError("No module named 'openai'")])
+def test_gated_backup_none_when_unavailable(tmp_path, monkeypatch, caplog, exc):
+    import skydango.chat.llm as llm
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(llm, "make_llm", lambda c: (_ for _ in ()).throw(exc))
+    with caplog.at_level("WARNING"):
+        assert cli._gated_backup(cfg) is None
+    assert any("备用" in r.getMessage() for r in caplog.records)
+
+
+def test_force_fallback_keeps_gate_open(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.brain.force_fallback = True
+    sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
+    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: sentinel)
+    seen = []
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
+    assert seen[0].on_fallback is True and seen[0].gate.ok()  # 调试开关不关闸：记忆、反思、眼睛照旧走 Claude
+
+
+def test_wardrobe_describe_gated(tmp_path):
+    from types import SimpleNamespace
+
+    from skydango.brain.claude import ClaudeError, ClaudeGate
+
+    cfg = Config()
+    env = SimpleNamespace(appearance=SimpleNamespace(load_cards=lambda cards: None), on_described=lambda *a: None)
+    gate = ClaudeGate()
+    w = cli._wardrobe(cfg, env, None, SimpleNamespace(name="game"), FAKE, {}, tmp_path, time.monotonic, gate=gate)
+    assert w is not None and w.available == gate.ok
+    gate.trip("limit", "429")
+    with pytest.raises(ClaudeError):
+        w.describe([{"type": "text", "text": "看"}])

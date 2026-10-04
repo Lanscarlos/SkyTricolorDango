@@ -454,6 +454,9 @@ dir = "private/sandbox"
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒：聊天交给 `[llm]`（DeepSeek）纯文字备用回复。
   **额度用完**切 DeepSeek 备用大脑（`brain/deepseek.py`，spec `2026-10-03-deepseek-fallback-brain-design.md`；`[brain] fallback`，`force_fallback` 调试用、测完删掉）：同一套工具（看不到画面，看图的工具不给）、不自动切回 Claude。
   它每轮重发、不是常驻会话：带最近 `[brain] fallback_history`（8）轮的唤醒消息（每轮截 1500 字、总共 12000 字）和"你这一轮说了 / 做了什么"（10-04，10-03 晚不带时同一句话隔 8 秒说两遍）；`FALLBACK_NOTE` 里多了别重复、recall 查不到别编、说做动作就真调 emote
+- Claude 总闸（10-04，spec `2026-10-04-claude-gate-design.md`）：额度 / 认证错后这次运行里不再起 claude：大脑切 DeepSeek（认证错也切）、随手记 / 整理 / 反思改走 DeepSeek、眼睛和装扮描述停用；整理 notes 失败 10 分钟内不再试。
+  一次运行一个闸（`brain/claude.py` 的 `ClaudeGate`，`cli._run_brain` 建好交给大脑循环、`GatedLlm`、`gated_describe`）；备用是 `[llm]`、`max_tokens` 取 `[brain] fallback_max_tokens`（没 Key 时闸关了照旧失败）；
+  `force_fallback` 只换大脑、不关闸；沙盒自己的场景描述不接闸；`memory update` 等单独的一次性命令不接闸；不切回（额度恢复了要重启）。**还没在沙盒里验证**（spec §8 四步）
 - `say` 拦重复（10-04）：10 分钟内说过几乎一样的话（`similar` 0.85）拦下、告诉大脑"你刚说过「…」"，Claude 大脑也一样；手动控制不管
 - 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；额度用完时这一笔跳过，notes 下次再整理
 - 退出：身体先恢复轮盘、再复原镜头（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code

@@ -2424,6 +2424,22 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
     )
 
 
+def _gated_backup(cfg: Config):
+    """Claude 总闸关了以后随手记、整理 notes、反思改走的备用模型（[llm]，一般是 DeepSeek；spec 2026-10-04-claude-gate §3.1）。
+
+    max_tokens 取 [brain] fallback_max_tokens（反思要写日记，[llm] 的回复长度不够）；没 Key / 没装 openai 返回 None：
+    闸关了以后这些调用照旧失败，只是不再起 claude 进程。"""
+    import dataclasses
+
+    from .chat.llm import make_llm
+
+    try:
+        return make_llm(dataclasses.replace(cfg.llm, max_tokens=cfg.brain.fallback_max_tokens))
+    except (RuntimeError, ImportError) as exc:
+        log.warning("Claude 不能用时的备用模型没有（%s）：那时随手记、整理、反思照旧失败", exc)
+        return None
+
+
 def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
     """真机世界（brain-sandbox spec §2）：接 MuMu 的设备、OCR 读聊天、身边识别、轮盘、镜头……原样搬自 _run_brain。
 
@@ -2473,7 +2489,7 @@ def _run_brain(
     import threading
 
     from .brain.body import Body
-    from .brain.claude import ClaudeLlm, one_shot
+    from .brain.claude import ClaudeGate, ClaudeLlm, GatedLlm, gated_describe, one_shot
     from .brain.events import EventQueue
     from .brain.eyes import Eyes, eyes_command
     from .brain.images import scene_note
@@ -2493,6 +2509,10 @@ def _run_brain(
     wall, clock = world.wall, world.clock
     env = world.env
     try:
+        # Claude 总闸（spec 2026-10-04-claude-gate）：一次运行一个，大脑、记忆、反思、眼睛、装扮描述共用；
+        # 额度 / 认证出错关上后不再起 claude，文字的改走 backup（[llm] DeepSeek），看图的跳过
+        gate = ClaudeGate()
+        backup = _gated_backup(cfg)
         store = notes = None
         if cfg.reply.memory_dir:  # dry-run 也读人设和记忆（看大脑的表现要用），但不写
             from .chat.memory import MemoryStore, NotesKeeper
@@ -2500,11 +2520,14 @@ def _run_brain(
             store = MemoryStore(cfg.reply.memory_dir)
             if not cfg.reply.dry_run:
                 # 记忆整理也走 Claude（订阅）：随手记、整理 notes.md 各起一次性 claude -p，在记忆后台线程里跑
-                memory_llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout)
+                memory_llm = GatedLlm(
+                    ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout),
+                    backup, gate,
+                )
                 notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every, wall=wall)
         live_store = None if cfg.reply.dry_run else store
         ledger = _inner_ledger(cfg, store, wall())
-        mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run, wall(), clock)
+        mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run, wall(), clock, gate=gate, backup=backup)
         persona = _inner_persona(cfg, ledger, wall())
         mind_log = _inner_log(ledger, reflector, wall())
         events = EventQueue(clock=clock)
@@ -2518,11 +2541,13 @@ def _run_brain(
             ledger=ledger, mind=mind, reflector=reflector, persona=persona, mind_log=mind_log, clock=clock, wall=wall,
         )
         work = run.path / "brain"
-        if world.describe is not None:
-            describe = world.describe
+        if world.describe is not None:  # 沙盒自己的场景描述：不走 Claude，不接闸
+            describe, eyes_available = world.describe, None
         else:
-            def describe(content):
+            def claude_describe(content):
                 return one_shot(eyes_command(base, cfg.brain), claude_vars, work / "eyes", content, cfg.brain.eyes_timeout)
+
+            describe, eyes_available = gated_describe(claude_describe, gate), gate.ok
         if world.text_only:  # 沙盒：没有画面，不给位置说明
             note = lambda now, s: ""  # noqa: E731
         else:
@@ -2539,6 +2564,7 @@ def _run_brain(
             proactive=cfg.proactive,
             busy=(lambda now: bool(env.nearby(now))) if env else (lambda now: False),
             on_news=body.news,
+            available=eyes_available,
         )
         body.friend_names = _friend_names(cfg)
         if store is not None:  # 反思用的人设、笔记和好友名单（dry-run 也读）
@@ -2550,7 +2576,7 @@ def _run_brain(
         # recall 只读，dry-run 也给
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
                           sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled, call=_call_enabled(cfg, env))
-        wardrobe = _wardrobe(cfg, env, ledger, world, base, claude_vars, work, clock)
+        wardrobe = _wardrobe(cfg, env, ledger, world, base, claude_vars, work, clock, gate=gate)
         server = SkyServer(toolbox)
         server.start()
     except BaseException:
@@ -2576,9 +2602,9 @@ def _run_brain(
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
         eyes=eyes, clock=clock, wall=wall, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
-        fallback_session=fallback_session,
+        fallback_session=fallback_session, gate=gate,
     )
-    if cfg.brain.force_fallback and fallback_session is not None:
+    if cfg.brain.force_fallback and fallback_session is not None:  # 调试开关：只换大脑，不关闸（记忆、反思、眼睛照旧走 Claude）
         brain.session = fallback_session
         brain.on_fallback = True
     if viewer is not None:
@@ -2686,9 +2712,10 @@ def _finish_wardrobe(thread: threading.Thread, body) -> None:
         log.exception("下线时记装扮出错")
 
 
-def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock):
+def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock, gate=None):
     """认装扮（spec 2026-10-01-appearance）：关系卡里的旧外观载入记忆簿；[appearance] describe 开着、不是沙盒时建描述器挂到感知层上。
-    感知层没挂记忆簿时什么都不做、返回 None。描述器的钟和感知层的帧时间同一个（world.clock）。"""
+    感知层没挂记忆簿时什么都不做、返回 None。描述器的钟和感知层的帧时间同一个（world.clock）。
+    gate：Claude 总闸（brain.claude.ClaudeGate）；关了就不再排描述（spec 2026-10-04-claude-gate §3.3）。"""
     book = getattr(env, "appearance", None)
     if book is None:
         return None
@@ -2700,13 +2727,17 @@ def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock):
     a = cfg.appearance
     if not a.describe or world.name == "sandbox":
         return None
-    from .brain.claude import one_shot
+    from .brain.claude import gated_describe, one_shot
     from .vision.wardrobe import Wardrobe, wardrobe_command
 
     cmd = wardrobe_command(base, a.describe_model)
+
+    def describe(content):
+        return one_shot(cmd, claude_vars, work / "wardrobe", content, a.describe_timeout)
+
     wardrobe = Wardrobe(
-        a, describe=lambda content: one_shot(cmd, claude_vars, work / "wardrobe", content, a.describe_timeout),
-        on_done=env.on_described, clock=clock,
+        a, describe=gated_describe(describe, gate) if gate is not None else describe,
+        on_done=env.on_described, clock=clock, available=gate.ok if gate is not None else None,
     )
     env.wardrobe = wardrobe
     log.info("描述装扮：%s，每小时最多 %d 次", a.describe_model, a.describe_max)
@@ -2729,11 +2760,14 @@ def _inner_ledger(cfg: Config, store, now: float | None = None):
         return None
 
 
-def _inner_mind(cfg: Config, ledger, base, claude_vars, run, now: float | None = None, clock=time.monotonic):
-    """内心层第 2 期：(Mind, Reflector)；没有账本或 [inner] reflect = false 时 (None, None)。"""
+def _inner_mind(
+    cfg: Config, ledger, base, claude_vars, run, now: float | None = None, clock=time.monotonic, gate=None, backup=None,
+):
+    """内心层第 2 期：(Mind, Reflector)；没有账本或 [inner] reflect = false 时 (None, None)。
+    gate / backup：Claude 总闸和备用模型（spec 2026-10-04-claude-gate §3.1）：给了闸就包成 GatedLlm，闸关了反思改走 backup。"""
     if ledger is None or not cfg.inner.reflect:
         return None, None
-    from .brain.claude import ClaudeLlm
+    from .brain.claude import ClaudeLlm, GatedLlm
     from .inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM, Reflector
 
     try:
@@ -2741,6 +2775,8 @@ def _inner_mind(cfg: Config, ledger, base, claude_vars, run, now: float | None =
         if mind.wake(time.time() if now is None else now, cfg.inner.rest_gap):
             log.info("睡过一觉：心情回到平常")
         llm = ClaudeLlm(base, claude_vars, cfg.inner.reflect_model, run.path / "brain" / "reflect", cfg.inner.reflect_timeout)
+        if gate is not None:
+            llm = GatedLlm(llm, backup, gate)
         system = REFLECT_SYSTEM + "\n\n" + PERSONA_SYSTEM if cfg.inner.persona else REFLECT_SYSTEM
         return mind, Reflector(cfg.inner, llm, clock=clock, system=system)
     except Exception:

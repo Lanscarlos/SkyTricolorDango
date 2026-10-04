@@ -77,3 +77,21 @@ def test_failure_counts_as_retry():
     w.request("me", "", ME, C, F, 0)
     w.tick(0)
     assert not w.request("me", "", ME, C, F, 30)
+
+
+def test_wardrobe_stops_queueing_when_unavailable():  # Claude 总闸关了：不排、不描述
+    calls = []
+    w = Wardrobe(AppearanceConfig(), lambda content: calls.append(content) or '{"desc":"x"}', lambda *a: None,
+                 available=lambda: False)
+    assert not w.request("me", "", ME, C, F, 0)
+    assert not w.tick(0) and calls == [] and w.calls == 0
+
+
+def test_wardrobe_closed_after_queueing_keeps_quiet():  # 排进去之后才关闸：也不再描述
+    calls = []
+    is_open = [True]
+    w = Wardrobe(AppearanceConfig(), lambda content: calls.append(content) or '{"desc":"x"}', lambda *a: None,
+                 available=lambda: is_open[0])
+    assert w.request("me", "", ME, C, F, 0)
+    is_open[0] = False
+    assert not w.tick(0) and calls == []

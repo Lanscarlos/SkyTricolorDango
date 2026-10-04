@@ -103,6 +103,7 @@ class Eyes:
         proactive: ProactiveConfig | None = None,  # 看场合主动开口；None 或 enabled = false 时照旧
         busy: Callable[[float], bool] = lambda now: False,  # 好友在不在身边：在就看得勤一点
         on_news: Callable[[str], None] = lambda text: None,  # 自动看时挑出了新鲜事（在眼睛线程里调）
+        available: Callable[[], bool] | None = None,  # Claude 总闸开着吗（gate.ok）；为假时自动看直接跳过（spec 2026-10-04-claude-gate §3.3）
     ) -> None:
         self.cfg = cfg
         self.describe = describe
@@ -115,6 +116,7 @@ class Eyes:
         self.proactive = proactive if proactive is not None and proactive.enabled else None
         self.busy = busy
         self.on_news = on_news
+        self.available = available
         self.latest: tuple[str, float] | None = None
         self.last_look = float("-inf")
         self.look_request = LOOK_REQUEST
@@ -140,6 +142,8 @@ class Eyes:
 
     def tick(self, now: float) -> bool:
         """后台线程每秒调一次：到了时机就看一眼。返回这次有没有去看。"""
+        if self.available is not None and not self.available():
+            return False  # Claude 总闸关了：不看（留着旧描述），也不每次报 WARNING
         if not self.due(now):
             return False
         frame = self.frame()

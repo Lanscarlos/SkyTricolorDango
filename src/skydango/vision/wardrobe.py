@@ -71,11 +71,13 @@ class Wardrobe:
         describe: Callable[[list[dict]], str],
         on_done: Callable[[str, str, str, np.ndarray], None],
         clock: Callable[[], float] = time.monotonic,
+        available: Callable[[], bool] | None = None,  # Claude 总闸开着吗（gate.ok）；为假时不排、不描述（spec 2026-10-04-claude-gate §3.3）
     ) -> None:
         self.cfg = cfg
         self.describe = describe
         self.on_done = on_done
         self.clock = clock
+        self.available = available
         self.calls = 0
         self._lock = threading.Lock()
         self._queue: list[tuple[int, int, str, str, np.ndarray, np.ndarray]] = []  # (优先级, 序号, kind, who, 裁图, 特征)
@@ -88,6 +90,8 @@ class Wardrobe:
 
     def request(self, kind: str, who: str, priority: int, crop: np.ndarray, feat: np.ndarray, now: float) -> bool:
         key = (kind, who)
+        if self._closed():
+            return False
         with self._lock:
             if key in self._busy or now < self._retry_at.get(key, float("-inf")) or self._fails.get(key, 0) >= MAX_FAILS:
                 return False
@@ -102,7 +106,13 @@ class Wardrobe:
             self._fails.pop((kind, who), None)
             self._retry_at.pop((kind, who), None)
 
+    def _closed(self) -> bool:
+        """Claude 总闸关了：等多久都没用，不再排描述。"""
+        return self.available is not None and not self.available()
+
     def tick(self, now: float) -> bool:
+        if self._closed():
+            return False
         with self._lock:
             while self._calls and now - self._calls[0] >= WINDOW:
                 self._calls.popleft()
