@@ -188,7 +188,7 @@ class ConsoleServer:
                 problems.append(problem(str(exc)))
             if problems:
                 return 409, {"ok": False, "problems": problems}
-            cmd = build_command(opts, self.config_path, self.child_port, self.parent_pid)
+            cmd = build_command(opts, self.config_path, self.parent_pid)
             try:
                 self.runner.start(cmd, child_env(os.environ, secrets), opts)
             except (RuntimeError, OSError) as exc:
