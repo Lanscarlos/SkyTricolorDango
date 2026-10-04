@@ -289,6 +289,14 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 「不要」和没确认的不动；增强图（`_blur` / `_dark`）现在数据集里没有，以后 augment 过的一起改。备份 `datasets/sky/_backup/labels-20261004-152027`（改之前）；`labels-20261004-152037` 是修"重跑也备份"之前多出来的一份、和现在一模一样，可以删。
 **下一步可以重训 YOLO**（v8）：数据集的人物标注第一次被人核对过一批，YOLO 自己的点没点火也该变好；导入未确认还剩 1366 张，照"模型先筛、只看不一致的"再过一批收益更大
 
+**v10**（10-04 下午，`tmp/yolo/sky-v10/weights/best.pt`，写回后的数据集、同 v9 设置 yolo11n / 960 / 120 epoch；`train_v10.py`；
+先把旧的 `labels/*.cache` 挪到 `tmp/yolo/stale-cache-1004/`——ultralytics 只按文件大小判缓存过期，0 改成 4 大小不变会用旧标签）。**没上线，本机继续用 v7**：
+- mAP50（`compare_v7_v9_v10.py`，验证集标注已写回修正）旧 val 90 帧 v7 / v9 / v10：player 0.739 / 0.690 / 0.701、player_unlit 0.667 / 0.639 / 0.671、self 0.812 / 0.831 / 0.851、spirit 0 / 0 / 0.426；
+  茶座 49 帧：player 0.549 / 0.588 / 0.494、player_unlit 0.706 / 0.488 / 0.511、social_ring 0.545 / 0.786 / 0.662。比 v9（只差写回）旧 val 都涨、茶座有涨有跌；player 比 v7 低是 v9 起就有的（茶座数据带来的）
+- 整帧回放纯 YOLO（`sweep_v7_v10.py`）：同精确率下 v10 召回更低（84% 时 v7 76% / v10 70%），认反 v7 22 / v10 29
+- **但答案不全**：`fp_sheet.py` → `fp_v10.jpg`：v10 的 63 个"错报"多是答案里没有的真人（茶座坐着的人、雪人变身、点过火的人——v7 认不出、当初没裁出来给人确认）+ 约 6 个 player / player_unlit 重复框（运行时 `merge_people` 会合并，回放没合）；真错报只有几个。
+  回放和 mAP 都拿这份不全的答案算，对认得多的模型不公平，**v7 / v10 现在比不出高下**
+
 ## 没做完 / 待办（按建议顺序）
 
 1. **用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，
