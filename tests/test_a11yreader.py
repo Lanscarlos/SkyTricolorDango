@@ -1,9 +1,10 @@
 import re
 
 from a11ysnap import bubble, placeholder, row, self_row, snap, tag
-from skydango.chat.a11yreader import A11yChatReader
+from skydango.chat.a11yreader import A11yChatReader, FallbackReader
 from skydango.chat.tracker import SelfFilter
 from skydango.config import ChatConfig, OcrConfig
+from skydango.device.a11y import A11yError
 
 
 def panel(*texts, pkg="com.netease.sky.vivo"):
@@ -391,3 +392,265 @@ def test_bubble_traced(tmp_path):
     h[0] = closed(*head("怎么样"))
     r.read(None, 2.0)
     assert "气泡 小明：怎么样" in r.trace_path.read_text(encoding="utf-8")
+
+
+# ---- FallbackReader（spec §5）----
+GOOD = object()  # 假快照
+FRAME = object()  # 假截图
+
+
+class FakeClient:
+    def __init__(self):
+        self.alive = True
+        self.error = ""
+        self.snap = GOOD
+        self.starts = 0
+        self.stops = 0
+        self.fail: Exception | None = None
+
+    def start(self):
+        self.starts += 1
+        if self.fail is not None:
+            raise self.fail
+        self.alive = True
+
+    def stop(self):
+        self.stops += 1
+
+    def latest(self, max_age=None):
+        return self.snap
+
+
+class FakeOcrReader:
+    settling = False
+
+    def __init__(self):
+        self.msgs = ["ocr 的消息"]
+        self.visible = True
+        self.panel_closed_since = None
+        self.trace_path = None
+        self.reads = 0
+
+    def read(self, frame, now):
+        self.reads += 1
+        return list(self.msgs)
+
+    def panel_visible(self, frame):
+        return self.visible
+
+    def log_rows(self, frame):
+        return ["ocr 行"]
+
+    def detect(self, frame):
+        return ["ocr 框"]
+
+
+class FakeA11y:
+    settling = False
+    reads_bubbles = True
+
+    def __init__(self):
+        self.msgs = ["a11y 的消息"]
+        self.panel_closed_since = None
+        self.trace_path = None
+
+    def read(self, frame, now):
+        return list(self.msgs)
+
+    def panel_visible(self, frame=None):
+        return self.panel_closed_since is None
+
+    def log_rows(self, frame=None):
+        return ["a11y 行"]
+
+    def detect(self, frame=None):
+        return ["a11y 框"]
+
+    def tags_in_view(self):
+        return ["小明"]
+
+    def typing(self):
+        return ["小红"]
+
+    def want_peek(self):
+        return "bubble_text"
+
+
+def fallback(fail: Exception | None = None):
+    client, a11y, ocr = FakeClient(), FakeA11y(), FakeOcrReader()
+    client.fail = fail
+    fb = FallbackReader(client, a11y, ocr)
+    fb.start()
+    return fb, client, a11y, ocr
+
+
+def test_healthy_reads_a11y():
+    fb, client, a11y, ocr = fallback()
+    assert fb.read(FRAME, 1.0) == ["a11y 的消息"]
+    assert not fb.using_ocr and fb.describe() == "无障碍"
+    assert fb.reads_bubbles is True and fb.want_peek() == "bubble_text"
+    assert fb.tags_in_view() == ["小明"] and fb.typing() == ["小红"]
+    assert fb.log_rows(FRAME) == ["a11y 行"] and fb.detect(FRAME) == ["a11y 框"]
+    assert fb.panel_visible(FRAME) is True
+    assert ocr.reads == 0
+
+
+def test_start_failure_falls_back_to_ocr(caplog):
+    fb, client, a11y, ocr = fallback(A11yError("IllegalStateException: already registered!"))
+    assert fb.using_ocr
+    assert "already registered" in fb.describe() and fb.describe().startswith("OCR（无障碍读不到：")
+    assert "读聊天退回 OCR" in caplog.text
+    assert fb.read(FRAME, 1.0) == ["ocr 的消息"]
+    assert fb.log_rows(FRAME) == ["ocr 行"] and fb.detect(FRAME) == ["ocr 框"]
+    ocr.panel_closed_since = 3.0
+    assert fb.panel_closed_since == 3.0
+
+
+def test_restart_then_recover():
+    fb, client, a11y, ocr = fallback()
+    assert fb.read(FRAME, 9.0) == ["a11y 的消息"]
+    client.alive, client.snap = False, None
+    assert fb.read(FRAME, 10.0) == []
+    assert fb.read(FRAME, 11.0) == [] and client.starts == 1  # 还没到 2 秒
+    fb.read(FRAME, 12.0)
+    assert client.starts == 2  # 按 2 秒重启
+    client.snap = GOOD
+    assert fb.read(FRAME, 13.0) == ["a11y 的消息"]  # 收到快照：次数清零
+    client.alive, client.snap = False, None
+    fb.read(FRAME, 20.0)
+    fb.read(FRAME, 21.9)
+    assert client.starts == 2
+    fb.read(FRAME, 22.0)
+    assert client.starts == 3  # 还是按 2 秒（不是 5 秒）
+    assert not fb.using_ocr
+
+
+def test_three_failed_restarts_switch_to_ocr(caplog):
+    fb, client, a11y, ocr = fallback()
+    fb.read(FRAME, 0.0)
+    client.alive, client.snap = False, None
+    client.error = "error: already registered!"
+    t = 10.0
+    fb.read(FRAME, t)
+    for delay in (2.0, 5.0, 10.0):
+        t += delay
+        fb.read(FRAME, t)  # 到点重启
+        assert not fb.using_ocr
+        client.alive = False  # 没快照又死了
+        t += 0.1
+        fb.read(FRAME, t)
+    assert client.starts == 4  # 起一次 + 重启三次
+    assert fb.using_ocr and "already registered" in fb.reason
+    assert client.stops == 1
+    for later in (t + 20, t + 60):
+        assert fb.read(FRAME, later) == ["ocr 的消息"]
+    assert client.starts == 4  # 不再起
+    assert "读聊天退回 OCR" in caplog.text
+
+
+def test_restart_raising_counts_as_another_death():
+    fb, client, a11y, ocr = fallback()
+    fb.read(FRAME, 0.0)
+    client.alive, client.snap = False, None
+    client.fail = A11yError("adb 没了")
+    t = 10.0
+    fb.read(FRAME, t)
+    for delay in (2.0, 5.0, 10.0):
+        t += delay
+        fb.read(FRAME, t)
+        t += 0.1
+        fb.read(FRAME, t)
+    assert fb.using_ocr and client.starts == 4
+
+
+def test_stale_switches_to_ocr():
+    fb, client, a11y, ocr = fallback()
+    client.snap = None
+    for now in range(0, 31):
+        assert fb.read(FRAME, float(now)) == []
+        assert not fb.using_ocr
+    fb.read(FRAME, 31.0)
+    assert fb.using_ocr and "30 秒" in fb.reason
+    assert client.stops == 1
+
+
+def test_unhealthy_uses_ocr_panel_visibility():
+    fb, client, a11y, ocr = fallback()
+    fb.read(FRAME, 1.0)
+    assert fb.panel_closed_since is None
+    client.alive, client.snap = False, None
+    ocr.visible = False
+    assert fb.read(FRAME, 2.0) == []
+    assert fb.panel_closed_since == 2.0
+    assert fb.panel_visible(FRAME) is False
+    fb.read(None, 3.0)  # 没有画面：保持原值
+    assert fb.panel_closed_since == 2.0
+    ocr.visible = True
+    fb.read(FRAME, 3.5)
+    assert fb.panel_closed_since is None
+    assert fb.panel_visible(FRAME) is True
+    assert ocr.reads == 0  # 不健康时只借 OCR 看面板，不读消息
+
+
+def test_closed_since_does_not_jump_when_turning_unhealthy():
+    fb, client, a11y, ocr = fallback()
+    a11y.panel_closed_since = 5.0  # 无障碍说面板 5 秒起关着
+    fb.read(FRAME, 6.0)
+    assert fb.panel_closed_since == 5.0
+    client.alive, client.snap = False, None
+    ocr.visible = False  # OCR 也看着关着
+    fb.read(FRAME, 7.0)
+    assert fb.panel_closed_since == 5.0  # 不跳成 7
+    fb.read(None, 8.0)
+    assert fb.panel_closed_since == 5.0
+
+
+def test_unhealthy_has_no_stale_bubbles():
+    fb, client, a11y, ocr = fallback()
+    fb.read(FRAME, 1.0)
+    client.alive, client.snap = False, None
+    fb.read(FRAME, 2.0)
+    assert fb.tags_in_view() == [] and fb.typing() == [] and fb.want_peek() is None
+
+
+def test_trace_path_propagates(tmp_path):
+    fb, client, a11y, ocr = fallback()
+    fb.trace_path = tmp_path / "rows.log"
+    assert a11y.trace_path == ocr.trace_path == tmp_path / "rows.log"
+    assert fb.trace_path == tmp_path / "rows.log"
+
+
+def test_stop_calls_client_stop():
+    fb, client, a11y, ocr = fallback()
+    fb.stop()
+    assert client.stops == 1
+
+
+def test_no_restart_after_stop():  # 收尾时身体还会借 reader 看面板：别把设备上的客户端又起起来
+    fb, client, a11y, ocr = fallback()
+    fb.read(FRAME, 1.0)
+    fb.stop()
+    client.alive, client.snap = False, None
+    for now in (2.0, 5.0, 20.0, 60.0):
+        assert fb.read(FRAME, now) == []
+    assert client.starts == 1 and not fb.using_ocr
+    ocr.visible = False
+    assert fb.panel_visible(FRAME) is False
+
+
+def test_stop_swallows_errors():
+    fb, client, a11y, ocr = fallback()
+
+    def boom():
+        raise RuntimeError("adb 断了")
+
+    client.stop = boom
+    fb.stop()  # 不抛
+
+
+def test_ocr_mode_has_no_bubbles():
+    fb, client, a11y, ocr = fallback(A11yError("x"))
+    assert fb.reads_bubbles is False
+    assert fb.want_peek() is None and fb.tags_in_view() == [] and fb.typing() == []
+    ocr.settling = True
+    assert fb.settling is True

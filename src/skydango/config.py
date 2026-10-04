@@ -62,6 +62,9 @@ class VisionConfig:
     poll_interval: float = 0.15
     # "log"：读聊天记录面板（光遇按 C 打开，推荐）；"bubble"：找头顶气泡再 OCR；"roi"：直接对整块区域 OCR
     mode: str = "bubble"
+    # log 模式下读聊天的方式（spec 2026-10-04-a11y-chat-reader）："a11y" = 读游戏的无障碍节点（准、面板关着也能读好友头顶气泡），
+    # 读不到自动退回 OCR；"ocr" = 截图识别（原来的做法）
+    source: str = "a11y"
     # 搜索区域 [x1, y1, x2, y2]（归一化），默认排除底部操作栏
     roi: list[float] = field(default_factory=lambda: [0.0, 0.0, 1.0, 0.85])
     bubble: BubbleConfig = field(default_factory=BubbleConfig)
@@ -95,6 +98,7 @@ class PanelConfig:
     bubble_gone: float = 3.0  # 气泡消失后再等多久
     bubble_strangers: bool = False  # 陌生人的气泡也触发（没解锁聊天的陌生人在面板里只有省略号）
     open_timeout: float = 1.5  # 按键后最多等多久面板出现
+    chat_peek: float = 15.0  # 「聊着」时多久看一眼面板（读无障碍节点时面板关着也读得到气泡）
 
 
 @dataclass

@@ -296,3 +296,16 @@ def test_removed_wander_keys_are_skipped_with_warning(tmp_path, caplog):  # spec
         cfg = load_config(p)
     assert not hasattr(cfg.attention, "wander_min") and cfg.attention.search is False
     assert "attention.wander_min" in caplog.text and "attention.wander_presses" in caplog.text
+
+
+def test_a11y_chat_reader_defaults():  # spec 2026-10-04-a11y-chat-reader §6
+    import tomllib
+
+    from skydango.config import Config
+
+    cfg = Config()
+    assert cfg.vision.source == "a11y" and cfg.panel.chat_peek == 15.0
+    ex = load_config(ROOT / "config.example.toml")
+    assert ex.vision.source == "a11y" and ex.panel.chat_peek == 15.0
+    raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))
+    assert raw["vision"]["source"] == "a11y" and raw["panel"]["chat_peek"] == 15.0

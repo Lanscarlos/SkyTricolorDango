@@ -27,6 +27,7 @@ def fake_brain_run(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_brain_env", lambda cfg: (FAKE, env))
     monkeypatch.setattr(cli, "_device", lambda cfg: FakeDevice([scene()]))
     monkeypatch.setattr(cli, "_build_reader", lambda cfg: (FakeReader(), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (FakeReader(), SelfFilter(60, 0.8, "")))
     monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda engine, threads=8: FakeOcr())
     cfg = Config()
     cfg.panels.cards_dir = str(Path(__file__).resolve().parents[1] / "assets" / "panels")
@@ -860,3 +861,95 @@ def test_wardrobe_describe_gated(tmp_path):
     gate.trip("limit", "429")
     with pytest.raises(ClaudeError):
         w.describe([{"type": "text", "text": "看"}])
+
+
+# ---- 读聊天走无障碍节点（spec 2026-10-04-a11y-chat-reader §5~§6）----
+class FakeA11yClient:
+    made = []
+
+    def __init__(self, adb_path, serial, **kwargs):
+        self.args = (adb_path, serial)
+        self.starts = self.stops = 0
+        self.alive = True
+        self.error = ""
+        FakeA11yClient.made.append(self)
+
+    def start(self):
+        self.starts += 1
+
+    def stop(self):
+        self.stops += 1
+
+    def latest(self, max_age=None):
+        return None
+
+
+def chat_cfg(monkeypatch, source="a11y", mode="log"):
+    FakeA11yClient.made = []
+    monkeypatch.setattr("skydango.device.a11y.A11yReader", FakeA11yClient)
+    monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda engine, threads=8: FakeOcr())
+    cfg = Config()
+    cfg.vision.mode, cfg.vision.source = mode, source
+    cfg.reply.memory_dir = ""
+    return cfg
+
+
+def test_chat_reader_a11y_source_starts_client(monkeypatch):
+    from skydango.chat.a11yreader import A11yChatReader, FallbackReader
+
+    cfg = chat_cfg(monkeypatch)
+    reader, sf = cli._chat_reader(cfg, FakeDevice([scene()]))
+    assert isinstance(reader, FallbackReader) and isinstance(reader.a11y, A11yChatReader)
+    assert isinstance(sf, SelfFilter) and reader.a11y.self_filter is sf and reader.ocr.self_filter is sf
+    (client,) = FakeA11yClient.made
+    assert client.args == (cfg.device.adb_path, cfg.device.serial) and client.starts == 1
+    assert reader.describe() == "无障碍"
+    cli._stop_reader(reader)
+    assert client.stops == 1
+
+
+def test_chat_reader_ocr_source_is_plain_chatreader(monkeypatch):
+    from skydango.chat.reader import ChatReader
+
+    cfg = chat_cfg(monkeypatch, source="ocr")
+    reader, sf = cli._chat_reader(cfg, FakeDevice([scene()]))
+    assert type(reader) is ChatReader and FakeA11yClient.made == []
+
+
+def test_chat_reader_needs_log_mode_and_a_device(monkeypatch):
+    from skydango.chat.reader import ChatReader
+
+    cfg = chat_cfg(monkeypatch, mode="bubble")
+    assert type(cli._chat_reader(cfg, FakeDevice([scene()]))[0]) is ChatReader
+    cfg = chat_cfg(monkeypatch)
+    assert type(cli._chat_reader(cfg, None)[0]) is ChatReader  # view --images 回放：没有设备
+    assert FakeA11yClient.made == []
+
+
+def test_chat_reader_rejects_unknown_source(monkeypatch):
+    cfg = chat_cfg(monkeypatch, source="ocr2")
+    with pytest.raises(ValueError, match="vision.source"):
+        cli._chat_reader(cfg, FakeDevice([scene()]))
+
+
+def test_stop_reader_swallows_errors():
+    class Boom:
+        def stop(self):
+            raise RuntimeError("adb 断了")
+
+    cli._stop_reader(Boom())
+    cli._stop_reader(FakeReader())  # 没有 stop 也行
+
+
+def test_game_world_close_stops_reader(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    stopped = []
+
+    class StoppingReader(FakeReader):
+        def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(), SelfFilter(60, 0.8, "")))
+    world = cli._game_world(cfg, run, True)
+    world.close()
+    assert stopped == [True]

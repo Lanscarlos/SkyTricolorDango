@@ -13,7 +13,10 @@ serial = "127.0.0.1:16384"
 [vision]
 poll_interval = 0.15
 mode = "log"                  # 读聊天记录面板（光遇按 C 打开）；"bubble" 找头顶气泡；"roi" 整块 OCR
-roi = [0.0, 0.0, 1.0, 0.85]   # 只在这块区域里找气泡，排除底部操作栏
+# log 模式下怎么读（设计见 docs/superpowers/specs/2026-10-04-a11y-chat-reader-design.md）：
+# "a11y" = 读游戏的无障碍节点（准、面板关着也能读好友头顶气泡），读不到自动退回 OCR；"ocr" = 截图识别（原来的做法）
+source = "a11y"
+roi =[0.0, 0.0, 1.0, 0.85]   # 只在这块区域里找气泡，排除底部操作栏
 
 [vision.bubble]
 # 用 `skydango detect 截图.png` 反复试这几项
@@ -34,6 +37,7 @@ bubble_wait = 15.0        # 看到气泡后最多开着等多久
 bubble_gone = 3.0         # 气泡消失后再等多久
 bubble_strangers = false  # 陌生人的气泡也触发（没解锁聊天的陌生人在面板里只有省略号）
 open_timeout = 1.5        # 按 C 后最多等多久面板出现
+chat_peek = 15.0          # 「聊着」时多久看一眼面板（[vision] source = "a11y" 时面板关着也读得到好友头顶的气泡）
 
 [ocr]
 min_score = 0.6

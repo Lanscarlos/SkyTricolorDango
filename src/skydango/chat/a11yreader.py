@@ -313,3 +313,161 @@ class A11yChatReader:
         fresh = self._panel_messages(view, now)
         self._bubble_messages(view, now, report=False)  # 在面板行之后：同一份里的气泡能抵掉刚报的面板行
         return fresh
+
+
+# ---- 读不到自动退回 OCR（spec §5）----
+RESTART_DELAYS = (2.0, 5.0, 10.0)  # 客户端死了以后第几次重启前等多久；用完了又死 → 这次 run 剩下的时间都用 OCR
+STALE = 30.0  # 客户端活着、这么久没收到快照（心跳每秒一份）→ 退回 OCR
+MAX_AGE = 2.0  # 比这旧的快照不算（客户端死了以后最后一份会一直留着）
+
+
+class FallbackReader:
+    """先读无障碍节点（`A11yChatReader`），读不到自动退回 OCR（`ChatReader`），接口同两者。
+
+    - 健康（`client.latest(max_age=MAX_AGE)` 拿得到）：照常交给 `a11y`
+    - 客户端死了：按 `RESTART_DELAYS` 重启，重启后收到快照次数清零；用完了又死 → 切到 OCR
+    - 活着但 `STALE` 秒没快照 → 切到 OCR
+    - 不健康期间 `read()` 返回空，面板开没开借 OCR reader 看截图（便宜，不跑 OCR），免得面板管理器乱按键
+    - 切到 OCR 后这次 run 剩下的时间都交给 `ocr`（它从空基准开始，不会把历史当新消息；切换期间漏的几句不补）
+    """
+
+    def __init__(self, client, a11y: A11yChatReader, ocr) -> None:
+        self.client = client  # device.a11y.A11yReader
+        self.a11y = a11y
+        self.ocr = ocr  # chat.reader.ChatReader
+        self.using_ocr = False
+        self.reason = ""  # 退回 OCR 的原因
+        self._ok = False  # 最近一次 read() 时无障碍是健康的
+        self._good_at: float | None = None  # 最后一次拿到新鲜快照
+        self._dead_at: float | None = None  # 发现客户端死了的时间（等重启）
+        self._restarts = 0
+        self._start_error = ""
+        self._stopped = False
+        self._closed_since: float | None = None  # 无障碍模式下自己维护的“面板从什么时候关着”
+        self._trace_path: Path | None = None
+
+    # ---- 起停 ----
+    def start(self) -> None:
+        try:
+            self.client.start()
+        except Exception as exc:
+            self._to_ocr(str(exc) or type(exc).__name__)
+
+    def stop(self) -> None:
+        self._stopped = True  # 收尾时身体还可能借 reader 看面板：别再重启客户端
+        try:
+            self.client.stop()
+        except Exception:
+            log.warning("停无障碍客户端出错", exc_info=True)
+
+    def describe(self) -> str:
+        return f"OCR（无障碍读不到：{self.reason}）" if self.using_ocr else "无障碍"
+
+    def _to_ocr(self, reason: str) -> None:
+        self.using_ocr, self.reason, self._ok = True, reason, False
+        log.warning("读聊天退回 OCR：%s", reason)
+        self.ocr.panel_closed_since = self._closed_since  # 面板关着的时间接着算，不跳
+        self.stop()
+
+    # ---- 健康检查 ----
+    def _restart(self, now: float) -> None:
+        self._restarts += 1
+        self._dead_at = None
+        self._good_at = now  # 重启后给它 STALE 秒出第一份快照
+        log.warning("无障碍客户端退出了，第 %d 次重启", self._restarts)
+        try:
+            self.client.start()
+        except Exception as exc:  # 起不来就当又死了一次：下一圈看到 alive 为假接着等
+            self._start_error = str(exc) or type(exc).__name__
+            log.warning("重启无障碍客户端失败：%s", self._start_error)
+
+    def _check(self, now: float) -> bool:
+        """这一圈无障碍能不能用；顺带重启 / 切到 OCR。"""
+        client = self.client
+        if not client.alive:
+            if self._stopped:
+                return False
+            if self._dead_at is None:
+                if self._restarts >= len(RESTART_DELAYS):
+                    self._to_ocr(client.error or self._start_error or "客户端反复退出")
+                    return False
+                self._dead_at = now
+            if now >= self._dead_at + RESTART_DELAYS[self._restarts]:
+                self._restart(now)
+            return False
+        if client.latest(max_age=MAX_AGE) is not None:
+            if self._restarts:
+                log.info("无障碍客户端恢复了")
+            self._good_at, self._restarts, self._start_error = now, 0, ""
+            return True
+        if self._good_at is None:
+            self._good_at = now
+        if now - self._good_at > STALE:
+            self._to_ocr(f"{STALE:.0f} 秒没收到快照")
+        return False
+
+    def _live(self) -> bool:
+        return not self.using_ocr and self.client.alive and self.client.latest(max_age=MAX_AGE) is not None
+
+    # ---- 读 ----
+    def read(self, frame, now: float) -> list[Message]:
+        if not self.using_ocr:
+            self._ok = self._check(now)
+        if self.using_ocr:
+            return self.ocr.read(frame, now)
+        if self._ok:
+            fresh = self.a11y.read(frame, now)
+            self._closed_since = self.a11y.panel_closed_since
+            return fresh
+        if frame is not None:  # 不健康：借 OCR reader 看截图里的输入框
+            if self.ocr.panel_visible(frame):
+                self._closed_since = None
+            elif self._closed_since is None:
+                self._closed_since = now
+        return []
+
+    def panel_visible(self, frame=None) -> bool:
+        if self._live():
+            return self.a11y.panel_visible(frame)
+        if frame is None:
+            return self.panel_closed_since is None
+        return self.ocr.panel_visible(frame)
+
+    @property
+    def panel_closed_since(self) -> float | None:
+        return self.ocr.panel_closed_since if self.using_ocr else self._closed_since
+
+    @property
+    def settling(self) -> bool:
+        return self.ocr.settling if self.using_ocr else self.a11y.settling
+
+    @property
+    def reads_bubbles(self) -> bool:
+        return not self.using_ocr
+
+    @property
+    def trace_path(self) -> Path | None:
+        return self._trace_path
+
+    @trace_path.setter
+    def trace_path(self, path: Path | None) -> None:
+        self._trace_path = self.a11y.trace_path = self.ocr.trace_path = path
+
+    def _current(self):
+        return self.ocr if self.using_ocr else self.a11y
+
+    def log_rows(self, frame=None) -> list[LogRow]:
+        return self._current().log_rows(frame)
+
+    def detect(self, frame=None) -> list[Detection]:
+        return self._current().detect(frame)
+
+    # ---- 给面板管理器（OCR 模式 / 不健康时没有）----
+    def tags_in_view(self) -> list[str]:
+        return self.a11y.tags_in_view() if self._ok else []
+
+    def typing(self) -> list[str]:
+        return self.a11y.typing() if self._ok else []
+
+    def want_peek(self) -> str | None:
+        return self.a11y.want_peek() if self._ok else None

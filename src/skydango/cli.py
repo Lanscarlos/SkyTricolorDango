@@ -85,6 +85,36 @@ def _build_reader(cfg: Config):
     return ChatReader(make_ocr(cfg.ocr.engine, cfg.ocr.threads), cfg.vision, cfg.ocr, cfg.chat, self_filter), self_filter
 
 
+def _chat_reader(cfg: Config, dev):
+    """run / view 读聊天用的：`[vision] source = "a11y"`（log 模式、有设备）时先读无障碍节点、读不到自动退回 OCR，
+    否则就是 OCR 的 `_build_reader`。用完要 `_stop_reader`（清掉设备上的客户端进程）。"""
+    if cfg.vision.source not in ("a11y", "ocr"):
+        raise ValueError(f"vision.source 只能是 a11y / ocr，现在是 {cfg.vision.source!r}")
+    ocr, self_filter = _build_reader(cfg)
+    if cfg.vision.source != "a11y" or cfg.vision.mode != "log" or dev is None:
+        return ocr, self_filter
+    from .chat.a11yreader import MAX_AGE, A11yChatReader, FallbackReader
+    from .device.a11y import A11yReader
+
+    client = A11yReader(cfg.device.adb_path, cfg.device.serial)
+    a11y = A11yChatReader(lambda: client.latest(max_age=MAX_AGE), _friend_names(cfg), cfg.chat, cfg.ocr, self_filter)
+    reader = FallbackReader(client, a11y, ocr)
+    reader.start()
+    log.info("读聊天：%s", reader.describe())
+    return reader, self_filter
+
+
+def _stop_reader(reader) -> None:
+    """停掉 `_chat_reader` 起的无障碍客户端；OCR reader 没有 stop，什么也不做。"""
+    stop = getattr(reader, "stop", None)
+    if stop is None:
+        return
+    try:
+        stop()
+    except Exception:
+        log.exception("停读聊天出错")
+
+
 # ---- 命令 ----
 def cmd_devices(cfg: Config, args) -> None:
     dev = _device(cfg)
@@ -750,9 +780,13 @@ def cmd_view(cfg: Config, args) -> None:
         cfg.env.interval = 0.0
         cfg.perception.fps, cfg.perception.capture = 1000.0, "body"
     dev = None if files else _device(cfg)
-    reader, _ = _build_reader(cfg)
-    env = _scene_watcher(cfg, _icon_classifier(cfg), dev=dev, background=not files)
-    viewer = _viewer(cfg, open_browser=not args.no_browser)
+    reader, _ = _chat_reader(cfg, dev)  # 回放（没有设备）时就是 OCR
+    try:
+        env = _scene_watcher(cfg, _icon_classifier(cfg), dev=dev, background=not files)
+        viewer = _viewer(cfg, open_browser=not args.no_browser)
+    except BaseException:
+        _stop_reader(reader)
+        raise
     print("只看，不操作游戏；Ctrl+C 结束" + (f"。回放 {len(files)} 张图" if files else ""))
     try:
         _view(cfg, _view_frames(files, dev), reader, env, viewer)
@@ -766,6 +800,7 @@ def cmd_view(cfg: Config, args) -> None:
         if hasattr(env, "stop"):
             env.stop()
         viewer.stop()
+        _stop_reader(reader)
 
 
 def cmd_a11y(cfg: Config, args) -> None:
@@ -2294,7 +2329,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     from .vision.envdiff import snapshot
 
     dev = _device(cfg)
-    reader, self_filter = _build_reader(cfg)
+    reader, self_filter = _chat_reader(cfg, dev)
     reader.trace_path = run.rows_log
     panel = _panel(cfg, dev, reader)
     llm = make_llm(cfg.llm)
@@ -2349,6 +2384,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             panel.shutdown()  # 按需模式：退出时把聊天面板恢复成开着
         except Exception:
             log.exception("聊天面板没恢复")
+        _stop_reader(reader)
         ime.stop()
 
 
@@ -2455,13 +2491,13 @@ def _gated_backup(cfg: Config):
 def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
     """真机世界（brain-sandbox spec §2）：接 MuMu 的设备、OCR 读聊天、身边识别、轮盘、镜头……原样搬自 _run_brain。
 
-    仍按模块名调 _device / _build_reader / _panels……（测试的 monkeypatch 照样生效）。"""
+    仍按模块名调 _device / _chat_reader / _panels……（测试的 monkeypatch 照样生效）。"""
     from .brain.locomotion import Locomotion
     from .brain.world import World
     from .chat.sender import ChatSender
 
     dev = _device(cfg)
-    reader, self_filter = _build_reader(cfg)
+    reader, self_filter = _chat_reader(cfg, dev)
     reader.trace_path = run.rows_log
     panel = _panel(cfg, dev, reader)
     icons = _icon_classifier(cfg) if cfg.env.enabled else None
@@ -2480,6 +2516,7 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
         _stop_scene(env)
         if panels is not None:
             panels.close()
+        _stop_reader(reader)
 
     ime = _ime_switch(cfg, dev)  # 最后才切：前面建东西出错时不用切回
     return World(

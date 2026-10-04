@@ -28,7 +28,7 @@ def test_every_spec_field_is_listed():
         "device.adb_path", "device.serial", "device.switch_ime", "device.capture", "llm.provider", "llm.base_url", "llm.model", "secret.llm",
         "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model",
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
-        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "backstage.enabled", "env.enabled",
+        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "backstage.enabled", "vision.source", "env.enabled",
         "perception.enabled",
         "perception.model", "attrs.enabled", "places.enabled", "appearance.enabled", "appearance.describe", "catalog.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
@@ -175,3 +175,11 @@ def test_console_has_backstage_switch():
 def test_console_has_call_switches():
     by = {f.key: f for f in FIELDS}
     assert by["call.enabled"].kind == "bool" and by["call.auto"].kind == "bool"
+
+
+def test_console_has_vision_source():
+    from skydango.console.settings import KNOWN
+
+    f = KNOWN["vision.source"]
+    assert (f.label, f.kind, f.group, f.choices) == ("读聊天的方式", "choice", "features", ("a11y", "ocr"))
+    assert f.help.startswith("a11y：读游戏的无障碍节点") and "ocr：截图识别" in f.help
