@@ -43,7 +43,8 @@ from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
 from ..config import AppearanceConfig, EnvConfig, GestureConfig, PerceptionConfig, SocialConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_request
-from .appearance import describe_crop, good_crop
+from .appearance import describe_crop, make_sample
+from .gallery import Sample
 from .attrs import unlit_score
 from .candle import black, find_flames, white_ring
 from .bubbles import Rect, roi_rect
@@ -69,6 +70,8 @@ SELF_IOU = 0.3  # 和团子框重叠这么多就算团子（_mark_dango 用 same
 MERGE_IOU = 0.7  # merge_people：player 和 player_unlit 两框重叠这么多就是同一个人（录像里同一人的两框 IoU 0.74~1.0，挨着的两个人 < 0.5）
 SAME_BODY_IOU = 0.45  # same_body：团子身上的 player 框和 self 框
 DANGO_MEMORY = 30.0  # 团子框（按聊天面板开 / 关分别记）这么久内见过：YOLO 没出 self 时，落在那个位置上的人物框就是团子
+# 认装扮：没挂名字的人 DINOv2 特征像团子（"看着像团子"，data["dango_look"]）：这么久内没再被判像团子就失效（身份底库 spec 2026-10-03 §3.2）
+DANGO_LOOK_HOLD = 3.0
 SELF_HOLD = 3.0  # 团子框丢了（黑影贴着团子时 YOLO 常认不出 self）最多沿用最近的框这么久：镜头跟着团子，屏幕位置几乎不变
 LIT_LOW = 0.2  # 点亮陌生人开着时检测器按这个出框：晚上黑影分数低（10-01 晚 0.27 / 0.28），找"火焰下面那个人"时也看低分框
 DIAG_EVERY = 0.5  # 点亮中每隔这么久存一张图（spec 2026-10-01-light-flame-around-self §5）
@@ -307,12 +310,14 @@ class PerceptionWatcher:
         light_dir: Path | None = None,  # 点亮陌生人每次存图 / summary.json 的目录（None = 不存）
         appearance=None,  # vision.appearance.AppearanceBook：认装扮（None = 不认，行为照旧）
         embedder=None,  # 外观特征模型（appearance.make_embedder）
+        dino=None,  # vision.appearance.DinoGuard：DINOv2 特征（None = 不算，只有颜色）
         appearance_cfg: AppearanceConfig | None = None,
         saver=None,  # 攒认人模型的训练数据（CropSaver，None = 不存）
         call_window: float = 6.0,  # 按 Q 喊一声的窗口秒数（[call] window）
         camera_settle: float = 0.6,  # 镜头缩放 / 走路 / 转圈后这么久画面才稳（同 [track] settle）
         attrs=None,  # vision.attrs.PersonAttrs：第二层（复核低分框、撤下误框、点没点火两边投票；None = 不接，行为照旧）
         catalog=None,  # vision.catalog.CatalogCollector：图鉴收集（None = 不收，行为照旧）
+        enroll_dir: Path | None = None,  # 启动登记团子时取到的裁图存这里（<序号>.jpg，None = 不存）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -350,9 +355,11 @@ class PerceptionWatcher:
         self._gesture_at: dict[tuple[str, str], float] = {}
         self.appearance = appearance
         self.embedder = embedder
+        self.dino = dino
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
         self.saver = saver
         self.catalog = catalog
+        self.enroll_dir = enroll_dir
         self._self_seen: tuple[float, list[Rect]] | None = None  # 最近一次看到团子框的时间和框（图鉴收集认团子用）
         self.call_window = call_window
         self._call: CallSeen | None = None  # 最近一次呼喊窗口（只留一次）；self._lock 保护
@@ -485,6 +492,11 @@ class PerceptionWatcher:
         for track in list(self.tracker.tracks.values()):
             if "relink_at" in track.data:
                 track.data["relink_at"] += d
+            for key in ("unsure", "unsure_first"):  # "可能是"的等待也不算暂停的时间
+                if v := track.data.get(key):
+                    track.data[key] = (v[0], v[1] + d)
+            if "dango_look" in track.data:
+                track.data["dango_look"] += d
         for name, (x, y, w, h, t) in list(self.labels.items()):
             self.labels[name] = (x, y, w, h, min(t + d, now))
         for name, (kind, t) in list(self.circles.items()):
@@ -679,6 +691,7 @@ class PerceptionWatcher:
             self._note_lost(now)
         selfs = [t for t in tracks if t.cls == "self"]
         self._mark_dango(tracks, selfs, now, panel_visible)
+        dangos = [t for t in tracks if t.cls in ("player", UNLIT) and t.data.get("dango") and self._admitted(t)]
         players = [t for t in tracks if t.cls in ("player", UNLIT) and not t.data.get("dango") and self._admitted(t)]
         if self.attrs is not None:
             # 外形是先祖 / 共享空间的：看得到，但不算陌生人、不挂名字、不进接回 / 续命 / 走近 / 运动 / 动作 / 认装扮（spec §3.5）
@@ -793,9 +806,14 @@ class PerceptionWatcher:
             self._relink(players, shown, now)
         fresh = {}
         if self.appearance is not None:
-            fresh = self._appearance_features(frame, players, selfs, now, width, height, panel_visible)
-            self._appearance_identify(frame, players, selfs, tagged, shown, fresh, now, tracks)
+            fresh = self._appearance_features(frame, players, selfs, dangos, now, width, height, panel_visible)
+            self._appearance_identify(frame, players, selfs, dangos, tagged, shown, fresh, now, tracks)
         for player in players:
+            if self.appearance is not None:
+                if self._dangoish(player, now):
+                    player.data["stranger"] = False  # 看着像团子：不判陌生人（同团子标记）
+                    continue
+                self._unsure_expire(player, now)
             if self._unlit(player):
                 # 没点火的黑影是陌生人，远近都算；但也等 stranger_after（好友偶尔被认成黑影一两帧，walkaway-1002-1），
                 # 挂过名字标签的轨迹不算（好友不会是黑影）
@@ -909,6 +927,8 @@ class PerceptionWatcher:
         tagged = d.get("tagged")
         if tagged and d.get("name"):
             return Who(d["name"], "friend", True)
+        if self._dangoish(t, self._frame_at):
+            return Who("团子", "self", True)  # 团子身上的 player 框 / 看着像团子的人：按团子收
         if self._near_dango(t):
             return None  # 团子身上的 player 框（_mark_dango 没认出来的）：团子自己有一份，不当陌生人收
         if tagged:
@@ -1011,10 +1031,49 @@ class PerceptionWatcher:
         return self._count_unnamed([
             t for t in tracks
             if t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and not t.data.get("dango")
-        ])
+        ], now)
 
-    def _count_unnamed(self, players: list[Track]) -> int:
-        return sum(not self._unlit(p) and not p.data.get("name") and not p.data.get("maybe") for p in players)
+    def unsure(self, now: float) -> list[tuple[int, str, float]]:
+        """最近一帧里"可能是小明"已经挂满 unsure_wait、还没为它喊过的轨迹：(轨迹 id, 名字, 开始时间)，给身体决定要不要喊一声。
+        他的名字此刻挂在别的轨迹上、或者他的名字标签 PEOPLE_STALE 秒内刚亮过的不列（那是名字在说话，不用喊）。"""
+        if self.appearance is None:
+            return []
+        wait = self.appearance_cfg.unsure_wait
+        with self._lock:
+            tracks = [t for t in list(self.last_tracks) if now - t.last <= PEOPLE_STALE and t.cls in ("player", UNLIT)]
+            named = {n for t in tracks if (n := t.data.get("name"))}
+            labels = dict(self.labels)
+        out = []
+        for t in tracks:
+            u = t.data.get("unsure")
+            if not u or t.data.get("unsure_called") is not None or now - u[1] < wait or u[0] in named:
+                continue
+            seen = labels.get(u[0])
+            if seen is not None and now - seen[4] <= PEOPLE_STALE:
+                continue
+            out.append((t.id, u[0], u[1]))
+        return out
+
+    def mark_unsure_called(self, ids: list[int], at: float) -> None:
+        """身体为这几条"可能是"的轨迹喊了一声（窗口从 at 开始）：打上标记，不再列出；窗口结束时按有没有亮名字收尾。"""
+        with self._lock:
+            for t in self.last_tracks:
+                if t.id in ids:
+                    t.data["unsure_called"] = at
+
+    def _count_unnamed(self, players: list[Track], now: float) -> int:
+        """没挂名字的点过火的人：按外观认的好友（像小明 / 可能是小明）、看着像团子的不算。"""
+        return sum(
+            not self._unlit(p) and not p.data.get("name") and not p.data.get("maybe") and not p.data.get("unsure")
+            and not self._dangoish(p, now)
+            for p in players
+        )
+
+    @staticmethod
+    def _dangoish(t: Track, now: float) -> bool:
+        """这条人物轨迹算不算团子：_mark_dango 按位置打了标记，或者 DANGO_LOOK_HOLD 秒内被判过"看着像团子"。"""
+        d = t.data
+        return bool(d.get("dango")) or now - d.get("dango_look", float("-inf")) <= DANGO_LOOK_HOLD
 
     def _offscreen(self, tag: Track, width: int) -> str | None:
         """名字标签中心在最左 / 最右 edge_band 里：好友在画面外，返回在哪边。"""
@@ -1041,9 +1100,14 @@ class PerceptionWatcher:
             return
         if now > self._call_span[1]:
             with self._lock:
-                c.unnamed = self._count_unnamed(players)
+                c.unnamed = self._count_unnamed(players, now)
                 c.ended = True
             log.debug("呼喊窗口结束：%s；没挂名字 %d 个", "、".join(c.friends) or "没看到名字", c.unnamed)
+            for p in players:  # 为"可能是"喊的这一声：窗口里头上没亮名字（标签挂到别人头上也一样）就是认错了
+                if p.data.get("unsure_called") == c.at and not p.data.get("name"):
+                    log.info("喊了一声，轨迹 %d 头上没亮名字", p.id)
+                    p.data.pop("unsure", None)
+                    p.data["unsure_miss"] = True
             return
         for tag in tags:  # 只看到名字、下面没框到人（贴边的在上面已经记过）
             name = tag.data.get("name")
@@ -1116,33 +1180,39 @@ class PerceptionWatcher:
         return self.tracker.update(fresh, now, prune=False) if fresh else []  # 同一帧第二次：不删、不冲掉 dropped
 
     # ---- 认装扮（设计 §3.2、§4） ----
-    def _appearance_features(self, frame: np.ndarray, players: list[Track], selfs: list[Track], now: float,
-                             width: int, height: int, panel_visible: bool) -> dict[int, tuple[np.ndarray, Rect]]:
-        """点过火的人和团子：每 every 帧裁一次好样本、算特征，平滑进 data["feat"]、好样本数进 data["samples"]。
-        一帧最多算 max_per_frame 个（最久没算的先算）。返回这一帧新算的 {轨迹 id: (这次的特征, 框)}，学进记忆簿时用。"""
+    def _appearance_features(self, frame: np.ndarray, players: list[Track], selfs: list[Track], dangos: list[Track], now: float,
+                             width: int, height: int, panel_visible: bool) -> dict[int, tuple[Sample, Rect]]:
+        """点过火的人、团子（self 框和身上打了 data["dango"] 的 player 框）：每 every 帧裁一次好样本、算颜色和 DINOv2 两个特征，
+        颜色平滑进 data["feat"]、好样本数进 data["samples"]、这一次的样本放 data["sample"]。
+        一帧最多算 max_per_frame 个（最久没算的先算）。返回这一帧新算的 {轨迹 id: (这次的样本, 框)}，学进记忆簿时用。"""
         acfg = self.appearance_cfg
         every = max(1, acfg.every)
-        due = [t for t in [p for p in players if not self._unlit(p)] + selfs if t.hits % every == 0]
+        pool: dict[int, Track] = {}
+        for t in [p for p in players if not self._unlit(p)] + selfs + dangos:
+            pool.setdefault(t.id, t)  # 同一条轨迹只算一次
+        due = [t for t in pool.values() if t.hits % every == 0]
         due.sort(key=lambda t: t.data.get("feat_at", float("-inf")))
         blocked = [roi_rect(self.log_roi, width, height)] if panel_visible else []
-        out: dict[int, tuple[np.ndarray, Rect]] = {}
+        body_ids = {t.id for t in selfs} | {t.id for t in dangos}  # 团子的 self 框和 player 框是同一个身体，互相不算遮挡
+        out: dict[int, tuple[Sample, Rect]] = {}
         for t in due:
             if len(out) >= acfg.max_per_frame:
                 break
             t.data["feat_at"] = now
-            others = [o.box for o in players + selfs if o.id != t.id]
-            crop = good_crop(frame, t.box, others, blocked, acfg.min_height, acfg.max_overlap)
-            if crop is None:
-                continue
+            mine = t.id in body_ids
+            others = [o.box for o in players + selfs + dangos if o.id != t.id and not (mine and o.id in body_ids)]
             try:
-                feat = unit(self.embedder.embed(crop))
+                sample = make_sample(frame, t.box, others, blocked, acfg, self.embedder, self.dino, now)
             except Exception:
                 log.exception("算外观特征出错")
                 continue
+            if sample is None:
+                continue
             old = t.data.get("feat")
-            t.data["feat"] = feat if old is None else unit((1 - acfg.ema) * old + acfg.ema * feat)
+            t.data["feat"] = sample.color if old is None else unit((1 - acfg.ema) * old + acfg.ema * sample.color)
             t.data["samples"] = t.data.get("samples", 0) + 1
-            out[t.id] = (feat, t.box)
+            t.data["sample"] = sample
+            out[t.id] = (sample, t.box)
         return out
 
     def _save_samples(self, frame: np.ndarray, players: list[Track], tagged: dict[int, Track],
@@ -1151,7 +1221,8 @@ class PerceptionWatcher:
         for p in players:
             if self._unlit(p) or p.id not in fresh:
                 continue
-            feat, box = fresh[p.id]
+            sample, box = fresh[p.id]
+            feat = sample.color
             try:
                 tag = tagged.get(p.id)
                 name = (tag.data.get("name") if tag is not None else None) or None
@@ -1164,9 +1235,9 @@ class PerceptionWatcher:
             except Exception:
                 log.exception("存认装扮训练数据出错")
 
-    def _learn(self, kind: str, who: str, sample: tuple[np.ndarray, Rect], frame: np.ndarray, now: float) -> None:
-        feat, box = sample
-        p = self.appearance.learn(kind, who, feat, now, crop=(box.h, describe_crop(frame, box).copy()))
+    def _learn(self, kind: str, who: str, sample: tuple[Sample, Rect], frame: np.ndarray, now: float) -> None:
+        smp, box = sample
+        p = self.appearance.learn(kind, who, smp.color, now, crop=(box.h, describe_crop(frame, box).copy()), dino=smp.dino, h=smp.h)
         self._outfit_triggers(kind, who, p, box, frame.shape[0], now)
 
     # ---- 装扮描述（设计 §3.3、§4.4）：学到新的好样本时才判断，不是每帧 ----
@@ -1271,29 +1342,32 @@ class PerceptionWatcher:
             out, self._outfits = self._outfits, []
         return out
 
-    def _appearance_identify(self, frame: np.ndarray, players: list[Track], selfs: list[Track],
+    def _appearance_identify(self, frame: np.ndarray, players: list[Track], selfs: list[Track], dangos: list[Track],
                              tagged: dict[int, Track], shown: set[str], fresh: dict, now: float,
                              tracks: list[Track]) -> None:
-        """学（挂着名字标签的好友、团子）→ 名字标签说了算（摘掉 maybe / 编号）→ 没标签的按外观认好友（maybe）。"""
+        """学 → 名字标签说了算 → 没标签的按外观认（身份底库 spec 2026-10-03 §3）。
+
+        学：团子（self 框、_mark_dango 打了标记的 player 框）进团子底库；这一帧挂着名字标签的好友进他的底库；
+        像小明 / 可能是小明 / 接回的 / 看着像团子的都不学（陌生人编号在 _appearance_stranger 里学）。
+        认（只拿这一帧新算的样本比，这一帧没算出样本的轨迹保持上一帧的结论）：先看像不像团子（DINOv2，dango_look），
+        再看像哪个好友：过 match 是"像小明"（maybe），落在 [unsure, match) 是"可能是小明"（unsure，先不判陌生人、等喊一声）。"""
         book, acfg = self.appearance, self.appearance_cfg
-        for me in selfs:
+        for me in selfs + dangos:
             if me.id in fresh:
                 self._learn("me", "", fresh[me.id], frame, now)
         cands: dict[int, np.ndarray] = {}
         for p in players:
             d = p.data
             if self._unlit(p):  # 变成黑影了：没有外观可比
-                d.pop("maybe", None)
-                d.pop("maybe_by", None)
-                d.pop("miss", None)
+                for key in ("maybe", "maybe_by", "miss", "unsure", "dango_look"):
+                    d.pop(key, None)
                 continue
             tag = tagged.get(p.id)
             if tag is not None:  # 名字标签永远说了算
                 name = tag.data.get("name")
                 maybe = d.pop("maybe", None)
-                d.pop("maybe_by", None)
-                d.pop("miss", None)
-                d.pop("sid", None)
+                for key in ("maybe_by", "miss", "sid", "unsure", "unsure_first", "dango_look"):
+                    d.pop(key, None)
                 if maybe and name and maybe != name:
                     log.info("轨迹 %d 按外观认成 %s，名字标签是 %s", p.id, maybe, name)
                     self._report(frame, now, f"按外观认成 {maybe}，名字标签是 {name}", tracks)
@@ -1302,32 +1376,75 @@ class PerceptionWatcher:
                 continue
             if d.get("tagged") or d.get("name"):
                 continue  # 之前挂过标签、这一帧被挡住：身份照旧
+            unsure = d.get("unsure")
+            if unsure and unsure[0] in shown:  # 他的名字标签此刻清清楚楚挂在别处：不是他
+                log.debug('轨迹 %d 不是 %s（标签在别处），不再"可能是"', p.id, unsure[0])
+                d.pop("unsure", None)
             maybe = d.get("maybe")
             if maybe and d.get("maybe_by") == "relink":
                 continue  # 按位置接回的：颜色特征不稳，不拿外观否掉位置连续性（标签在别处时 process 里已经摘了）
+            if maybe and maybe in shown:  # 他的名字标签此刻清清楚楚挂在别处：不是他
+                log.debug("轨迹 %d 不像 %s 了（标签在别处）", p.id, maybe)
+                d.pop("maybe", None)
+                d.pop("miss", None)
+                continue
+            if p.id not in fresh or d.get("samples", 0) < acfg.min_samples:
+                continue  # 这一帧没算出新样本：保持上一帧的结论
+            sample = fresh[p.id][0]
+            if book.looks_like_dango(sample.dino):
+                if not self._dangoish(p, now):
+                    log.info("轨迹 %d 没看到名字，看着像团子", p.id)
+                d["dango_look"] = now
+                for key in ("maybe", "miss", "unsure"):
+                    d.pop(key, None)
+                continue
+            if self._dangoish(p, now):
+                continue  # 刚才还像团子（DANGO_LOOK_HOLD 内）：不改认成好友
             if maybe:
-                if maybe in shown:  # 他的名字标签此刻清清楚楚挂在别处：不是他
-                    log.debug("轨迹 %d 不像 %s 了（标签在别处）", p.id, maybe)
+                d["miss"] = 0 if book.still_like(sample.color, maybe) else d.get("miss", 0) + 1
+                if d["miss"] >= acfg.recheck:
+                    log.debug("轨迹 %d 连着 %d 次不像 %s，摘掉", p.id, d["miss"], maybe)
                     d.pop("maybe", None)
                     d.pop("miss", None)
-                elif p.id in fresh:
-                    d["miss"] = 0 if book.still_like(d["feat"], maybe) else d.get("miss", 0) + 1
-                    if d["miss"] >= acfg.recheck:
-                        log.debug("轨迹 %d 连着 %d 次不像 %s，摘掉", p.id, d["miss"], maybe)
-                        d.pop("maybe", None)
-                        d.pop("miss", None)
                 continue
-            if d.get("samples", 0) >= acfg.min_samples:
-                cands[p.id] = d["feat"]
+            cands[p.id] = sample.color
         if not cands:
             return
-        taken = shown | {v for p in players for k in ("name", "maybe") if (v := p.data.get(k))}
         byid = {p.id: p for p in players}
-        for tid, name in book.assign_friends(cands, taken).items():
+        taken = shown | {v for p in players for k in ("name", "maybe") if (v := p.data.get(k))}
+        assigned = book.assign_friends(cands, taken)
+        for tid, name in assigned.items():
             d = byid[tid].data
             d["maybe"], d["miss"] = name, 0
             d.pop("sid", None)
+            d.pop("unsure", None)
             log.info("轨迹 %d 没看到名字，按外观像 %s", tid, name)
+        # 喊过 / 等过还没认出来的（unsure_miss）不再进"可能是"；像团子、像小明照样能认
+        rest = {tid: f for tid, f in cands.items() if tid not in assigned and not byid[tid].data.get("unsure_miss")}
+        # 一个名字只给一条轨迹："可能是"也一样（这一帧没重新认的轨迹上挂着的也算占着）
+        held = taken | set(assigned.values()) | {
+            u[0] for p in players if p.id not in rest and (u := p.data.get("unsure"))
+        }
+        unsure = book.unsure_friends(rest, held)
+        for tid in rest:
+            d = byid[tid].data
+            name, old = unsure.get(tid), d.get("unsure")
+            if name is None:
+                if old:
+                    log.debug('轨迹 %d 不再"可能是" %s', tid, old[0])
+                d.pop("unsure", None)
+            elif not old or old[0] != name:
+                # 同一个名字接着算（开始时间不变）；分数在 unsure 上下晃、掉出去又回来的也从第一次算起（不然一直拖着不判陌生人）；
+                # 换了名字重新算
+                first = d.get("unsure_first")
+                start = first[1] if first and first[0] == name else now
+                d["unsure"] = d["unsure_first"] = (name, start)
+                log.info("轨迹 %d 没看到名字，可能是 %s", tid, name)
+        gone = set(assigned.values())
+        for p in players:  # 名字刚被别的轨迹认走（像小明）：这条的"可能是"作废
+            u = p.data.get("unsure")
+            if u and p.id not in assigned and u[0] in gone:
+                p.data.pop("unsure", None)
 
     # ---- 失踪好友接回（spec §4） ----
     def _note_lost(self, now: float) -> None:
@@ -1361,7 +1478,7 @@ class PerceptionWatcher:
             del self._lost[name]  # 他的标签此刻在别处 / 已经在别的轨迹上：这条记录没用了
         cands = [
             p for p in players
-            if not self._unlit(p) and not any(p.data.get(k) for k in ("tagged", "name", "maybe"))
+            if not self._unlit(p) and not any(p.data.get(k) for k in ("tagged", "name", "maybe")) and not self._dangoish(p, now)
         ]
         pairs: list[tuple[float, str, Track]] = []
         for lost in self._lost.values():
@@ -1393,17 +1510,34 @@ class PerceptionWatcher:
                 continue
             lost = self._lost.pop(name)
             p.data["maybe"], p.data["maybe_by"], p.data["relink_at"] = name, "relink", now
-            for key in ("sid", "miss"):
+            for key in ("sid", "miss", "unsure"):
                 p.data.pop(key, None)
+            for o in players:  # 名字被接回给了这条轨迹：别的轨迹上"可能是他"作废
+                if o is not p and (u := o.data.get("unsure")) and u[0] == name:
+                    o.data.pop("unsure", None)
             log.info("轨迹 %d 像是 %s（断了 %.1f 秒，按位置接回）", p.id, name, now - lost.last)
 
     def _looks_checked(self, player: Track, now: float) -> bool:
-        """能不能判陌生人了：没开认装扮、已经攒够好样本和好友比过外观、或者多等了 STRANGER_GRACE 还攒不够。"""
+        """能不能判陌生人了：没开认装扮、已经攒够好样本和好友比过外观、或者多等了 STRANGER_GRACE 还攒不够。
+        "可能是小明"（unsure）还没到时候的不判（等喊一声确认，spec 2026-10-03 §3.3）。"""
+        if self.appearance is not None and player.data.get("unsure"):
+            return False
         return (
             self.appearance is None
             or player.data.get("samples", 0) >= self.appearance_cfg.min_samples
             or now - self._stranger_base(player) >= self.cfg.stranger_after + STRANGER_GRACE
         )
+
+    def _unsure_expire(self, player: Track, now: float) -> None:
+        """"可能是小明"挂满 unsure_wait + 喊一声的窗口还没被名字标签证实：摘掉，记 unsure_miss（以后不再进"可能是"），照常判陌生人。"""
+        u = player.data.get("unsure")
+        if u and now - u[1] >= self.appearance_cfg.unsure_wait + self.call_window:
+            called, c = player.data.get("unsure_called"), self._call
+            if called is not None and c is not None and c.at == called and not c.ended:
+                return  # 为他喊的这一声还没结束：别在窗口中间作废，窗口结束时（_call_tick）再定
+            log.info("轨迹 %d 可能是 %s，等了 %.0f 秒没看到名字，不等了", player.id, u[0], now - u[1])
+            player.data.pop("unsure", None)
+            player.data["unsure_miss"] = True
 
     @staticmethod
     def _stranger_base(player: Track) -> float:
@@ -1590,8 +1724,9 @@ class PerceptionWatcher:
         return self.cfg.self_height * frame_h
 
     # ---- 二期：环绕扫描（设计 §1） ----
-    def sweep(self, frames: list[tuple[float, np.ndarray]], spin: SpinConfig) -> SweepResult:
-        """转一圈截下的帧 [(按住后第几秒, 图)] → 每个方向有谁。独立的一次观察：不碰追踪器、last_seen、请求。"""
+    def sweep(self, frames: list[tuple[float, np.ndarray]], spin: SpinConfig, enroll: bool = False) -> SweepResult:
+        """转一圈截下的帧 [(按住后第几秒, 图)] → 每个方向有谁。独立的一次观察：不碰追踪器、last_seen、请求。
+        enroll：顺带把团子的好样本钉进记忆簿（启动登记，spec 2026-10-03-identity-gallery §4；没挂记忆簿时不做）。"""
         friends = self.names()
         people: list[list[Detection]] = []
         tags: list[list[Detection]] = []
@@ -1635,7 +1770,46 @@ class PerceptionWatcher:
             log.info("转圈认出了团子：%s", found.box)
         ref = self._ref_height(height or self._frame_h)
         entries = merge(sightings, spin.merge_deg, ref, self.cfg.near, self.cfg.far)
-        return SweepResult(entries, found.box, len(frames), frames[-1][0] if frames else 0.0)
+        enrolled = 0
+        if enroll and self.appearance is not None:
+            try:
+                enrolled = self._enroll_self(frames, people, found.per_frame)
+            except Exception:
+                log.exception("启动登记团子出错")
+        return SweepResult(entries, found.box, len(frames), frames[-1][0] if frames else 0.0, enrolled)
+
+    def _enroll_self(self, frames: list[tuple[float, np.ndarray]], people: list[list[Detection]],
+                     static: dict[int, Rect]) -> int:
+        """转圈截图里取团子的好样本：每帧团子框 = 分数最高的 self 检测，没有就用转圈认出的静止框（static）；
+        别的人物框当遮挡（和团子同一个身体的不算）；有样本的帧按时间均匀挑最多 enroll_max 张，钉进团子底库
+        （pinned：不去重、不挤）。不喂描述用的裁图（crop=None）：团子的描述照旧靠平时的样本。"""
+        acfg = self.appearance_cfg
+        got: list[tuple[int, Sample, Rect, np.ndarray]] = []
+        for fi, (t, img) in enumerate(frames):
+            selfs = [d for d in people[fi] if d.cls == "self"]
+            box = max(selfs, key=lambda d: d.score).box if selfs else static.get(fi)
+            if box is None:
+                continue
+            others = [d.box for d in people[fi] if d.box is not box and not same_body(d.box, box)]
+            sample = make_sample(img, box, others, [], acfg, self.embedder, self.dino, self.clock())
+            if sample is not None:
+                got.append((fi, sample, box, img))
+        if not got:
+            return 0
+        k = min(acfg.enroll_max, len(got))
+        picks = sorted({int(round(i)) for i in np.linspace(0, len(got) - 1, k)}) if k > 1 else [0]
+        now = self.clock()
+        for n, i in enumerate(picks):
+            _, s, box, img = got[i]
+            self.appearance.learn("me", "", s.color, now, dino=s.dino, h=s.h, pinned=True)
+            if self.enroll_dir is not None:
+                try:
+                    self.enroll_dir.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(self.enroll_dir / f"{n}.jpg"), describe_crop(img, box))
+                except Exception:
+                    log.exception("存启动登记的团子裁图出错")
+        log.info("启动登记团子：转圈 %d 帧里 %d 帧是好样本，入库 %d 张", len(frames), len(got), len(picks))
+        return len(picks)
 
     @staticmethod
     def _tag_above(ring: Track, tags: list[Track]) -> Track | None:
@@ -1839,7 +2013,8 @@ class PerceptionWatcher:
         for t in list(self.last_tracks):
             # 每个键只读一次：感知线程随时可能 pop 掉 maybe / sid（别的线程在读）
             who = t.data.get("name") or t.data.get("maybe") or (STRANGER if t.data.get("stranger") else None)
-            if t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and who:
+            if (t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and who
+                    and not (self.appearance is not None and self._dangoish(t, now))):
                 known.append((t.box.h, who))
         if not known:
             return None
@@ -1857,13 +2032,13 @@ class PerceptionWatcher:
         out = []
         others = {t.id for t in list(self._others)}  # process 认定的先祖 / 共享空间的人（和团子框重叠的不算）
         for t in list(self.last_tracks):
-            if now - t.last > PEOPLE_STALE or t.cls not in ("player", UNLIT) or not self._admitted(t) or t.data.get("dango"):
-                continue
+            if now - t.last > PEOPLE_STALE or t.cls not in ("player", UNLIT) or not self._admitted(t) or self._dangoish(t, now):
+                continue  # 团子自己（按位置打了标记，或者看着像团子）
             d = t.data
-            # 每个键只读一次（不 get 完再 []）：身体线程在读的同时，感知线程可能刚好 pop 掉 maybe / sid
-            name, maybe, stranger = d.get("name"), d.get("maybe"), d.get("stranger")
+            # 每个键只读一次（不 get 完再 []）：身体线程在读的同时，感知线程可能刚好 pop 掉 maybe / sid / unsure
+            name, maybe, stranger, unsure = d.get("name"), d.get("maybe"), d.get("stranger"), d.get("unsure")
             motion = d.get("motion") if self.cfg.motion else None
-            sure, sid, look = True, None, ""
+            sure, sid, look, doubt = True, None, "", False
             form, form_p = (d.get("form") or (None, 0.0)) if self._attrs_on() else (None, 0.0)
             dark = self._unlit(t)
             if form in OTHERS and t.id in others:  # 先祖 / 共享空间的人：不挂名字，运动方向没算过（不在 players 里）
@@ -1874,6 +2049,8 @@ class PerceptionWatcher:
                 kind = "friend"
             elif not dark and maybe:  # 没看到名字、按外观认的好友
                 kind, name, sure = "friend", maybe, False
+            elif not dark and unsure:  # 没看到名字、外观有点像（"可能是小明"，等喊一声确认）
+                kind, name, sure, doubt = "friend", unsure[0], False, True
             elif not dark and stranger:
                 kind, sid = "stranger", d.get("sid")
                 if sid and self.appearance is not None:
@@ -1883,7 +2060,7 @@ class PerceptionWatcher:
             side = side_of(t.box.x + t.box.w / 2, self._frame_w)
             out.append(Person(t.id, kind, name if kind == "friend" else None, t.box, side,
                               distance(t.box.h, ref, self.cfg.near, self.cfg.far), sure=sure, sid=sid, look=look,
-                              motion=motion, form=form, form_p=form_p))
+                              motion=motion, form=form, form_p=form_p, unsure=doubt))
         order = {"左边": 0, "前面": 1, "右边": 2}
         return sorted(out, key=lambda p: (order[p.side], -p.box.h))
 
@@ -2177,10 +2354,15 @@ class PerceptionWatcher:
             other = self._other_form(t) if person and t.id in others else None
             # 每个键只读一次（同 people()）；who = 装扮描述按谁查
             name, maybe, sid, who = d.get("name"), d.get("maybe"), d.get("sid"), None
+            unsure, look_at = d.get("unsure"), d.get("dango_look")
             if other:  # 先祖 / 共享空间的人（画法见 spec §8，后面再加）
                 kind, label = other, WHO[other]
+            elif person and not dark and not name and look_at is not None and now - look_at <= DANGO_LOOK_HOLD:
+                kind, label = "dango_look", "像团子"
             elif person and not dark and maybe and not name:
                 kind, label, who = "maybe", f"像{maybe}?", maybe
+            elif person and not dark and unsure and not name:
+                kind, label, who = "unsure", f"可能是{unsure[0]}?", unsure[0]
             elif person and not dark:
                 kind = "stranger" if d.get("stranger") else ("friend" if name else "player")
                 label = name or ((sid or "陌生人") if kind == "stranger" else "")
@@ -2233,11 +2415,11 @@ class PerceptionWatcher:
 
     def _desc(self, kind: str, who: str | None) -> str:
         """框对应的人的装扮描述（没有就空）；who = overlay 已经读出来的好友名 / 陌生人编号（不再回去查 data）。"""
-        if kind in ("friend", "maybe") and who:
+        if kind in ("friend", "maybe", "unsure") and who:
             return self.appearance.look("friend", who)
         if kind == "stranger" and who:
             return self.appearance.look("stranger", who)
-        if kind == "self":
+        if kind in ("self", "dango_look"):
             return self.appearance.look("me", "")
         return ""
 

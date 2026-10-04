@@ -77,6 +77,13 @@ class EnvWatcher:
     def call_result(self, at: float):
         return None
 
+    def unsure(self, now: float) -> list:
+        """"可能是小明"（外观拿不准）只有感知层认得出；整图 OCR 没有，接口和感知层一致。"""
+        return []
+
+    def mark_unsure_called(self, ids: list[int], at: float) -> None:
+        pass
+
     def observe(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
         """主循环每帧调一次；到了间隔就扫一次（默认在后台线程里）。"""
         if now - self._last_scan < self.cfg.interval:

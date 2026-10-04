@@ -4,7 +4,17 @@ import numpy as np
 import pytest
 
 from skydango.config import AppearanceConfig, Config
-from skydango.vision.appearance import AppearanceBook, ColorEmbedder, CropSaver, clear_box, describe_crop, good_crop, make_embedder
+from skydango.vision.appearance import (
+    AppearanceBook,
+    ColorEmbedder,
+    CropSaver,
+    DinoGuard,
+    clear_box,
+    describe_crop,
+    good_crop,
+    make_embedder,
+    make_sample,
+)
 from skydango.vision.bubbles import Rect
 from skydango.vision.embed import cosine, unit
 
@@ -81,7 +91,10 @@ def test_make_embedder():
 
 def test_config_has_appearance_defaults():
     c = Config().appearance
-    assert (c.enabled, c.model, c.match, c.card_match, c.margin, c.changed) == (False, "color", 0.85, 0.92, 0.05, 0.40)
+    assert (c.enabled, c.model, c.match, c.card_match, c.margin, c.changed) == (False, "color", 0.88, 0.92, 0.05, 0.40)
+    assert (c.min_height, c.unsure, c.unsure_wait, c.dino, c.dango_match, c.gallery_max, c.enroll_max) == (
+        0.13, 0.83, 2.0, "models/dinov2-small.onnx", 0.80, 40, 16,
+    )
     assert c.outfit_change is False  # 颜色特征判换装太不稳（10-01 标定），默认不判
     assert (c.size, c.norm, c.device, c.quota_wait, c.retry_after, c.describe_timeout) == (224, "imagenet", "cpu", 600.0, 60.0, 60.0)
 
@@ -148,11 +161,11 @@ def test_no_maybe_when_two_friends_look_alike():
     assert b.assign_friends({1: V_PINK}, set()) == {}
 
 
-def test_card_only_friend_needs_stricter_threshold():
-    b = book(match=0.85, card_match=0.92)
+def test_card_feature_never_assigns():
+    b = book(match=0.85)
     b.load_cards({"小明": [outfit(V_PINK, key="color-v1")]})
-    assert b.assign_friends({1: near(V_PINK, 0.88)}, set()) == {}
-    assert b.assign_friends({1: near(V_PINK, 0.95)}, set()) == {1: "小明"}
+    assert b.assign_friends({1: V_PINK}, set()) == {}
+    assert b.still_like(V_PINK, "小明") is False
 
 
 def test_card_feature_with_other_key_is_ignored():
@@ -166,18 +179,76 @@ def test_load_cards_takes_last_outfit():
     b = book()
     b.load_cards({"小明": [outfit(V_BLUE, desc="蓝"), outfit(V_PINK, desc="粉")]})
     assert b.look("friend", "小明") == "粉"
-    assert b.assign_friends({1: V_PINK}, set()) == {1: "小明"}
 
 
-def test_still_like_prefers_learned_over_card():
-    b = book(match=0.85, card_match=0.92)
-    b.load_cards({"小明": [outfit(V_PINK)]})
-    assert b.still_like(near(V_PINK, 0.95), "小明") and not b.still_like(near(V_PINK, 0.88), "小明")
-    b.learn("friend", "小明", V_BLUE, 0.0)  # 学到的是蓝：以它为准
-    assert b.still_like(near(V_BLUE, 0.9), "小明") and not b.still_like(V_PINK, "小明")
+def test_still_like_uses_gallery():
+    b = book(match=0.85)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    b.learn("friend", "小明", V_BLUE, 1.0)
+    assert b.still_like(V_BLUE, "小明") and b.still_like(V_PINK, "小明")  # 多张样本，不被平均冲掉
+    assert not b.still_like(V_WHITE, "小明")
     assert not b.still_like(V_PINK, "没有这人")
 
 
+def test_gallery_keeps_two_views_of_one_friend():
+    b = book(match=0.85, margin=0.05)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    b.learn("friend", "小明", V_BLUE, 1.0)  # 两个角度
+    assert b.assign_friends({1: V_BLUE}, set()) == {1: "小明"}  # 平均特征时这会失败
+
+
+def test_unsure_band():
+    b = book(match=0.88, unsure=0.83)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    assert b.unsure_friends({1: near(V_PINK, 0.85)}, set()) == {1: "小明"}
+    assert b.assign_friends({1: near(V_PINK, 0.85)}, set()) == {}
+    assert b.unsure_friends({1: near(V_PINK, 0.80)}, set()) == {}
+    assert b.assign_friends({1: near(V_PINK, 0.80)}, set()) == {}
+    assert b.unsure_friends({1: near(V_PINK, 0.95)}, set()) == {}  # 够 match 的归 assign_friends
+    assert b.unsure_friends({1: near(V_PINK, 0.85)}, {"小明"}) == {}  # 名字被别处占了
+
+
+def test_unsure_friends_one_name_best_track():
+    b = book(match=0.9, unsure=0.8)
+    b.learn("friend", "小明", V_PINK, 0.0)
+    assert b.unsure_friends({1: near(V_PINK, 0.82), 2: near(V_PINK, 0.86)}, set()) == {2: "小明"}
+
+
+def test_friend_scores_sorted():
+    b = book()
+    b.learn("friend", "小明", V_PINK, 0.0)
+    b.learn("friend", "小红", V_BLUE, 0.0)
+    sc = b.friend_scores(near(V_BLUE, 0.9))
+    assert [n for n, _ in sc] == ["小红", "小明"] and sc[0][1] > sc[1][1]
+    assert book().friend_scores(V_PINK) == []
+
+
+def test_looks_like_dango():
+    b = book(dango_match=0.80)
+    assert not b.looks_like_dango(V_PINK)  # 还没有团子底库
+    b.learn("me", "", V_WHITE, 0.0, dino=V_PINK)
+    b.learn("friend", "小明", V_BLUE, 0.0, dino=V_BLUE)
+    assert b.looks_like_dango(near(V_PINK, 0.9))
+    assert not b.looks_like_dango(near(V_PINK, 0.75))
+    assert not b.looks_like_dango(None)
+    b.learn("friend", "小明", V_WHITE, 1.0, dino=near(V_PINK, 0.95))  # 小明也有张和团子很像的
+    assert not b.looks_like_dango(near(V_PINK, 0.9))  # 小明更像：不算团子
+    assert b.looks_like_dango(V_PINK)  # V_PINK 对团子 1.0、对小明 0.95：团子更像才真
+
+
+def test_pinned_me_samples_survive():
+    b = book(gallery_max=2)
+    me = b.learn("me", "", V_PINK, 0.0, pinned=True)
+    for i, v in enumerate((V_WHITE, V_BLUE, _basis(3))):
+        b.learn("me", "", v, 1.0 + i)
+    assert me.gallery.pinned_count == 1 and len(me.gallery) == 2
+
+
+def test_stranger_gets_gallery():
+    b = book(gallery_max=7)
+    b.stranger_id(V_WHITE, 0.0)
+    g = b.strangers["陌生人A"].gallery
+    assert len(g) == 1 and g.max_size == 7 and g.best(V_WHITE, "color") > 0.99
 def test_stranger_ids_reuse_new_back_and_forget():
     b = book(stranger_forget=1800, keep=5.0)
     assert b.stranger_id(V_WHITE, 0.0) == ("陌生人A", False)
@@ -310,3 +381,79 @@ def test_clear_box():
     assert not clear_box(box, [], [Rect(0, 0, 160, 1080)], 0.2)  # 压在聊天面板上
     assert clear_box(box, [], [Rect(0, 0, 105, 1080)], 0.2)  # 面板只碰到一点边
     assert not clear_box(Rect(0, 0, 0, 10), [], [], 0.2)  # 空框
+
+
+class FakeDino:
+    size = 224
+
+    def __init__(self, fail=False):
+        self.fail, self.calls, self.shapes = fail, 0, []
+
+    def embed(self, img):
+        self.calls += 1
+        self.shapes.append(img.shape)
+        if self.fail:
+            raise RuntimeError("推理挂了")
+        return _basis(3)
+
+
+def _frame_with(box, color=(150, 80, 220)):
+    img = np.zeros((1080, 1920, 3), np.uint8)
+    img[box.y:box.y2, box.x:box.x2] = color
+    return img
+
+
+def test_make_sample_both_features():
+    box = Rect(400, 400, 90, 220)
+    frame = _frame_with(box)
+    cfg = AppearanceConfig()
+    dino = DinoGuard(FakeDino())
+    s = make_sample(frame, box, [], [], cfg, ColorEmbedder(), dino, 12.5)
+    assert s is not None
+    assert np.allclose(s.dino, _basis(3))
+    crop = good_crop(frame, box, [], [], cfg.min_height, cfg.max_overlap)
+    assert np.allclose(s.color, ColorEmbedder().embed(crop))
+    assert s.h == pytest.approx(220 / 1080) and s.t == 12.5 and not s.pinned
+    assert dino.size == 224
+    assert dino._embedder.shapes == [(224, 224, 3)]  # attrs.crop 补成正方形缩到 size
+
+
+def test_make_sample_without_dino():
+    box = Rect(400, 400, 90, 220)
+    s = make_sample(_frame_with(box), box, [], [], AppearanceConfig(), ColorEmbedder(), None, 1.0)
+    assert s is not None and s.dino is None
+
+
+def test_make_sample_none_when_not_good_crop():
+    box = Rect(400, 400, 90, 40)  # 太矮
+    dino = DinoGuard(FakeDino())
+    assert make_sample(_frame_with(box), box, [], [], AppearanceConfig(), ColorEmbedder(), dino, 1.0) is None
+    assert dino._embedder.calls == 0  # 不好的样本不白算 DINOv2
+
+
+def test_dino_errors_disable_only_dino(caplog):
+    dino = DinoGuard(FakeDino(fail=True), max_errors=3)
+    img = np.zeros((10, 10, 3), np.uint8)
+    for _ in range(3):
+        assert dino.enabled and dino.embed(img) is None
+    assert dino.enabled is False
+    n = dino._embedder.calls
+    assert dino.embed(img) is None and dino._embedder.calls == n  # 关了以后不再调
+    assert sum("DINOv2" in r.message for r in caplog.records if r.levelname == "WARNING") == 1
+    box = Rect(400, 400, 90, 220)
+    s = make_sample(_frame_with(box), box, [], [], AppearanceConfig(), ColorEmbedder(), dino, 1.0)
+    assert s is not None and s.dino is None  # 颜色照旧
+
+
+def test_dino_success_resets_error_count():
+    class Flaky(FakeDino):
+        def embed(self, img):
+            self.calls += 1
+            if self.calls % 3:
+                raise RuntimeError("偶尔出错")
+            return _basis(3)
+
+    dino = DinoGuard(Flaky(), max_errors=3)
+    img = np.zeros((10, 10, 3), np.uint8)
+    res = [dino.embed(img) for _ in range(9)]
+    assert dino.enabled and sum(r is not None for r in res) == 3  # 连续才算

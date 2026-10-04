@@ -212,3 +212,4 @@ def test_env_watcher_call_stubs():
     w = EnvWatcher(None, EnvConfig(), lambda: [], [0, 0, 0.3, 0.8], background=False)
     w.called(1.0)
     assert w.call_result(1.0) is None
+    assert w.unsure(2.0) == [] and w.mark_unsure_called([1], 2.0) is None  # 身份底库 spec §5：拿不准的人整图 OCR 没有

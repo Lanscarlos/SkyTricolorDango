@@ -19,7 +19,9 @@ import numpy as np
 from ..config import AppearanceConfig
 from ..imageio import imwrite
 from .bubbles import Rect
+from .attrs import crop as square_crop
 from .embed import OnnxEmbedder, cosine, unit
+from .gallery import Gallery, Sample
 from .track import iou
 
 log = logging.getLogger(__name__)
@@ -105,6 +107,49 @@ def make_embedder(cfg: AppearanceConfig):
     raise ValueError(f"appearance.model 只能是 \"color\" 或 .onnx 路径：{cfg.model}")
 
 
+class DinoGuard:
+    """DINOv2 特征模型的保险：推理出错返回 None 并计数，连续 max_errors 次后关掉这一路（颜色特征不受影响）。"""
+
+    def __init__(self, embedder, max_errors: int = 10) -> None:
+        self._embedder = embedder
+        self.max_errors = max_errors
+        self.errors = 0
+        self.enabled = True
+
+    @property
+    def size(self) -> int:
+        return self._embedder.size
+
+    def embed(self, img: np.ndarray) -> np.ndarray | None:
+        if not self.enabled:
+            return None
+        try:
+            feat = unit(self._embedder.embed(img))
+        except Exception:
+            self.errors += 1
+            log.debug("DINOv2 特征出错（连续第 %d 次）", self.errors, exc_info=True)
+            if self.errors >= self.max_errors:
+                self.enabled = False
+                log.warning("DINOv2 特征连续出错 %d 次，这一路关掉，只用颜色特征", self.errors)
+            return None
+        self.errors = 0
+        return feat
+
+
+def make_sample(
+    frame: np.ndarray, box: Rect, others: list[Rect], blocked: list[Rect], cfg: AppearanceConfig,
+    color_embedder, dino: DinoGuard | None, now: float,
+) -> Sample | None:
+    """一次裁图出两个特征：颜色用 good_crop 的裁图，DINOv2 用补成正方形的整框。不是好样本返回 None；
+    DINOv2 没开 / 出错时 Sample.dino 是 None（颜色照旧）；颜色特征出错向上抛。"""
+    crop = good_crop(frame, box, others, blocked, cfg.min_height, cfg.max_overlap)
+    if crop is None:
+        return None
+    color = unit(color_embedder.embed(crop))
+    feat = dino.embed(square_crop(frame, box, 0.0, dino.size)) if dino is not None and dino.enabled else None
+    return Sample(color=color, dino=feat, t=now, h=box.h / frame.shape[0])
+
+
 @dataclass
 class Profile:
     """一个人的外观档案（好友 / 陌生人 / 团子自己）。"""
@@ -119,6 +164,7 @@ class Profile:
     checked: bool = False  # 好友：这次上线和关系卡比过没有
     redescribed: int = 0
     settling: bool = False  # 刚记过一次换装、平均特征还在往新那套挪：挪稳之前不再判换装
+    gallery: Gallery = field(default_factory=lambda: Gallery(40))  # 多张样本（认人靠它，不靠平均特征）
 
 
 def _letters(i: int) -> str:
@@ -154,13 +200,15 @@ class AppearanceBook:
             return self.strangers.get(who)
         return self.me
 
-    def learn(self, kind: str, who: str, feat, now: float, crop: tuple[int, np.ndarray] | None = None) -> Profile:
-        """滑动平均更新（第一次直接用）。kind：friend / stranger / me。"""
+    def learn(self, kind: str, who: str, feat, now: float, crop: tuple[int, np.ndarray] | None = None,
+              *, dino=None, h: float = 0.0, pinned: bool = False) -> Profile:
+        """滑动平均更新（第一次直接用，判换装用），同时把这张样本放进底库（认人用）。kind：friend / stranger / me。
+        feat 是颜色特征，dino 是 DINOv2 特征（没开就不传），h 是框高，pinned = 启动转圈登记的团子样本（底库满了也不挤）。"""
         feat = unit(feat)
         with self._lock:
             p = self._get(kind, who)
             if p is None:
-                p = Profile(feat=feat, n=1, updated=now, seen=now)
+                p = Profile(feat=feat, n=1, updated=now, seen=now, gallery=Gallery(self.cfg.gallery_max))
                 if kind == "friend":
                     self.friends[who] = p
                 elif kind == "stranger":
@@ -176,6 +224,7 @@ class AppearanceBook:
                 if p.settling and cosine(p.feat, feat) >= self.cfg.match:  # 平均特征追上了新那套：以它为新的基准
                     p.desc_feat = p.feat.copy()
                     p.settling = False
+            p.gallery.add(Sample(feat, None if dino is None else unit(dino), now, h, pinned))
             if crop is not None:
                 p.crops.append(crop)
             return p
@@ -222,22 +271,34 @@ class AppearanceBook:
                 del self.strangers[k]
 
     # ---- 认人 ----
-    def _candidates(self, exclude: set[str]) -> list[tuple[str, np.ndarray, float]]:
-        out = [(n, p.feat, self.cfg.match) for n, p in self.friends.items() if n not in exclude]
-        out += [(n, f, self.cfg.card_match) for n, f in self.card_feats.items() if n not in self.friends and n not in exclude]
+    def _scores(self, feat, exclude: set[str]) -> list[tuple[float, str]]:
+        """feat 对这次上线学到的每个好友（不含 exclude）的颜色底库打分，从高到低；底库里没有可比样本的不列。"""
+        out = []
+        for n, p in self.friends.items():
+            if n in exclude:
+                continue
+            sc = p.gallery.best(feat, "color")
+            if sc is not None:
+                out.append((sc, n))
+        out.sort(reverse=True)
         return out
 
-    def assign_friends(self, cands: dict[int, np.ndarray], exclude: set[str]) -> dict[int, str]:
-        """没有名字标签的轨迹 -> 好友名（"maybe"）。要过门槛、比第二像的（任何候选）高 margin；一个名字只给相似度最高的那条轨迹。"""
+    def friend_scores(self, feat) -> list[tuple[str, float]]:
+        """feat 对这次上线学到的每个好友的颜色底库打分（名字, 分数），从高到低（只读）。"""
         with self._lock:
-            pool = self._candidates(exclude)
-            if not pool:
-                return {}
+            return [(n, sc) for sc, n in self._scores(unit(feat), set())]
+
+    def assign_friends(self, cands: dict[int, np.ndarray], exclude: set[str]) -> dict[int, str]:
+        """没有名字标签的轨迹 -> 好友名（"maybe"）。底库最高分过 match、比第二像的好友高 margin；一个名字只给相似度最高的那条轨迹。
+        只认这次上线名字标签证实过的样本：关系卡里的旧特征不拿来认人。"""
+        with self._lock:
             best: dict[str, tuple[float, int]] = {}
             for tid, feat in cands.items():
-                scored = sorted(((cosine(feat, f), n, th) for n, f, th in pool), reverse=True)
-                top, name, th = scored[0]
-                if top < th:
+                scored = self._scores(feat, exclude)
+                if not scored:
+                    continue
+                top, name = scored[0]
+                if top < self.cfg.match:
                     continue
                 if len(scored) > 1 and top - scored[1][0] < self.cfg.margin:
                     continue
@@ -245,29 +306,68 @@ class AppearanceBook:
                     best[name] = (top, tid)
             return {tid: name for name, (_, tid) in best.items()}
 
+    def unsure_friends(self, cands: dict[int, np.ndarray], exclude: set[str]) -> dict[int, str]:
+        """疑似：底库最高分落在 [unsure, match) 的轨迹 -> 好友名；一个名字只给分数最高的那条。
+        已被 assign_friends 拿走的名字由调用方放进 exclude。"""
+        with self._lock:
+            best: dict[str, tuple[float, int]] = {}
+            for tid, feat in cands.items():
+                scored = self._scores(feat, exclude)
+                if not scored:
+                    continue
+                top, name = scored[0]
+                if not (self.cfg.unsure <= top < self.cfg.match):
+                    continue
+                if name not in best or top > best[name][0]:
+                    best[name] = (top, tid)
+            return {tid: name for name, (_, tid) in best.items()}
+
     def still_like(self, track_feat, name: str) -> bool:
-        """这条轨迹现在还像不像 name（学到的优先，否则卡里的）。"""
+        """这条轨迹现在还像不像 name：他的底库最高分 ≥ match（不看关系卡）。"""
         with self._lock:
             p = self.friends.get(name)
-            if p is not None:
-                return cosine(track_feat, p.feat) >= self.cfg.match
-            f = self.card_feats.get(name)
-            return f is not None and cosine(track_feat, f) >= self.cfg.card_match
+            if p is None:
+                return False
+            sc = p.gallery.best(unit(track_feat), "color")
+            return sc is not None and sc >= self.cfg.match
 
     def best_friend(self, feat) -> tuple[str | None, float]:
-        """和哪个好友最像、余弦多少（只读；学到的 + 卡里的，没有候选 = (None, 0.0)）。"""
+        """和哪个好友最像、底库余弦多少（只读；没有候选 = (None, 0.0)）。"""
         with self._lock:
-            scored = [(cosine(feat, f), n) for n, f, _ in self._candidates(set())]
+            scored = self._scores(unit(feat), set())
         if not scored:
             return None, 0.0
-        score, name = max(scored)
+        score, name = scored[0]
         return name, float(score)
+
+    def looks_like_dango(self, dino: np.ndarray | None) -> bool:
+        """DINOv2 特征像不像团子自己：团子底库最高分 ≥ dango_match，且严格高于每个好友底库的最高分（没有分的好友不算）。"""
+        if dino is None:
+            return False
+        with self._lock:
+            if self.me is None:
+                return False
+            dino = unit(dino)
+            mine = self.me.gallery.best(dino, "dino")
+            if mine is None or mine < self.cfg.dango_match:
+                return False
+            for p in self.friends.values():
+                other = p.gallery.best(dino, "dino")
+                if other is not None and other >= mine:
+                    return False
+            return True
 
     def stranger_id(self, feat, now: float, exclude: frozenset[str] | set[str] = frozenset()) -> tuple[str, bool]:
         """陌生人编号：认回已有的（第二项 = 离开超过 keep 秒又回来了），否则新编号。
         exclude = 此刻别的轨迹正占着的编号：最像的被占着就起新编号（不退而求其次认第二像的）。"""
         with self._lock:
-            scored = sorted(((cosine(feat, p.feat), k) for k, p in self.strangers.items()), reverse=True)
+            feat = unit(feat)
+            scored = []
+            for k, p in self.strangers.items():
+                sc = p.gallery.best(feat, "color")
+                if sc is not None:
+                    scored.append((sc, k))
+            scored.sort(reverse=True)
             if (scored and scored[0][1] not in exclude and scored[0][0] >= self.cfg.match
                     and (len(scored) == 1 or scored[0][0] - scored[1][0] >= self.cfg.margin)):
                 p = self.strangers[scored[0][1]]
@@ -276,7 +376,9 @@ class AppearanceBook:
                 return scored[0][1], back
             name = "陌生人" + _letters(self._stranger_count)
             self._stranger_count += 1
-            self.strangers[name] = Profile(feat=unit(feat), n=1, updated=now, seen=now)
+            p = Profile(feat=feat, n=1, updated=now, seen=now, gallery=Gallery(self.cfg.gallery_max))
+            p.gallery.add(Sample(feat, None, now, 0.0))
+            self.strangers[name] = p
             return name, False
 
     # ---- 换装 ----

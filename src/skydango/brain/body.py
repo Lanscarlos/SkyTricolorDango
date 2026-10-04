@@ -216,6 +216,7 @@ class Body:
         self.last_look = float("-inf")
         self.look_frame = None  # 最近一次 look（原图）看的那张，look_at 裁它
         self.blackout = False
+        self.enroll_note = ""  # 启动登记团子的结果（status 里写一行；空 = 没做 / 不适用）
         self.holding: str | None = None  # 推测正牵着谁的手
         self._holding_since = 0.0
         self._accepted_hand: tuple[str, float] | None = None
@@ -354,6 +355,10 @@ class Body:
         mode = "dry-run（只打印不执行）" if self.cfg.reply.dry_run else "LIVE（会真的说话、做动作）"
         log.info("身体启动，模式：%s；Ctrl+C 退出%s", mode, f"；{duration:.0f} 秒后自动结束" if duration > 0 else "")
         self.panel.start(self.clock())
+        try:  # 大脑第一轮之前转一圈，把团子自己的样子登记进记忆簿（出错只记日志，照常进主循环）
+            self.enroll_self()
+        except Exception:
+            log.exception("启动登记团子出错")
         # --duration 按真实时间：沙盒快进拨的是模拟时钟，不该让它提前下线
         deadline = time.monotonic() + duration if duration > 0 else float("inf")
         while time.monotonic() < deadline and not (stop is not None and stop.is_set()):
@@ -681,7 +686,7 @@ class Body:
                 out.append(AttnTarget(f"n:{who}", "act_on_me", found[0], who, t))
         if hasattr(env, "people"):
             for p in env.people(now):
-                if p.kind == "friend" and p.name:
+                if p.kind == "friend" and p.name and not p.unsure:  # "可能是小明"不当他（等喊一声确认）
                     out.append(AttnTarget(f"n:{p.name}", "friend_present", p.box.x + p.box.w / 2, p.name))
         return out
 
@@ -702,8 +707,8 @@ class Body:
                 return bool(n) and (n == who or similar(who, n, 0.75))
 
             for p in people:
-                if p.kind != "friend" or not same(p.name):
-                    continue
+                if p.kind != "friend" or p.unsure or not same(p.name):
+                    continue  # "可能是他"不算找到（只算一个别的人）
                 if p.sure:
                     target, where = p.box.x + p.box.w / 2, f"{p.side}·{p.distance}"
                     break
@@ -1427,7 +1432,7 @@ class Body:
         for p in people:
             if p.sid and p.sid == name:
                 return p.box, ""
-        maybe = [p for p in people if p.kind == "friend" and p.name and not p.sure]
+        maybe = [p for p in people if p.kind == "friend" and p.name and not p.sure and not p.unsure]  # "可能是"的不算
         for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
             for p in maybe:
                 if same(p.name):
@@ -1442,7 +1447,8 @@ class Body:
         """
         if self.env is None:
             return None
-        people = [p for p in self.env.people(now) if p.kind == "friend" and p.name] if hasattr(self.env, "people") else []
+        people = ([p for p in self.env.people(now) if p.kind == "friend" and p.name and not p.unsure]  # "可能是他"不盯
+                  if hasattr(self.env, "people") else [])
         people.sort(key=lambda p: not p.sure)  # 看到名字的排前面；只有"像他"的也照样能盯
         max_age = self.cfg.track.max_age
         labels = {n: v for n, v in dict(self.env.labels).items() if now - v[4] <= max_age}  # 后台线程会改：先拍快照
@@ -1469,7 +1475,7 @@ class Body:
 
     def _recognized(self, now: float) -> list[str]:
         """现在画面里认得出名字的人（找不到某人时告诉大脑）。"""
-        names = [p.name for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        names = [p.name for p in self.env.people(now) if p.name and not p.unsure] if hasattr(self.env, "people") else []
         names += [n for n, v in dict(self.env.labels).items() if now - v[4] <= self.cfg.env.interval * 2 + 1]
         return list(dict.fromkeys(names))
 
@@ -1563,7 +1569,7 @@ class Body:
 
     def _body_of(self, name: str, now: float, since: float | None = None) -> Rect | None:
         """这个人的身体框；since：只要感知层在 since 之后又看到过的（people() 会给 1 秒内的旧框）。"""
-        people = [p for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        people = [p for p in self.env.people(now) if p.name and not p.unsure] if hasattr(self.env, "people") else []
         if since is not None:
             seen = {t.id for t in list(getattr(self.env, "last_tracks", ())) if t.last >= since}
             people = [p for p in people if p.track_id in seen]
@@ -1745,6 +1751,58 @@ class Body:
             self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
         return result.text() + ("（中途画面黑了，可能在切场景，这一圈不准）" if shot.blackout else "") + stopped
 
+    def enroll_self(self) -> str:
+        """启动时转一圈，把团子自己的好样本钉进认装扮的记忆簿（spec 2026-10-03-identity-gallery §4）。
+        返回 status 用的文字并存进 self.enroll_note；不适用（没开认装扮 / 不是感知层 / 没挂 DINOv2）返回空串、什么都不记。
+        没转的原因和"转了但一张都没取到"都记 WARNING，不重试。"""
+        if not self.cfg.appearance.enabled or not hasattr(self.env, "sweep") or getattr(self.env, "dino", None) is None:
+            return ""
+        why = ""
+        black = False
+        if self._dry(False):
+            why = "dry-run"
+        else:
+            try:  # run() 在第一个 step() 之前调它：blackout / 面板状态还没人更新过，先截一张现看（同 _sense / _watch_panels）
+                frame = self.device.screenshot()
+                black = is_black(frame)
+                if self.panels is not None:
+                    self.panels.observe(frame, self.clock())
+            except Exception:
+                log.debug("启动登记团子：截图 / 看面板出错", exc_info=True)
+                why = "截不到图"
+        if why:
+            pass
+        elif black:
+            why = "画面黑着"
+        elif self.panels is not None and self.panels.state.others():
+            why = "别的面板开着"
+        elif self.camera is None:
+            why = "没有视角控制"
+        elif self.skills.active is not None:
+            why = f"正在{self.skills.active.goal}"
+        if why:
+            self.enroll_note = f"团子登记：没转（{why}）"
+            log.warning(self.enroll_note)
+            return self.enroll_note
+        spin = self.cfg.spin
+        try:
+            with self._held("camera"):  # 同 sweep_around 的 live 分支；Camera.spin 自己管聊天面板
+                shot = self.camera.spin(self.device.screenshot, 1, spin.seconds_per_turn, spin.fps)
+                result = self.env.sweep([(0.0, shot.before), *shot.frames], spin, enroll=True)
+        finally:
+            self._ref_thumb = None  # 自己转的镜头，不算画面大变
+            self._camera_moved("spin")
+        self.last_frame = shot.after
+        if not shot.panel_reopened:
+            self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
+        if result.enrolled:
+            self.enroll_note = f"团子登记：{result.enrolled} 张"
+            log.info(self.enroll_note)
+        else:
+            self.enroll_note = "团子登记：转了一圈没认出自己"
+            log.warning(self.enroll_note)
+        return self.enroll_note
+
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
@@ -1762,6 +1820,8 @@ class Body:
         me = self.env.my_look() if hasattr(self.env, "my_look") else ""
         if me:
             parts.append("你自己：" + me)
+        if self.enroll_note:
+            parts.append(self.enroll_note)
         looks = self.env.looks(list(near)) if near and hasattr(self.env, "looks") else {}
         friends = "、".join(f"{n}（{looks[n]}）" if looks.get(n) else n for n in near)
         if near and self.ledger is not None:
@@ -2247,9 +2307,10 @@ class Body:
         return result + (OWNER_NOTE if relaxed else "")
 
     # ---- 按 Q 喊一声（spec 2026-10-01-q-call §2） ----
-    def call_out(self, reason: str, *, live: bool = False) -> CallResult:
+    def call_out(self, reason: str, *, live: bool = False, on_press: Callable[[float], None] | None = None) -> CallResult:
         """短按 Q 喊一声：同步按键 + 连拍 burst 秒看光圈，开感知层的呼喊窗口（结果约 window 秒后 env.call_result(at) 才有）。
-        reason："brain" / "auto" / "manual"。不能喊时不抛异常，CallResult.refused 写原因。约 1~1.3 秒。"""
+        reason："brain" / "auto" / "manual"。不能喊时不抛异常，CallResult.refused 写原因。约 1~1.3 秒。
+        on_press(at)：按键命令发出之前、用窗口开始的时间 at 调一次（拿不准那种自动喊靠它按 at 打标记，免得连拍那 1 秒里标记过期）；它出错只记日志、不拦按键。"""
         cfg = self.cfg.call
         now = self.clock()
         if not cfg.enabled:
@@ -2289,6 +2350,11 @@ class Body:
                           and not t.data.get("dango") and not any(iou(t.box, s.box) >= 0.5 for s in selfs)})
             at = self.clock()  # 按键命令发出之前：adb 往返之后才记会把最亮那一下算到窗口之前
             watch = HaloWatch(base, heads, at, cfg)
+            if on_press is not None:
+                try:
+                    on_press(at)
+                except Exception:
+                    log.warning("喊一声：按键前的回调出错（照常按）", exc_info=True)
             self.device.hw_key(LINUX_KEY_Q)
             if at - moved < self.cfg.track.settle:
                 watch.skipped = True  # 镜头刚动过：头顶区域对不上
@@ -2324,35 +2390,62 @@ class Body:
         return result
 
     def _watch_call(self, now: float) -> None:
-        """身体自动兜底（spec §2.3）：好友刚"走开"、画面里还有没挂名字的人 → 多半只是走远了标签淡掉，喊一声确认。
+        """身体自动兜底（spec §2.3）：两种起因共用一套间隔 / 额度 / 拦截：
+        ① 好友刚"走开"、画面里还有没挂名字的人 → 多半只是走远了标签淡掉，喊一声确认；
+        ② 外观认成"可能是小明"拿不准的人挂满 unsure_wait 秒（env.unsure，identity-gallery spec §5）→ 喊一声让名字标签亮出来。
         喊完不等：窗口结束后放背景事件 call；认回来的好友照常 return（抵消那条 leave）。"""
         cfg = self.cfg.call
         if not (cfg.enabled and cfg.auto) or self.env is None or not hasattr(self.env, "unnamed"):
             return
         try:
             self._collect_auto_call(now)
-            if self._pending_auto is not None or self._search_takes_call():
+            if self._pending_auto is not None:
                 return
-            who = [n for n, t in self._left_at.items()
-                   if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t
-                   and now - self._auto_found.get(n, float("-inf")) > cfg.auto_again]
-            if not who or now - self._call_at < cfg.min_gap:
+            who = []
+            if not self._search_takes_call():  # 走开后的这一声归注意力的"找走开的好友"管时，只剩拿不准那一种
+                who = [n for n, t in self._left_at.items()
+                       if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t
+                       and now - self._auto_found.get(n, float("-inf")) > cfg.auto_again]
+            unsure = []
+            if hasattr(self.env, "unsure") and (not who or self.env.unnamed(now) <= 0):
+                unsure = [(i, n) for i, n, _t in self.env.unsure(now)
+                          if now - self._auto_found.get(n, float("-inf")) > cfg.auto_again]
+            if not who and not unsure:
+                return
+            if now - self._call_at < cfg.min_gap:
                 return
             while self._call_times and now - self._call_times[0] > cfg.auto_window:
                 self._call_times.popleft()
-            if len(self._call_times) >= cfg.auto_quota or self.env.unnamed(now) <= 0 or self._auto_call_blocked(now):
+            if len(self._call_times) >= cfg.auto_quota:
                 return
-            for n in who:
-                self._auto_called[n] = self._left_at[n]
-            self._call_times.append(now)
-            log.info("%s 刚走开、画面里还有没挂名字的人：自动喊一声找找", "、".join(who))
-            r = self.call_out("auto")
+            if who and not unsure:  # 两样都有时：走开的那位画面里没有没挂名字的人（unnamed ≤ 0），只剩拿不准的
+                if self.env.unnamed(now) <= 0 or self._auto_call_blocked(now):
+                    return
+                for n in who:
+                    self._auto_called[n] = self._left_at[n]
+                self._call_times.append(now)
+                log.info("%s 刚走开、画面里还有没挂名字的人：自动喊一声找找", "、".join(who))
+                r = self.call_out("auto")
+            else:
+                ids = [i for i, _n in unsure]
+                self._mark_unsure(ids, now)  # 不管喊没喊成都打上：别一直排队
+                if self._auto_call_blocked(now):
+                    return
+                self._call_times.append(now)
+                log.info("拿不准 %s 是不是%s：自动喊一声", "、".join(f"轨迹{i}" for i, _n in unsure),
+                         "、".join(dict.fromkeys(n for _i, n in unsure)))
+                r = self.call_out("unsure", on_press=lambda at: self._mark_unsure(ids, at))  # 按键前按窗口真正开始的时间重新打标记：感知层按它收尾
             if r.refused:
                 log.info("自动喊一声没喊成：%s", r.refused)
             elif not r.dry:
                 self._pending_auto = r
         except Exception:
             log.exception("自动喊一声出错")
+
+    def _mark_unsure(self, ids: list[int], at: float) -> None:
+        mark = getattr(self.env, "mark_unsure_called", None)
+        if mark is not None:
+            mark(ids, at)
 
     def _auto_call_blocked(self, now: float) -> bool:
         if self._bubble_at is not None or self.sender.opened or self.skills.active is not None:

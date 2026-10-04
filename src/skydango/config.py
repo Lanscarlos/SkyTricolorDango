@@ -401,14 +401,21 @@ class AppearanceConfig:
     device: str = "cpu"  # cuda / dml / cpu，同 [perception] device
     every: int = 3  # 每条轨迹每几帧算一次特征
     max_per_frame: int = 4  # 一帧最多算几个
-    min_height: float = 0.10  # 好样本的框高（相对截图高度）
+    min_height: float = 0.13  # 好样本的框高（相对截图高度）
     max_overlap: float = 0.2  # 和别的框 / 面板重叠超过这个比例就不是好样本
     ema: float = 0.2  # 平均特征的更新速度
     min_samples: int = 3  # 判 maybe / 陌生人编号 / 换装前至少几个好样本
-    match: float = 0.85  # 估的
-    card_match: float = 0.92  # 只有关系卡旧特征时的门槛（更严）
+    match: float = 0.88  # 估的
+    card_match: float = 0.92  # 废弃，不再使用（留着旧配置不报错）
     margin: float = 0.05  # 最像的要比第二像的高这么多
     recheck: int = 5  # maybe 连续这么多个新样本低于门槛就摘掉
+    # 多样本底库（身份底库设计 2026-10-03）
+    unsure: float = 0.83  # 底库最高相似度在 [unsure, match) 之间算"疑似"，等 unsure_wait 秒再定
+    unsure_wait: float = 2.0  # 秒
+    dino: str = "models/dinov2-small.onnx"  # 第二个特征（DINOv2）模型，没有这个文件就只用颜色
+    dango_match: float = 0.80  # 认团子自己（底库）的门槛
+    gallery_max: int = 40  # 每个身份底库最多留几张样本
+    enroll_max: int = 16  # 启动转圈登记团子时，一次最多钉进底库几张
     # 判换装（outfit_change 开着时）：低于它算换了装。10-01 标定：颜色特征下同一身衣服常跌到 0.15~0.5，所以默认不判
     changed: float = 0.40
     # false：不判换装（不追加新的一套、不发换装事件、上线中途不重新描述），好友 / 团子每次上线描述一次、覆盖最近那一套

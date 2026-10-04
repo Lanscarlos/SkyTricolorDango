@@ -98,7 +98,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/console/labeling.py` | 「标注」页的后端（`/api/gesture/*`）：片段状态、取帧、确认 / 改类别 / 丢弃 = 挪文件夹、撤销，记在 `_labels.jsonl` |
 | `src/skydango/console/emotenames.py` | 「标注 → 动作名」的后端（`/api/emotes/*`）：按剪影把图标库 `emotes/*.png` 配给 `emotes/scan/` 的扫描图标、起名（复制）/ 改名 / 清除（挪进 `_removed/`）、名字检查、提示配置里引用旧名字的地方 |
 | `src/skydango/vision/embed.py` `onnxrt.py` | 特征模型的公共部分：`OnnxEmbedder`、`unit` / `cosine`（认地图、认装扮共用）；`onnxrt.py` 按 device（cuda / dml / cpu）选 onnxruntime 后端、建会话（YOLO、特征模型、动作模型共用） |
-| `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己、关系卡旧特征、`assign_friends`、换装判定）、攒训练数据 `CropSaver` |
+| `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己各一个底库、`assign_friends`、`looks_like_dango`、换装判定）、攒训练数据 `CropSaver` |
+| `src/skydango/vision/gallery.py` | 认装扮的多样本底库（纯数据）：`Sample`（颜色 + DINOv2 两个特征）、`Gallery`（去重、上限、钉住、`best` 取最像一张） |
 | `src/skydango/vision/catalog.py` | 装扮图鉴第 1 期（见「装扮图鉴」）：运行时把近处的人清楚的整身裁图存进 `catalog/inbox/`（门槛、每人留最好几张、写盘、索引）、离线工具的总览拼图 |
 | `src/skydango/vision/wardrobe.py` | 装扮描述器：排队、优先级、每小时额度，一次性 `claude -p --model haiku` 把人物裁图写成一句话 |
 | `src/skydango/vision/appearance_eval.py` | 认装扮的离线标定（`perception appearance-eval`）：收集轨迹特征、相似度分布、建议门槛、藏标签重放、报告 |
@@ -178,6 +179,7 @@ dir = "private/sandbox"
 | `spin/<时间>/` | 主人 `#spin` 转一圈的截图：转前 / 转完 / 每帧（文件名带按住后第几秒）和 `summary.json` |
 | `light/<时间>/` | 每次点亮陌生人（`[social]` light）：出请求那一刻 + 举起后每 0.5 秒的截图（每次最多 30 张、每次 run 最多 50 次；所有火焰候选画青圈，他那团画粗）和 `summary.json`（线索、结局、举起时和最后的 `black()`、火焰最后看到的时间和位置、最后在不在边上 `away`） |
 | `unknown_names/` | YOLO 感知层读得清楚、但不在 friends.md 里的名字（`names.jsonl` + 每个名字一张裁剪图）；`perception unknown-names` 汇总，**只列出，不自动写 friends.md** |
+| `enroll/` | 启动时转一圈登记团子取到的团子裁图（`<序号>.jpg`），事后核对登记的是不是团子各个角度 |
 | `appearance/` | 认装扮攒的训练数据：`crops/<身份>/*.jpg`（好友名，或 `t<轨迹>`）+ `appearance.jsonl`（`[appearance] save`，每条轨迹 2 秒一张、每次最多 2000 张） |
 | `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有 `--brain`）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
 
@@ -274,12 +276,21 @@ dir = "private/sandbox"
 
 ## 认装扮（`[appearance]`，要配合 `[perception]`）
 
-设计见 `docs/superpowers/specs/2026-10-01-appearance-design.md`，计划 `docs/superpowers/plans/2026-10-01-appearance.md`。
-名字标签挡住 / 太远读不到时靠外观把人认回来，认得出走开又回来的陌生人，说得出谁穿的什么。**还没在真机上跑过，数字都是估的**：
-先用 `perception appearance-eval` 在录像上标定 `match` / `changed`（spec §10），再按 spec「真机验证」五步（`view` 看"像小明?"、陌生人走开再回来还是同一个编号、dry-run 的 status 和描述额度、`--live` 换装和关系卡、`runs/<…>/appearance/` 的图）。
-- **特征**：YOLO 人物框（点过火的人和团子）每 `every` 帧裁一次好样本（框够高、不被别的框 / 聊天面板压住），默认内置颜色直方图（`model = "color"`，头 / 身体各一份色相饱和度），也能换 `.onnx`；平滑进轨迹 `data["feat"]`
-- **好友**（`maybe`）：只从这一帧挂着名字标签的样本学；没标签的轨迹攒够 `min_samples` 个好样本后和这次见过的好友（`match`）/ 关系卡旧特征（`card_match`，更严）比，过门槛且领先第二像的 `margin` → "像小明"。
-  名字标签永远说了算；标签挂在别处的不参加；一个名字一帧只给一条轨迹；连续 `recheck` 个样本不像就摘。**后果保守**：不算陌生人、好友还在身边时刷新在场（标签被挡不冒"走开了"），但不发 `arrive` / `return`、不打招呼；`people()` 里 `sure = False`
+设计见 `docs/superpowers/specs/2026-10-01-appearance-design.md`（第一版）和 `docs/superpowers/specs/2026-10-03-identity-gallery-design.md`（**10-03 改成多张底库**，计划 `docs/superpowers/plans/2026-10-03-identity-gallery.md`，依据是 10-03 的离线 spike）。
+名字标签挡住 / 太远读不到时靠外观把人认回来，认得出走开又回来的陌生人，说得出谁穿的什么。**代码已完成，还没在真机 / 录像上跑过，门槛是 10-03 spike 估的**：
+先用 `perception appearance-eval <录像> --gallery` 重算 `match` / `unsure` / `dango_match`（`tmp/record/walkaway-1002-1` 等还没跑），再按 identity-gallery spec §9「真机验证」五步（转圈登记的 status 和 `enroll/` 图、好友走远标签淡掉后 `view` 里一直是"像他"、拿不准时自动喊勤不勤、镜头转过 / 面板开关后团子不被当陌生人、用当晚录像重标门槛）。
+- **特征**：YOLO 人物框（点过火的人和团子）每 `every` 帧裁一次好样本（框高 ≥ `min_height` 0.13、不被别的框 / 聊天面板压住），一次裁图出两个特征：颜色直方图（`model = "color"`，头 / 身体各一份色相饱和度，也能换 `.onnx`）和 DINOv2-small（`[appearance] dino`，整框补成正方形，空 / 缺文件 = 只用颜色）；
+  颜色平滑进轨迹 `data["feat"]`（只给装扮描述 / 判换装），这一次的 `Sample` 放 `data["sample"]`。`[attrs] backbone` 是同一个文件时共用一个推理会话（建在第二层原来的 device 上，不把第二层降到 CPU），否则用 `[appearance] device`；DINOv2 连续出错 10 次自关，只剩颜色
+- **底库**（`vision/gallery.py`）：每个身份（团子 / 好友 / 陌生人编号）存多张样本、认人取**最像的一张**（spike：好友认出率颜色 56% → 89%）；去重 = 颜色 ≥ `DUP`（0.97）且（没有 DINOv2 或 DINOv2 也 ≥ 0.97）只刷新那张的时间；超过 `gallery_max`（40）挤掉和别的最像的（一样像挤旧的）；钉住的（转圈登记）不去重、不挤；
+  **只从身份确定的框学**：团子（`self` 框 / `_mark_dango` 标记）、**这一帧**挂着名字标签的好友、已有编号的陌生人；像小明 / 可能是 / 接回 / 看着像团子都不学、不存负样本。认团子用 DINOv2、认好友用颜色（同场景颜色好过 DINOv2，两个合起来也没更好）；**团子底库每次上线重建**（跨天不稳），关系卡旧特征（`card_match`，已废弃、留在配置里不报错）不再拿来认人
+- **三档**（只认没挂名字、没团子标记的点过火的轨迹，好样本攒够 `min_samples` 才判；名字标签永远说了算，挂上立刻清掉下面各档）：
+  ① **看着像团子**（`dango_look`）：团子底库 DINOv2 最像 ≥ `dango_match`（0.80）且比任何好友都像团子 → 效果同团子标记（不判陌生人、不算没挂名字的人、不自动喊、图鉴按团子算），`DANGO_LOOK_HOLD` 3 秒没再判像就失效；
+  ② **像小明**（`maybe`，颜色最像一张 ≥ `match` 0.88 且领先第二像 `margin`）：不算陌生人、好友还在身边时刷新在场（标签被挡不冒"走开了"），但不发 `arrive` / `return`、不打招呼；`people()` 里 `sure = False`；一个名字一帧只给一条轨迹，连续 `recheck` 个样本不像就摘；
+  ③ **可能是小明**（`unsure`，`unsure` 0.83 ≤ 分数 < `match`）：先不判陌生人，持续 `unsure_wait`（2 秒）后交给「按 Q 喊一声」确认（见该节的"拿不准"起因）。喊完他身上亮出标签 = 确认（这一帧学进底库）、标签亮在别人身上 / 什么都没亮 = 摘掉、什么都没亮时记 `unsure_miss`（这条轨迹不再进"可能是"、不再为它喊，但仍可能变成像团子 / 像小明）、照常判陌生人；
+  一直没喊成（额度、被拦、dry-run、`[call] auto` 关着）挂满 `unsure_wait + call.window` 秒摘掉；他的呼喊还在途中时不到期（免得标签亮前先判了陌生人）；"可能是"从第一次进入算起，暂停（`held`）会把计时一起往后挪。
+  **身体的路径（`track` 盯人目标、`look_person` 按外观、`find` / 注意力找人）不把"可能是"当好友**，只有标签说了算或像小明才行；识别可视化 / status：像小明 = 浅绿虚线"像小明?"，可能是 = 浅绿点线"可能是小明?"（status"可能是小明（没看到名字）"），看着像团子 = 灰白虚线
+- **启动转圈登记团子**（`Body.enroll_self()`，大脑第一轮之前）：`Camera.spin` 转一整圈（不套 `panel.borrow`：`spin` 自己关 / 重开聊天面板，身体在 `held("camera")` 里），每张截图取团子框（高分 `self` 框优先，否则 `sweep` 的 `self_box`），裁好样本均匀挑最多 `enroll_max`（16）张钉住进团子底库，裁图存 `runs/<…>/enroll/`，status"团子登记：N 张"。
+  条件：感知层 + `[appearance] enabled` + DINOv2 加载成功；**不转**（WARNING + status"团子登记：没转（原因）"；转之前自己截一张现看画面黑不黑、开着哪些面板，因为这时主循环还没跑过）：dry-run、画面黑着、别的面板开着、截不到图、没有视角控制、正在跑技能；转了但一张都没取到记"转了一圈没认出自己"，都不重试
 - **陌生人**：认装扮开着时好样本不够先不判陌生人，最多多等 1.5 秒（`STRANGER_GRACE`）；判成陌生人后编号"陌生人A / B…"（这次上线不复用），走开超过 `keep` 又被认回来发 `stranger_back` 背景事件（"刚才那个陌生人A（白斗篷）又回来了"）；
   同屏两个陌生人不会共用编号；`stranger_forget`（30 分钟）没见就忘
 - **装扮描述**（`describe`，默认开）：描述器排队用 Haiku 把裁图写成一句话（团子自己优先、好友其次、近处陌生人最后；每小时 `describe_max` 次、同一人一次上线最多重新描述 `redescribe_max` 次，额度用完等 `quota_wait`）；
@@ -287,13 +298,11 @@ dir = "private/sandbox"
 - **判不判换装**（`outfit_change`，**默认关**）：10-01 在 15 段录像上标定（`tmp/appearance-eval/`），颜色特征下同一身衣服常跌到 0.15~0.5，0.70 的门槛会把同一身判成换装、往关系卡里记假装扮；
   换 DINOv2-small（`models/dinov2-small.onnx`）也没稳住（对比在 `tmp/appearance-eval/compare-color-dinov2.md`）。**关着时**：不追加新的一套、不发 `outfit` 事件、上线中途不重新描述；
   好友 / 团子每次上线描述一次（每个好友每次上线多一次 Haiku），好友的描述**覆盖**关系卡最近那一套；描述回来前 status 不写他的装扮（不拿上次的旧描述说事）。换了更稳的特征模型再打开；`changed` 默认 0.40
-- **关系卡**：`Card.outfits` 每个好友留最近 `outfit_keep`（3）套（描述、特征、特征模型 key、第一次 / 最后一次的日期），启动时载入记忆簿；`outfit_change` 开着时：第一次靠标签认出好友、和卡里最近一套比：< `changed` 算换了装、排描述，
+- **关系卡**：`Card.outfits` 每个好友留最近 `outfit_keep`（3）套（描述、特征、特征模型 key、第一次 / 最后一次的日期），启动时载入记忆簿（只用来取描述 / 判换装，**不拿来认人**）；`outfit_change` 开着时：第一次靠标签认出好友、和卡里最近一套比：< `changed` 算换了装、排描述，
   新描述回来后放 `outfit` 背景事件（"小明换了装扮：上次是「…」，现在「…」"，arrive 文字不变）；同一套直接用卡里的描述、不花额度。只在 live 写盘；管理面板「内心」页关系卡显示装扮
-- **攒数据**（`save`，默认开）：好样本存进 `runs/<…>/appearance/`（见「运行目录」），以后训认人模型用（spec §8，这一期不做）
-- **识别可视化**：按外观认的好友画浅绿虚线、标"像小明?"，陌生人标编号，鼠标悬停看装扮
-- **已知限制**：颜色直方图不看亮度，白 / 灰 / 黑发色、同色深浅分不开；不同地图、白天晚上光照差得多，跨天靠关系卡认人弱（所以 `card_match` 更严）；撞衫（季节装扮、默认斗篷）会认错；身高没做；没点火的黑影没有外观
-- `enabled = false` 照旧：系统提示词的规矩、事件、status、`people()` / 识别框逐字一样；只有 `look_person` 工具说明里总写着能传「陌生人A」（关着时找不到、照常报没找到，无害）；管理面板有 `appearance.enabled`、`appearance.describe` 两个开关
-- 中途换装（`outfit_change` 开着时）：好友 / 团子的平均特征离上次描述（或上次换装稳下来时）低于 `changed` 就记一次换装（好友发 `changed`），平均特征挪稳到新那套之前不再判；不看描述有没有回来（描述关了、没挂描述器、描述器放弃了照样判），最多 `redescribe_max` 次
+- **攒数据**（`save`，默认开）：好样本存进 `runs/<…>/appearance/`（见「运行目录」），以后训认人模型用（只有一个好友的录像训不出来，这一期不做）
+- **识别可视化**：见上面三档的画法；陌生人标编号，鼠标悬停看装扮
+- **已知限制**：颜色直方图不看亮度，白 / 灰 / 黑发色、同色深浅分不开；不同地图、白天晚上光照差得多（所以底库只认这次上线、不跨天）；撞衫（季节装扮、默认斗篷）会认错；好友中途变身（雪人）底库对不上；框高 < 0.13 的远处小人两种特征都认不出（spike 结论：瓶颈是朝向 / 场景，不是距离，所以不做远处底库）；身高没做；没点火的黑影没有外观
 
 ## 装扮图鉴（`[catalog]`，要配合 `[perception]`）
 
@@ -482,7 +491,8 @@ dir = "private/sandbox"
   别人也在喊 / 镜头刚动过 / 喊之前聊天面板开着（关面板时画面横移）/ 没有新鲜的人物框 / 黑屏就放弃，**不为确认再按**。认错 = 把一个好友当成团子过滤掉，所以先 `perception halo-eval tmp/record/q-call-20260930-c` 定 `halo_rise`、真机核对再开
 - **自动兜底**（`[call] auto`，`Body._watch_call`）：好友 `auto_after_leave`（30 秒）内走开、还没回来、这次走开没为他喊过，画面里有没挂名字的人，`auto_window` 1 分钟最多 `auto_quota` 3 次（10-02 晚从 10 分钟改的；还受 `min_gap` 20 秒限制）；喊一声认回来的好友 `auto_again`（5 分钟）内不再为他自动喊（10-03，他多半一直站在稍远处、标签淡了而已）；
   输入框开着、技能在跑、有互动请求、在举蜡烛、别的面板开着、刚做完动作、大脑在回聊天、黑屏都不喊；dry-run 只记日志。喊完不等，窗口结束后放**背景事件** `call`（"你下意识喊了一声：认出 小明（右边·远）…"），
-  认回来的好友照常 `return` 抵消那条 `leave`。空闲注意力的找人开着时（`[attention] search`，模式随意 / 好奇 / 专心，面板 auto），好友走开后的这一声改由「找刚走开的好友」当一步去喊（额度同上），`_watch_call` 不再自己喊
+  认回来的好友照常 `return` 抵消那条 `leave`。
+  **第二种起因：拿不准**（identity-gallery spec §5）：认装扮里某个人是"可能是小明"（`env.unsure(now)`，持续 `unsure_wait` 秒、小明没在别处确认）时也自动喊一声，**共用**上面的 `min_gap` / `auto_window` / `auto_quota` / `auto_again` 和所有拦截；额度 / 间隔 / `auto_again` 挡住不算尝试（他留在名单里、下一圈还能喊，受"可能是"超时约束），拦截（输入框、技能……）/ dry-run / `call_out` 拒绝才打 `unsure_called`（喊成没喊成都打，免得反复排队）；喊完窗口结束时按标签有没有亮出来判（见「认装扮」）。注意力的找人接管"刚走开的好友"那一声时，这个起因照旧在 `_watch_call` 里喊。空闲注意力的找人开着时（`[attention] search`，模式随意 / 好奇 / 专心，面板 auto），好友走开后的这一声改由「找刚走开的好友」当一步去喊（额度同上），`_watch_call` 不再自己喊
 - **大脑工具 `call()`**（`calling.call_available`：`[call] enabled` 且 env 是感知层才注册，在 `look_around` 后面，算"做了事"）：身体按完键就回来，MCP 线程里等窗口结束（最多 `window + 4` 秒），
   返回"喊了一声：认出 …；小红在画面外（左边）；还有 1 个没挂名字的人。光圈：…"；拒绝时返回原因。提示词「视角」一节加一句什么时候喊；status 多一行"上次喊：2 分钟前（认出小明）"；
   网页手动控制"喊一声（Q）"（总是真执行、照样过检查）；管理面板有 `call.enabled` / `call.auto`
@@ -634,6 +644,7 @@ python -m skydango perception attrs-eval datasets/sky --model models/attrs-<日�
 python -m skydango perception bench --attrs [--model …]  # 测速时再测一遍加第二层后的 fps
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
 python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
+python -m skydango perception appearance-eval <录像目录> --gallery  # 底库模式：前一半挂标签的当底库、后一半当查询，开头 20 秒的团子框当团子底库，给 match / unsure / dango_match 的建议值和三档人数分布（还没在录像上跑过，先跑 tmp/record/walkaway-1002-1）
 python -m skydango catalog collect <录像目录> [--model 模型] [--fps 6.5]  # 装扮图鉴：录像上试跑收集 → tmp/catalog/<时间>/（sheet.jpg、candidates.jsonl），定 min_height / sharp_min
 python -m skydango perception clips <录像目录> [--force]  # 动作识别的数据：按人物轨迹切 16 帧片段 → datasets/gesture/_unlabeled；这段录像切过就拒绝，--force 只切数据目录里哪儿都还没有的片段
 python -m skydango perception gesture-label [片段目录] [--blind]  # Claude 初分动作片段（默认 datasets/gesture/_unlabeled），再去管理面板「标注」页确认；--blind 不给录像名提示、写 claude-blind.json（标注页优先显示），看名字时它常照名字判

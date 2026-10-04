@@ -3,11 +3,11 @@
  * 标签、描述来自识别 / 模型：只用 fillText 画。顶层不碰 document：node 里 require 它能测 nameAt / toFrame（tests/test_viewer.py）。 */
 (function () {
 "use strict";
-const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",maybe:"#86efac",
+const COLORS={friend:"#3ddc84",name:"#3ddc84",tag:"#facc15",stranger:"#ff9f43",unlit:"#a78bfa",player:"#60a5fa",self:"#cbd5e1",maybe:"#86efac",unsure:"#86efac",dango_look:"#cbd5e1",
 ring:"#22d3ee",request:"#f43f5e",panel:"#6b7280",message:"#f472b6",typing:"#e879f9",
 bench:"#1d4ed8",bonfire:"#ea580c",instrument:"#fda4af",spirit:"#ffffff",shared:"#7dd3fc",rejected:"#6b7280",
 panel_ok:"#3b82f6",panel_new:"#facc15",panel_unknown:"#ef4444",button_ok:"#22c55e",button_ask:"#9ca3af",button_never:"#dc2626"};
-const NAMES={friend:"好友",tag:"没认出的名字",stranger:"陌生人",unlit:"没点火",player:"没判定的人",self:"团子",maybe:"按外观认的好友",ring:"互动圆圈",
+const NAMES={friend:"好友",tag:"没认出的名字",stranger:"陌生人",unlit:"没点火",player:"没判定的人",self:"团子",maybe:"按外观认的好友",unsure:"可能是的好友",dango_look:"看着像团子",ring:"互动圆圈",
 request:"互动请求",panel:"聊天面板",message:"新消息",typing:"正在输入",
 bench:"座位",bonfire:"篝火",instrument:"乐器",spirit:"先祖",shared:"共享空间的人",rejected:"被复核撤下的框",
 panel_ok:"面板（已核对）",panel_new:"面板（未核对）",panel_unknown:"不认识的面板",button_ok:"能按",button_ask:"要放行",button_never:"不能按"};
@@ -35,7 +35,7 @@ function draw(canvas,img,s,o){
   ctx.font=`${fs}px system-ui,"Microsoft YaHei",sans-serif`;ctx.textBaseline="middle";
   const boxes=s.boxes||[];
   for(const b of boxes){const col=COLORS[b.kind]||"#fff",x=b.x*k,y=b.y*k,w=b.w*k,h=b.h*k;
-    ctx.strokeStyle=col;ctx.lineWidth=b.kind==="request"?4:2;ctx.setLineDash(b.kind.startsWith("panel")?[8,5]:b.kind==="maybe"?[6,4]:b.kind==="rejected"?[4,4]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
+    ctx.strokeStyle=col;ctx.lineWidth=b.kind==="request"?4:2;ctx.setLineDash(b.kind.startsWith("panel")?[8,5]:b.kind==="maybe"||b.kind==="dango_look"?[6,4]:b.kind==="unsure"?[2,4]:b.kind==="rejected"?[4,4]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
     const t=boxText(b);if(!t)continue;
     const below=b.kind==="ring"||b.kind==="request",tw=ctx.measureText(t).width+8,th=fs+6,ty=(below||y-th<0)?y+h:y-th;
     ctx.fillStyle=col;ctx.fillRect(x,ty,tw,th);ctx.fillStyle="#0b0d12";ctx.fillText(t,x+4,ty+th/2);}
