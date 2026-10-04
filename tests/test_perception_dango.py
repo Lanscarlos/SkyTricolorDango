@@ -147,3 +147,63 @@ def test_friend_tag_over_dango_is_not_hung_on_dangos_box():
     t = run(w, det, [[on_me(), tag(640, 110, y=400)]] * 4, start=t + 0.25)
     assert w.nearby(t) == ["懒洋洋大王"]
     assert [p for p in w.people(t) if p.name] == []
+
+
+# ---- self 框的位置连续性（10-03 晚真机复盘：docs/progress/2026-10-03-plan.md「认人」）----
+# 21:28~21:46 团子和番茄并排坐着、聊天面板开着：团子在右边（self 0.4~0.9 / player 0.88~0.95），YOLO 偶尔把高分 self 框
+# （0.70~0.75）打在番茄身上（hard/213242、213406）。以前团子当场被摘掉标记、记住的位置被番茄覆盖，之后团子的新轨迹
+# 全被判成陌生人（图鉴"陌生人" 105 张里约 70 张是团子）
+SIT_ME = Rect(1430, 340, 190, 442)
+SIT_ON_ME = Rect(1436, 328, 187, 445)
+SIT_FRIEND = Rect(1090, 457, 259, 415)
+JUMP = Rect(1052, 447, 302, 416)  # 打在番茄身上的 self 框
+
+
+def friend(box=SIT_FRIEND, score=0.7):
+    return Detection("player", box, score)
+
+
+def dango_strangers(w, t):
+    return [p for p in w.people(t) if p.kind == "stranger" and same_body(p.box, SIT_ON_ME)]
+
+
+def test_self_box_jumping_to_neighbour_does_not_unmark_dango():
+    det = FakeDetector()
+    w = watcher(det)
+    t = run(w, det, [[me(SIT_ME), on_me(SIT_ON_ME, 0.9), friend()]] * 4, panel=True)
+    cycle = [[me(JUMP, 0.75), on_me(SIT_ON_ME, 0.9)]] + [[on_me(SIT_ON_ME, 0.9), friend()]] * 3
+    t = run(w, det, cycle * 8, start=t + 0.25, panel=True)  # 8 秒，每秒跳一次
+    assert dango_strangers(w, t) == []
+
+
+def test_weak_self_on_neighbour_does_not_steal_dango():
+    """番茄身上只有低分 self（0.3）、和她的 player 框重合：不能把她提升成团子、把团子挤掉。"""
+    det = FakeDetector()
+    w = watcher(det)
+    t = run(w, det, [[me(SIT_ME), on_me(SIT_ON_ME, 0.9), friend()]] * 4, panel=True)
+    weak = [[on_me(SIT_ON_ME, 0.9), friend(), Detection("self", SIT_FRIEND, 0.3)]]
+    t = run(w, det, (weak + [[on_me(SIT_ON_ME, 0.9), friend()]]) * 12, start=t + 0.25, panel=True)
+    assert dango_strangers(w, t) == []
+
+
+def test_self_box_that_stays_somewhere_new_is_believed():
+    """self 框在新位置连着待了 SELF_JUMP_HOLD 秒以上：团子真的换了地方（比如走开了），照新位置认。"""
+    from skydango.vision.perception import SELF_JUMP_HOLD
+
+    det = FakeDetector()
+    w = watcher(det, track_buffer=0.5)
+    t = run(w, det, [[me(), on_me()]] * 2)
+    new_me, new_on = Rect(1300, 470, 165, 395), Rect(1299, 468, 287, 399)
+    n = int(SELF_JUMP_HOLD / 0.25) + 3
+    t = run(w, det, [[me(new_me)]] * n, start=t + 1)
+    t = run(w, det, [[on_me(new_on)]] * 8, start=t + 0.25)
+    assert w.strangers(t) == 0
+
+
+def test_one_self_prefers_box_near_dango():
+    from skydango.vision.perception import one_self
+
+    dets = [Detection("self", JUMP, 0.75), Detection("self", SIT_ME, 0.45)]
+    out = one_self(dets, near=[SIT_ON_ME])
+    assert [d.cls for d in out] == ["player", "self"]
+    assert [d.cls for d in one_self(dets)] == ["self", "player"]  # 没有参考位置：照旧留分数最高的

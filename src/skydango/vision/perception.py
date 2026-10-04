@@ -69,6 +69,7 @@ SELF_MEMORY = 1.0  # 图鉴收集：团子框这么久内出现过的位置上�
 SELF_IOU = 0.3  # 和团子框重叠这么多就算团子（_mark_dango 用 same_body 更严，团子身上的 player 框常比 self 框大一圈）
 MERGE_IOU = 0.7  # merge_people：player 和 player_unlit 两框重叠这么多就是同一个人（录像里同一人的两框 IoU 0.74~1.0，挨着的两个人 < 0.5）
 SAME_BODY_IOU = 0.45  # same_body：团子身上的 player 框和 self 框
+SELF_JUMP_HOLD = 1.0  # self 框跳到离团子（轨迹 / 记住的位置）连不上的地方：在那儿连着待这么久才信，之前当成别人（10-03 21:32 打到旁边的番茄身上）
 DANGO_MEMORY = 30.0  # 团子框（按聊天面板开 / 关分别记）这么久内见过：YOLO 没出 self 时，落在那个位置上的人物框就是团子
 # 认装扮：没挂名字的人 DINOv2 特征像团子（"看着像团子"，data["dango_look"]）：这么久内没再被判像团子就失效（身份底库 spec 2026-10-03 §3.2）
 DANGO_LOOK_HOLD = 3.0
@@ -183,9 +184,18 @@ def _near(a: tuple[int, int], b: tuple[int, int], dist: int = 80) -> bool:
     return abs(a[0] - b[0]) <= dist and abs(a[1] - b[1]) <= dist
 
 
-def one_self(dets: list[Detection]) -> list[Detection]:
-    """一帧只有一个团子：留分数最高的 self，其余改成 player（实测模型会把躺在地上的别人也认成团子）。"""
+def near_dango(box: Rect, ref: Rect) -> bool:
+    """这个框和团子的参考位置是不是连得上：同一个身体，或者中心横着离开不到一个参考框宽
+    （团子是镜头支点，屏幕上几乎不动；聊天面板开关时的横移有团子轨迹跟着，参考位置也跟着）。"""
+    return same_body(box, ref) or abs(box.x + box.w / 2 - ref.x - ref.w / 2) <= ref.w
+
+
+def one_self(dets: list[Detection], near: list[Rect] = ()) -> list[Detection]:
+    """一帧只有一个团子：留分数最高的 self，其余改成 player（实测模型会把躺在地上的别人也认成团子）。
+    near：团子现在 / 刚才在哪（团子轨迹、记住的位置）：有的话先留连得上的里分数最高的
+    （10-03 21:32：番茄身上的 self 0.75 比团子自己的 0.45 高）。"""
     selfs = sorted((d for d in dets if d.cls == "self"), key=lambda d: d.score, reverse=True)
+    selfs.sort(key=lambda d: not any(near_dango(d.box, r) for r in near))  # 稳定排序：连得上的排前面
     extra = {id(d) for d in selfs[1:]}
     return [Detection("player", d.box, d.score) if id(d) in extra else d for d in dets]
 
@@ -402,6 +412,7 @@ class PerceptionWatcher:
         self.self_box: Rect | None = None  # 转圈认出的团子（sweep）；有它就不用 self_roi，下次转圈前一直用
         self._me_last: tuple[Rect, float] | None = None  # 沿用的最近一次团子框：(box, time)，黑影贴着时认不出 self
         self._dango_mem: dict[bool, tuple[Rect, float]] = {}  # 聊天面板开着 / 关着 → 最近一次高分 self 框和时间
+        self._self_jump: tuple[Rect, float] | None = None  # 连不上团子的 self 框：(这一帧的框, 第一次在那儿看到的时间)
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
         self._frame_w = 1920  # 最近一帧的宽度（算在画面哪边用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
@@ -655,7 +666,8 @@ class PerceptionWatcher:
         if self._last_panel is not None and panel_visible != self._last_panel:
             self.camera_moved(now, "panel")  # 别处（别人按的 C）开关的面板身体不知道，这里兜底
         self._last_panel = panel_visible
-        dets, flagged = merge_people(one_self(self._filter(self._detect(frame), width, height, panel_visible)))
+        refs = self._dango_refs(now, panel_visible)
+        dets, flagged = merge_people(one_self(self._filter(self._detect(frame), width, height, panel_visible), near=refs))
         unlit_dup = {id(dets[i]) for i in flagged}  # 压掉过黑影框的检测
         detected = time.perf_counter()
         low_all = [d for d in dets if d.score < self.cfg.conf]
@@ -663,7 +675,7 @@ class PerceptionWatcher:
         # 检测器为点亮陌生人放低到 LIT_LOW 后，promote_weak_self / 难例 / last_low 仍只看原来阈值以上的低分框
         floor = detector_conf(self.cfg, attrs=attrs_on)
         low = [d for d in low_all if d.score >= floor]
-        dets = promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low)
+        dets = self._steady_self(promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low), refs, now)
         if self._occlusion(frame, dets):
             return
         shift = self._pan_step(frame, panel_visible) if self.cfg.track_pan else None
@@ -1640,6 +1652,30 @@ class PerceptionWatcher:
         if self.cfg.self_roi:
             areas.append(roi_rect(self.cfg.self_roi, width, height))
         return areas
+
+    def _dango_refs(self, now: float, panel_visible: bool) -> list[Rect]:
+        """团子现在 / 刚才在哪：标着团子的轨迹最后的框（1 秒内还在的）+ 这个面板状态下记住的团子框（DANGO_MEMORY 内）。"""
+        refs = [t.box for t in self.tracker.tracks.values() if t.data.get("dango") and now - t.last <= 1.0]
+        mem = self._dango_mem.get(panel_visible)
+        if mem is not None and now - mem[1] <= DANGO_MEMORY:
+            refs.append(mem[0])
+        return refs
+
+    def _steady_self(self, dets: list[Detection], refs: list[Rect], now: float) -> list[Detection]:
+        """self 框要和团子连得上（near_dango）：连不上的（10-03 21:32 打到并排坐着的番茄身上）改成 player——它就是旁边那个人；
+        在那儿连着待满 SELF_JUMP_HOLD 秒才信（团子真的换了地方）。不知道团子在哪（refs 空）时照单全收。"""
+        selfs = [d for d in dets if d.cls == "self"]
+        if not selfs or not refs or any(near_dango(d.box, r) for d in selfs for r in refs):
+            self._self_jump = None
+            return dets
+        best = max(selfs, key=lambda d: d.score)
+        jump = self._self_jump
+        since = jump[1] if jump is not None and same_body(best.box, jump[0]) else now
+        self._self_jump = (best.box, since)
+        if now - since >= SELF_JUMP_HOLD:
+            return dets
+        log.debug("self 框 %s 和团子连不上（%.1f 秒）：当成别人", best.box, now - since)
+        return [Detection("player", d.box, d.score) if d.cls == "self" else d for d in dets]
 
     def _mark_dango(self, tracks: list[Track], selfs: list[Track], now: float, panel_visible: bool) -> None:
         """给这一帧的人物轨迹打"是团子"的标记（data["dango"] = 这一帧的框），打了的不算别人（不判陌生人、不挂名字标签、不算没挂名字的人）。
