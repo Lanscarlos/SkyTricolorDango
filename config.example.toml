@@ -157,20 +157,21 @@ norm = "imagenet"
 device = "cpu"                  # cuda / dml / cpu，同 [perception]
 every = 3                       # 每条轨迹每几帧算一次特征
 max_per_frame = 4               # 一帧最多算几个
-min_height = 0.13               # 好样本的框高（相对截图高度）
+min_height = 0.13               # 好样本的框高（相对截图高度；10-03 spike：< 0.13 两种特征都认不出）
 max_overlap = 0.2               # 和别的框 / 面板重叠超过这个比例就不算好样本
 ema = 0.2                       # 平均特征的更新速度
 min_samples = 3                 # 判 maybe / 陌生人编号 / 换装前至少几个好样本
-match = 0.88                    # 相似度门槛（估的，以离线标定为准）
-card_match = 0.92               # 废弃，不再使用（留着旧配置不报错）
+match = 0.88                    # 颜色、底库里最像的一张 ≥ 它 = "像小明"（10-03 spike 估的，以 appearance-eval --gallery 为准）
+card_match = 0.92               # 废弃：关系卡旧特征不再拿来认人，留着旧配置不报错
 margin = 0.05                   # 最像的要比第二像的高这么多
 recheck = 5                     # maybe 连续这么多个新样本低于门槛就摘掉
-unsure = 0.83                   # 底库最高相似度在 [unsure, match) 之间算疑似，等 unsure_wait 秒再定
+unsure = 0.83                   # 颜色最像一张在 [unsure, match) 之间 = "可能是小明"，等 unsure_wait 秒后自动按 Q 喊一声确认（10-03 spike 估的）
 unsure_wait = 2.0               # 秒
-dino = "models/dinov2-small.onnx"  # 第二个特征（DINOv2）模型，没有这个文件就只用颜色
-dango_match = 0.80              # 认团子自己（底库）的门槛
-gallery_max = 40                # 每个身份底库最多留几张样本
-enroll_max = 16                 # 一次最多入库几张（名字标签证实的样本）
+dino = "models/dinov2-small.onnx"  # 第二个特征（DINOv2）模型，认团子用；空 / 没有这个文件就只用颜色（不判像团子、不转圈登记）；
+                                # 和 [attrs] backbone 是同一个文件时共用一个推理会话
+dango_match = 0.80              # DINOv2、团子底库最像一张 ≥ 它且比任何好友都像 = "看着像团子"（10-03 spike 估的）
+gallery_max = 40                # 每个身份底库最多留几张样本（超过挤掉和别的最像的，钉住的不挤）
+enroll_max = 16                 # 启动时转一圈登记团子，最多钉住几张样本
 outfit_change = false           # 判不判换装：颜色特征下同一身衣服常被误判成换装（10-01 标定），默认不判；
                                 # 关着时好友 / 团子每次上线描述一次、覆盖关系卡最近那一套
 changed = 0.40                  # outfit_change 开着时：低于它算换了装
