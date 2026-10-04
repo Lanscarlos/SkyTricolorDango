@@ -17,14 +17,15 @@ from skydango.console.sandbox_view import reset
 from skydango.sandbox.clock import save
 
 
-# ---- 1. 起沙盒也要探团子的端口：上次留下的孤儿团子占着 19391 时不许起（两个大脑同时在线）----
-def test_sandbox_start_refused_while_orphan_dango_holds_child_port(tmp_path, upstream):  # noqa: F811
+# ---- 1. 起沙盒也要探团子的端口：终端起的团子占着 19391 时不许起（两个大脑同时在线）----
+def test_sandbox_start_refused_while_terminal_dango_runs(tmp_path, upstream):  # noqa: F811
     s = make(tmp_path, upstream)
     try:
-        s.child_port = upstream.server_address[1]
+        s.probe = lambda port: {"pid": 1, "run_dir": "r", "live": True, "brain": True, "emotes": True, "duration": 0.0,
+                                "started": 1.0, "console": False}
         status, res = post(s, "api/sandbox/start", {"start": "resume"})
-        assert status == 409 and any("先在「真机团子」页让它退出" in p["text"] for p in res["problems"])
-        assert s.runner.started == []
+        assert status == 409 and any("先停团子" in p["text"] for p in res["problems"])
+        assert s.runner.started == [] and s.runner.state == "running"  # 接上了
     finally:
         s.stop()
 

@@ -494,6 +494,7 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .lv-drawer.open{transform:none;visibility:visible}
 .lv-drawer>header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12px;letter-spacing:.12em;color:var(--muted)}
 .lv-drawer pre{flex:1;min-height:0;margin:0;padding:8px 14px 14px;overflow:auto;font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.lv-log-note{flex:none;margin:0;padding:6px 14px 0}
 .lv-drawer pre .e{color:var(--brick-ink)}
 .lv-drawer pre .w{color:var(--amber-ink)}
 @media (prefers-reduced-motion:reduce){.lv-drawer{transition:none}}

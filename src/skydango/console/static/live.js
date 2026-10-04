@@ -39,7 +39,7 @@ function render() {
   chip.className = "chip" + (run.state === "running" ? " live dot" : "");
   chip.textContent = CHIP[run.state] || run.state;
   const o = run.options || {};
-  $("lv-mode").textContent = [o.brain === false ? "普通 Agent" : "统管大脑", o.live ? "真的发送" : "只打印",
+  $("lv-mode").textContent = [run.source === "terminal" ? "终端起的" : "", o.brain === false ? "普通 Agent" : "统管大脑", o.live ? "真的发送" : "只打印",
     run.uptime != null ? `已运行 ${fmtUptime(run.uptime)}` : ""].filter(Boolean).join(" · ");
   $("rundir").textContent = mine && run.run_dir ? run.run_dir : "";
   renderBanners(st, run, busy, isSb);
@@ -56,12 +56,6 @@ function renderBanners(st, run, busy, isSb) {
   if (run.forced && !busy && !isSb) {
     const b = el("div", "banner bad");
     b.append(el("span", "", "强制结束了，轮盘可能没换回，请用 python -m skydango emotes wheel 检查。")); banners.append(b);
-  }
-  if (st.orphan) {
-    const b = el("div", "banner warn"), btn = el("button", "btn sm", "让它退出");
-    b.append(el("span", "", "上次留下的团子还在运行（占着子进程端口），先让它退出再叫醒新的。"));
-    btn.type = "button"; btn.onclick = async () => { btn.disabled = true; await post("api/orphan/stop"); refresh(); };
-    b.append(btn); banners.append(b);
   }
 }
 
@@ -179,7 +173,8 @@ async function pullLogs(force) {  // force：没在跑也拉一次（出错停�
   else if (!BUSY.includes(run.state)) { if (!L.drain) return; L.drain = false; }  // 刚停下：再拉最后一次，把收尾 / traceback 读进来
   else L.drain = true;
   try {
-    const r = await getJSON(`api/logs?after=${L.logNext}`), box = $("log");
+    const r = await getJSON(`api/logs?after=${L.logNext}`), box = $("log"), note = $("log-note");
+    note.textContent = r.note || ""; note.hidden = !r.note;  // 终端起的团子：日志来自 agent.log
     if (r.next < L.logNext) { L.logNext = 0; box.textContent = ""; return; }  // 重新启动过：从头来
     for (const line of r.lines) box.append(el("span", /Traceback|ERROR|错误/.test(line) ? "e" : /WARNING/.test(line) ? "w" : "", line + "\n"));
     while (box.childNodes.length > 1000) box.firstChild.remove();

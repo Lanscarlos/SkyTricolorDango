@@ -280,3 +280,10 @@ def test_live_crash_drawer_loads_log():  # 打开页面时已经出错停下：�
     live = (STATIC / "live.js").read_text(encoding="utf-8")
     assert "pullLogs(true)" in _fn_body(live, "function render(")
     assert "force" in _fn_body(live, "async function pullLogs(")
+
+
+def test_live_page_marks_terminal_dango_and_has_no_dango_orphan_button():  # spec 2026-10-04-console-attach §2
+    live = (STATIC / "live.js").read_text(encoding="utf-8")
+    common = (STATIC / "common.js").read_text(encoding="utf-8")
+    assert "api/orphan/stop" not in live and "st.orphan" not in live
+    assert "终端起的" in common and "终端起的" in live and ".note" in live

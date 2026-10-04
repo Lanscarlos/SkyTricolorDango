@@ -2086,8 +2086,9 @@ def cmd_console(cfg: Config, args) -> None:
     except OSError as exc:
         raise SystemExit(f"管理面板起不来（127.0.0.1:{port}）：{exc}\n端口可能被占用了，用 console --port 换一个") from exc
     print(f"管理面板：{url}（只有本机能看）；Ctrl+C 结束（会先停掉团子）")
-    if server.orphan:
-        print(f"注意：{cfg.viewer.port} 端口上有上次留下的团子，面板上可以让它退出")
+    st = runner.status()
+    if st["state"] == "running" and st.get("source") == "terminal":
+        print(f"接上了终端起的团子（pid {st['pid']}，运行目录 {st['run_dir']}）")
     if not args.no_browser:
         import webbrowser
 

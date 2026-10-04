@@ -143,7 +143,7 @@ function renderRunCard(st){
   if(s==="starting"){cs="busy";title=`${who} 正在启动…`;sub=run.slow_start?"已超过 60 秒，看看日志":""}
   else if(s==="running"){cs="busy";title=`${who} 运行中`;
     if(isSb){let t="";try{t=typeof g.sandboxSummary==="function"?g.sandboxSummary()||"":""}catch(e){}sub=t}
-    else{const o=run.options||{};sub=[o.live?"真的发送":"只打印",run.uptime!=null?`已运行 ${fmtUptime(run.uptime)}`:""].filter(Boolean).join(" · ")}}
+    else{const o=run.options||{};sub=[run.source==="terminal"?"终端起的":"",o.live?"真的发送":"只打印",run.uptime!=null?`已运行 ${fmtUptime(run.uptime)}`:""].filter(Boolean).join(" · ")}}
   else if(s==="stopping"){cs="stopping";title=`${who} 在收尾…`;sub=isSb?"最终反思、写日记":"恢复轮盘、复原镜头"}
   else if(s==="crashed"){cs="crashed";title=`${who} 出错停下了`;sub=run.error||(run.exit_code!=null?`退出码 ${run.exit_code}`:"")}
   card.dataset.state=cs;

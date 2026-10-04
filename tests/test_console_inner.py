@@ -188,15 +188,18 @@ def test_forget_offline_refused_when_someone_else_runs(tmp_path):  # I3：终端
     assert forget_offline(tmp_path, {"kind": "catchphrase", "text": "害"}, NOW) == {"ok": True}
 
 
-def test_api_forget_refused_with_orphan(tmp_path, upstream):  # noqa: F811  I3：上次留下的团子还占着端口
+def test_api_forget_with_terminal_dango_forwards(tmp_path, upstream):  # noqa: F811  I3：终端起的团子会被接管、转发给它
     mem = tmp_path / "memory"
     (tmp_path / "config.toml").write_text(f'[reply]\nmemory_dir = "{mem.as_posix()}"\n', encoding="utf-8")
     fill(mem / "inner")
-    s = make_server(tmp_path, upstream)  # 子进程端口 = 假 viewer，/status 有响应
+    info = {"pid": 1, "run_dir": "r", "live": True, "brain": True, "emotes": True, "duration": 0.0, "started": 1.0, "console": False}
+    s = make_server(tmp_path, upstream, probe=lambda port: info)  # 子进程端口 = 假团子
     try:
+        assert s.fake_runner.attached == [info]
+        calls = fake_proxy(s, {("POST", "inner/forget"): (200, {"ok": True})})
         code, data = request(s.url + "api/inner/forget", json.dumps({"kind": "catchphrase", "text": "害"}).encode(), GOOD)
-        assert code == 409 and "上次留下的团子" in data["error"]
-        assert json.loads((mem / "inner" / "persona.json").read_text("utf-8"))["catchphrases"] != []
+        assert (code, data) == (200, {"ok": True}) and calls[0][:2] == ("POST", "inner/forget")
+        assert json.loads((mem / "inner" / "persona.json").read_text("utf-8"))["catchphrases"] != []  # 文件交给团子改
     finally:
         s.stop()
 

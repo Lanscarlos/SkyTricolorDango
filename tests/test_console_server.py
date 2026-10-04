@@ -30,14 +30,22 @@ def request(url, body: bytes | None = None, headers: dict | None = None):
 
 class FakeRunner:
     def __init__(self):
-        self.state, self.started, self.stopped = "idle", [], 0
+        self.state, self.started, self.stopped, self.attached, self.note = "idle", [], 0, [], None
 
     def status(self):
         return {"state": self.state, "pid": None, "uptime": None, "exit_code": None, "run_dir": None, "forced": False,
                 "slow_start": False, "options": None}
 
     def logs(self, after=0):
-        return {"next": 2, "lines": ["a", "b"][after:]}
+        out = {"next": 2, "lines": ["a", "b"][after:]}
+        return out | {"note": self.note} if self.note else out
+
+    def attach(self, info):
+        if self.state in ("starting", "running", "stopping"):
+            return False
+        self.attached.append(info)
+        self.state = "running"
+        return True
 
     def start(self, cmd, env, options):
         self.started.append((cmd, env, options))
@@ -107,14 +115,15 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def make_server(tmp_path, upstream, secrets="", checks=None, child_port=None, make_device=None):
+def make_server(tmp_path, upstream, secrets="", checks=None, child_port=None, make_device=None, probe=None, port_free=None):
     if secrets:
         (tmp_path / "secrets.toml").write_text(secrets, encoding="utf-8")
     store = SettingsStore(tmp_path / "config.toml", environ={})
     runner = FakeRunner()
     srv = ConsoleServer(tmp_path / "config.toml", store, runner, port=0, child_port=child_port or upstream.server_address[1],
                         device_checks=checks or (lambda cfg, make: []), make_device=make_device or (lambda cfg: None),
-                        find_spec=lambda name: object())
+                        find_spec=lambda name: object(), **({"probe": probe} if probe else {}),
+                        **({"port_free": port_free} if port_free else {}))
     srv.url = srv.start()
     srv.fake_runner, srv.store = runner, store
     return srv
@@ -154,7 +163,8 @@ def test_post_needs_header_and_json(srv):
 def test_state_and_logs(srv):
     status, state = request(srv.url + "api/state")
     assert status == 200 and state["run"]["state"] == "idle" and state["launch"] == OPTS | {"duration": 0.0}
-    assert [p["text"] for p in state["problems"]] == ["大脑模式要 Claude 令牌：去设置页填", "大脑离线时的备用回复要大模型的 API Key：去设置页填"] and state["orphan"] is True  # 假上游占着 child_port
+    assert [p["text"] for p in state["problems"]] == ["大脑模式要 Claude 令牌：去设置页填", "大脑离线时的备用回复要大模型的 API Key：去设置页填"] and "orphan" not in state
+    assert srv.fake_runner.attached == []  # 假上游占着 child_port，但 /status 没有 run 节：不是团子
     assert request(srv.url + "api/logs?after=1") == (200, {"next": 2, "lines": ["b"]})
 
 
@@ -215,10 +225,9 @@ def test_live_control_rewrites_host_and_header(srv, upstream):
     assert request(srv.url + "live/control", b'{"action":"say"}', {"Content-Type": "application/json"})[0] == 403
 
 
-def test_orphan_stop_sends_shutdown(srv, upstream):
+def test_orphan_stop_is_sandbox_only(srv, upstream):  # spec 2026-10-04-console-attach §2：团子改成接管，不再「让它退出」
     status, res = request(srv.url + "api/orphan/stop", b"{}", GOOD)
-    assert status == 200 and res["ok"] and upstream.posts == ["/shutdown"]
-    assert request(srv.url + "api/state")[1]["orphan"] is False
+    assert status == 400 and not res["ok"] and upstream.posts == []
 
 
 def test_settings_round_trip_never_leaks_secret(srv):
@@ -266,16 +275,6 @@ def test_serves_stage_js_from_console_static(srv):  # spec 2026-10-04-console-at
         assert r.status == 200 and "javascript" in r.headers["Content-Type"] and "Stage" in r.read().decode("utf-8")
     for gone in ("static/stage.js", "static/brain_trace.js", "static/brain_trace.css"):
         assert request(srv.url + gone)[0] == 404
-
-
-def test_start_refused_while_orphan_holds_port(tmp_path, upstream):  # 终审 Important 3：别起第二个团子
-    s = make_server(tmp_path, upstream, secrets='[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n')
-    try:
-        status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
-        assert status == 409 and "上次留下的团子" in res["problems"][0]["text"] and s.fake_runner.started == []
-        assert request(s.url + "api/state")[1]["orphan"] is True
-    finally:
-        s.stop()
 
 
 def test_live_proxy_body_cut_off_is_503(srv):  # Review Focus 4：子进程在半路退出
@@ -382,3 +381,85 @@ def test_console_static_device_names_never_touch_fs():
     for n in ("con.js", "nul.js", "aux.css", "com1.js", "nope.js"):
         assert _console_static(n) is None
     assert _console_static("console.css") is not None
+
+
+# ---- 接管终端起的团子（spec 2026-10-04-console-attach §2）----
+TOKEN = '[env]\nSKYDANGO_CLAUDE_TOKEN = "tok"\nDEEPSEEK_API_KEY = "k"\n'
+
+
+def run_info(pid=4242, run_dir="runs/a"):
+    return {"pid": pid, "run_dir": run_dir, "live": True, "brain": True, "emotes": True, "duration": 0.0, "started": 1.0,
+            "console": False}
+
+
+def test_discover_attaches_terminal_dango(tmp_path, upstream):
+    s = make_server(tmp_path, upstream, probe=lambda port: run_info())
+    try:
+        assert s.fake_runner.attached == [run_info()]  # 面板一起来就接上
+        assert request(s.url + "api/state")[1]["run"]["state"] == "running"
+        assert len(s.fake_runner.attached) == 1  # 在跑时不再探
+    finally:
+        s.stop()
+
+
+def test_discover_skips_while_own_child_busy(tmp_path, upstream):  # Review Focus 1
+    calls = []
+    s = make_server(tmp_path, upstream, probe=lambda port: calls.append(port))
+    try:
+        calls.clear()
+        s.fake_runner.state = "starting"
+        request(s.url + "api/state")
+        assert calls == [] and s.fake_runner.attached == []
+    finally:
+        s.stop()
+
+
+def test_reattach_after_exit_picks_new_run(tmp_path, upstream):  # Review Focus 3
+    import time
+
+    from skydango.console.runner import Runner
+
+    current = {"info": run_info(1, "a")}
+    s = make_server(tmp_path, upstream, probe=lambda port: current["info"])
+    try:
+        s.runner = Runner(tmp_path, s.child_port, 1.0, 50, probe_run=lambda port: current["info"], poll=0.05)
+        assert s.discover() is True and s.runner.status()["pid"] == 1
+        current["info"] = None
+        end = time.monotonic() + 3
+        while s.runner.status()["state"] != "exited":
+            assert time.monotonic() < end
+            time.sleep(0.05)
+        current["info"] = run_info(2, "b")
+        run = request(s.url + "api/state")[1]["run"]
+        assert run["state"] == "running" and run["pid"] == 2 and run["run_dir"] == "b" and run["source"] == "terminal"
+        s.runner.close()
+    finally:
+        s.stop()
+
+
+def test_start_attaches_instead_of_second_dango(tmp_path, upstream):
+    found = {"info": None}
+    s = make_server(tmp_path, upstream, secrets=TOKEN, child_port=free_port(), probe=lambda port: found["info"])
+    try:
+        found["info"] = run_info()  # 面板起来之后终端才起的团子
+        status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
+        assert status == 409 and any("终端起的" in p["text"] for p in res["problems"])
+        assert s.fake_runner.started == [] and s.fake_runner.attached == [run_info()]
+    finally:
+        s.stop()
+
+
+def test_start_reports_foreign_port_owner(tmp_path, upstream):  # Review Focus 5
+    s = make_server(tmp_path, upstream, secrets=TOKEN, child_port=free_port(), port_free=lambda port: False)
+    try:
+        status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
+        texts = [p["text"] for p in res["problems"]]
+        assert status == 409 and any("被别的程序占着" in t for t in texts) and not any("上次留下的团子" in t for t in texts)
+        assert s.fake_runner.started == [] and s.fake_runner.attached == []
+    finally:
+        s.stop()
+
+
+def test_logs_pass_note(srv):
+    srv.fake_runner.note = "终端起的，日志来自 agent.log"
+    assert request(srv.url + "api/logs?after=0")[1]["note"] == "终端起的，日志来自 agent.log"

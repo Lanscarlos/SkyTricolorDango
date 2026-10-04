@@ -29,6 +29,9 @@ def fake_console(monkeypatch, events):
         def kill(self):
             events.append("runner.kill")
 
+        def status(self):
+            return {"state": "idle", "source": "console", "pid": None, "run_dir": None}
+
     def interrupt(seconds):
         raise KeyboardInterrupt
 

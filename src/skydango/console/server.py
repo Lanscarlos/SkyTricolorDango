@@ -35,7 +35,18 @@ from .labeling import FormLabels, GestureLabels
 from .preflight import preflight, problem
 from .reports import list_reports, read_report
 from .replay import KEEP_NOTE, Recorder, Replayer, safe_name
-from .runner import LOCAL, LaunchOptions, Runner, build_command, build_sandbox_command, child_env, probe_status, send_shutdown
+from .runner import (
+    LOCAL,
+    LaunchOptions,
+    Runner,
+    build_command,
+    build_sandbox_command,
+    child_env,
+    port_free,
+    probe_run,
+    probe_status,
+    send_shutdown,
+)
 from .settings import SettingsStore
 
 log = logging.getLogger(__name__)
@@ -116,12 +127,14 @@ class ConsoleServer:
         make_device: Callable[[Config], Any] | None = None,
         parent_pid: int | None = None,
         find_spec: Callable[[str], object] = importlib.util.find_spec,
+        probe: Callable[[int], dict | None] = probe_run,
+        port_free: Callable[[int], bool] = port_free,
     ) -> None:
         self.config_path, self.store, self.runner = Path(config_path), store, runner
         self.port, self.child_port = port, child_port
         self.device_checks, self.make_device, self.find_spec = device_checks, make_device, find_spec
         self.parent_pid = os.getpid() if parent_pid is None else parent_pid
-        self.orphan = probe_status(child_port)  # 上次留下的团子还占着端口
+        self.probe, self.port_free = probe, port_free  # 探团子的端口（测试换掉）
         self.proxy_timeout = PROXY_TIMEOUT
         self._device_lock = threading.Lock()  # 检测设备期间不让启动（两边会同时碰设备）
         self._checking = False
@@ -131,8 +144,17 @@ class ConsoleServer:
         self.replayer: Replayer | None = None
         self.last_report: str | None = None
         self._replay_lock = threading.Lock()
+        self.discover()  # 面板起来之前终端里已经在跑的团子：直接接上
 
     # ---- 各个接口 ----
+    def discover(self) -> bool:
+        """槽空着时探一下团子的端口：上面是团子（/status 带 run 节）就接管（spec 2026-10-04-console-attach §2）。
+        面板自己的子进程在启动 / 运行 / 停止时不探（Review Focus 1）。返回这次接上了没有。"""
+        if self._busy():
+            return False
+        info = self.probe(self.child_port)
+        return info is not None and self.runner.attach(info)
+
     def _busy(self) -> bool:
         return self.runner.status()["state"] in BUSY
 
@@ -160,10 +182,10 @@ class ConsoleServer:
         return preflight(self.store, opts, self._busy(), self.find_spec)
 
     def state(self) -> dict:
+        self.discover()  # 页面每秒拉一次：终端里刚起的团子在这里接上
         opts = self.launch_options()
-        busy = self._busy()
         return {"run": self.runner.status(), "launch": dataclasses.asdict(opts),
-                "problems": self._run_problems(opts), "orphan": self.orphan and not busy,
+                "problems": self._run_problems(opts),
                 "emotes_allowed": self.store._fallback().emotes.enabled}  # config.toml 关了动作：面板上只能关不能开
 
     def start_run(self, body: dict) -> tuple[int, dict]:
@@ -177,9 +199,10 @@ class ConsoleServer:
             problems = self._run_problems(opts)
             if self._checking:
                 problems.append(problem("正在检测设备，等检测完再叫醒"))
-            if not self._busy() and probe_status(self.child_port):  # 上次留下的团子还占着端口：再起一个会有两个团子
-                self.orphan = True
-                problems.append(problem(f"{self.child_port} 端口上有上次留下的团子，先点「让它退出」"))
+            if self.discover():  # 终端里已经有一个团子：接上它，不起第二个
+                return 409, {"ok": False, "problems": [problem("已经有一个团子在跑（终端起的），已接上")]}
+            if not self._busy() and not self.port_free(self.child_port):  # 占着端口的不是团子：起了也会因为端口被占退出
+                problems.append(problem(f"{self.child_port} 端口被别的程序占着，团子起不来；改 [viewer] port"))
             if not self._busy() and probe_status(self.sandbox_port()):  # 上次留下的沙盒：共用令牌，也别同时在线
                 problems.append(problem(f"{self.sandbox_port()} 端口上有上次留下的沙盒，先在「沙盒」页让它退出"))
             try:
@@ -193,7 +216,6 @@ class ConsoleServer:
                 self.runner.start(cmd, child_env(os.environ, secrets), opts)
             except (RuntimeError, OSError) as exc:
                 return 409, {"ok": False, "problems": [problem(str(exc))]}
-        self.orphan = False
         return 200, {"ok": True}
 
     def save_settings(self, body: dict) -> tuple[int, dict]:
@@ -265,12 +287,10 @@ class ConsoleServer:
             self._checking = False
 
     def stop_orphan(self, body: dict | None = None) -> tuple[int, dict]:
-        """让上次留下的子进程退出；body {"kind": "sandbox"} 时是沙盒端口。"""
+        """让上次留下的沙盒退出（body {"kind": "sandbox"}）。团子不再有孤儿：探到就接管，在「真机团子」页停。"""
         if (body or {}).get("kind") == "sandbox":
             return 200, {"ok": send_shutdown(self.sandbox_port())}
-        ok = send_shutdown(self.child_port)
-        self.orphan = False
-        return 200, {"ok": ok}
+        return 400, {"ok": False, "text": "团子会被接管，到「真机团子」页停止它"}
 
     def stop_run(self) -> tuple[int, dict]:
         """真机团子的「停止」：只停团子（沙盒在跑时不动它）。"""
@@ -314,6 +334,7 @@ class ConsoleServer:
 
     def sandbox_problems(self) -> tuple[list[dict], bool]:
         """起沙盒前的问题 + 沙盒端口上有没有孤儿（不加锁，要一致的调用方自己拿 _device_lock）。"""
+        self.discover()  # 终端起的团子：接上了下面就是"团子在运行，先停团子"（共用令牌，别两个大脑同时在线）
         port = self.sandbox_port()
         problems: list[dict] = []
         other = self._other_busy("sandbox")
@@ -327,9 +348,6 @@ class ConsoleServer:
         if not self._busy() and probe_status(port):
             orphan = True
             problems.append(problem(f"{port} 端口上有上次留下的沙盒，先点「让它退出」"))
-        if not self._busy() and probe_status(self.child_port):  # 上次留下的团子：共用令牌，别两个大脑同时在线
-            self.orphan = True
-            problems.append(problem(f"{self.child_port} 端口上有上次留下的团子，先在「真机团子」页让它退出"))
         try:
             read_secrets(console_paths(self.config_path)[1])
         except ValueError as exc:
@@ -606,6 +624,7 @@ class ConsoleServer:
         if body.get("source") == "sandbox":
             return self._forget_sandbox(body)
         body = {k: v for k, v in body.items() if k != "source"}
+        self.discover()  # 终端起的团子：接上了就转发给它（它会把性格档案写回去，不能绕过它改文件）
         state = self._state_of("dango")
         if state in ("starting", "stopping"):  # 两边可能同时改 persona.json
             return 409, {"ok": False, "error": BUSY_ERROR}
@@ -629,8 +648,6 @@ class ConsoleServer:
                 except Exception:
                     log.exception("dry-run 时顺手改 persona.json 出错")
             return code, data
-        if probe_status(self.child_port):  # 上次留下的团子还占着端口：它会把性格档案写回去
-            return 409, {"ok": False, "error": "上次留下的团子还在跑（占着子进程端口），先在「真机团子」页让它退出再删"}
         try:
             return 200, forget_offline(inner_dir, body, time.time(), alive)
         except ValueError as exc:
