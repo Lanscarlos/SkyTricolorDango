@@ -211,6 +211,25 @@ yolo_w = 0.3                    # 点没点火的黑影分里 YOLO 一侧（最�
 flip_votes = 3                  # 形态要翻转，新形态至少连续几票
 max_errors = 10                 # 推理连续出错这么多次就自己关掉
 
+[inbox]
+# 难例收件箱：live 运行时存下的难例 → 外形头先筛 → 整帧核对 → 一键重训对比
+enabled = true
+dir = "datasets/inbox"          # 收件箱目录（gitignore）
+ask = true                      # 外形头和 YOLO 不一致时让 Claude 再核对（花额度）
+agree = 0.9                     # 外形头与 YOLO 一致的概率门槛
+dup_diff = 6.0                  # 去重：缩略图平均像素差低于这个算重复
+dup_gap = 5.0                   # 去重：同类难例至少隔这么久（秒）
+val_every = 5                   # 每隔几张分一张进验证集
+retrain_min = 50                # 攒够这么多张核对过的才提示重训
+
+[retrain]
+# 一键重训的参数
+base = "models/yolo11n.pt"      # 起点权重
+imgsz = 960
+epochs = 120
+batch = 16
+workers = 2
+
 [catalog]
 # 装扮图鉴第 1 期：运行时把近处的人清楚的整身裁图存进 catalog/inbox/<日期>/<运行>/<身份>/（只截图存盘、不发输入）。
 # 要配合 [perception]；门槛是估的，用 `python -m skydango catalog collect <录像目录>` 在录像上定

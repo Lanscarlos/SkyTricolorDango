@@ -30,7 +30,7 @@ def test_every_spec_field_is_listed():
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
         "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "backstage.enabled", "vision.source", "env.enabled",
         "perception.enabled",
-        "perception.model", "attrs.enabled", "places.enabled", "appearance.enabled", "appearance.describe", "catalog.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
+        "perception.model", "attrs.enabled", "attrs.model", "inbox.enabled", "inbox.ask", "inbox.retrain_min", "places.enabled", "appearance.enabled", "appearance.describe", "catalog.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
 
 
@@ -183,3 +183,20 @@ def test_console_has_vision_source():
     f = KNOWN["vision.source"]
     assert (f.label, f.kind, f.group, f.choices) == ("读聊天的方式", "choice", "features", ("a11y", "ocr"))
     assert f.help.startswith("a11y：读游戏的无障碍节点") and "ocr：截图识别" in f.help
+
+
+def test_console_has_inbox_fields():
+    from skydango.console.settings import KNOWN
+
+    for k in ("inbox.enabled", "inbox.ask", "inbox.retrain_min", "perception.model", "attrs.model"):
+        assert k in KNOWN, k
+
+
+def test_example_toml_inbox_matches_defaults():
+    from pathlib import Path
+
+    from skydango.config import load_config
+
+    p = Path(__file__).resolve().parent.parent / "config.example.toml"
+    cfg, dflt = load_config(p), load_config(None)
+    assert cfg.inbox == dflt.inbox and cfg.retrain == dflt.retrain
