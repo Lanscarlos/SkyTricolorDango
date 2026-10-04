@@ -34,6 +34,14 @@ class CallEnv(FakeEnv):
         self.self_box = None
         self.results = {}
         self.unnamed_n = 0
+        self.unsure_list = []  # [(轨迹 id, 名字, 开始时间)]
+        self.marked = []  # mark_unsure_called 的记录：[(ids, at)]
+
+    def unsure(self, now):
+        return [u for u in self.unsure_list if not any(u[0] in ids for ids, _ in self.marked)]
+
+    def mark_unsure_called(self, ids, at):
+        self.marked.append((list(ids), at))
 
     def called(self, at, *, by_self=True):
         self.calls.append(at)
@@ -375,3 +383,97 @@ def test_auto_call_not_blocked_by_stale_request(clock):
     env2.requests = {"小明": Request("小明", "hand", (0, 0), clock() - 1)}  # 新鲜的请求照样拦
     b2._watch_call(clock())
     assert pressed(device2) == 0
+
+
+# ---- 拿不准是不是好友时自动喊一声（spec 2026-10-03-identity-gallery §5） ----
+def unsure_one(b, clock, tid=5, name="小明"):
+    b.env.unsure_list = [(tid, name, clock() - 3.0)]
+
+
+def test_auto_call_for_unsure_person(clock):
+    b, device, env, events = call_body(clock)
+    unsure_one(b, clock)  # 没人走开、也没有没挂名字的人
+    b._watch_call(clock())
+    assert pressed(device) == 1 and b.last_call.reason == "unsure"
+    assert env.marked[0][0] == [5]
+    assert env.marked[-1] == ([5], b.last_call.at)  # 第二次打标记的时间就是窗口开始的时间
+    assert len(env.marked) == 2 and env.marked[0][1] <= env.marked[1][1]
+    # 喊完的收尾和 auto 共用：背景事件 call、_auto_found
+    env.results[b.last_call.at] = CallSeen(b.last_call.at, {"小明": Seen("右边", "远")}, unnamed=0, ended=True)
+    b._watch_call(clock())
+    assert [e.text for e in events.drain() if e.kind == "call"] == ["你下意识喊了一声：认出 小明（右边·远）。"]
+    assert "小明" in b._auto_found
+
+
+def test_unsure_call_shares_quota_and_gap(clock):
+    b, device, env, _ = call_body(clock)
+    b.cfg.call.auto_window = 600.0
+    left(b, clock)
+    b._watch_call(clock())  # 先一次 auto
+    assert pressed(device) == 1 and b.last_call.reason == "auto"
+    env.results[b.last_call.at] = CallSeen(b.last_call.at, {}, ended=True)
+    clock.advance(5)
+    unsure_one(b, clock, tid=7, name="小红")
+    b._left_at.clear()
+    b._watch_call(clock())  # min_gap 内：不按、也不打标记（以后还能喊）
+    assert pressed(device) == 1 and env.marked == []
+    clock.advance(b.cfg.call.min_gap)
+    b._watch_call(clock())
+    assert pressed(device) == 2 and b.last_call.reason == "unsure"
+    env.results[b.last_call.at] = CallSeen(b.last_call.at, {}, ended=True)
+    b._watch_call(clock())
+    # 额度用完（auto_quota 3）：不按、不打标记
+    marks = len(env.marked)
+    clock.advance(b.cfg.call.min_gap + 1)
+    b._call_times.extend([clock(), clock()])
+    env.unsure_list = [(9, "小刚", clock() - 3.0)]
+    b._watch_call(clock())
+    assert pressed(device) == 2 and len(env.marked) == marks
+
+
+def test_unsure_call_skipped_when_busy(clock):
+    b, device, env, _ = call_body(clock)
+    b._bubble_at = clock()  # 输入框开着（身体替大脑开的）
+    unsure_one(b, clock)
+    b._watch_call(clock())
+    assert pressed(device) == 0
+    assert env.marked == [([5], clock())]  # 不方便喊也已经打了标记：不会一直排队
+
+
+def test_unsure_call_dry_run_logs_only(clock, caplog):
+    b, device, env, _ = call_body(clock, live=False)
+    unsure_one(b, clock)
+    with caplog.at_level("INFO"):
+        b._watch_call(clock())
+    assert pressed(device) == 0 and "会喊一声" in caplog.text and "拿不准" in caplog.text
+    assert env.marked == [([5], clock())] and b._pending_auto is None
+
+
+def test_unsure_not_called_for_recently_found_friend(clock):
+    b, device, env, _ = call_body(clock)
+    unsure_one(b, clock)
+    b._auto_found["小明"] = clock() - 10
+    b._watch_call(clock())
+    assert pressed(device) == 0 and env.marked == []
+
+
+def test_unsure_call_still_runs_when_search_takes_after_leave_call(clock):
+    b, device, env, _ = call_body(clock)
+    b._search_takes_call = lambda: True  # 走开后的那一声归注意力找人管
+    left(b, clock)
+    unsure_one(b, clock)
+    b._watch_call(clock())
+    assert pressed(device) == 1 and b.last_call.reason == "unsure"
+    assert "小明" not in b._auto_called  # 走开那条没有被 _watch_call 动
+
+
+def test_unsure_waits_while_a_call_is_pending(clock):
+    b, device, env, _ = call_body(clock)
+    unsure_one(b, clock)
+    b._watch_call(clock())
+    assert pressed(device) == 1
+    clock.advance(1)
+    b._call_at -= 100  # 间隔够了，只剩"上一声的结果还没收"
+    env.unsure_list.append((8, "小红", clock() - 3.0))
+    b._watch_call(clock())  # 上一声的结果还没收：一次只收一个
+    assert pressed(device) == 1

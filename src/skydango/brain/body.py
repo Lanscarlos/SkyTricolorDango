@@ -2325,35 +2325,64 @@ class Body:
         return result
 
     def _watch_call(self, now: float) -> None:
-        """身体自动兜底（spec §2.3）：好友刚"走开"、画面里还有没挂名字的人 → 多半只是走远了标签淡掉，喊一声确认。
+        """身体自动兜底（spec §2.3）：两种起因共用一套间隔 / 额度 / 拦截：
+        ① 好友刚"走开"、画面里还有没挂名字的人 → 多半只是走远了标签淡掉，喊一声确认；
+        ② 外观认成"可能是小明"拿不准的人挂满 unsure_wait 秒（env.unsure，identity-gallery spec §5）→ 喊一声让名字标签亮出来。
         喊完不等：窗口结束后放背景事件 call；认回来的好友照常 return（抵消那条 leave）。"""
         cfg = self.cfg.call
         if not (cfg.enabled and cfg.auto) or self.env is None or not hasattr(self.env, "unnamed"):
             return
         try:
             self._collect_auto_call(now)
-            if self._pending_auto is not None or self._search_takes_call():
+            if self._pending_auto is not None:
                 return
-            who = [n for n, t in self._left_at.items()
-                   if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t
-                   and now - self._auto_found.get(n, float("-inf")) > cfg.auto_again]
-            if not who or now - self._call_at < cfg.min_gap:
+            who = []
+            if not self._search_takes_call():  # 走开后的这一声归注意力的"找走开的好友"管时，只剩拿不准那一种
+                who = [n for n, t in self._left_at.items()
+                       if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t
+                       and now - self._auto_found.get(n, float("-inf")) > cfg.auto_again]
+            unsure = []
+            if hasattr(self.env, "unsure") and (not who or self.env.unnamed(now) <= 0):
+                unsure = [(i, n) for i, n, _t in self.env.unsure(now)
+                          if now - self._auto_found.get(n, float("-inf")) > cfg.auto_again]
+            if not who and not unsure:
+                return
+            if now - self._call_at < cfg.min_gap:
                 return
             while self._call_times and now - self._call_times[0] > cfg.auto_window:
                 self._call_times.popleft()
-            if len(self._call_times) >= cfg.auto_quota or self.env.unnamed(now) <= 0 or self._auto_call_blocked(now):
+            if len(self._call_times) >= cfg.auto_quota:
                 return
-            for n in who:
-                self._auto_called[n] = self._left_at[n]
-            self._call_times.append(now)
-            log.info("%s 刚走开、画面里还有没挂名字的人：自动喊一声找找", "、".join(who))
-            r = self.call_out("auto")
+            if who and not unsure:  # 两样都有时：走开的那位画面里没有没挂名字的人（unnamed ≤ 0），只剩拿不准的
+                if self.env.unnamed(now) <= 0 or self._auto_call_blocked(now):
+                    return
+                for n in who:
+                    self._auto_called[n] = self._left_at[n]
+                self._call_times.append(now)
+                log.info("%s 刚走开、画面里还有没挂名字的人：自动喊一声找找", "、".join(who))
+                r = self.call_out("auto")
+            else:
+                ids = [i for i, _n in unsure]
+                self._mark_unsure(ids, now)  # 不管喊没喊成都打上：别一直排队
+                if self._auto_call_blocked(now):
+                    return
+                self._call_times.append(now)
+                log.info("拿不准 %s 是不是%s：自动喊一声", "、".join(f"轨迹{i}" for i, _n in unsure),
+                         "、".join(dict.fromkeys(n for _i, n in unsure)))
+                r = self.call_out("unsure")
+                if not r.refused and not r.dry:
+                    self._mark_unsure(ids, r.at)  # 窗口真正开始的时间：感知层按它收尾
             if r.refused:
                 log.info("自动喊一声没喊成：%s", r.refused)
             elif not r.dry:
                 self._pending_auto = r
         except Exception:
             log.exception("自动喊一声出错")
+
+    def _mark_unsure(self, ids: list[int], at: float) -> None:
+        mark = getattr(self.env, "mark_unsure_called", None)
+        if mark is not None:
+            mark(ids, at)
 
     def _auto_call_blocked(self, now: float) -> bool:
         if self._bubble_at is not None or self.sender.opened or self.skills.active is not None:
