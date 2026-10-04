@@ -125,6 +125,9 @@ class _Writer:
         key = folder.split("/")[-1]
         self.counts[key] = self.counts.get(key, 0) + 1
 
+    def flush(self) -> None:
+        self._fh.flush()
+
     def close(self) -> dict:
         self._fh.close()
         return self.counts

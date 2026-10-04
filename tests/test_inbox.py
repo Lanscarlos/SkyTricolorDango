@@ -315,7 +315,7 @@ def _cfg():
 def _judge_by_order(table):
     """假外形头：按裁图出现顺序依次给概率。"""
     it = iter(table)
-    return lambda crops: [next(it) for _ in crops]
+    return lambda frame, boxes: [next(it) for _ in boxes]
 
 
 def test_process_routes_and_writes(tmp_path):
@@ -325,7 +325,7 @@ def test_process_routes_and_writes(tmp_path):
     dets = [_Det("player", Rect(100, 200, 120, 260), 0.8), _Det("player", Rect(900, 300, 100, 240), 0.8)]
     weak = [("name_tag", Rect(80, 150, 160, 30))]
     judge = _judge_by_order([{"lit": 0.95, "unlit": 0.03, "not_person": 0.02}, {"lit": 0.2, "not_person": 0.75, "unlit": 0.05}])
-    res = _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: dets, lambda f: weak, judge, progress=lambda s: None)
+    res = _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: dets, lambda f, d: weak, judge, progress=lambda s: None)
     frames = _inbox.load_frames(inbox, "r1")
     entry = frames["r1_192007_low_conf"]
     assert entry["file"] == "raw/192007_low_conf.jpg" and entry["reason"] == "low_conf" and entry["error"] is None
@@ -348,7 +348,7 @@ def test_process_dedupes(tmp_path):
     inbox = tmp_path / "inbox"
     _setup_run(inbox, "r1", {"192000_a.jpg": _img(90), "192002_b.jpg": _img(91), "192012_c.jpg": _img(91)})
     calls = []
-    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), lambda f: calls.append(1) or [], lambda f: [], lambda c: [], progress=lambda s: None)
+    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), lambda f: calls.append(1) or [], lambda f, d: [], lambda f, b: [], progress=lambda s: None)
     frames = _inbox.load_frames(inbox, "r1")
     assert frames["r1_192002_b"]["dup_of"] == "r1_192000_a"
     assert not frames["r1_192012_c"].get("dup_of")
@@ -367,10 +367,10 @@ def test_process_resumes(tmp_path):
         return []
 
     with pytest.raises(KeyboardInterrupt):
-        _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), boom, lambda f: [], lambda c: [], progress=lambda s: None)
+        _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), boom, lambda f, d: [], lambda f, b: [], progress=lambda s: None)
     assert list(_inbox.load_frames(inbox, "r1")) == ["r1_192000_a"] and pending_runs(inbox) == ["r1"]
     calls.clear()
-    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), lambda f: calls.append(1) or [], lambda f: [], lambda c: [], progress=lambda s: None)
+    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), lambda f: calls.append(1) or [], lambda f, d: [], lambda f, b: [], progress=lambda s: None)
     assert len(calls) == 1 and not pending_runs(inbox)
 
 
@@ -385,7 +385,7 @@ def test_process_frame_error_skips(tmp_path):
             raise ValueError("坏帧")
         return []
 
-    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), det, lambda f: [], lambda c: [], progress=lambda s: None)
+    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), det, lambda f, d: [], lambda f, b: [], progress=lambda s: None)
     frames = _inbox.load_frames(inbox, "r1")
     assert "坏帧" in frames["r1_192000_a"]["error"] and frames["r1_192100_b"]["error"] is None
     assert frame_state(frames["r1_192000_a"], lambda c: None) == "error"
@@ -396,7 +396,7 @@ def test_process_collects_first(tmp_path):
     (runs / "r9" / "hard").mkdir(parents=True)
     cv2.imwrite(str(runs / "r9" / "hard" / "192000_x.jpg"), _img(60))
     inbox = tmp_path / "inbox"
-    res = _inbox.process(inbox, tmp_path / "attrs", runs, _cfg(), lambda f: [], lambda f: [], lambda c: [], progress=lambda s: None)
+    res = _inbox.process(inbox, tmp_path / "attrs", runs, _cfg(), lambda f: [], lambda f, d: [], lambda f, b: [], progress=lambda s: None)
     assert "r9_192000_x" in _inbox.load_frames(inbox, "r9") and res["frames"] == 1
 
 
@@ -404,7 +404,7 @@ def test_process_drop_low_and_status(tmp_path):
     inbox, attrs_root = tmp_path / "inbox", tmp_path / "attrs"
     _setup_run(inbox, "r1", {"192000_a.jpg": _img(40)})
     dets = [_Det("player", Rect(100, 200, 120, 260), 0.25)]
-    _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: dets, lambda f: [], lambda c: [{"not_person": 0.95, "lit": 0.05}], progress=lambda s: None)
+    _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: dets, lambda f, d: [], lambda f, b: [{"not_person": 0.95, "lit": 0.05}], progress=lambda s: None)
     b = _inbox.load_frames(inbox, "r1")["r1_192000_a"]["boxes"][0]
     assert b["auto"] == "drop_low" and b["crop"] is None
     st = _inbox.status(inbox, attrs_root)
@@ -423,3 +423,89 @@ def test_inbox_process_missing_model(tmp_path, capsys):
         cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "process", str(tmp_path / "runs")])
     assert e.value.code == 1 and "外形头" in capsys.readouterr().out
     assert json.loads((inbox / "r1" / "frames.json").read_text(encoding="utf-8")) == before
+
+
+def test_process_judge_gets_frame_and_person_boxes(tmp_path):
+    inbox = tmp_path / "inbox"
+    _setup_run(inbox, "r1", {"192000_a.jpg": _img(40)})
+    dets = [_Det("player", Rect(100, 200, 120, 260), 0.8), _Det("name_tag", Rect(90, 150, 150, 30), 0.9)]
+    seen = []
+
+    def judge(frame, boxes):
+        seen.append((frame.shape, list(boxes)))
+        return [{"lit": 0.5, "not_person": 0.5} for _ in boxes]
+
+    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), lambda f: dets, lambda f, d: [], judge, progress=lambda s: None)
+    assert seen == [((1080, 1920, 3), [Rect(100, 200, 120, 260)])]
+
+
+def test_process_flushes_crop_rows_per_frame(tmp_path):
+    inbox, attrs_root = tmp_path / "inbox", tmp_path / "attrs"
+    _setup_run(inbox, "r1", {"192000_a.jpg": _img(40), "192100_b.jpg": _img(200)})
+    dets = [_Det("player", Rect(100, 200, 120, 260), 0.8)]
+    rows_at_second = []
+
+    def judge(frame, boxes):
+        path = attrs_root / "_crops.jsonl"
+        rows_at_second.append(len(path.read_text(encoding="utf-8").splitlines()) if path.exists() else 0)
+        return [{"lit": 0.5, "not_person": 0.5} for _ in boxes]
+
+    _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: dets, lambda f, d: [], judge, progress=lambda s: None)
+    assert rows_at_second == [0, 1]
+
+
+def test_process_guess_has_prompt_version(tmp_path):
+    from skydango.vision.attrs_data import FORM_PROMPT_VERSION
+
+    inbox, attrs_root = tmp_path / "inbox", tmp_path / "attrs"
+    _setup_run(inbox, "r1", {"192000_a.jpg": _img(40)})
+    dets = [_Det("player", Rect(100, 200, 120, 260), 0.8)]
+    _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: dets, lambda f, d: [], lambda f, b: [{"lit": 0.5, "not_person": 0.5}], progress=lambda s: None)
+    guess = json.loads((attrs_root / "_unlabeled" / "claude.json").read_text(encoding="utf-8"))
+    assert [g["version"] for g in guess.values()] == [FORM_PROMPT_VERSION]
+
+
+def test_form_judge_masks_by_box_not_crop_size():
+    class Model:
+        size = 224
+
+        def labels(self, head):
+            return ["not_person", "lit"]
+
+        def pad(self, head):
+            return 0.15
+
+        def keep(self, head):
+            return 0.05
+
+        def predict(self, items):
+            self.items = items
+            return [{"form": np.array([0.2, 0.8])} for _ in items]
+
+    m = Model()
+    frame = np.full((1080, 1920, 3), 255, np.uint8)
+    out = cli._form_judge(m)(frame, [Rect(900, 300, 60, 400)])  # 瘦高的框：左右要填灰
+    img = m.items[0][1]
+    assert out == [{"not_person": pytest.approx(0.2), "lit": pytest.approx(0.8)}]
+    assert img.shape[:2] == (224, 224) and (img[:, :5] == 114).all() and (img[:, -5:] == 114).all() and (img[100:120, 100:120] == 255).all()
+
+
+def test_cli_inbox_process_model_load_failure(tmp_path, capsys, monkeypatch):
+    inbox = tmp_path / "inbox"
+    _setup_run(inbox, "r1", {"192000_a.jpg": _img(40)})
+    for n in ("yolo.onnx", "attrs.npz", "bb.onnx"):
+        (tmp_path / n).write_bytes(b"x")
+    t = lambda n: (tmp_path / n).as_posix()  # noqa: E731
+    lines = ["[inbox]", f'dir = "{inbox.as_posix()}"', "[perception]", f'model = "{t("yolo.onnx")}"',
+             "[attrs]", f'model = "{t("attrs.npz")}"', f'backbone = "{t("bb.onnx")}"']
+    (tmp_path / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    import skydango.vision.embed as embed
+
+    def boom(*a, **k):
+        raise RuntimeError("坏主干")
+
+    monkeypatch.setattr(embed, "OnnxEmbedder", boom)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "process", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert e.value.code == 1 and "整理不了" in out and "坏主干" in out and not (inbox / "r1" / "frames.json").exists()

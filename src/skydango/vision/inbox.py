@@ -334,36 +334,31 @@ def _write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
-def _other_boxes(dets: list, weak: list[tuple[str, Rect]], conf: float) -> list[dict]:
-    """非人物框：OCR 的弱标注框（名字标签、圆圈）+ 分数够的检测框；同类 IoU > 0.5 留弱标注的框、分数用检测的。"""
+def _other_boxes(dets: list, pre: list[tuple[str, Rect]]) -> list[dict]:
+    """非人物框：预标注（弱标注 + 检测 + 圆圈）里的名字标签、圆圈等；分数取同类 IoU > 0.5 的检测框的，没有就 1.0（来自 OCR）。"""
     from .track import iou
 
     out: list[dict] = []
-    for cls, box in weak:
+    for cls, box in pre:
         if cls in PAIR:
             continue
         match = max((d.score for d in dets if d.cls == cls and iou(box, d.box) > 0.5), default=None)
         out.append({"cls": cls, "box": [box.x, box.y, box.w, box.h], "score": float(match if match is not None else 1.0),
-                    "src": "ocr", "crop": None, "auto": None})
-    for d in dets:
-        if d.cls in PAIR or d.score < conf or any(c == d.cls and iou(b, d.box) > 0.5 for c, b in weak):
-            continue
-        out.append({"cls": d.cls, "box": [d.box.x, d.box.y, d.box.w, d.box.h], "score": float(d.score),
-                    "src": "yolo", "crop": None, "auto": None})
+                    "src": "yolo" if match is not None else "ocr", "crop": None, "auto": None})
     return out
 
 
 def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) -> tuple[list[dict], int, int]:
     """一帧：检测 + 弱标注 → 人物框裁图、外形头判、分流。返回 (boxes, 自动一致几个, 给人判几个)。"""
-    from .attrs_data import crop_name
+    from .attrs_data import FORM_PROMPT_VERSION, crop_name
     from .perception import merge_people
 
     cfg, writer = ctx["cfg"], ctx["writer"]
     dets = [d for d in ctx["detect"](img) if d.score >= cfg.perception.low_conf]
-    boxes = _other_boxes(dets, ctx["weak"](img), cfg.perception.conf)
+    sure = [d for d in dets if d.score >= cfg.perception.conf]
+    boxes = _other_boxes(sure, ctx["weak"](img, sure))
     people = merge_people([d for d in dets if d.cls in PAIR])[0]
-    crops = [attrs.crop(img, d.box, attrs.CROP_PAD, _CROP_SIZE) for d in people]
-    probs = ctx["judge"](crops) if crops else []
+    probs = ctx["judge"](img, [d.box for d in people]) if people else []
     auto = human = 0
     for d, p in zip(people, probs):
         r = route(d.cls, d.score, p, cfg.perception.conf, cfg.inbox.agree)
@@ -384,7 +379,7 @@ def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) 
         else:
             human += 1
             ctx["guesses"][crop] = {
-                "label": r.form, "confidence": round(r.p, 3), "model": GUESS_MODEL,
+                "label": r.form, "confidence": round(r.p, 3), "model": GUESS_MODEL, "version": FORM_PROMPT_VERSION,
                 "reason": f"YOLO 判{_YOLO_CN.get(d.cls, d.cls)} {d.score:.2f}，外形头判{_FORM_CN.get(r.form, r.form)} {r.p:.2f}"}
     return boxes, auto, human
 
@@ -405,7 +400,7 @@ def process(
     detect: Callable,
     weak: Callable,
     judge: Callable,
-    progress: Callable[[str], None] = print,
+    progress: Callable[[str], None] = lambda line: print(line, flush=True),
 ) -> dict:
     """整理收件箱（spec §4）：先收（强杀后补收），再对没整理完的运行逐帧去重、检测、外形头分流，每帧落一次盘（可续跑）。
     _stats.json 的 sec_per_frame = 最近一次整理里每张非重复帧的平均耗时（秒）。"""
@@ -452,8 +447,9 @@ def process(
                         boxes, auto, human = _process_frame(img, image, name, run, split, ctx)
                         frames[name] = {**base, "boxes": boxes}
                         labels_fh.flush()
+                        writer.flush()
                         if human:
-                            _write_json(guess_path, {**_json_dict(guess_path), **ctx["guesses"]})
+                            _write_json(guess_path, ctx["guesses"])
                         prev = (name, img, t)
                         total["frames"] += 1
                         total["auto"] += auto

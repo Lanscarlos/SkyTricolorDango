@@ -1402,6 +1402,19 @@ def _perception_inbox(cfg: Config, args) -> None:
         print(f"裁图待判 {st['judge_left']} 张；上次训练以来通过 {st['passed_since_train']} 帧")
 
 
+def _form_judge(model):
+    """外形头判一帧里的人物框：裁法同训练 / 评估（模型自己的 pad、size、keep，框外填灰）。返回每个框 {类: 概率}。"""
+    from .vision import attrs
+
+    labels = model.labels("form")
+
+    def judge(frame, boxes):
+        items = [("player", attrs.crop(frame, b, model.pad("form"), model.size, model.keep("form"))) for b in boxes]
+        return [dict(zip(labels, (float(v) for v in out["form"]))) for out in model.predict(items)]
+
+    return judge
+
+
 def _inbox_process(cfg: Config, args) -> None:
     """perception inbox process：模型都在才开工（缺了打印原因、退出码 1、不碰收件箱）。"""
     from types import SimpleNamespace
@@ -1421,31 +1434,28 @@ def _inbox_process(cfg: Config, args) -> None:
             print(f"整理不了：{why}")
             raise SystemExit(1)
     device = _attrs_device(cfg)
-    embedder = OnnxEmbedder(cfg.attrs.backbone, norm="imagenet", device=device, what="attrs.backbone")
-    model = attrs.load_model(cfg.attrs, device, embedder)
-    if model is None or "form" not in model.heads:
-        print(f"整理不了：外形头模型 {cfg.attrs.model} 打不开或和主干对不上（详见上面的警告）")
+    try:
+        embedder = OnnxEmbedder(cfg.attrs.backbone, norm="imagenet", device=device, what="attrs.backbone")
+        model = attrs.load_model(cfg.attrs, device, embedder)
+        if model is None or "form" not in model.heads:
+            print(f"整理不了：外形头模型 {cfg.attrs.model} 打不开或和主干对不上（详见上面的警告）")
+            raise SystemExit(1)
+        p = cfg.perception
+        detector = make_detector(p.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"整理不了：模型加载失败（{type(exc).__name__}: {exc}）")
         raise SystemExit(1)
-    p = cfg.perception
-    detector = make_detector(p.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
     ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
     icons = _icon_classifier(cfg)
     names = _friend_names(cfg)()
     weak_args = SimpleNamespace(all_text=False, min_score=0.9)  # 同 perception label --min-score 的默认
-    labels, keep = model.labels("form"), model.keep("form")
-
-    def judge(crops):
-        items = []
-        for img in crops:
-            if keep is not None:
-                h, w = img.shape[:2]
-                img = attrs.mask_crop(img, w, h, attrs.CROP_PAD, keep)
-            items.append(("player", img))
-        return [dict(zip(labels, (float(v) for v in out["form"]))) for out in model.predict(items)]
+    judge = _form_judge(model)
 
     res = hardcase_inbox.process(
         Path(cfg.inbox.dir), Path(args.attrs_data), Path(args.runs), cfg, detector.detect,
-        lambda frame: _weak_boxes(cfg, weak_args, frame, ocr, icons, names), judge,
+        lambda frame, dets: _prelabel(frame, _weak_boxes(cfg, weak_args, frame, ocr, icons, names), dets, icons), judge,
     )
     print(f"整理完了：{res['runs']} 次运行 / {res['frames']} 帧（重复 {res['dups']}），"
           f"外形头自动确认 {res['auto']} 个、{res['to_judge']} 个裁图等你在标注页判，{res['glance']} 帧可以直接过目")
@@ -1761,6 +1771,20 @@ def _perception_detect(cfg: Config, args) -> None:
         print(f"互动请求：{req.name} → {req.kind}（圆圈在 {req.pos}）")
 
 
+def _prelabel(frame, boxes: list, detections: list | None, icons, me=None) -> list:
+    """一帧的预标注：弱标注 + 模型检测（detections 不是 None 才合并）+ 转圈认出的团子（me）+ 人物头顶的圆圈。
+    perception label 和 inbox process 共用。"""
+    from .vision.weaklabel import merge_labels, ring_labels, with_self
+
+    if detections is not None:
+        boxes = merge_labels(boxes, detections)
+    if me is not None:
+        boxes = with_self(boxes, me)
+    if detections is not None and icons is not None:  # 模型预标注出了人：顺带补他们头顶的圆圈
+        boxes += [("social_ring", r) for r in ring_labels(frame, boxes, icons)]
+    return boxes
+
+
 def _weak_boxes(cfg: Config, args, frame, ocr, icons, names: list[str]) -> list:
     """一帧的弱标注：整图 OCR 读好友名字标签 + 圆圈模板；面板开着时跳过面板区域。"""
     from .vision.bubbles import roi_rect
@@ -2011,7 +2035,7 @@ def _perception_label(cfg: Config, args) -> None:
     from .vision.bubbles import Rect
     from .vision.ocr import make_ocr
     from .vision.weaklabel import (
-        CLASH_REASON, data_yaml, dataset_clash, hard_images, label_items, merge_labels, ring_labels, split_of, with_self,
+        CLASH_REASON, data_yaml, dataset_clash, hard_images, label_items, split_of,
         write_sample, yolo_line,
     )
 
@@ -2074,12 +2098,8 @@ def _perception_label(cfg: Config, args) -> None:
         height, width = frame.shape[:2]
         boxes = _weak_boxes(cfg, args, frame, ocr, icons, names)
         weak = len(boxes)
-        if detector is not None:
-            boxes = merge_labels(boxes, predicted[stem] if stem in predicted else detector.detect(frame))
-        if stem in selves:
-            boxes = with_self(boxes, selves[stem])
-        if detector is not None and icons is not None:  # 模型预标注出了人：顺带补他们头顶的圆圈
-            boxes += [("social_ring", r) for r in ring_labels(frame, boxes, icons)]
+        boxes = _prelabel(frame, boxes, (predicted[stem] if stem in predicted else detector.detect(frame)) if detector is not None else None,
+                          icons, selves.get(stem))
         lines = [yolo_line(index[c], box, width, height) for c, box in boxes if c in index]
         if write_sample(out, split_of(stem, args.val), stem, frame, lines) is not None:
             skipped.append(stem)
