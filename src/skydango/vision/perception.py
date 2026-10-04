@@ -52,7 +52,7 @@ from .catalog import Who, stranger_key
 from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
-from .lighting import DISK_EVERY, DISK_GAP, FlameWatch, flame_area, person_under
+from .lighting import DISK_EVERY, DISK_GAP, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, OTHERS, WHO, CallSeen, Person, Seen, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
@@ -2117,8 +2117,7 @@ class PerceptionWatcher:
                         panel_visible: bool) -> str | None:
         """火焰落在这些地方当没看到：认出了名字的标签下面（好友举蜡烛给团子点火的圆圈）、篝火上方（"点燃"图标也是火焰圆圈）、开着的聊天面板。"""
         for t in tags:
-            b = t.box
-            if t.data.get("name") and _inside(pos, Rect(round(b.x - 0.5 * b.w), b.y, 2 * b.w, round(4.5 * b.h))):
+            if t.data.get("name") and under_tag(pos, t.box):
                 return f"在 {t.data['name']} 的名字标签下面"
         for t in bonfires:  # 图标浮在柴堆上方：左右各放宽 0.5 倍框宽、往上放宽 1 倍框高、下到框底
             b = t.box
@@ -2149,17 +2148,26 @@ class PerceptionWatcher:
         if cfg is None or self.flame is None or now - self._flame_check < DISK_EVERY - 1e-6:  # 1e-6：0.6 - 0.3 < 0.3
             return
         self._flame_check = now
-        why, flames = "", []
+        why, flames, extra = "", [], []
         me = self._self_now(now, panel_visible)
         if me is None:
             why = "没有团子框"
             self._scan = None
         else:
             area = flame_area(me, cfg, width, height)
-            for f in find_flames(frame, area, self.flame, cfg.disk_min_score):
+            # 找到 LIT_WEAK：分数不够的、好友名字标签下面的只当 extra 交给 FlameWatch（不出请求，举着蜡烛时给他那团接续用）
+            floor = min(LIT_WEAK, cfg.disk_min_score)
+            for f in find_flames(frame, area, self.flame, floor):
+                if f.score < floor:
+                    continue
                 skip = self._flame_excluded((f.x, f.y), tags, bonfires, width, height, panel_visible)
                 if skip:
-                    why = f"火焰 {f.score:.2f} {skip}"
+                    if f.score >= cfg.disk_min_score:
+                        why = f"火焰 {f.score:.2f} {skip}"
+                    if any(t.data.get("name") and under_tag((f.x, f.y), t.box) for t in tags):
+                        extra.append(f)
+                elif f.score < cfg.disk_min_score:
+                    extra.append(f)
                 else:
                     flames.append(f)
             self._scan = {"area": area, "me": me, "flames": flames}
@@ -2167,7 +2175,7 @@ class PerceptionWatcher:
             watch, cooling = self.flames, now < self._cooldown_until
             if me is not None:  # 团子框丢了就没真的找过，不扫（lit() 靠 scan_at 判扫描新不新）
                 shift = (self._pan[0] - self._flame_pan[0], self._pan[1] - self._flame_pan[1])
-                watch.scan(now, me, area, flames, self._person_at(frame, me), shift=shift)
+                watch.scan(now, me, area, flames, self._person_at(frame, me), shift=shift, extra=extra)
                 self._flame_pan = self._pan
             lighting = watch.lighting
             clue = None if cooling else watch.ready(now)
@@ -2300,6 +2308,8 @@ class PerceptionWatcher:
             "black_raised": lighting.black0,
             "black_end": round(person[1], 3) if person is not None and person[1] is not None else None,
             "flame_last": rel(lighting.flame_last), "flame_pos": list(lighting.pos), "away": lighting.away,
+            "seen": lighting.seen,  # 举起后看到过他的火焰（false = 举之前就没了，不判点亮）
+            "darkest": None if lighting.darkest is None else round(lighting.darkest, 3),
         }
         try:
             diag["dir"].mkdir(parents=True, exist_ok=True)

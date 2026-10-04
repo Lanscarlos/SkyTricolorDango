@@ -209,7 +209,9 @@ dir = "private/sandbox"
 （原地没反应补点、在动就等、消失就完成，见 game-ops §6）。好友的都接受，陌生人只接受举蜡烛给团子点火（头顶没名字的圆圈要有白圈才算，深色火焰圆盘绝不点，见 game-ops §6）；
 输入框开着时不点；dry-run 只打印。`python -m skydango record` 连续截图，用来观察新的界面变化。
 点亮陌生人（只有大脑模式找，普通 Agent 不管 light 请求）：团子框周围（左右 `light_area_x` = 1.4、往上 `light_area_up` = 0.5 倍框高）连续 `light_after`（1.5）秒冒着火焰（`vision/candle.py` 的 `find_flames`，每处火焰一条线索，`vision/lighting.py`；**不管 YOLO 认没认出这个人**；认出名字的好友标签下、聊天面板下、`bonfire` 框里的不算；原地待 4 秒、从没到过 `disk_sure` 的不动火焰（灯笼）不算；团子框丢了沿用最后一个，最多 3 秒，再久用这个面板状态下记住的高分团子框），身体按 3 号键举蜡烛（**绝不点那个圆盘**：会跟着人走）；
-**主要看火焰怎么消失**（10-03，spec `2026-10-03-light-flame-vanish-design.md`）：举满 `lit_min`（1 秒）后他那团火焰连着 2 次扫描、`lit_vanish`（0.8 秒）没看到——在范围边上 / 变小了再没的算走了、放下不鞠躬；原地没的算点亮（下面没人、`black()` 量不准也算），只有下面的人量得到、还黑着时接着等；同一个人连续两次变亮可以提前判；点亮后过 `bow_delay`（0.5 秒）鞠躬（顺带放下蜡烛；不等挂着的互动请求，别的反射照旧等）；`light_timeout` 秒没结果放下；没点亮冷却 `light_cooldown`（60 秒）；
+**主要看火焰怎么消失**（10-03，spec `2026-10-03-light-flame-vanish-design.md`）：举满 `lit_min`（1 秒）后他那团火焰连着 2 次扫描、`lit_vanish`（0.8 秒）没看到——在范围边上 / 变小了再没的算走了、放下不鞠躬；原地没的算点亮（下面没人、`black()` 量不准也算），只有下面的人量得到、还黑着时接着等；同一个人连续两次变亮可以提前判；
+**10-04 按 10-03 晚真机复盘补的**：举起后一次都没看到他的火焰（举之前就没了）不判点亮，满 `lit_min + lit_vanish` 放下、不鞠躬；举着时分数 `LIT_WEAK`（0.6）~ `disk_min_score` 的弱火焰和好友名字标签下面的火焰作为 `extra` 只给他那团用（认到他之前只认离他 `LIT_JUMP` 以内的弱火焰，证明举起后还看到过他；认到之后只认标签下面的，弱的不续命）；认到他之后他那团只配离预测位置 `LIT_JUMP`（0.25 倍框高）以内的火焰（举起后第一次还按 `light_jump`：请求到举起常隔 1~2 秒）；"还黑着"按比他（同一个人）量到过第二黑的时候降没降够 `lit_drop` 判，最多等 `LIT_DARK_WAIT`（2.5 秒）就放下、不鞠躬；`summary.json` 多了 `seen` / `darkest`；10-03 晚 8 次存图加进了 `tests/test_light_replay.py`（14 次全对）；
+点亮后过 `bow_delay`（0.5 秒）鞠躬（顺带放下蜡烛；不等挂着的互动请求，别的反射照旧等）；`light_timeout` 秒没结果放下；没点亮冷却 `light_cooldown`（60 秒）；
 鞠躬没做完不再举第二次、举之前先查 `reflex.min_gap`、身体替大脑开着输入框时不举；放下前先关替大脑开的框（按数字键会关掉它）；举着时接受了别的互动（点圆圈会放下蜡烛）或黑过屏（切场景、状态不明）就不再按 3 放下。接受别人点火后也鞠躬。每次存图到 `runs/<…>/light/`。
 大脑能用 `set_request_policy("stranger", "light", false)` 关掉；**未在真机验证**（spec `docs/superpowers/specs/2026-10-01-light-flame-around-self-design.md` §11；数字和录像核对见 game-ops §6）。篝火「点燃」图标也是火焰圆圈，要等 YOLO 学会 `bonfire` 才排除得掉（之前团子站篝火旁可能误举一次）
 
@@ -352,7 +354,7 @@ dir = "private/sandbox"
 - **原生 `confirm` / `prompt` / `alert` 全换成页内对话框和提示条**（`ask()` / `toast()`；Claude 桌面版内嵌浏览器里原生弹窗用不了），测试禁止再出现。
 - **预检**：大脑模式下也查 LLM Key；每个问题带 `setting` 跳转目标，「去设置 →」跳到设置页并高亮那一行（樱花底闪一下）。
 - **剧本和报告页**：报告在页内直接读（`console/reports.py`，`GET /api/sandbox/reports[/<name>]`），不用再去翻 `sandbox/reports/`。
-- **「标注」页**（`#labeling`，左栏「数据」组；后端 `console/labeling.py`）：逐段看动作片段的动图，按键标（1~9 = 类别、0 = 丢弃、Z = 撤销；10-03 去掉了「回车 = 同意 Claude」：初分认不出动作，直接人工标），片段挪进 `datasets/gesture/<动作>/`，然后 `perception gesture-train`。同一页还有「外形」标签页（第二层，后端同 `console/labeling.py`）：逐张看人物裁图和 Claude 的初分，确认 / 改类别 / 丢弃，裁图挪进 `datasets/attrs/form/<类别>/`。
+- **「标注」页**（`#labeling`，左栏「数据」组；后端 `console/labeling.py`）：逐段看动作片段的动图，按键标（1~9 = 类别、0 = 丢弃、Z = 撤销；10-03 去掉了「回车 = 同意 Claude」：初分认不出动作，直接人工标），片段挪进 `datasets/gesture/<动作>/`，然后 `perception gesture-train`。同一页还有「外形」标签页（第二层，后端同 `console/labeling.py`）：逐张看人物裁图和 Claude 的初分，确认 / 改类别 / 丢弃，裁图挪进 `datasets/attrs/form/<类别>/`；10-04 起只出 不是人 / 点亮的人 / 黑影 / 先祖 四个按钮（共享空间、变身按点没点火标；先祖不够 20 张训练时并进不是人），筛选里照旧列全部类别。
   第三个标签页「动作名」（`console/emotenames.py` + `static/emotenames.js`）：网格列出 `emotes scan` 扫下来的全部图标，起名 = 把 `scan/NNN.png` 复制成图标库的 `emotes/<名字>.png`，改名 / 清除（挪进 `emotes/_removed/`）；
   哪个扫描图标叫什么按剪影配（门槛 0.7、每张库图只配一个），不靠编号，重扫不错位。**只起名**，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动生效；
   改名 / 清除时旧名字还被 `social.after_light` / `emotes.extra` / `gesture.names` / `reflex` 清单引用的只提示、不自动改。没有“重新扫描”按钮（要往游戏里按键，终端跑 `emotes scan`）

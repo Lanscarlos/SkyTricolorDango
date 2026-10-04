@@ -54,7 +54,7 @@ def test_merge_labels_cases():
     m, notes = at.merge_labels({**ok, "shared": 3, "morph": 0}, 20)
     assert m["shared"] == "lit" and m["morph"] == "lit" and len(notes) == 2
     m, notes = at.merge_labels({**ok, "spirit": 5}, 20)
-    assert m["spirit"] is None and notes
+    assert m["spirit"] == "not_person" and notes  # 10-04：先祖不够数并进不是人（不再丢掉），够了自动单独成类
     for bad in ("not_person", "lit", "unlit"):
         with pytest.raises(ValueError):
             at.merge_labels({**ok, bad: 2}, 20)
@@ -241,13 +241,21 @@ class BucketEmbedder:
         return np.eye(3, dtype=np.float32)[0 if m < 70 else 1 if m < 170 else 2]
 
 
+def test_gt_boxes_drop_spirit_when_head_has_no_spirit(tmp_path):
+    # 先祖不够数时并进 not_person：外形头会把先祖框撤掉，评估就不该再把先祖当成要保留的人（不然全算漏检）
+    lf = tmp_path / "a.txt"
+    lf.write_text("0 0.5 0.5 0.1 0.2\n9 0.2 0.5 0.1 0.2\n4 0.8 0.5 0.1 0.2\n", encoding="utf-8")
+    assert [c for _, c in at._gt_boxes(lf, 100, 100)] == [0, 9, 4]
+    assert [c for _, c in at._gt_boxes(lf, 100, 100, spirit=False)] == [0, 4]
+
+
 def test_run_training_end_to_end(tmp_path):
     root = tmp_path / "attrs"
     for form, level in (("not_person", 20), ("lit", 120), ("unlit", 220)):
         for i in range(8):
             imwrite(root / "form" / form / f"{i}.jpg", np.full((16, 16, 3), level + i, np.uint8))
     res = at.run_training(root, BucketEmbedder(), tmp_path / "cache", min_per_class=3)
-    assert res["labels"] == ["not_person", "lit", "unlit"] and res["mapping"]["spirit"] is None
+    assert res["labels"] == ["not_person", "lit", "unlit"] and res["mapping"]["spirit"] == "not_person"
     assert res["eval"]["macro_f1"] == 1.0 and res["val_n"] > 0 and len(res["notes"]) == 3
     from skydango.vision import attrs
     out = tmp_path / "m.npz"

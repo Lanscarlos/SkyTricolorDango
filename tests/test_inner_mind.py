@@ -96,6 +96,16 @@ def test_parse_reflection():  # Review Focus 2
     assert parse_reflection("") is None and parse_reflection(None) is None
 
 
+def test_parse_reflection_merges_split_objects():
+    # 10-03 晚真机：下线反思把心情 / 日记和性格分成两个对象回，第一个 { 到最后一个 } 解析失败，日记丢了
+    text = ('```json\n{"mood": {"level": "开心"}, "diary": "今天很热闹"}\n'
+            '{"persona_add": {"catchphrases": []}, "persona_used": []}\n```')
+    assert parse_reflection(text) == {"mood": {"level": "开心"}, "diary": "今天很热闹",
+                                      "persona_add": {"catchphrases": []}, "persona_used": []}
+    # 中间夹着字、后面还有一个坏的：好的照收
+    assert parse_reflection('{"grudge": null}\n然后是：{"wants_add": []} {"坏": ') == {"grudge": None, "wants_add": []}
+
+
 def test_mind_roundtrip_and_bad_file(tmp_path):
     st = InnerStore(tmp_path)
     m = Mind(Mood("开心", "x", T0), Grudge("小明", "y", T0, T0 + 5), [Want("想做", "a", "", T0, T0 + 1)], T0)
