@@ -2648,3 +2648,78 @@ def test_panel_people_off_drops_people_under_panel():
     w = watcher(det, panel_people=False)
     w.process(frame(), 0.0, panel_visible=True)
     assert w.last_tracks == []
+
+
+# ---- 判走开后原地又冒火焰：不等冷却再试一次（10-04 19:51:45：误判走开，他原地接着举了 20 多秒没人理） ----
+def test_gone_then_flame_persists_retries_once_despite_cooldown(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    w.light_done("gone")
+    run_frames(w, clock, 3.2, 5.9)  # 新线索 3.2 起，还不够 GONE_RETRY（且不短于 light_after = 3）
+    assert LIGHT_KEY not in w.requests
+    run_frames(w, clock, 6.0, 6.3)
+    req = w.requests.get(LIGHT_KEY)
+    assert req is not None  # 冷却还有 50 多秒，照样出请求
+    w.mark_tried(req.track)
+    w.light_done("gone")  # 又判走开：这次照常冷却，不再重试
+    run_frames(w, clock, 6.4, 20.0)
+    assert LIGHT_KEY not in w.requests
+
+
+@pytest.mark.parametrize("result", ["timeout", "interrupted", "failed"])
+def test_other_failures_do_not_retry_during_cooldown(monkeypatch, result):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    w.light_done(result)
+    run_frames(w, clock, 3.2, 20.0)
+    assert LIGHT_KEY not in w.requests
+
+
+def test_lit_resets_gone_retry(monkeypatch):
+    """重试那次点亮了：之后再判走开又能重试一次。"""
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    w.light_done("gone")
+    run_frames(w, clock, 3.2, 6.3)
+    w.mark_tried(w.requests[LIGHT_KEY].track)
+    w.light_done("lit")
+    run_frames(w, clock, 6.4, 10.0)  # 找火焰 0.3 秒一次，新线索比 6.4 晚一点起
+    w.mark_tried(w.requests[LIGHT_KEY].track)
+    w.light_done("gone")
+    run_frames(w, clock, 10.1, 13.6)
+    assert LIGHT_KEY in w.requests
+
+
+# ---- light_busy：点亮这件事在进行，身体用它让聊天面板先别动 ----
+def test_light_busy_while_flame_builds_and_while_lighting(monkeypatch):
+    w, det, clock = light_watcher(monkeypatch, [None, None, FLAME])
+    det.frames = [[self_det(), unlit(1000)]]
+    run_frames(w, clock, 0.0, 0.1)
+    assert w.light_busy(clock.t) is False  # 还没火焰
+    run_frames(w, clock, 0.2, 1.0)
+    assert w.light_busy(clock.t) is True  # 火焰刚冒出来，可能马上出请求
+    run_frames(w, clock, 1.1, 3.9)
+    w.mark_tried(w.requests[LIGHT_KEY].track)
+    no_flames(monkeypatch)
+    run_frames(w, clock, 4.0, 5.0)
+    assert w.light_busy(clock.t) is True  # 举着蜡烛
+    w.light_done("lit")
+    assert w.light_busy(clock.t) is False
+
+
+def test_light_busy_gives_up_on_flame_that_never_requests(monkeypatch):
+    """一直不够 disk_sure 的火焰（不会出请求）：看了 light_after + PENDING_GRACE 秒就不再拦面板。"""
+    w, det, clock = light_watcher(monkeypatch, [Disk(1045, 480, 20.0, 0.75)])
+    det.frames = [[self_det(), unlit(1000)]]
+    run_frames(w, clock, 0.0, 2.0)
+    assert w.light_busy(clock.t) is True
+    run_frames(w, clock, 2.1, 6.0)
+    assert LIGHT_KEY not in w.requests and w.light_busy(clock.t) is False
+
+
+def test_light_busy_false_during_cooldown_unless_retry_possible(monkeypatch):
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME])
+    w.light_done("timeout")
+    run_frames(w, clock, 3.2, 4.0)
+    assert w.light_busy(clock.t) is False  # 冷却中不会出请求：不拦面板
+    w2, det2, clock2, cid2 = lit_setup(monkeypatch, [FLAME])
+    w2.light_done("gone")
+    run_frames(w2, clock2, 3.2, 4.0)
+    assert w2.light_busy(clock2.t) is True  # 判走开后可能重试：拦着

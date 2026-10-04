@@ -73,6 +73,7 @@ class PanelManager:
         self._tag_seen: dict[str, float] = {}  # 好友名 → 最后一次看到他的名字标签（无障碍读法）
         self._talk_since = 0.0  # 聊着：什么时候开始的（看一眼的计时从这儿和上次读到面板里晚的那个算）
         self._peek_from = "idle"  # 看一眼 / 等气泡从哪个状态发起：没读到新消息时回到它（聊着 / 闲着）
+        self.still: str | None = None  # 先别动（谁要的）：tick 不按键、不开不关（hold_still）
 
     @property
     def auto(self) -> bool:
@@ -155,6 +156,14 @@ class PanelManager:
         log.debug("聊天面板推迟到 %.1f 秒后再开（先看一眼）", until - now)
         return True
 
+    def hold_still(self, who: str | None) -> None:
+        """面板先别动（who = 谁要的，None = 放手）：期间 tick 不按开面板的键——不看一眼、不关、不重开，状态照记，放手后照常。
+        开关面板时画面横移约 400 px，点亮陌生人这种盯着画面里一个位置的事会跟丢（10-04 19:51:45）。
+        团子说话（before_speak）、借面板（borrow）是明确要按键的，不受影响。"""
+        if who != self.still and self.active:
+            log.debug("面板先别动：%s" if who else "面板照常（%s 放手了）", who or self.still)
+        self.still = who
+
     def bubble_seen(self, now: float) -> None:
         """这一圈看到了该触发的"正在输入"气泡（好友的；bubble_strangers 时陌生人的也算）。聊着时什么都不做。"""
         if not self.auto:
@@ -208,6 +217,10 @@ class PanelManager:
         return now - since if since is not None else 0.0
 
     def describe(self, now: float) -> str:
+        text = self._describe(now)
+        return f"{text}（先别动：{self.still}）" if text and self.still and self.lent is None else text
+
+    def _describe(self, now: float) -> str:
         if not self.active:
             return ""
         if self.lent is not None:
@@ -243,7 +256,8 @@ class PanelManager:
         if not self.active or self.lent is not None:
             return
         if not self.auto:
-            self._maybe_reopen(now)
+            if self.still is None:
+                self._maybe_reopen(now)
             return
         if self._reads_bubbles():
             tags = getattr(self.reader, "tags_in_view", None)
@@ -308,6 +322,8 @@ class PanelManager:
             return
         self._talk_since = now
         if self.state == "chatting" and visible:
+            if self.still is not None:  # 先别动：接着聊天中，放手后安静够了照常关
+                return
             self._close(now, "说话的人在画面里，关面板接着聊", "talking")  # 输入框开着时 _close 会留在聊天中
         else:
             self._set("talking", "说话的人在画面里")
@@ -338,7 +354,8 @@ class PanelManager:
         if not self._reads_bubbles():  # 中途退回了 OCR：读不了气泡，照原来的做法开着面板聊
             self._last_activity = now
             self._set("chatting", "读聊天退回了 OCR")
-            self.ensure_open()
+            if self.still is None:
+                self.ensure_open()
             return
         if visible:
             if self._user_opened(now):  # 刚关上的那一阵还看得到，不算
@@ -348,7 +365,7 @@ class PanelManager:
         quiet = now - self._last_activity >= self.cfg.quiet_close
         due = self._until_chat_peek(now) <= 0
         wanted = self._pending is not None and now - self._last_peek >= self.cfg.peek_cooldown
-        if not quiet and (blackout or not (due or wanted)):
+        if not quiet and (blackout or not (due or wanted) or self.still is not None):
             return
         # 到点了才查输入框（每圈都查要多一条 adb）：开着说明在说话（反射替大脑开的框），算活动、这次不看 ——
         # 交给 _open_peek 会因为输入框开着升级成聊天中，框一关就把面板打开了
@@ -367,6 +384,8 @@ class PanelManager:
                 self._set("chatting", "面板开着（不是自己开的）")
             return
         if self._hold_until is not None and now < self._hold_until:  # 空闲注意力在先看一眼
+            return
+        if self.still is not None:
             return
         due = now - self._last_read >= self.cfg.idle_peek
         wanted = self._pending is not None and now - self._last_peek >= self.cfg.peek_cooldown
@@ -396,7 +415,7 @@ class PanelManager:
             if self._seen_at is None:
                 self._seen_at = now
             long_enough = not self._reads_bubbles() or now - self._seen_at >= A11Y_PEEK_MIN
-            if self._seen >= 2 and long_enough and not self._settling():  # 第一帧面板可能还没画完；读聊天的还在等确认也先别关
+            if self._seen >= 2 and long_enough and not self._settling() and self.still is None:  # 第一帧面板可能还没画完；读聊天的还在等确认也先别关
                 self._end_peek(now, "看一眼：没有新消息")
         elif now - self._opened_at >= self.cfg.open_timeout:
             log.warning("按了键 %.1f 秒聊天记录面板还没出现（被别的界面挡住了？），下个周期再看", self.cfg.open_timeout)
@@ -416,7 +435,7 @@ class PanelManager:
             why = f"等了 {self.cfg.bubble_wait:.0f} 秒没等到消息"
         else:
             return
-        if self._settling():
+        if self._settling() or self.still is not None:
             return
         self._end_peek(now, why)
 
@@ -425,11 +444,11 @@ class PanelManager:
             self._missing_since = None
         elif self._missing_since is None:
             self._missing_since = now
-        elif (not blackout and now - self._missing_since >= self.vision.log_reopen_after
+        elif (not blackout and self.still is None and now - self._missing_since >= self.vision.log_reopen_after
               and now - self._last_reopen >= self.vision.log_reopen_cooldown):
             self._last_reopen = now
             self.ensure_open()
-        if now - self._last_activity < self.cfg.quiet_close or self._settling():
+        if now - self._last_activity < self.cfg.quiet_close or self._settling() or self.still is not None:
             return
         if self.device.ime_shown():
             self._last_activity = now

@@ -340,6 +340,7 @@ class Body:
 
     def _sense(self, frame, now: float, fresh: list[Message]) -> None:
         if self.cfg.vision.mode == "log":
+            self.panel.hold_still("点亮陌生人" if self._light_busy(now) else None)
             self.panel.tick(now, fresh, visible=self.reader.panel_closed_since is None, blackout=self.blackout)
             self._watch_panel(now)
         self._watch_screen(frame, now)
@@ -1280,6 +1281,20 @@ class Body:
             return
         self._raised = (req.track, req.pos, now)
         log.info("举起蜡烛给身边没点火的陌生人点火")
+
+    def _light_busy(self, now: float) -> bool:
+        """点亮陌生人在进行（举着蜡烛，或者感知层说身边火焰可能马上出请求）：聊天面板先别动，
+        开关面板画面横移约 400 px，他的火焰会接不上、被误判走开（10-04 19:51:45）。"""
+        if self._raised is not None:
+            return True
+        busy = getattr(self.env, "light_busy", None)
+        if busy is None:
+            return False
+        try:
+            return bool(busy(now))
+        except Exception:
+            log.debug("light_busy 出错", exc_info=True)
+            return False
 
     def _light_done(self, result: str) -> None:
         """这次点亮结束了，告诉感知层（结束"点亮中"、写存图 summary、没点亮就冷却）。"""

@@ -497,3 +497,37 @@ def test_press_failure_reports_failed(clock):
     offer(env, clock)
     b.step()
     assert env.done == ["failed"] and b._raised is None
+
+
+# ---- 点亮陌生人时聊天面板先别动（10-04 19:51:45：举蜡烛时「看一眼」开了面板，画面横移、误判走开） ----
+def test_panel_held_still_while_light_busy(clock):
+    b, dev, env, emotes, events = lb(clock)
+    env.light_busy = lambda now: True
+    b.step()
+    assert b.panel.still == "点亮陌生人"
+    env.light_busy = lambda now: False
+    b.step()
+    assert b.panel.still is None
+
+
+def test_panel_held_still_while_candle_raised(clock):
+    b, dev, env, emotes, events = lb(clock)
+    env.light_busy = lambda now: False
+    offer(env, clock)
+    b.step()  # 举起蜡烛
+    assert presses(dev) == 1
+    b.step()
+    assert b.panel.still == "点亮陌生人"  # 感知层说不忙也拦着：身体自己举着蜡烛
+
+
+def test_env_without_light_busy_never_holds_panel(clock):
+    b, dev, env, emotes, events = lb(clock)
+    b.step()
+    assert b.panel.still is None
+
+
+def test_light_busy_error_does_not_hold_panel(clock):
+    b, dev, env, emotes, events = lb(clock)
+    env.light_busy = lambda now: 1 / 0
+    b.step()
+    assert b.panel.still is None

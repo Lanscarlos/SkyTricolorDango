@@ -52,7 +52,7 @@ from .catalog import Who, stranger_key
 from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
-from .lighting import DISK_EVERY, DISK_GAP, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
+from .lighting import DISK_EVERY, DISK_GAP, GONE_RETRY, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, OTHERS, WHO, CallSeen, Person, Seen, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
@@ -379,6 +379,8 @@ class PerceptionWatcher:
         self._flame_log = float("-inf")  # DEBUG 日志每秒最多一行
         self._frame_at = float("-inf")  # 最近一帧跑过 tracker.update 的时间（trackeval 用它认出被挡住提前返回的帧）
         self._cooldown_until = float("-inf")  # 没点亮之后这之前不出请求
+        self._gone_retry = False  # 上次判走开（不是重试那次）：冷却中火焰连着够 GONE_RETRY 秒可以再举一次
+        self._retrying = False  # 这次点亮是冷却中的重试
         self._scan: dict | None = None  # 最近一次找火焰：area / me / flames（存图用）
         self._people_boxes: list[tuple[Rect, bool]] = []  # 这一帧的人物框（含 LIT_LOW 以上的低分框）和是不是 player_unlit
         self._gestures: deque[tuple[str, str]] = deque(maxlen=50)  # (好友名, 动作)，身体取走；没人取（普通 Agent）时只留最近的
@@ -2251,7 +2253,10 @@ class PerceptionWatcher:
                 watch.scan(now, me, area, flames, self._person_at(frame, me), shift=shift, extra=extra)
                 self._flame_pan = self._pan
             lighting = watch.lighting
-            clue = None if cooling else watch.ready(now)
+            clue = watch.ready(now)
+            retry = cooling and clue is not None and self._may_retry(clue, now)
+            if cooling and not retry:
+                clue = None
             first = clue is not None and not clue.announced
             if clue is not None:
                 clue.announced = True
@@ -2273,7 +2278,8 @@ class PerceptionWatcher:
         if lighting is not None and self._diag is not None and self._scan is not None and now >= self._diag["next"]:
             self._save_light(frame, now, "raised")
         if first:
-            log.info("身边有没点火的陌生人：火焰出现了 %.0f 秒（线索 %d）", now - clue.first, clue.id)
+            log.info("身边有没点火的陌生人：火焰出现了 %.0f 秒（线索 %d）%s", now - clue.first, clue.id,
+                     "（上次判他走开了，火焰又一直在：不等冷却，再试一次）" if retry else "")
             self._on_request(frame, now)
 
     def _on_request(self, frame: np.ndarray, now: float) -> None:
@@ -2329,10 +2335,31 @@ class PerceptionWatcher:
         except Exception:
             log.debug("存点亮图出错", exc_info=True)
 
+    def _may_retry(self, clue, now: float) -> bool:
+        """冷却中这条线索能不能出请求：上次判走开（不是重试）、火焰连着看到 ≥ GONE_RETRY 秒（且不短于 light_after）。"""
+        return self._gone_retry and now - clue.first >= max(GONE_RETRY, self.light_cfg.light_after)
+
+    def _light_wait(self, now: float) -> float | None:
+        """火焰冒出来多久内可能出请求（FlameWatch.pending 用）；冷却中又不能重试 = None。"""
+        if now >= self._cooldown_until:
+            return self.light_cfg.light_after
+        return max(GONE_RETRY, self.light_cfg.light_after) if self._gone_retry else None
+
+    def light_busy(self, now: float) -> bool:
+        """点亮陌生人这件事在进行：举着蜡烛，或者团子身边一团火焰刚冒出来、可能马上出请求。
+        身体用它让聊天面板先别动：开关面板画面横移，火焰会接不上（10-04 19:51:45）。"""
+        if self.flames is None or self.light_cfg is None:
+            return False
+        with self._lock:
+            return self.flames.pending(now, self._light_wait(now))
+
     def mark_tried(self, clue_id: int) -> None:
         """身体举起蜡烛了：开始"点亮中"（期间不出新请求），认准这条线索的火焰。"""
         now = self.clock()
         with self._lock:
+            self._retrying = now < self._cooldown_until  # 冷却中能举只能是重试
+            if self._retrying:
+                self._gone_retry = False
             if self.flames is not None:
                 self.flames.start(clue_id, now)
             if self._diag is not None:
@@ -2352,15 +2379,20 @@ class PerceptionWatcher:
 
     def light_done(self, result: str) -> None:
         """身体这次点亮结束了（lit / gone / timeout / interrupted / dry-run / exit / failed）：结束"点亮中"；
-        没点亮就冷却 light_cooldown 秒（认不出是谁，只能按时间）。重复调用无害。"""
+        没点亮就冷却 light_cooldown 秒（认不出是谁，只能按时间），判走开的冷却里留一次重试（_may_retry）；点亮了冷却作废。重复调用无害。"""
         cfg = self.light_cfg
         with self._lock:
             L = self.flames.stop() if self.flames is not None else None
             self.requests.pop(LIGHT_KEY, None)
             if L is None:
                 return
-            if result != "lit" and cfg is not None:
+            if result == "lit":  # 点亮了（可能是冷却中的重试）：之前那次多半是误判，冷却作废
+                self._cooldown_until = float("-inf")
+            elif cfg is not None:
                 self._cooldown_until = self.clock() + cfg.light_cooldown
+            # 判走开可能是误判（画面一晃火焰接不上）：他要是原地接着举，冷却里给一次重试；重试那次又判走开就照常冷却
+            self._gone_retry = result == "gone" and not self._retrying
+            self._retrying = False
         log.info("点亮陌生人结束：%s（线索 %d）", result, L.clue)
         self._light_finished(L, result)
 
