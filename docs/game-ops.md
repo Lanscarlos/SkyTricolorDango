@@ -146,6 +146,23 @@ MuMu 用的键位方案是 **「PC端操作方案」**：没有任何键位映�
   折行之间几乎贴着（间距 0~2 px），不同消息之间隔 25~30 px → 上一行写满（≥ 面板宽 75%）+ 间距小 + 底色一致就拼成一条
   （`chatlog._merge_wrapped`）。不拼的话前几行会被当成"只有名字的被屏蔽行"，模型只看到最后半句
 
+### 无障碍节点：不用 OCR 直接读 UI 文字（2026-10-04 实测，`device/a11y.py`，**还没接进读聊天**）
+
+光遇做了读屏支持：渲染用的 `TGCSurfaceView` 上面盖着一层看不见的 `app:id/system_ui_view`（RelativeLayout），
+把 UI 文字镜像成原生 `TextView`，**文字和屏幕坐标都和画面一一对上**。系统无障碍开关是关的（`accessibility_enabled = 0`）它也在填。
+- **面板开着**：面板里每一行（`团子早上好 - 懒洋洋大王`，格式和画面一样是「内容 - 说话人」、按最后一个 " - " 拆）、输入框占位 `聊天……`（77,1021）；
+  **往上滚出去的历史行也在**（`isVisibleToUser = false`，坐标被裁成负数），面板里还留着多少就能读多少；顺序从上到下
+- **面板关着**：头顶名字标签（`懒洋洋大王`，1220,420 附近）和头顶聊天气泡（`...`、`...........`，没有说话人）
+- 陌生人的话照样是点点（`...... - 陌生人`）：游戏自己遮的，不是读不到
+- 名字标签和聊天行没有 view id、类名都是 TextView，只能按坐标（聊天行 x≈21）和格式（有没有 " - "）分；**自己的消息、折行的长消息长什么样还没看**
+- 读法：`uiautomator dump` 用不了（游戏一直在渲染，报 `could not get idle state`）；`uiautomator events` 连上时游戏会发一条带全部文字的
+  `TYPE_VIEW_FOCUSED`，但没有坐标。现在用自己的小客户端：`assets/a11y/skydango-a11y.jar`（源码 `android/a11y/`，3 KB），
+  推到 `/data/local/tmp`、`app_process` 起一个 UiAutomation 连接、不等 idle，每个快照一行 JSON。单读一次约 1.1 秒（起 JVM），
+  常驻（`watch`）时 0.3 秒出第一份、之后变了就出，设备上 CPU 0~0.5%、内存约 116 MB；adb 断开后自己退出（最多 1 秒心跳）
+- **同一时间只能有一个 UiAutomation 连接**：客户端开着时 `uiautomator dump / events` 连不上，反过来也一样
+- 游戏能察觉有无障碍客户端连着（`AccessibilityManager`），和任何读法一样；不装 App、不改系统设置，比装无障碍服务低调，但不等于看不见
+- `python -m skydango a11y [--watch 秒] [--all]` 打印出来看
+
 ### 按需打开聊天面板（`[panel] mode = "auto"`，2026-09-30 晚真机验收，dry-run + live）
 
 - 头顶冒"正在输入"（v7 的 `typing`）→ 面板马上打开，约 1 秒后读到消息；好友来到身边（arrive）、走近（approach）都会提前看一眼

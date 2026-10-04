@@ -768,6 +768,46 @@ def cmd_view(cfg: Config, args) -> None:
         viewer.stop()
 
 
+def cmd_a11y(cfg: Config, args) -> None:
+    """读无障碍节点：一次，或 --watch 秒内每次变化打印一次。"""
+    import time
+
+    from .device.a11y import A11yReader, split_speaker
+
+    def show(snap) -> None:
+        if snap is None:
+            print("没读到（客户端没输出）")
+            return
+        nodes = [n for n in snap.nodes if args.all or n.visible]
+        print(f"[{time.strftime('%H:%M:%S')}] {snap.package or '（拿不到窗口）'}：{len(nodes)} 个节点")
+        for n in nodes:
+            text = n.text or f"（描述）{n.desc}"
+            pair = split_speaker(n.text) if n.text else None
+            kind = f"聊天 {pair[1]}：{pair[0]}" if pair else text
+            mark = "" if n.visible else " （看不见）"
+            print(f"  {n.box!s:24} {kind}{mark}")
+
+    reader = A11yReader(cfg.device.adb_path, cfg.device.serial)
+    if not args.watch:
+        t = time.perf_counter()
+        snap = reader.dump()
+        show(snap)
+        print(f"（{(time.perf_counter() - t) * 1000:.0f} ms）")
+        return
+    with reader:
+        end = time.monotonic() + args.watch
+        last = None
+        while time.monotonic() < end and reader.alive:
+            snap = reader.latest()
+            if snap is not None and snap is not last:
+                if last is None or [(n.text, n.box) for n in snap.nodes] != [(n.text, n.box) for n in last.nodes]:
+                    show(snap)
+                last = snap
+            time.sleep(0.05)
+        if not reader.alive and reader.error:
+            print("客户端退出了：", reader.error)
+
+
 def cmd_env(cfg: Config, args) -> None:
     """对当前画面识别一次环境（身边有谁、在哪），用来验证。"""
     from .vision.chatlog import find_input_top
@@ -3015,6 +3055,11 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_memory)
 
     sub.add_parser("env", help="对当前画面识别一次环境（身边有谁、在哪张图），用来验证").set_defaults(func=cmd_env)
+
+    p = sub.add_parser("a11y", help="读游戏的无障碍节点（聊天行、头顶名字等 UI 文字 + 坐标，不用 OCR；不发输入）")
+    p.add_argument("--watch", type=float, metavar="秒", help="常驻读这么多秒，每次变化打印一次（不填就只读一次）")
+    p.add_argument("--all", action="store_true", help="连看不见的节点也打印（聊天面板里滚出去的历史行）")
+    p.set_defaults(func=cmd_a11y)
 
     p = sub.add_parser("look", help="截一张图让眼睛（Claude Haiku）描述一遍（调眼睛的提示词，看它认得准不准）")
     p.add_argument("image", nargs="?", help="描述这张图（不截屏）；不填就截当前画面")

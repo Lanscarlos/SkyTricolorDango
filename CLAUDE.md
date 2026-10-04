@@ -60,6 +60,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - **onnxruntime 用 GPU 版**（10-02）：`.pydeps` 里装的是 `onnxruntime-gpu==1.23.2`（CUDA 12，和 torch cu128 对上；1.30 要 CUDA 13，驱动不够），用户目录里的 CPU 版 `onnxruntime` 已卸掉。
   CUDA / cuDNN 的 DLL 借 torch 的 `lib` 目录（`vision/onnxrt.py` 建 CUDA 会话前自动 `preload_dlls`）。用户目录的 site-packages 在 `sys.path` 里排在 `.pydeps` 前面：
   **别再往用户目录装 `onnxruntime`**（`pip install -e ".[ocr]"` 会装回来、盖掉 GPU 版，装了就再 `pip uninstall onnxruntime`）；`pip check` 报 skydango 缺 onnxruntime、onnxruntime-gpu 缺 coloredlogs 都不影响
+- 编译 `android/a11y/` 的无障碍客户端要 JDK（本机 `D:\Java\azul-18.0.2.1`）和 R8（含 d8）：`.pydeps/r8/r8-9.4.28.jar`（Google Maven `com.android.tools:r8`，10-04 下载、SHA1 核对过）；
+  不用 Android SDK（隐藏 API 照 `android/a11y/stubs/` 编译）。编好的 jar 进 git，只改 Java 时才要重编
 - `config.toml` 是本机配置（gitignore），模板是 `config.example.toml`；记忆在私有仓库，新电脑先按「记忆」一节克隆到 `private/`
 - 模拟器里装了 ADBKeyboard（团子输中文用），用户自己打字用 MuMu 里的搜狗输入法。**`run` 启动时自动切到 ADBKeyboard、停下时切回来**（`device/ime.py`，`[device] switch_ime`，默认开；
   切回启动时的那个，启动时已经是 ADBKeyboard（上次被强杀没切回）就找装了的搜狗，`[device] user_ime` 可以指定）；被强杀时切不回，在管理面板「设备」页「输入法」一栏手动切，
@@ -72,6 +74,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 |---|---|
 | `src/skydango/device/adb.py` | 截图（raw screencap）、tap/swipe、`hw_key*`（sendevent 模拟实体键盘）、ADBKeyboard 输入、`ime_shown()` |
 | `src/skydango/device/mumu.py` | MuMu 原生截图（external_renderer_ipc.dll，约 9 ms/张），`AdbDevice.screenshot()` 优先用它 |
+| `src/skydango/device/a11y.py` `android/a11y/` `assets/a11y/` | 读游戏的无障碍节点（聊天行、头顶名字 / 气泡的文字 + 坐标，不用 OCR；见 game-ops §3「无障碍节点」）：`A11yReader` 推 jar、`app_process` 常驻 UiAutomation 客户端、`latest()` 取快照；jar 源码在 `android/a11y/`，`python android/a11y/build.py` 编译（要 javac + `.pydeps/r8/` 的 R8）。**还没接进读聊天 / 认人** |
 | `src/skydango/vision/chatlog.py` | 解析聊天记录面板（C）：分行、拆说话人、认自己的消息 / 被屏蔽的消息、前后帧对齐找新消息 |
 | `src/skydango/vision/icons.py` | 动作图标的剪影匹配（多尺度 matchTemplate） |
 | `src/skydango/vision/bubbles.py` | 旧方案：3D 画面里找头顶气泡（不推荐，见 game-ops） |
@@ -623,6 +626,7 @@ python -m skydango camera spin [--turns N] [--seconds S]  # 转一圈、边转�
 python -m skydango friend-check X Y       # 点一下人物打开好友树、截图、再关掉（核对面板和关法），图在 tmp/friend-check/
 python -m skydango memory init|show|update # 记忆：生成人设 / 好友文件、查看、立刻整理
 python -m skydango env                    # 对当前画面识别一次环境（身边有谁、在哪）
+python -m skydango a11y [--watch 秒] [--all]  # 读游戏的无障碍节点：聊天行、头顶名字等 UI 文字 + 坐标（不发输入）
 python -m skydango view [--images 目录] [--model 模型] [--port 端口] [--no-browser]  # 只看不动：网页上实时画识别框；--images 回放录像
 python -m skydango run --view ...          # 跑 Agent / 大脑时顺便开可视化网页
 python -m skydango perception bench [--model yolo11n.pt] [--images 目录]  # YOLO 测速（没训练前用官方模型看硬件）
