@@ -411,10 +411,38 @@ def test_inbox_line():  # 侧栏整理提示：任务进度 > 失败 > 待看 > 
     re = _common_js("C.inboxLine({job:{state:'running',job:'retrain',progress:'第 5 轮',tail:[]},inbox:%s})" % ib)
     assert re["text"] == "重训中：第 5 轮"
     bad = _common_js("C.inboxLine({job:{state:'failed',job:'inbox',progress:'',tail:['a','没显卡']},inbox:%s})" % ib)
-    assert bad["text"] == "整理失败：没显卡"
+    assert bad == {"text": "整理失败：没显卡（点这里重试）", "action": "start-inbox"}  # 终审 5：失败行能重试
     wait = _common_js("C.inboxLine({job:{state:'idle'},inbox:{pending:1,judge_left:12,glance:3,edit:0}})")
     assert wait == {"text": "12 张裁图、3 帧等你看 →", "action": "open-labeling"}
     pend = _common_js("C.inboxLine({job:{state:'idle'},inbox:{pending:3,judge_left:0,glance:0,edit:0}})")
     assert pend == {"text": "3 次运行的素材没整理", "action": "start-inbox"}
     assert _common_js("C.inboxLine({job:{state:'idle'},inbox:%s})" % ib) is None
     assert _common_js("C.inboxLine({job:null,inbox:null})") is None
+
+
+def test_inbox_line_failure_keeps_other_hints():  # 终审 5：失败行按任务分、给 action、不盖住待看 / 没整理的提示
+    wait = "{pending:2,judge_left:12,glance:3,edit:0}"
+    bad = _common_js("C.inboxLine({job:{state:'failed',job:'inbox',tail:['没显卡']},inbox:%s})" % wait)
+    assert bad == {"text": "整理失败：没显卡（点这里重试）；另有 12 张裁图、3 帧等你看", "action": "start-inbox"}
+    re = _common_js("C.inboxLine({job:{state:'failed',job:'retrain',tail:['爆显存']},inbox:%s})" % wait)
+    assert re == {"text": "重训失败：爆显存；12 张裁图、3 帧等你看 →", "action": "open-labeling"}
+    pend = _common_js("C.inboxLine({job:{state:'failed',job:'retrain',tail:[]},inbox:{pending:3,judge_left:0,glance:0,edit:0}})")
+    assert pend == {"text": "重训失败；3 次运行的素材没整理", "action": "start-inbox"}
+    alone = _common_js("C.inboxLine({job:{state:'failed',job:'retrain',tail:['x']},inbox:{pending:0,judge_left:0,glance:0,edit:0}})")
+    assert alone == {"text": "重训失败：x", "action": "open-labeling"}  # 标注页「整帧」里有重训区和报告
+    assert _common_js("C.inboxLine({job:{state:'failed',job:'inbox',tail:[]},inbox:null})") == {"text": "整理失败（点这里重试）", "action": "start-inbox"}
+
+
+def test_busy_question_names_job():  # 终审 5：起团子时任务在跑，问话按任务分
+    assert _common_js("C.busyQuestion({job:'inbox',progress:'3/9'})") == "整理还没完（剩 3/9），先停下再叫醒？"
+    assert _common_js("C.busyQuestion({job:'retrain',progress:''})") == "重训还没完，先停下再叫醒？\n训练停了要从头来。"
+
+
+def test_frames_tab_hidden_when_inbox_disabled():  # 终审 11 / spec §8：inbox.enabled = false（/api/state 的 inbox 为 null）不出「整帧」标签
+    lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
+    sync = lab.split("function syncFramesTab(", 1)[1].split("\n}", 1)[0]
+    assert "st.inbox" in sync and ".hidden" in sync and 'setTab("gesture")' in sync
+    init = lab.split("  init() {", 1)[1].split("\n  },", 1)[0]
+    assert "onState(syncFramesTab)" in init
+    set_tab = lab.split("function setTab(", 1)[1].split("\n}", 1)[0]
+    assert "framesOn" in set_tab  # 关着时点不进去（侧栏链接 go("labeling","frames") 也一样）

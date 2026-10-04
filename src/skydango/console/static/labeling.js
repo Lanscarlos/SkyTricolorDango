@@ -491,6 +491,7 @@ const NOTES = {
   frames: "通过 = 原图和标注复制进 datasets/sky/images|labels/<分边>/；不要的留在收件箱；决定记在收件箱各次运行的 frames.json",
 };
 function setTab(tab) {
+  if (tab === "frames" && LB.framesOn === false) tab = "gesture";  // 难例收件箱关着：没有整帧页
   LB.tab = tab === "form" || tab === "names" || tab === "frames" ? tab : "gesture";
   window.LabelingTab = LB.tab;
   for (const b of $("lb-tabs").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.tab === LB.tab));
@@ -505,6 +506,15 @@ function setTab(tab) {
   $("fr-cols").hidden = !frTab || !fhas; $("fr-empty").hidden = !frTab || fhas;
   startTimer();  // 动作页之外不放动图
   reload();
+}
+/* 难例收件箱关着（[inbox] enabled = false → /api/state 的 inbox 为 null，spec §8）：不出「整帧」标签，正开着就切回动作页 */
+function syncFramesTab(st) {
+  const on = !!(st && st.inbox);
+  if (on === LB.framesOn) return;
+  LB.framesOn = on;
+  const b = document.querySelector('#lb-tabs [data-tab="frames"]');
+  if (b) b.hidden = !on;
+  if (!on && LB.tab === "frames") setTab("gesture");
 }
 function reload() {
   if (LB.tab === "form") fmLoad();
@@ -560,6 +570,7 @@ Pages.labeling = {
     // 鼠标点按钮不抢焦点：点完接着按键就行（Tab 过去的按钮照样能用回车 / 空格）
     $("page-labeling").addEventListener("mousedown", e => { if (e.target.closest && e.target.closest("button")) e.preventDefault(); });
     setPlaying(true); setSpeed(1); draw();
+    onState(syncFramesTab);
   },
   show(arg) {  // 可能被重复调用（点当前导航项）：只重读，键盘不重复绑；arg = "frames" 直接切到整帧页（侧栏提示点过来）
     LB.active = true;
@@ -567,7 +578,7 @@ Pages.labeling = {
     if (!LB.keyBound) { document.addEventListener("keydown", onKey); LB.keyBound = true; }
     startTimer();
     reload();
-    if (LB.tab !== "frames" && window.FramesTab) window.FramesTab.peek();  // 标签上的「整帧（N）」不用先点进去
+    if (LB.tab !== "frames" && LB.framesOn !== false && window.FramesTab) window.FramesTab.peek();  // 标签上的「整帧（N）」不用先点进去
   },
   hide() {
     LB.active = false;

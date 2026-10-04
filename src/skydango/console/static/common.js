@@ -197,25 +197,40 @@ function stopQuestion(info){
   if(hard===0&&pending===0)return null;
   return `这次存了 ${hard} 张难例（还有 ${pending} 次运行没整理），现在整理吗？约 ${info.eta_min||0} 分钟`;
 }
-function inboxLine(st){
-  if(!st)return null;
-  const job=st.job||{},ib=st.inbox;
-  if(job.state==="running"&&job.job==="inbox")return {text:"整理素材："+(job.progress||""),action:null};
-  if(job.state==="running"&&job.job==="retrain")return {text:"重训中："+(job.progress||""),action:null};
-  if(job.state==="failed"){const t=job.tail||[];return {text:"整理失败："+(t.length?t[t.length-1]:""),action:null}}
+function inboxHint(ib){  // 没任务时的提示：先待看、再没整理
   if(!ib)return null;
   const crops=ib.judge_left||0,frames=(ib.glance||0)+(ib.edit||0);
-  if(crops+frames>0)return {text:`${crops} 张裁图、${frames} 帧等你看 →`,action:"open-labeling"};
+  if(crops+frames>0)return {text:`${crops} 张裁图、${frames} 帧等你看`,action:"open-labeling"};
   if((ib.pending||0)>0)return {text:`${ib.pending} 次运行的素材没整理`,action:"start-inbox"};
   return null;
 }
-/* 起团子 / 沙盒：整理任务在跑时服务端回 409 + job，问一句，同意就带 stop_job 重发 */
+function inboxLine(st){
+  if(!st)return null;
+  const job=st.job||{},ib=st.inbox,hint=inboxHint(ib);
+  if(job.state==="running"&&job.job==="inbox")return {text:"整理素材："+(job.progress||""),action:null};
+  if(job.state==="running"&&job.job==="retrain")return {text:"重训中："+(job.progress||""),action:null};
+  if(job.state==="failed"){  // 失败一直挂到下次起任务：按任务分开说，不盖住待看 / 没整理的提示
+    const t=job.tail||[],why=t.length?"："+t[t.length-1]:"";
+    if(job.job==="retrain"){  // 重训的报告和「重训」按钮在标注页「整帧」里
+      if(!hint)return {text:"重训失败"+why,action:"open-labeling"};
+      return {text:`重训失败${why}；${hint.text}`+(hint.action==="open-labeling"?" →":""),action:hint.action};
+    }
+    const wait=hint&&hint.action==="open-labeling"?`；另有 ${hint.text}`:"";  // 没整理的运行重试时一起整理
+    return {text:`整理失败${why}（点这里重试）${wait}`,action:"start-inbox"};
+  }
+  if(!hint)return null;
+  return hint.action==="open-labeling"?{text:hint.text+" →",action:hint.action}:hint;
+}
+function busyQuestion(j){  // 起团子 / 沙盒时整理或重训在跑
+  const left=j.progress?`（剩 ${j.progress}）`:"",name=j.job==="retrain"?"重训":"整理";
+  return `${name}还没完${left}，先停下再叫醒？`+(j.job==="retrain"?"\n训练停了要从头来。":"");
+}
+/* 起团子 / 沙盒：整理 / 重训任务在跑时服务端回 409 + job，问一句，同意就带 stop_job 重发 */
 async function startGuarded(url,body){
   let r=await post(url,body);
   const j=r.status===409&&r.data&&r.data.job;
   if(j&&j.state==="running"){
-    const left=j.progress?`（剩 ${j.progress}）`:"";
-    const ok=await ask(`整理还没完${left}，先停下再叫醒？`+(j.job==="retrain"?"\n训练停了要从头来。":""),{ok:"停下再叫醒",danger:j.job==="retrain"});
+    const ok=await ask(busyQuestion(j),{ok:"停下再叫醒",danger:j.job==="retrain"});
     if(!ok)return {status:0,data:{ok:false,cancelled:true}};
     r=await post(url,Object.assign({},body,{stop_job:true}));
   }
@@ -271,5 +286,5 @@ function start(){
 
 Object.assign(g,{$,el,getJSON,post,pad2,hhmm,dayTime,span,fmtUptime,ask,toast,startGuarded,problemList,Pages,go,parseHash,S,onState,refresh,BUSY});
 if(HAS_DOM){if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",start);else setTimeout(start,0)}
-if(typeof module!=="undefined"&&module.exports)module.exports={parseHash,inboxLine,stopQuestion};
+if(typeof module!=="undefined"&&module.exports)module.exports={parseHash,inboxLine,stopQuestion,busyQuestion};
 })(globalThis);

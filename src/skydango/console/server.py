@@ -244,8 +244,10 @@ class ConsoleServer:
         return self._job_busy()
 
     def _job_busy(self) -> dict:
-        error = "整理还没完，等它做完，或者选「停掉整理再叫醒」"
-        return {"ok": False, "job": self.jobs.status(), "error": error, "text": error}
+        job = self.jobs.status()
+        name = "重训" if job.get("job") == "retrain" else "整理"
+        error = f"{name}还没完，等它做完，或者选「停掉{name}再叫醒」"
+        return {"ok": False, "job": job, "error": error, "text": error}
 
     def start_job(self, job: str) -> tuple[int, dict]:
         if job not in JOBS:

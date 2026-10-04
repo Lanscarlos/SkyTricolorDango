@@ -110,7 +110,7 @@ class KindRunner(FakeRunner):
 
 class FakeJobs:
     def __init__(self):
-        self.state, self.started, self.stopped = "idle", [], 0
+        self.state, self.started, self.stopped, self.job = "idle", [], 0, "inbox"
 
     def start(self, job, cmd, env):
         if self.state == "running":
@@ -123,7 +123,7 @@ class FakeJobs:
         self.state = "stopped"
 
     def status(self):
-        return {"state": self.state, "job": "inbox", "progress": "", "tail": [], "exit_code": None, "log": None}
+        return {"state": self.state, "job": self.job, "progress": "", "tail": [], "exit_code": None, "log": None}
 
 
 def make(tmp_path, upstream):
@@ -328,3 +328,9 @@ def test_stop_info_ask_false_when_disabled(tmp_path, upstream):
         assert request(s.url + "api/inbox/stop-info")[1]["ask"] is False
     finally:
         s.stop()
+
+
+def test_job_busy_names_retrain(srv):  # 终审 5：重训在跑时起团子，不再说「整理还没完」
+    srv.jobs.state, srv.jobs.job = "running", "retrain"
+    status, res = post(srv, "api/run/start", RUN)
+    assert status == 409 and "重训还没完" in res["error"] and "整理" not in res["error"]
