@@ -244,6 +244,27 @@ def test_pass_rolls_back_on_copy_failure(tmp_path, monkeypatch):
     assert _inbox.load_frames(inbox, run)[frame]["decision"] is None
 
 
+def test_pass_rolls_back_when_saving_decision_fails(tmp_path, monkeypatch):
+    inbox, run, frame, attrs_root, ds = _setup_frame(tmp_path)
+    real = _inbox.save_frames
+    calls = []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return real(*a, **k)
+
+    monkeypatch.setattr(_inbox, "save_frames", flaky)
+    with pytest.raises(OSError):
+        _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)
+    assert not (ds / "images" / "train" / f"{frame}.jpg").exists()
+    assert not (ds / "labels" / "train" / f"{frame}.txt").exists()
+    assert not (inbox / run / "labels" / f"{frame}.txt").exists()
+    assert _inbox.load_frames(inbox, run)[frame]["decision"] is None
+    assert _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES) == f"train/{frame}"
+
+
 def test_undo_pass_removes_files(tmp_path):
     inbox, run, frame, attrs_root, ds = _setup_frame(tmp_path)
     _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)

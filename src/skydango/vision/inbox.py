@@ -221,19 +221,22 @@ def pass_frame(
     text = "".join(yolo_line(c, b, width, height) + "\n" for c, b in boxes)
     label = inbox / run / "labels" / f"{frame}.txt"
     label.parent.mkdir(parents=True, exist_ok=True)
+    label_existed = label.exists()
     label.write_text(text, encoding="utf-8")
     dst_img.parent.mkdir(parents=True, exist_ok=True)
     dst_lbl.parent.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copyfile(src_img, dst_img)
         shutil.copyfile(label, dst_lbl)
+        entry["decision"] = {"what": "pass", "edited": edited, "t": time.time(), "dataset": f"{split}/{frame}"}
+        entry["editing"] = False
+        save_frames(inbox, run, frames)
     except BaseException:
         dst_img.unlink(missing_ok=True)
         dst_lbl.unlink(missing_ok=True)
+        if not label_existed:
+            label.unlink(missing_ok=True)
         raise
-    entry["decision"] = {"what": "pass", "edited": edited, "t": time.time(), "dataset": f"{split}/{frame}"}
-    entry["editing"] = False
-    save_frames(inbox, run, frames)
     return f"{split}/{frame}"
 
 
