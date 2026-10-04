@@ -11,9 +11,19 @@ import json
 import shutil
 import time
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
+
+from . import attrs
+from .bubbles import Rect
 
 INDEX = "_index.jsonl"
+
+PAIR = {"player": "lit", "player_unlit": "unlit", "spirit": "spirit"}  # YOLO 人物类别 ↔ 外形头的类
+MERGE_FORM = {"shared": "lit", "morph": "lit"}  # 并进 lit 再比
+# 人在外形页判的类 → 最终标注的类别名（not_person 不在里面 = 去掉）
+FORM_CLS = {"lit": "player", "morph": "player", "shared": "player", "unlit": "player_unlit", "spirit": "spirit"}
 
 
 def split_of(run: str, every: int) -> str:
@@ -85,3 +95,81 @@ def pending_runs(inbox: Path) -> list[str]:
     for row in _index_rows(Path(inbox)):
         merged.setdefault(row["run"], {}).update(row)
     return [run for run, row in merged.items() if not row.get("processed_at")]
+
+
+@dataclass
+class Route:
+    auto: str | None  # "agree" / "drop_low" / None（给人判）
+    form: str  # 外形头的类（已并过 shared / morph）
+    p: float  # 这个类的把握
+
+
+def route(yolo_cls: str, score: float, probs: dict[str, float], conf: float, agree: float) -> Route:
+    """人物框分流（spec §4 的表）：高分框只会自动确认一致的（判"不是人"也给人看，篝火不能自动删）；
+    低分框一致自动补成正式框、判"不是人"且有把握自动丢，其余给人判。"""
+    merged: dict[str, float] = {}
+    for form, v in probs.items():
+        k = MERGE_FORM.get(form, form)
+        merged[k] = merged.get(k, 0.0) + float(v)
+    form = max(merged, key=merged.get) if merged else "not_person"
+    p = merged.get(form, 0.0)
+    auto = None
+    if p >= agree:
+        if form == PAIR.get(yolo_cls):
+            auto = "agree"
+        elif form == "not_person" and score < conf:
+            auto = "drop_low"
+    return Route(auto, form, p)
+
+
+def crop_place(attrs_root: Path, crop: str) -> str | None:
+    """裁图现在在 datasets/attrs 的哪里：_unlabeled / _discard / form/<类>；都不在返回 None。"""
+    root = Path(attrs_root)
+    if (root / "_unlabeled" / crop).is_file():
+        return "_unlabeled"
+    if (root / "_discard" / crop).is_file():
+        return "_discard"
+    for form in attrs.FORMS:
+        if (root / "form" / form / crop).is_file():
+            return form
+    return None
+
+
+def frame_state(entry: dict, place: Callable[[str], str | None]) -> str:
+    """帧状态（现算，不存盘，spec §2.2）：done / discarded / crops / edit / glance，另有 dup / error。"""
+    if entry.get("dup_of"):
+        return "dup"
+    if entry.get("error"):
+        return "error"
+    what = (entry.get("decision") or {}).get("what")
+    if what == "pass":
+        return "done"
+    if what == "discard":
+        return "discarded"
+    places = [place(b["crop"]) for b in entry.get("boxes", []) if b.get("crop")]
+    if "_unlabeled" in places:
+        return "crops"
+    if "_discard" in places or entry.get("editing"):
+        return "edit"
+    return "glance"
+
+
+def final_boxes(entry: dict, place: Callable[[str], str | None], classes: list[str]) -> list[tuple[int, Rect]]:
+    """这一帧通过时写进标注的框（类别编号, 框），顺序同 boxes：自动一致的用 YOLO 的框和类别；
+    drop_low 去掉；有裁图的人物框按人判的类（not_person / 不要 = 去掉）；还没人判的保持 YOLO 类别；非人物框原样。"""
+    out: list[tuple[int, Rect]] = []
+    for b in entry.get("boxes", []):
+        cls = b["cls"]
+        if cls in PAIR and b.get("auto") != "agree":
+            if b.get("auto") == "drop_low":
+                continue
+            where = place(b["crop"]) if b.get("crop") else None
+            if where == "_discard":
+                continue
+            if where in attrs.FORMS:
+                cls = FORM_CLS.get(where)
+                if cls is None:
+                    continue
+        x, y, w, h = (int(v) for v in b["box"])
+        out.append((classes.index(cls), Rect(x, y, w, h)))
+    return out

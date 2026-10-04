@@ -1,6 +1,9 @@
+import pytest
+
 from skydango import cli
 from skydango.config import InboxConfig, load_config
-from skydango.vision.inbox import collect, collect_all, frame_name, pending_runs, split_of
+from skydango.vision.bubbles import Rect
+from skydango.vision.inbox import collect, collect_all, crop_place, final_boxes, frame_name, frame_state, pending_runs, route, split_of
 
 
 def test_split_of_whole_run_same_side():
@@ -116,3 +119,54 @@ def test_cli_inbox_collect(tmp_path, capsys):
     cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "collect", str(tmp_path / "runs")])
     assert "收了 1 次运行 / 共 1 张" in capsys.readouterr().out
     assert (tmp_path / "inbox" / "r1" / "raw" / "1.jpg").is_file()
+
+
+@pytest.mark.parametrize("cls,score,probs,want", [
+    ("player", 0.8, {"lit": 0.95, "unlit": 0.03, "not_person": 0.02}, "agree"),
+    ("player", 0.8, {"not_person": 0.97, "lit": 0.03}, None),  # 高分框判不是人：给人看
+    ("player_unlit", 0.6, {"lit": 0.7, "unlit": 0.3}, None),  # 不一致
+    ("player_unlit", 0.3, {"unlit": 0.93, "lit": 0.07}, "agree"),  # 低分框一致：补成正式框
+    ("player", 0.3, {"not_person": 0.92, "lit": 0.08}, "drop_low"),
+    ("player", 0.3, {"not_person": 0.6, "lit": 0.4}, None),
+    ("player", 0.8, {"shared": 0.95, "lit": 0.05}, "agree"),  # shared 并进 lit
+])
+def test_route(cls, score, probs, want):
+    assert route(cls, score, probs, conf=0.35, agree=0.9).auto == want
+
+
+def test_frame_state_order_and_done_sticks():
+    e = {"boxes": [{"cls": "player", "crop": "a.jpg", "auto": None}], "decision": None, "dup_of": None, "error": None, "editing": False}
+    assert frame_state(e, lambda c: "_unlabeled") == "crops"
+    assert frame_state(e, lambda c: "lit") == "glance"
+    assert frame_state(e, lambda c: "_discard") == "edit"
+    assert frame_state({**e, "editing": True}, lambda c: "lit") == "edit"
+    assert frame_state({**e, "decision": {"what": "pass"}}, lambda c: "_unlabeled") == "done"  # 通过后外形页再改也不回 crops
+    assert frame_state({**e, "decision": {"what": "discard"}}, lambda c: "lit") == "discarded"
+    assert frame_state({**e, "dup_of": "x"}, lambda c: "lit") == "dup"
+    assert frame_state({**e, "error": "boom"}, lambda c: "lit") == "error"
+
+
+def test_crop_place(tmp_path):
+    (tmp_path / "_unlabeled").mkdir()
+    (tmp_path / "_unlabeled" / "a.jpg").write_bytes(b"x")
+    (tmp_path / "_discard").mkdir()
+    (tmp_path / "_discard" / "b.jpg").write_bytes(b"x")
+    (tmp_path / "form" / "unlit").mkdir(parents=True)
+    (tmp_path / "form" / "unlit" / "c.jpg").write_bytes(b"x")
+    assert [crop_place(tmp_path, n) for n in ("a.jpg", "b.jpg", "c.jpg", "d.jpg")] == ["_unlabeled", "_discard", "unlit", None]
+
+
+def test_final_boxes():
+    classes = ["player", "name_tag", "social_ring", "self", "player_unlit", "typing", "bench", "bonfire", "instrument", "spirit"]
+    e = {"boxes": [
+        {"cls": "player", "box": [10, 20, 30, 40], "score": 0.8, "src": "yolo", "crop": "a.jpg", "auto": "agree"},
+        {"cls": "player", "box": [50, 60, 30, 40], "score": 0.6, "src": "yolo", "crop": "b.jpg", "auto": None},  # 人判 unlit
+        {"cls": "player", "box": [90, 60, 30, 40], "score": 0.6, "src": "yolo", "crop": "c.jpg", "auto": None},  # 人判 not_person
+        {"cls": "player", "box": [130, 60, 30, 40], "score": 0.2, "src": "yolo", "crop": "d.jpg", "auto": "drop_low"},
+        {"cls": "name_tag", "box": [5, 6, 7, 8], "score": 0.9, "src": "yolo", "crop": None, "auto": None},
+    ]}
+    where = {"a.jpg": "lit", "b.jpg": "unlit", "c.jpg": "not_person", "d.jpg": "not_person"}
+    assert final_boxes(e, where.get, classes) == [(0, Rect(10, 20, 30, 40)), (4, Rect(50, 60, 30, 40)), (1, Rect(5, 6, 7, 8))]
+    # 还没人判（_unlabeled）保持 YOLO 类别；挪进 _discard 的去掉
+    assert final_boxes(e, lambda c: "_unlabeled", classes)[1] == (0, Rect(50, 60, 30, 40))
+    assert len(final_boxes(e, lambda c: "_discard", classes)) == 2
