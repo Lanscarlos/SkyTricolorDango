@@ -310,10 +310,9 @@ def test_run_live_and_dry_run_conflict():
 
 
 def test_old_viewer_flags_are_gone():  # spec 2026-10-04-console-attach §1
-    for argv in (["run", "--no-browser"], ["run", "--viewer-port", "1"]):
-        with pytest.raises(SystemExit) as err:
-            cli.main(argv)
-        assert err.value.code == 2
+    with pytest.raises(SystemExit) as err:  # 只有管理面板传过；--no-browser 留着（旧会话常和 --view 一起写）
+        cli.main(["run", "--viewer-port", "1"])
+    assert err.value.code == 2
 
 
 def test_view_flag_is_ignored_with_notice(tmp_path, monkeypatch, capsys):
@@ -1022,3 +1021,11 @@ def test_run_agent_build_failure_stops_reader(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="镜头"):
         cli._run_agent(cfg, run, no_emotes=True)
     assert stopped == [True]
+
+
+def test_old_view_command_line_still_runs(tmp_path, monkeypatch, capsys):  # 终审：旧会话写的 run --live --view --no-browser
+    seen = []
+    monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: seen.append(1))
+    monkeypatch.chdir(tmp_path)
+    cli.main(["run", "--view", "--no-browser"])
+    assert seen == [1] and "--view 已经不用了" in capsys.readouterr().out

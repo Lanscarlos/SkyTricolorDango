@@ -3284,6 +3284,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--brain", action="store_true", help="接统管大脑（已是默认，保留兼容）")
     p.add_argument("--no-brain", action="store_true", help="不接大脑，用旧的普通 Agent（调试用）")
     p.add_argument("--view", action="store_true", help=argparse.SUPPRESS)  # 已经不用了（接口总是开），留着免得旧命令报错
+    p.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)  # 同上（旧命令常写 --view --no-browser）
     p.add_argument("--parent-pid", type=int, help="这个进程没了就自己退出（管理面板用）")
     p.set_defaults(func=lambda cfg, args: cmd_run(cfg, args))
 

@@ -168,6 +168,7 @@ class Runner:
         self._attached: dict | None = None  # 接管时 /status 里的 run 节
         self._tail: LogTail | None = None
         self._gen = 0  # 每次起 / 接管 / 放手加一：旧的后台线程看到对不上就收工
+        self._tail_lock = threading.Lock()  # 读 agent.log + 编号是一步：两个请求同时读会把整份日志读两遍
 
     # ---- 起 ----
     def start(self, cmd: list[str], env: dict[str, str], options, kind: str = "dango", port: int | None = None) -> None:
@@ -403,13 +404,16 @@ class Runner:
     def logs(self, after: int = 0) -> dict:
         """行号从 1 连续编号；after = 已经拿到的最后一行，环形缓冲丢掉的行不再返回。
         接管的团子拿不到终端输出：每次先把 agent.log 新写的（INFO 以上）编号进来，带上 note。"""
+        with self._tail_lock:
+            with self._lock:
+                tail = self._tail if self._source == "terminal" else None
+            fresh = tail.read_new() if tail is not None else None
+            with self._lock:
+                if self._tail is tail:  # 读的时候换了一次运行（重新接管）：旧文件的行不算
+                    for text in fresh or []:
+                        self._count += 1
+                        self._lines.append((self._count, text[:MAX_LINE]))
         with self._lock:
-            tail = self._tail if self._source == "terminal" else None
-        fresh = tail.read_new() if tail is not None else None
-        with self._lock:
-            for text in fresh or []:
-                self._count += 1
-                self._lines.append((self._count, text[:MAX_LINE]))
             out = {"next": self._count, "lines": [text for n, text in self._lines if n > after]}
             if self._source == "terminal":
                 out["note"] = TERMINAL_NOTE

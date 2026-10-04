@@ -287,3 +287,14 @@ def test_live_page_marks_terminal_dango_and_has_no_dango_orphan_button():  # spe
     common = (STATIC / "common.js").read_text(encoding="utf-8")
     assert "api/orphan/stop" not in live and "st.orphan" not in live
     assert "终端起的" in common and "终端起的" in live and ".note" in live
+
+
+def test_live_log_drawer_restarts_on_each_run():  # 终审 Important 2：重新接管后日志换成新那次的
+    live = (STATIC / "live.js").read_text(encoding="utf-8")
+    begin = live.split("function begin(", 1)[1].split("\nfunction ", 1)[0]
+    assert "L.logNext = 0" in begin and '$("log").textContent = ""' in begin
+
+
+def test_run_card_says_terminal_dango_exited():  # spec §2：卡片写「终端起的团子已经退出」
+    common = (STATIC / "common.js").read_text(encoding="utf-8")
+    assert "终端起的团子已经退出" in common

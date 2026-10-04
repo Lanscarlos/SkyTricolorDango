@@ -436,3 +436,28 @@ def test_probe_run_needs_run_section():
         srv.shutdown()
         srv.server_close()
     assert probe_run(port) is None  # 探不通
+
+
+def test_attached_logs_concurrent_reads_do_not_duplicate(tmp_path):  # 终审 Important 1：两个标签页 / 轮询重叠
+    import threading
+
+    t = "2026-10-04 21:30:00,123"
+    n = 20000
+    (tmp_path / "agent.log").write_text("".join(f"{t} INFO a: {i}\n" for i in range(n)), encoding="utf-8")
+    remote = Remote(info(tmp_path))
+    r = attached(tmp_path, remote, log_lines=n * 3)
+    r.attach(remote.info)
+    go = threading.Barrier(4)
+
+    def pull():
+        go.wait()
+        r.logs(0)
+
+    threads = [threading.Thread(target=pull) for _ in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    got = r.logs(0)
+    assert got["next"] == n and len(got["lines"]) == n and got["lines"][-1].endswith(f": {n - 1}")
+    r.close()

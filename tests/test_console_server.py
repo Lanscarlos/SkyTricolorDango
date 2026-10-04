@@ -163,7 +163,8 @@ def test_post_needs_header_and_json(srv):
 def test_state_and_logs(srv):
     status, state = request(srv.url + "api/state")
     assert status == 200 and state["run"]["state"] == "idle" and state["launch"] == OPTS | {"duration": 0.0}
-    assert [p["text"] for p in state["problems"]] == ["大脑模式要 Claude 令牌：去设置页填", "大脑离线时的备用回复要大模型的 API Key：去设置页填"] and "orphan" not in state
+    assert [p["text"] for p in state["problems"]] == ["大脑模式要 Claude 令牌：去设置页填", "大脑离线时的备用回复要大模型的 API Key：去设置页填",
+        f"{srv.child_port} 端口被别的程序占着，团子起不来；改 [viewer] port"] and "orphan" not in state
     assert srv.fake_runner.attached == []  # 假上游占着 child_port，但 /status 没有 run 节：不是团子
     assert request(srv.url + "api/logs?after=1") == (200, {"next": 2, "lines": ["b"]})
 
@@ -439,7 +440,8 @@ def test_reattach_after_exit_picks_new_run(tmp_path, upstream):  # Review Focus 
 
 def test_start_attaches_instead_of_second_dango(tmp_path, upstream):
     found = {"info": None}
-    s = make_server(tmp_path, upstream, secrets=TOKEN, child_port=free_port(), probe=lambda port: found["info"])
+    s = make_server(tmp_path, upstream, secrets=TOKEN, child_port=free_port(), probe=lambda port: found["info"],
+                    port_free=lambda port: found["info"] is None)
     try:
         found["info"] = run_info()  # 面板起来之后终端才起的团子
         status, res = request(s.url + "api/run/start", json.dumps(OPTS).encode(), GOOD)
@@ -463,3 +465,22 @@ def test_start_reports_foreign_port_owner(tmp_path, upstream):  # Review Focus 5
 def test_logs_pass_note(srv):
     srv.fake_runner.note = "终端起的，日志来自 agent.log"
     assert request(srv.url + "api/logs?after=0")[1]["note"] == "终端起的，日志来自 agent.log"
+
+
+def test_discover_skips_probe_when_port_is_free(tmp_path, upstream):  # 终审 Important 3：Windows 上连空端口要等满超时
+    calls = []
+    s = make_server(tmp_path, upstream, probe=lambda port: calls.append(port), port_free=lambda port: True)
+    try:
+        request(s.url + "api/state")
+        assert calls == []
+    finally:
+        s.stop()
+
+
+def test_state_problems_report_foreign_port_owner(tmp_path, upstream):  # spec §3：预检里就报，不等点叫醒
+    s = make_server(tmp_path, upstream, secrets=TOKEN, child_port=free_port(), port_free=lambda port: False)
+    try:
+        texts = [p["text"] for p in request(s.url + "api/state")[1]["problems"]]
+        assert any("被别的程序占着" in t for t in texts)
+    finally:
+        s.stop()

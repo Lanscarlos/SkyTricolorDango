@@ -146,6 +146,7 @@ function renderRunCard(st){
     else{const o=run.options||{};sub=[run.source==="terminal"?"终端起的":"",o.live?"真的发送":"只打印",run.uptime!=null?`已运行 ${fmtUptime(run.uptime)}`:""].filter(Boolean).join(" · ")}}
   else if(s==="stopping"){cs="stopping";title=`${who} 在收尾…`;sub=isSb?"最终反思、写日记":"恢复轮盘、复原镜头"}
   else if(s==="crashed"){cs="crashed";title=`${who} 出错停下了`;sub=run.error||(run.exit_code!=null?`退出码 ${run.exit_code}`:"")}
+  else if(s==="exited"&&!isSb&&run.source==="terminal"){title="终端起的团子已经退出"}
   card.dataset.state=cs;
   card.classList.toggle("go",cs!=="idle");
   card.title=cs!=="idle"?`去「${isSb?"沙盒":"真机团子"}」页`:"";

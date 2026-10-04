@@ -641,3 +641,16 @@ def test_view_command_is_gone():
     with pytest.raises(SystemExit) as err:
         cli.main(["view"])
     assert err.value.code == 2
+
+
+def test_snapshot_and_brain_check_host():  # 终审 Important 4：接口每次 run 都开着，画面和大脑原话防 DNS 重绑定
+    v = viewer()
+    v.brain = BrainTrace()
+    url = v.start()
+    port = url.rstrip("/").rsplit(":", 1)[1]
+    try:
+        for path in ("snapshot?after=0", "brain?after=0"):
+            assert request(url + path, None, {"Host": f"evil.example:{port}"})[0] == 403, path
+        assert request(url + "brain?after=0")[0] == 200
+    finally:
+        v.stop()

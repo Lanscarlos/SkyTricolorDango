@@ -21,6 +21,7 @@ from skydango.sandbox.clock import save
 def test_sandbox_start_refused_while_terminal_dango_runs(tmp_path, upstream):  # noqa: F811
     s = make(tmp_path, upstream)
     try:
+        s.port_free = lambda port: False
         s.probe = lambda port: {"pid": 1, "run_dir": "r", "live": True, "brain": True, "emotes": True, "duration": 0.0,
                                 "started": 1.0, "console": False}
         status, res = post(s, "api/sandbox/start", {"start": "resume"})

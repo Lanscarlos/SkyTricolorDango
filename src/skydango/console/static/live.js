@@ -62,6 +62,7 @@ function renderBanners(st, run, busy, isSb) {
 /* ---- 进入 / 离开运行：清空上一次的内容、挂大脑、开手动控制 ---- */
 function begin(brain) {
   L.on = true; L.brain = brain; L.gen++; L.seq = 0; L.paused = false; $("lv-pause").textContent = "暂停"; L.snap = null; L.chatV = 0; L.info = null; L.mark = null; L.times = [];
+  L.logNext = 0; $("log").textContent = "";  // 新的一次运行（含重新接管终端起的团子）：日志从头拉，旧那次的不留
   const chat = $("lv-chat"); chat.textContent = ""; chat.append(el("p", "none", "还没有聊天"));
   $("lv-stage-none").hidden = false; $("lv-stage-none").textContent = "画面出来之后显示在这里";
   const ctx = $("lv-canvas").getContext("2d"); ctx.clearRect(0, 0, $("lv-canvas").width, $("lv-canvas").height);

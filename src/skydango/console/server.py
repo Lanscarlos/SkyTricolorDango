@@ -150,10 +150,16 @@ class ConsoleServer:
     def discover(self) -> bool:
         """槽空着时探一下团子的端口：上面是团子（/status 带 run 节）就接管（spec 2026-10-04-console-attach §2）。
         面板自己的子进程在启动 / 运行 / 停止时不探（Review Focus 1）。返回这次接上了没有。"""
-        if self._busy():
+        if self._busy() or self.port_free(self.child_port):  # 试绑定瞬间就知道；Windows 上连空端口要等满探活超时
             return False
         info = self.probe(self.child_port)
         return info is not None and self.runner.attach(info)
+
+    def _foreign_port(self) -> list[dict]:
+        """槽空着、端口却被占着（discover 没接上 = 不是团子）：团子起不来。"""
+        if self._busy() or self.port_free(self.child_port):
+            return []
+        return [problem(f"{self.child_port} 端口被别的程序占着，团子起不来；改 [viewer] port")]
 
     def _busy(self) -> bool:
         return self.runner.status()["state"] in BUSY
@@ -179,7 +185,7 @@ class ConsoleServer:
         other = self._other_busy("dango")
         if other:
             return [problem(other), *preflight(self.store, opts, False, self.find_spec)]
-        return preflight(self.store, opts, self._busy(), self.find_spec)
+        return preflight(self.store, opts, self._busy(), self.find_spec) + self._foreign_port()
 
     def state(self) -> dict:
         self.discover()  # 页面每秒拉一次：终端里刚起的团子在这里接上
@@ -201,8 +207,6 @@ class ConsoleServer:
                 problems.append(problem("正在检测设备，等检测完再叫醒"))
             if self.discover():  # 终端里已经有一个团子：接上它，不起第二个
                 return 409, {"ok": False, "problems": [problem("已经有一个团子在跑（终端起的），已接上")]}
-            if not self._busy() and not self.port_free(self.child_port):  # 占着端口的不是团子：起了也会因为端口被占退出
-                problems.append(problem(f"{self.child_port} 端口被别的程序占着，团子起不来；改 [viewer] port"))
             if not self._busy() and probe_status(self.sandbox_port()):  # 上次留下的沙盒：共用令牌，也别同时在线
                 problems.append(problem(f"{self.sandbox_port()} 端口上有上次留下的沙盒，先在「沙盒」页让它退出"))
             try:

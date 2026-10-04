@@ -298,7 +298,9 @@ class Viewer:
         class Handler(JsonHandler):
             def do_GET(self) -> None:  # noqa: N802
                 url = urlparse(self.path)
-                if url.path == "/snapshot":
+                if not self._local_host():  # 画面里有好友昵称、大脑时间线里有聊天原话：防 DNS 重绑定
+                    self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                elif url.path == "/snapshot":
                     body = viewer.snapshot(self._after(url))
                     if body is None:
                         self._send(204, "application/json", b"")
