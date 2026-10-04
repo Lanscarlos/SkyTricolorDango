@@ -223,6 +223,8 @@ class Agent:
             if near - self._nearby:
                 self.panel.trigger("arrive", now)
             self._nearby = near
+        if getattr(self.reader, "reads_bubbles", False):  # 无障碍读法：气泡直接读成消息，不拿 YOLO 的气泡叫面板
+            return
         if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
             self.panel.bubble_seen(now)
 

@@ -699,6 +699,16 @@ def test_agent_bubble_triggers(clock):
     assert agent.panel.state == "bubble"
 
 
+def test_agent_bubble_ignored_when_reader_reads_bubbles(clock):
+    env = PanelEnv()
+    env.typing = True
+    agent, device, _ = auto_agent(clock, env=env)
+    agent.reader.reads_bubbles = True  # 无障碍读法：不拿 YOLO 的气泡叫面板
+    agent.step()
+    agent.step()
+    assert agent.panel.state == "idle" and keys(device) == []
+
+
 def test_agent_no_peek_during_blackout(clock):
     agent, device, _ = auto_agent(clock, frames=[np.zeros((720, 1280, 3), np.uint8)])
     clock.advance(31)

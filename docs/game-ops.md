@@ -164,7 +164,7 @@ MuMu 用的键位方案是 **「PC端操作方案」**：没有任何键位映�
 - 设备上的进程名：`--nice-name` 改的是 cmdline，`comm` 是 `main`，所以清理用 `pkill -f '^skydango-a11y'`（`pkill -x` 匹配不上）
 - 游戏能察觉有无障碍客户端连着（`AccessibilityManager`），和任何读法一样；不装 App、不改系统设置，比装无障碍服务低调，但不等于看不见
 - `python -m skydango a11y [--watch 秒] [--all]` 打印出来看
-- **接进读聊天**（10-04，`[vision] source = "a11y"` 默认，spec `2026-10-04-a11y-chat-reader-design.md`；**还没在真机上跑过**，spec §8 四步晚上做）：
+- **接进读聊天**（10-04，`[vision] source = "a11y"` 默认，spec `2026-10-04-a11y-chat-reader-design.md`；**还没在真机上跑过**，spec §8 六步晚上做）：
   `vision/a11yui.py` 分类 → `chat/a11yreader.py` 的 `A11yChatReader`：面板开着读面板行（按整段历史精确对齐，不用等淡入），面板关着读好友头顶的气泡
   （说话人 = 同一列最上面的名字标签；比较时去掉末尾的打字动画点；只有点点 = 在打字；挂不上名字的原文气泡不报、叫面板看一眼）；气泡和面板读到同一句只报一次。
   `FallbackReader` 读不到就重启（最多 3 次），再不行整次 run 退回 OCR

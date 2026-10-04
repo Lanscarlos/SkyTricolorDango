@@ -197,7 +197,7 @@ dir = "private/sandbox"
   读到新消息就一直开着，安静 45 秒再关；团子说话前先开面板。**老测试要常开的在辅助函数里写明 `mode = "always"`**
 - **新代码要关面板一律 `with panel.borrow("谁"):`**（点屏幕会顺带关面板的用 `close=False`），不许自己按 C；
   嵌套时最外层归还才恢复，闲着时归还不重开
-- **读聊天走无障碍节点**（`[vision] source = "a11y"`，默认；`"ocr"` = 原来截图 OCR 的读法，逐字照旧；设计 `docs/superpowers/specs/2026-10-04-a11y-chat-reader-design.md`，**还没在真机上跑过**，spec §8 四步）：
+- **读聊天走无障碍节点**（`[vision] source = "a11y"`，默认；`"ocr"` = 原来截图 OCR 的读法，逐字照旧；设计 `docs/superpowers/specs/2026-10-04-a11y-chat-reader-design.md`，**还没在真机上跑过**，spec §8 六步）：
   面板开着读面板行（精确对齐、没有错字），面板关着读好友头顶的气泡（说话人 = 名字标签，只有点点 = 在打字）；挂不上名字的原文气泡不报、叫面板看一眼（`want_peek`）。
   读不到自动重启（最多 3 次），3 次都失败或 30 秒没快照就整次 run 退回 OCR（status「读聊天：OCR（无障碍读不到：…）」）；同一时间只能有一个无障碍连接（`view` 和 `run` 同时开，后起的退回 OCR）
 - **「聊着（面板关着）」**（`talking`，只在 `auto` + 无障碍读法时有）：新消息全是从头顶气泡读到的 → 不开面板，每 `chat_peek`（15 秒）看一眼面板接住画面外的人，安静 `quiet_close` 秒回闲着；

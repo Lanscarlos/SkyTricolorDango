@@ -1923,7 +1923,7 @@ class Body:
         )
 
     def chat_log(self, n: int = 20) -> str:
-        if self.panel.auto and self.panel.state == "idle":
+        if self.panel.auto and self.panel.state in ("idle", "talking"):
             self._peek_now()
         rows = list(self.chat)[-max(1, min(n, 50)) :]
         if not rows:
@@ -1933,7 +1933,7 @@ class Body:
         )
 
     def _peek_now(self) -> None:
-        """聊天面板关着（闲着）时大脑要看聊天：马上打开看一眼，读到的照常变成事件。冷却中 / 黑屏打不开就算了。"""
+        """聊天面板关着（闲着 / 聊着）时大脑要看聊天：马上打开看一眼，读到的照常变成事件。冷却中 / 黑屏打不开就算了。"""
         if self._held_pending is not None:  # 空闲注意力在"先看一眼"：大脑要看聊天，别推迟了
             self.panel.hold_off(None, self.clock())
             self._held_pending = None

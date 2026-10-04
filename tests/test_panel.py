@@ -811,6 +811,64 @@ def test_fallback_to_ocr_while_talking_opens_panel():
     assert m.state == "chatting" and presses(dev) == 1 and state.open is True
 
 
+def test_talking_does_not_peek_while_typing():
+    """反射替大脑开着输入框时到点不看一眼：交给 _open_peek 会升级成聊天中，框一关就开面板。"""
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    dev.shown = True
+    m.tick(20.0, [], visible=False)
+    m.tick(30.0, [], visible=False)
+    assert m.state == "talking" and presses(dev) == 0
+    dev.shown = False  # 框关上了：照常看一眼
+    m.tick(30.2, [], visible=False)
+    assert m.state == "peek" and presses(dev) == 1
+
+
+def test_talking_typing_counts_as_activity_for_quiet_close():
+    m, dev, state = a11y()
+    m.cfg.chat_peek = 100.0
+    talking(m, 5.0)
+    dev.shown = True
+    m.tick(50.0, [], visible=False)  # 安静 45 秒到了，但输入框开着：算在说话
+    assert m.state == "talking" and presses(dev) == 0
+    dev.shown = False
+    m.tick(94.9, [], visible=False)
+    assert m.state == "talking"
+    m.tick(95.0, [], visible=False)
+    assert m.state == "idle" and presses(dev) == 0
+
+
+def test_fallback_to_ocr_during_talking_peek_goes_chatting():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.tick(20.0, [], visible=False)
+    assert m.state == "peek"
+    m.reader.reads_bubbles = False  # 看的途中退回 OCR
+    m.tick(20.2, [], visible=True)
+    m.tick(20.4, [], visible=True)
+    assert m.state == "chatting" and state.open is True and presses(dev) == 1  # 面板留着，不关
+
+
+def test_borrow_during_talking_peek_returns_to_talking():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.tick(20.0, [], visible=False)
+    assert m.state == "peek" and state.open is True
+    with m.borrow("camera"):
+        assert m.state == "talking"
+    assert m.state == "talking" and state.open is False  # 聊着不该开面板：归还不重开
+
+
+def test_borrow_during_talking_peek_after_fallback_returns_to_chatting():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.tick(20.0, [], visible=False)
+    m.reader.reads_bubbles = False
+    with m.borrow("camera"):
+        assert m.state == "chatting"
+    assert m.state == "chatting" and state.open is True  # 归还时按聊天中重开
+
+
 def test_talking_panel_opened_by_someone_else_becomes_chatting():
     m, dev, state = a11y()
     talking(m, 5.0)

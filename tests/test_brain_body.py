@@ -1429,6 +1429,16 @@ def test_typing_seen_ignored_when_reader_reads_bubbles(clock):
     assert b.panel.state == "idle"
 
 
+def test_chat_log_peeks_while_talking(clock):
+    b, device, _, _ = auto_body(clock)
+    b.panel.reader.reads_bubbles = True  # 无障碍读法：跟画面里的好友聊着、面板关着
+    b.panel.reader.tags_in_view = lambda: ["小明"]
+    b.panel.state = "talking"
+    b.panel._last_activity = clock()
+    b.chat_log()  # 大脑要看聊天：面板关着也马上开一眼
+    assert ("hw_key", 46) in device.calls
+
+
 def test_status_shows_typing_and_reader(clock):
     b, _, reader, _ = body(clock)
     assert "在打字" not in b.status() and "读聊天" not in b.status()
