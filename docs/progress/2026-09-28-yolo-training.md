@@ -277,6 +277,14 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 - 回放（答案修正 176 处）：纯 YOLO 88% / 68%；加外形头 0.2 → 87% / 74%、0.25 → 88% / 72%——**门槛 1 基本达到**
 - 点没点火认反 27 vs YOLO 12：回放帧里已有的 256 个人物框全是导入、没人确认的（YOLO 就是拿它们训的），这一项现在不可信；**下一步：标注页「导入未确认 → 其中回放用」把这 256 个过完再训**，然后才能判门槛 2
 
+**回放用的导入框过完**（10-04 下午）：外形头先筛 256 个回放用导入框（`tmp/attrs-mask/screen_imports.py`）——和导入标签一致且把握 ≥ 0.9 的 135 个自动确认（`_labels.jsonl` 里 `by = auto-agree`），
+不一致的 61 个挪回待确认由用户标完（`apply_screen.py`，备份 `tmp/attrs-mask/backup-20261004-150029/`），一致但没把握的 60 个没动。全部导入 1562 张筛下来：一致 863 / 没把握 330 / 不一致 369（以后同样办）。
+重训 `models/attrs-20261004d-mask.npz`（`tmp/attrs-train/20261004-150455/`，答案修正 372 处）：
+- 验证集 F1 0.882：not_person 67% / 79%、lit 95% / 92%、unlit 94% / 93%、spirit 90% / 96%
+- 回放：纯 YOLO 88% / 71%、**认反 22 / 189**；加外形头 0.2 → 87% / 78%、**认反 4 / 207**；0.25 → 88% / 76%、认反 4 / 201 —— **门槛 1、2 达到**
+- 门槛 3（`bench --attrs`，obj-bench-teatable-1、200 帧、每帧满 4 张裁图）：只检测 11.1 ms → 加外形头 20.1 ms；整个感知约 19 ms/帧，[perception] fps 15 的预算 66.7 ms，加上也不到 30 ms，同一轨迹 0.5 秒才裁一次——按 15 fps 节奏应不掉帧，真机确认
+- 剩门槛 4（真机三步）：`config.toml` 加 `[attrs] enabled = true`、`model = "models/attrs-20261004d-mask.npz"` 后 `view --images` / `run --dry-run` 开关各 10 分钟比事件和难例 / 点亮陌生人链路
+
 ## 没做完 / 待办（按建议顺序）
 
 1. **用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，
