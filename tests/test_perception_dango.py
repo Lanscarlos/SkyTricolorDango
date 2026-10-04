@@ -207,3 +207,24 @@ def test_one_self_prefers_box_near_dango():
     out = one_self(dets, near=[SIT_ON_ME])
     assert [d.cls for d in out] == ["player", "self"]
     assert [d.cls for d in one_self(dets)] == ["self", "player"]  # 没有参考位置：照旧留分数最高的
+
+
+def test_dango_sliding_with_panel_toggle_is_still_dango():
+    """聊天面板开关时画面横移的 2 秒动画里，团子的 self 框一帧挪 100~150 px（q-call-20260930-c 16.0~16.4 s、-b 38.4~38.6 s）：
+    不能当成"跳到别人身上"。身体按 C 时先通知（camera_moved panel），面板标志比动画晚 0.1~0.3 秒才翻。
+    整幅画面一起横移：平移估计（这里直接给）让团子身上那条 player 轨迹跟着滑过去。"""
+    small = Rect(1009, 536, 105, 230)  # 镜头离得远，团子框小（q-call-c）
+    on_small = Rect(1006, 532, 156, 236)  # 团子身上同时还有个宽一圈的 player 框（-c 的 #5）：轨迹活了一秒多
+    det = FakeDetector()
+    w = watcher(det, track_pan=True)
+    pans = []
+    w._pan_step = lambda frame, panel: pans.pop(0) if pans else (0.0, 0.0)
+    t = run(w, det, [[me(small), on_me(on_small, 0.45)]] * 8, panel=True)
+    w.camera_moved(t + 0.1, "panel")
+    pans[:] = [(-145.0, 0.0)] * 3
+    slide = [[me(Rect(small.x - 145 * i, small.y, small.w, small.h)),
+              on_me(Rect(on_small.x - 145 * i, on_small.y, on_small.w, on_small.h), 0.45)] for i in range(1, 4)]
+    t = run(w, det, slide, start=t + 0.25, step=0.36, panel=True)  # 标志还没翻
+    end, on_end = Rect(small.x - 435, small.y, small.w, small.h), Rect(on_small.x - 435, on_small.y, on_small.w, on_small.h)
+    t = run(w, det, [[me(end), on_me(on_end, 0.45)]] * 3 + [[on_me(on_end, 0.9)]] * 8, start=t + 0.36)
+    assert w.strangers(t) == 0

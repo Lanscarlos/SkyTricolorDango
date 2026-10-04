@@ -69,6 +69,7 @@ SELF_MEMORY = 1.0  # 图鉴收集：团子框这么久内出现过的位置上�
 SELF_IOU = 0.3  # 和团子框重叠这么多就算团子（_mark_dango 用 same_body 更严，团子身上的 player 框常比 self 框大一圈）
 MERGE_IOU = 0.7  # merge_people：player 和 player_unlit 两框重叠这么多就是同一个人（录像里同一人的两框 IoU 0.74~1.0，挨着的两个人 < 0.5）
 SAME_BODY_IOU = 0.45  # same_body：团子身上的 player 框和 self 框
+SELF_PANEL_SLIDE = 2.5  # 聊天面板开 / 关后这么久是画面横移的动画（团子一帧挪 100~150 px）：不查 self 框连不连得上（q-call-20260930-b / -c）
 SELF_JUMP_HOLD = 1.0  # self 框跳到离团子（轨迹 / 记住的位置）连不上的地方：在那儿连着待这么久才信，之前当成别人（10-03 21:32 打到旁边的番茄身上）
 DANGO_MEMORY = 30.0  # 团子框（按聊天面板开 / 关分别记）这么久内见过：YOLO 没出 self 时，落在那个位置上的人物框就是团子
 # 认装扮：没挂名字的人 DINOv2 特征像团子（"看着像团子"，data["dango_look"]）：这么久内没再被判像团子就失效（身份底库 spec 2026-10-03 §3.2）
@@ -413,6 +414,7 @@ class PerceptionWatcher:
         self._me_last: tuple[Rect, float] | None = None  # 沿用的最近一次团子框：(box, time)，黑影贴着时认不出 self
         self._dango_mem: dict[bool, tuple[Rect, float]] = {}  # 聊天面板开着 / 关着 → 最近一次高分 self 框和时间
         self._self_jump: tuple[Rect, float] | None = None  # 连不上团子的 self 框：(这一帧的框, 第一次在那儿看到的时间)
+        self._panel_slide_until = float("-inf")  # 聊天面板开关的横移动画到什么时候（这之前不查 self 框连不连得上）
         self._frame_h = 1080  # 最近一帧的高度（算远近用）
         self._frame_w = 1920  # 最近一帧的宽度（算在画面哪边用）
         self._approaches: list[str] = []  # 朝团子走过来的人（好友名 / STRANGER），身体取走
@@ -560,6 +562,7 @@ class PerceptionWatcher:
         """身体动了镜头（turn / zoom / move / spin / panel）。转镜头靠平移估计补偿，什么都不清；
         缩放、走路、转圈时框高会突变：settle 秒内不更新速度、清走近 / 运动历史（不能当成人在走近走远）。"""
         if kind == "panel":  # 聊天面板开 / 关：画面横移的动画约 2 秒，这期间的位移不是人在走
+            self._panel_slide_until = max(self._panel_slide_until, at + SELF_PANEL_SLIDE)  # 不受 panel_settle 开关管
             if self.cfg.panel_settle <= 0:
                 return
             until = at + self.cfg.panel_settle
@@ -1654,8 +1657,10 @@ class PerceptionWatcher:
         return areas
 
     def _dango_refs(self, now: float, panel_visible: bool) -> list[Rect]:
-        """团子现在 / 刚才在哪：标着团子的轨迹最后的框（1 秒内还在的）+ 这个面板状态下记住的团子框（DANGO_MEMORY 内）。"""
-        refs = [t.box for t in self.tracker.tracks.values() if t.data.get("dango") and now - t.last <= 1.0]
+        """团子现在 / 刚才在哪：标着团子的轨迹、self 轨迹最后的框（1 秒内还在的，不分面板开关：面板标志刚翻时团子还在半路）
+        + 这个面板状态下记住的团子框（DANGO_MEMORY 内）。"""
+        refs = [t.box for t in self.tracker.tracks.values()
+                if (t.data.get("dango") or t.cls == "self") and now - t.last <= 1.0]
         mem = self._dango_mem.get(panel_visible)
         if mem is not None and now - mem[1] <= DANGO_MEMORY:
             refs.append(mem[0])
@@ -1663,9 +1668,10 @@ class PerceptionWatcher:
 
     def _steady_self(self, dets: list[Detection], refs: list[Rect], now: float) -> list[Detection]:
         """self 框要和团子连得上（near_dango）：连不上的（10-03 21:32 打到并排坐着的番茄身上）改成 player——它就是旁边那个人；
-        在那儿连着待满 SELF_JUMP_HOLD 秒才信（团子真的换了地方）。不知道团子在哪（refs 空）时照单全收。"""
+        在那儿连着待满 SELF_JUMP_HOLD 秒才信（团子真的换了地方）。不知道团子在哪（refs 空）、聊天面板开关的横移动画里照单全收。"""
         selfs = [d for d in dets if d.cls == "self"]
-        if not selfs or not refs or any(near_dango(d.box, r) for d in selfs for r in refs):
+        if (not selfs or not refs or now < self._panel_slide_until
+                or any(near_dango(d.box, r) for d in selfs for r in refs)):
             self._self_jump = None
             return dets
         best = max(selfs, key=lambda d: d.score)
@@ -1696,12 +1702,19 @@ class PerceptionWatcher:
                 if not t.data.get("dango"):
                     t.data.pop("stranger", None)
                 t.data["dango"] = t.box
-            elif t.data.get("dango") and (selfs or self._walked_off(t, mem, now) or not same_body(t.box, t.data["dango"])):
+            elif t.data.get("dango") and (selfs or (now >= self._panel_slide_until and self._walked_off(t, mem, now))
+                                          or not same_body(t.box, self._shifted(t.data["dango"]))):
+                # 聊天面板开关的横移动画里不按"离开记住的位置"摘：团子在半路，标志晚翻、滑进面板区域的 self 还会被当成误检
                 # 框和上一帧对不上 = 轨迹被别人接走了（陌生人一下子挡到团子身前，框胀成两倍多宽）
                 log.debug("轨迹 %d 不在团子框上了：不再当成团子", t.id)
                 t.data.pop("dango")
             elif t.data.get("dango"):
                 t.data["dango"] = t.box  # 没有 self 框时跟着轨迹走（镜头拉近拉远框慢慢变）
+
+    def _shifted(self, box: Rect) -> Rect:
+        """上一帧的框按这一帧估出的画面平移挪过来（面板开关的横移、转镜头）；没估就原样。"""
+        dx, dy = self.last_shift or (0.0, 0.0)
+        return Rect(round(box.x + dx), round(box.y + dy), box.w, box.h)
 
     @staticmethod
     def _walked_off(t: Track, mem: tuple[Rect, float] | None, now: float) -> bool:
