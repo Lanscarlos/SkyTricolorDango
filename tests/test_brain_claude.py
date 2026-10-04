@@ -201,6 +201,39 @@ def test_gated_llm_no_backup_raises_without_calling_claude():
     assert claude.calls == 0
 
 
+class _Timed(_Fake):
+    """带超时的假备用：with_timeout 返回缩短后的新对象（原对象不动，记忆和反思共用一个备用）。"""
+
+    def __init__(self, result="ok", timeout=120.0, max_retries=2):
+        super().__init__(result)
+        self.timeout, self.max_retries = timeout, max_retries
+
+    def with_timeout(self, timeout, max_retries=None):
+        return _Timed(self.result, timeout, self.max_retries if max_retries is None else max_retries)
+
+
+def test_gated_llm_timeout_setter_reaches_claude_and_backup():  # 终审 I1 / M1
+    claude, backup = _Fake(), _Timed()
+    claude.timeout = 90.0
+    llm = GatedLlm(claude, backup, ClaudeGate())
+    assert llm.timeout == 90.0
+    llm.timeout = 35.0
+    assert claude.timeout == 35.0 and llm.timeout == 35.0
+    assert llm.backup is not backup and (llm.backup.timeout, llm.backup.max_retries) == (35.0, 0)  # 下线时不重试
+    assert (backup.timeout, backup.max_retries) == (120.0, 2)  # 共用的那个不动
+
+
+def test_gated_llm_timeout_setter_tolerates_plain_backup():
+    claude, backup = _Fake(), _Fake()
+    claude.timeout = 90.0
+    llm = GatedLlm(claude, backup, ClaudeGate())
+    llm.timeout = 35.0
+    assert claude.timeout == 35.0 and llm.backup is backup
+    llm2 = GatedLlm(claude, None, ClaudeGate())
+    llm2.timeout = 20.0
+    assert claude.timeout == 20.0 and llm2.backup is None
+
+
 def test_gated_describe_skips_and_trips():
     calls = []
 

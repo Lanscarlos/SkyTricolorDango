@@ -461,6 +461,77 @@ def test_final_reflection_timeout_fits_console_stop():  # 终审 I7
     assert cli._final_timeout(cfg) == cfg.inner.reflect_timeout
 
 
+def _final_parts(tmp_path, backup, gate):
+    """_final_reflection 的准备：live 记忆目录 + 真的 _inner_mind（GatedLlm 包 ClaudeLlm）+ 假身体。"""
+    from types import SimpleNamespace
+
+    from skydango.chat.memory import MemoryStore
+    from skydango.inner.mind import Mind
+
+    cfg = Config()
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False
+    store = MemoryStore(cfg.reply.memory_dir)
+    ledger = cli._inner_ledger(cfg, store, time.time())
+    _, reflector = cli._inner_mind(cfg, ledger, FAKE, {}, SimpleNamespace(path=tmp_path / "run"), gate=gate, backup=backup)
+    body = SimpleNamespace(
+        reflect_materials=lambda final: "材料：今天和阿花玩了", mind=Mind(), _safe_friends=lambda: [], persona=None,
+        soft_names_this_session=lambda: set(), mind_log=None, _energy=None,
+    )
+    return cfg, store, ledger, reflector, body
+
+
+def test_final_reflection_shortens_gated_claude_timeout(tmp_path):  # 终审 I1
+    from skydango.brain.claude import ClaudeGate
+
+    cfg, store, ledger, reflector, body = _final_parts(tmp_path, None, ClaudeGate())
+    claude = reflector.llm.claude
+    assert claude.timeout == cfg.inner.reflect_timeout > cli._final_timeout(cfg)
+    seen = []
+    claude.complete = lambda system, messages, max_tokens=None: seen.append(claude.timeout) or "{}"
+    cli._final_reflection(cfg, body, reflector, ledger, store)
+    assert seen == [cli._final_timeout(cfg)]  # 管理面板 stop_timeout 到之前就得写完日记
+
+
+class _Backup:
+    """假 DeepSeek：with_timeout 给出缩短的副本，记下这一笔用的超时 / 重试次数。"""
+
+    def __init__(self, reply, timeout=90.0, max_retries=2, calls=None):
+        self.reply, self.timeout, self.max_retries = reply, timeout, max_retries
+        self.calls = [] if calls is None else calls
+
+    def with_timeout(self, timeout, max_retries=None):
+        return _Backup(self.reply, timeout, self.max_retries if max_retries is None else max_retries, self.calls)
+
+    def complete(self, system, messages, max_tokens=None):
+        self.calls.append((self.timeout, self.max_retries))
+        return self.reply
+
+
+@pytest.mark.parametrize("how", ["closed", "auth"])
+def test_final_reflection_writes_diary_via_backup(tmp_path, how):  # 终审 M1：闸关着 / Claude 一直 401，日记照样写
+    from skydango.brain.claude import ClaudeError, ClaudeGate
+
+    gate = ClaudeGate()
+    reply = json.dumps({"mood": {"level": "开心", "text": "今天和阿花玩了"}, "diary": "今天和阿花去了雨林。", "memos": []},
+                       ensure_ascii=False)
+    backup = _Backup(reply)
+    cfg, store, ledger, reflector, body = _final_parts(tmp_path, backup, gate)
+    claude_calls = []
+
+    def claude_complete(system, messages, max_tokens=None):
+        claude_calls.append(1)
+        raise ClaudeError("Claude Code 这一轮失败：401 Invalid bearer token", auth=True)
+
+    reflector.llm.claude.complete = claude_complete
+    if how == "closed":
+        gate.trip("limit", "429")
+    cli._final_reflection(cfg, body, reflector, ledger, store)
+    assert len(claude_calls) == (0 if how == "closed" else 1) and not gate.ok()
+    assert backup.calls == [(cli._final_timeout(cfg), 0)]  # 备用也按下线的预算：缩短、不重试
+    assert ledger.store.last_diaries(1) and "今天和阿花去了雨林。" in ledger.store.last_diaries(1)[0]
+
+
 def test_profile_template_has_temper():
     for s in ("## 脾气", "毛病", "执念", "雷点"):
         assert s in cli.PROFILE_TEMPLATE
@@ -741,6 +812,18 @@ def test_gated_backup_uses_fallback_max_tokens(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "make_llm", lambda c: made.append(c) or "client")
     assert cli._gated_backup(cfg) == "client"
     assert made[0].max_tokens == 4321 and made[0].model == cfg.llm.model and made[0].max_retries == cfg.llm.max_retries
+    assert made[0].timeout == max(cfg.llm.timeout, cfg.inner.reflect_timeout)  # 终审 M1：日记 30 秒可能写不完
+
+
+def test_gated_backup_keeps_longer_llm_timeout(tmp_path, monkeypatch):
+    import skydango.chat.llm as llm
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.llm.timeout = cfg.inner.reflect_timeout + 50
+    made = []
+    monkeypatch.setattr(llm, "make_llm", lambda c: made.append(c) or "client")
+    cli._gated_backup(cfg)
+    assert made[0].timeout == cfg.llm.timeout
 
 
 @pytest.mark.parametrize("exc", [RuntimeError("没有找到 API Key"), ImportError("No module named 'openai'")])

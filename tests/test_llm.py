@@ -64,6 +64,35 @@ def test_max_retries_is_passed_to_sdk(monkeypatch):
     assert made["max_retries"] == 0
 
 
+def test_openai_with_timeout_returns_shorter_copy(monkeypatch):  # 终审 M1：下线反思改走 DeepSeek 时缩短超时、不重试
+    monkeypatch.setattr("skydango.chat.llm._user_env", lambda name: "")
+    client = make_llm(LlmConfig(timeout=90.0, max_retries=2), api_key="sk-given")
+    short = client.with_timeout(35.0, max_retries=0)
+    assert short is not client and short.cfg is client.cfg
+    assert (short._client.timeout, short._client.max_retries) == (35.0, 0)
+    assert (client._client.timeout, client._client.max_retries) == (90.0, 2)  # 原来的不动
+    assert client.with_timeout(20.0)._client.max_retries == 2  # 不给就沿用
+
+
+def test_anthropic_with_timeout(monkeypatch):
+    made = []
+
+    def build(**kw):
+        c = types.SimpleNamespace(messages=FakeMessages(), kw=kw)
+        c.with_options = lambda **o: types.SimpleNamespace(messages=c.messages, kw={**kw, **o})
+        made.append(c)
+        return c
+
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = build
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+    monkeypatch.setenv("SKYDANGO_TEST_KEY", "k")
+    client = AnthropicClient(llm_cfg("claude-sonnet-5"))
+    short = client.with_timeout(35.0, max_retries=0)
+    assert short._client.kw["timeout"] == 35.0 and short._client.kw["max_retries"] == 0
+    assert client._client is made[0]
+
+
 def test_make_llm_uses_given_key(monkeypatch):
     # 管理面板「测试大模型」用页面上还没保存的 Key：不经过环境变量
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)

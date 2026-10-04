@@ -2427,16 +2427,19 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
 def _gated_backup(cfg: Config):
     """Claude 总闸关了以后随手记、整理 notes、反思改走的备用模型（[llm]，一般是 DeepSeek；spec 2026-10-04-claude-gate §3.1）。
 
-    max_tokens 取 [brain] fallback_max_tokens（反思要写日记，[llm] 的回复长度不够）；没 Key / 没装 openai 返回 None：
-    闸关了以后这些调用照旧失败，只是不再起 claude 进程。"""
+    max_tokens 取 [brain] fallback_max_tokens（反思要写日记，[llm] 的回复长度不够），超时至少 [inner] reflect_timeout
+    （[llm] 的 30 秒写不完日记；下线那次由 GatedLlm.timeout 再压到管理面板的停止预算里）。
+    没 Key / 没装 openai 返回 None（只是防御：_run_brain 建备用回复时就要 [llm]，缺了起不来）。"""
     import dataclasses
 
     from .chat.llm import make_llm
 
     try:
-        return make_llm(dataclasses.replace(cfg.llm, max_tokens=cfg.brain.fallback_max_tokens))
+        return make_llm(dataclasses.replace(
+            cfg.llm, max_tokens=cfg.brain.fallback_max_tokens, timeout=max(cfg.llm.timeout, cfg.inner.reflect_timeout),
+        ))
     except (RuntimeError, ImportError) as exc:
-        log.warning("Claude 不能用时的备用模型没有（%s）：那时随手记、整理、反思照旧失败", exc)
+        log.warning("Claude 不能用时的备用模型没有（%s）：闸关了以后随手记、整理、反思做不了", exc)
         return None
 
 
@@ -2879,7 +2882,7 @@ def _final_reflection(cfg: Config, body, reflector, ledger, live_store, now: flo
     from .inner import finish_reflection
 
     try:
-        if hasattr(reflector.llm, "timeout"):
+        if hasattr(reflector.llm, "timeout"):  # GatedLlm：Claude 和备用（DeepSeek，不重试）一起缩短
             reflector.llm.timeout = _final_timeout(cfg)
         result = reflector.final(body.reflect_materials(True))
         return finish_reflection(

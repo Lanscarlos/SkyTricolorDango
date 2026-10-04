@@ -40,6 +40,19 @@ def _api_key(cfg: LlmConfig) -> str:
     return read_key(cfg.api_key_env)
 
 
+def _with_options(client, timeout: float, max_retries: int | None):
+    """换了超时（和重试次数）的副本：SDK 客户端建好后超时就定死了，用 with_options 复制一个；原来的不动。
+    下线反思改走备用时用（brain.claude.GatedLlm 的 timeout）。"""
+    import copy
+
+    opts: dict = {"timeout": timeout}
+    if max_retries is not None:
+        opts["max_retries"] = max_retries
+    out = copy.copy(client)
+    out._client = client._client.with_options(**opts)
+    return out
+
+
 class OpenAICompatClient:
     def __init__(self, cfg: LlmConfig, api_key: str | None = None) -> None:
         try:
@@ -50,6 +63,9 @@ class OpenAICompatClient:
         self._client = OpenAI(
             base_url=cfg.base_url or None, api_key=api_key or _api_key(cfg), timeout=cfg.timeout, max_retries=cfg.max_retries
         )
+
+    def with_timeout(self, timeout: float, max_retries: int | None = None) -> OpenAICompatClient:
+        return _with_options(self, timeout, max_retries)
 
     def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
         resp = self._client.chat.completions.create(
@@ -76,6 +92,9 @@ class AnthropicClient:
         if cfg.base_url:
             kwargs["base_url"] = cfg.base_url
         self._client = anthropic.Anthropic(**kwargs)
+
+    def with_timeout(self, timeout: float, max_retries: int | None = None) -> AnthropicClient:
+        return _with_options(self, timeout, max_retries)
 
     def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
         kwargs = {

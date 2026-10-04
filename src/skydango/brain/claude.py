@@ -239,6 +239,20 @@ class GatedLlm:
         self.backup = backup
         self.gate = gate
 
+    @property
+    def timeout(self) -> float | None:
+        return getattr(self.claude, "timeout", None)
+
+    @timeout.setter
+    def timeout(self, value: float) -> None:
+        """下线反思缩短超时用（cli._final_reflection）：Claude 改超时；备用换成同样超时、不重试的副本
+        （记忆和反思共用一个备用，原来那个不动）。备用没有 with_timeout 就照旧。"""
+        if hasattr(self.claude, "timeout"):
+            self.claude.timeout = value
+        shorten = getattr(self.backup, "with_timeout", None)
+        if shorten is not None:
+            self.backup = shorten(value, max_retries=0)
+
     def complete(self, system: str, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
         if self.gate.ok():
             try:

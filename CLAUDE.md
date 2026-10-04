@@ -455,10 +455,10 @@ dir = "private/sandbox"
   **额度用完**切 DeepSeek 备用大脑（`brain/deepseek.py`，spec `2026-10-03-deepseek-fallback-brain-design.md`；`[brain] fallback`，`force_fallback` 调试用、测完删掉）：同一套工具（看不到画面，看图的工具不给）、不自动切回 Claude。
   它每轮重发、不是常驻会话：带最近 `[brain] fallback_history`（8）轮的唤醒消息（每轮截 1500 字、总共 12000 字）和"你这一轮说了 / 做了什么"（10-04，10-03 晚不带时同一句话隔 8 秒说两遍）；`FALLBACK_NOTE` 里多了别重复、recall 查不到别编、说做动作就真调 emote
 - Claude 总闸（10-04，spec `2026-10-04-claude-gate-design.md`）：额度 / 认证错后这次运行里不再起 claude：大脑切 DeepSeek（认证错也切）、随手记 / 整理 / 反思改走 DeepSeek、眼睛和装扮描述停用；整理 notes 失败 10 分钟内不再试。
-  一次运行一个闸（`brain/claude.py` 的 `ClaudeGate`，`cli._run_brain` 建好交给大脑循环、`GatedLlm`、`gated_describe`）；备用是 `[llm]`、`max_tokens` 取 `[brain] fallback_max_tokens`（没 Key 时闸关了照旧失败）；
+  一次运行一个闸（`brain/claude.py` 的 `ClaudeGate`，`cli._run_brain` 建好交给大脑循环、`GatedLlm`、`gated_describe`）；备用是 `[llm]`、`max_tokens` 取 `[brain] fallback_max_tokens`、超时至少 `[inner] reflect_timeout`；下线那次反思 Claude 和备用都压到 `_final_timeout`（管理面板 `stop_timeout` − 25 秒，备用不重试），免得被强杀丢日记；
   `force_fallback` 只换大脑、不关闸；沙盒自己的场景描述不接闸；`memory update` 等单独的一次性命令不接闸；不切回（额度恢复了要重启）。**还没在沙盒里验证**（spec §8 四步）
 - `say` 拦重复（10-04）：10 分钟内说过几乎一样的话（`similar` 0.85）拦下、告诉大脑"你刚说过「…」"，Claude 大脑也一样；手动控制不管
-- 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；额度用完时这一笔跳过，notes 下次再整理
+- 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；Claude 额度用完 / 认证失败（总闸关上，见上）后改走 DeepSeek（`[llm]`）
 - 退出：身体先恢复轮盘、再复原镜头（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code
 - 调提示词时加 `--view`：网页上的大脑时间线能看到每一轮它收到了什么、调了什么工具、工具返回了什么（见「识别可视化」）；
   手动控制栏能绕过大脑直接试身体的工具（身体方法的 `live=True`），大脑会收到 `manual` 事件
@@ -555,7 +555,7 @@ dir = "private/sandbox"
 **第 2 期：反思**（设计见 `docs/superpowers/specs/2026-09-30-inner-phase2-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase2.md`；**还没在真机上跑过，数字都是估的**，spec「真机验证」四步）
 - **精力**（`energy.py`，身体每圈现算，不存盘）：几点（白天满、深夜低）− 连着挂了多久（离上次下线不到 `rest_gap` 算没睡、接着累）+ 最近 10 分钟有好友跟团子说话 − 最近一小时热闹太久；四档 精神 / 还行 / 有点累 / 困
 - **反思**（`reflect.py`，一次性 `claude -p`，`[inner] reflect_model` 默认 sonnet，后台线程，结果回身体线程套进 `Mind`）：有动静时每 `reflect_every`（20 分钟）、好友说够 6 句后安静 3 分钟、下线时各一次；
-  材料是上次以来的聊天原话、来去、相关好友的关系卡、friends.md 里他们那一节（日记里的称呼、性别照它，`friend_sections`）和笔记、人设、精力。回 JSON：心情（开心 / 平常 / 低落 / 烦 + 一句带原因的话）、别扭、心愿增删；下线那次再加日记和要点。额度用完 10 分钟内不反思，失败沿用上一份
+  材料是上次以来的聊天原话、来去、相关好友的关系卡、friends.md 里他们那一节（日记里的称呼、性别照它，`friend_sections`）和笔记、人设、精力。回 JSON：心情（开心 / 平常 / 低落 / 烦 + 一句带原因的话）、别扭、心愿增删；下线那次再加日记和要点。Claude 额度用完 / 认证失败（总闸关上，见「统管大脑」）后改走 DeepSeek（`[llm]`），失败沿用上一份
 - **代码守的规矩**（`mind.py`）：别扭只冲一起玩过 ≥ `grudge_min_days`（3）天的好友、最长 `grudge_max`（2 小时，同一个人再给也不续期）、同时 1 条、消气后冷却同样长；别扭对象说了“难过 / 不舒服 / 想哭 / 认真的……”（`DISTRESS`）身体当场撤掉，不等反思；离上次反思超过 `rest_gap`（睡过一觉）心情回到平常；心愿最多 3 条、7 天过期，kind 只有 惦记（挂在好友名下）/ 想做 / 小心思；不认识的一律丢
 - **后果**（`effects.py`，倍数相乘）：主动开口额度 开心 ×1.5、低落 / 烦 ×0.5、有点累 ×0.75、困 ×0.5（下限 ×0.25、至少 1 句）；烦时被叫到不做小动作、开心概率 ×1.5；困时闲着的小动作更勤、大脑心跳慢一档。
   **接话永远照常**；在跟谁闹别扭时，整批都是他说的话不冒输入气泡（故意晚点接），牵手等互动照接
