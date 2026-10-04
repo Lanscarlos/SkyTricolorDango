@@ -211,3 +211,31 @@ def test_memo_system_records_opinions():
     from skydango.chat.memory import MEMO_SYSTEM
 
     assert "喜好和评价" in MEMO_SYSTEM
+
+
+def test_notes_update_failure_waits_before_retry(tmp_path):
+    from skydango.chat.memory import NOTES_RETRY
+
+    store = MemoryStore(tmp_path)
+    store.history.append("懒洋洋大王：「在吗」", "在", 1.0)
+    llm = ScriptedLlm([RuntimeError("quota"), "## 自己\n- 新笔记"])
+    now = [1000.0]
+    keeper = NotesKeeper(llm, store, persona="", every=1, background=False, wall=lambda: now[0])
+    keeper.maybe_update()  # 第一次整理：失败
+    assert len(llm.calls) == 1
+    keeper.pending += 1
+    keeper.maybe_update()  # 冷却中，不再试
+    assert len(llm.calls) == 1
+    now[0] += NOTES_RETRY + 1
+    keeper.maybe_update()  # 冷却过了，再试一次，成功
+    assert len(llm.calls) == 2 and store.notes() == "## 自己\n- 新笔记"
+    assert keeper._retry_after == float("-inf")
+
+
+def test_update_now_ignores_retry_after(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.history.append("懒洋洋大王：「在吗」", "在", 1.0)
+    llm = ScriptedLlm([RuntimeError("quota"), "## 自己\n- 手动整理"])
+    keeper = NotesKeeper(llm, store, persona="", every=1, background=False, wall=lambda: 1000.0)
+    keeper.maybe_update()
+    assert keeper.update_now() is True  # memory update 命令直接调，不看冷却

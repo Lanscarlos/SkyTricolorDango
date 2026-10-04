@@ -228,6 +228,9 @@ def parse_memos(raw: str) -> list[str]:
     return memos
 
 
+NOTES_RETRY = 600.0  # 整理 notes 失败后至少隔这么久（秒）才自动再试，免得额度 / 认证出错时每轮都撞墙
+
+
 class NotesKeeper:
     """管长期记忆，所有活都在一个后台线程里按顺序做，不耽误回复：
 
@@ -247,6 +250,7 @@ class NotesKeeper:
         self.pending = len(store.pending_turns())
         self._lock = threading.Lock()
         self._update_queued = False
+        self._retry_after = float("-inf")  # wall() 时间：失败后这之前 maybe_update 不再自动整理
         self._tasks: queue.Queue | None = None
 
     def _submit(self, task) -> None:
@@ -292,6 +296,8 @@ class NotesKeeper:
     def maybe_update(self) -> None:
         if self.every <= 0 or self.pending < self.every:
             return
+        if self.wall() < self._retry_after:
+            return
         with self._lock:
             if self._update_queued:
                 return
@@ -316,12 +322,15 @@ class NotesKeeper:
         try:
             raw = self.llm.complete(NOTES_SYSTEM, [{"role": "user", "content": content}], max_tokens=1500)
         except Exception:
-            log.exception("整理长期记忆失败，下次再试")
+            self._retry_after = self.wall() + NOTES_RETRY
+            log.exception("整理长期记忆失败，%d 分钟后再试", int(NOTES_RETRY // 60))
             return False
         notes = _strip_fences(raw or "")
         if not notes:
+            self._retry_after = self.wall() + NOTES_RETRY
             log.warning("整理长期记忆时模型返回了空内容，保留旧笔记")
             return False
+        self._retry_after = float("-inf")
         self.store.write_notes(notes)
         if turns:
             self.store.set_notes_until(turns[-1].t)
