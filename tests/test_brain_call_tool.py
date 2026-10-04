@@ -130,10 +130,12 @@ def test_manual_options_call(clock):
     assert ManualControl(b).options()["call"] is False
 
 
-def test_viewer_page_has_call_button():
-    from skydango.vision.viewer import PAGE
+def test_console_page_has_call_button():  # viewer 网页删了（spec 2026-10-04-console-attach），按钮在管理面板「真机团子」页
+    import importlib.resources
 
-    assert 'id="ctl-call"' in PAGE and 'ctlSend("call"' in PAGE
+    static = importlib.resources.files("skydango.console") / "static"
+    assert 'id="lc-call"' in (static / "console.html").read_text(encoding="utf-8")
+    assert 'send("call"' in (static / "livectl.js").read_text(encoding="utf-8")
 
 
 def test_call_enabled_needs_perception():
