@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 MESSAGE_KEEP = 3.0  # 新消息的框留几秒
 MESSAGE_CHARS = 24  # 新消息的标签最多显示几个字
 WAIT = 2.0  # /snapshot 没有新帧时最多等几秒
-LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")  # 只有这些地址才开手动控制、才收 /control 请求
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")  # Host 头只认这些（防 DNS 重绑定）
 MAX_BODY = 4096  # /control 请求体上限（字节）
 
 
@@ -362,14 +362,14 @@ class Viewer:
                     return
                 self._json(200, result)
 
-        self._server = _Server((self.cfg.host, self.cfg.port), Handler)
+        self._server = _Server(("127.0.0.1", self.cfg.port), Handler)  # 只听本机：画面里有好友昵称和聊天
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, name="viewer", daemon=True).start()
         return self.url
 
     @property
     def url(self) -> str:
-        host, port = self._server.server_address[:2] if self._server else (self.cfg.host, self.cfg.port)
+        host, port = self._server.server_address[:2] if self._server else ("127.0.0.1", self.cfg.port)
         if host in ("0.0.0.0", "::", ""):
             host = "127.0.0.1"
         return f"http://{host}:{port}/"

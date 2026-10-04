@@ -133,7 +133,7 @@ def test_console_defaults():
     from skydango.config import Config
 
     c = Config().console
-    assert (c.port, c.child_port, c.stop_timeout, c.log_lines) == (19390, 19391, 60.0, 500)
+    assert (c.port, c.stop_timeout, c.log_lines) == (19390, 60.0, 500)  # 团子的接口端口是 [viewer] port
     assert (c.brain, c.live, c.emotes, c.duration) == (True, False, True, 0.0)
 
 
@@ -309,3 +309,15 @@ def test_a11y_chat_reader_defaults():  # spec 2026-10-04-a11y-chat-reader §6
     assert ex.vision.source == "a11y" and ex.panel.chat_peek == 15.0
     raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))
     assert raw["vision"]["source"] == "a11y" and raw["panel"]["chat_peek"] == 15.0
+
+
+def test_viewer_port_is_19391_and_old_port_keys_are_skipped(tmp_path, caplog):  # spec 2026-10-04-console-attach §1
+    from skydango.config import Config
+
+    assert Config().viewer.port == 19391
+    p = tmp_path / "c.toml"
+    p.write_text('[viewer]\nhost = "0.0.0.0"\nfps = 5.0\n[console]\nchild_port = 19391\n', encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(p)
+    assert not hasattr(cfg.viewer, "host") and not hasattr(cfg.console, "child_port") and cfg.viewer.fps == 5.0
+    assert "viewer.host" in caplog.text and "console.child_port" in caplog.text

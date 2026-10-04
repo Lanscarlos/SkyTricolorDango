@@ -555,10 +555,10 @@ class PanelsConfig:
 
 @dataclass
 class ViewerConfig:
-    """识别过程可视化：本机网页实时显示画面 + 识别框（`run --view` 或 `python -m skydango view`）。"""
+    """团子的 HTTP 接口（管理面板「真机团子」页的画面、大脑、聊天、手动控制、停止都经它）：`run` 总是开、只听 127.0.0.1。
+    见 docs/superpowers/specs/2026-10-04-console-attach-design.md。"""
 
-    host: str = "127.0.0.1"  # 只给本机看：画面里有好友昵称和聊天
-    port: int = 19399
+    port: int = 19391  # 管理面板也按它找团子；端口被占时 run 拒绝启动（同一时间只有一个团子）
     fps: float = 10.0  # 最多每秒更新几帧
     width: int = 1280  # 发给浏览器的图缩到这么宽
     quality: int = 70  # JPEG 质量
@@ -817,8 +817,7 @@ class InnerConfig:
 class ConsoleConfig:
     """管理面板（`console`，见 docs/superpowers/specs/2026-09-29-console-design.md）。启动选项由面板写进 console.toml，只影响面板启动的团子。"""
 
-    port: int = 19390  # 面板端口；和 view 的 19399 错开，可以同时开
-    child_port: int = 19391  # 面板起的团子子进程的 viewer 端口
+    port: int = 19390  # 面板端口（团子的接口端口是 [viewer] port）
     stop_timeout: float = 60.0  # 停止时最多等几秒（live 大脑退出前要写记忆），超了强杀
     log_lines: int = 500  # 日志尾巴保留几行
     # 上次的启动选项，面板写
@@ -882,6 +881,7 @@ class Config:
 # 删掉的配置项：旧的 config.toml / console.toml 里还写着时跳过、提醒一句（别的未知键照旧报错）
 DEPRECATED = frozenset({
     "attention.wander_min", "attention.wander_max", "attention.wander_presses", "attention.wander_same_side",  # 2026-10-03 随意看删了
+    "viewer.host", "console.child_port",  # 2026-10-04 viewer 网页删了：接口只听本机、端口统一用 [viewer] port
 })
 
 

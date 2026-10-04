@@ -688,9 +688,9 @@ def _stop_scene(env) -> None:
         print(f"图鉴收集：存了 {catalog.saved} 张 → {catalog.folder}")
 
 
-def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False, on_shutdown=None):
-    """起可视化网页（后台线程），打印地址、打开浏览器。端口被占用时直接退出并提示换一个。
-    brain：大脑模式，打开浏览器前先挂上大脑时间线（页面第一次请求 /brain 拿到 404 就不再请求了）。"""
+def _viewer(cfg: Config, brain: bool, on_shutdown, run_info: dict):
+    """起团子的接口（后台线程，只听 127.0.0.1:[viewer] port，管理面板经它看画面、控制、停止）。
+    brain：大脑模式，起之前先挂上大脑时间线（面板一连上就请求 /brain）。端口被占 = 已经有一个团子在跑，直接退出。"""
     from .vision.viewer import Viewer
 
     viewer = Viewer(cfg.viewer)
@@ -698,29 +698,30 @@ def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False, on_shut
         from .brain.trace import BrainTrace
 
         viewer.brain = BrainTrace()
+    viewer.run_info = run_info
+    viewer.on_shutdown = on_shutdown  # POST /shutdown（管理面板点停止）= Ctrl+C，走同样的收尾
     try:
         url = viewer.start()
     except OSError as exc:
-        raise SystemExit(f"可视化网页起不来（{cfg.viewer.host}:{cfg.viewer.port}）：{exc}\n端口可能被占用了，"
-                         "用 view --port 换一个，或改 config.toml 的 viewer.port") from exc
-    if cfg.viewer.host in ("127.0.0.1", "localhost", "::1"):  # 局域网模式不收 /shutdown（和手动控制一样）
-        if on_shutdown is None:
-            import _thread
-
-            from .console.watchdog import once
-
-            on_shutdown = once(_thread.interrupt_main)
-        viewer.on_shutdown = on_shutdown  # POST /shutdown（管理面板点停止）= Ctrl+C，走同样的收尾
-    where = "只有本机能看" if cfg.viewer.host in ("127.0.0.1", "localhost", "::1") else "同一局域网的人都能看！"
-    print(f"可视化：{url}（{where}）")
-    if open_browser:
-        import webbrowser
-
-        try:
-            webbrowser.open(url)
-        except Exception:
-            log.debug("打不开浏览器", exc_info=True)
+        port = cfg.viewer.port
+        raise SystemExit(f"{port} 端口上已经有一个团子在跑（终端或管理面板起的），先停掉它；"
+                         f"不是团子的话改 [viewer] port（{exc}）") from exc
+    print(f"接口：{url}（管理面板「真机团子」页看画面）")
     return viewer
+
+
+def _run_info(cfg: Config, run: RunDir, args) -> dict:
+    """/status 里的 run 节：管理面板靠它认出团子、显示启动选项（spec 2026-10-04-console-attach §1）。"""
+    return {
+        "pid": os.getpid(),
+        "run_dir": str(run.path.resolve()),
+        "live": not cfg.reply.dry_run,
+        "brain": cfg.brain.enabled,
+        "emotes": not args.no_emotes,
+        "duration": float(args.duration or 0),
+        "started": time.time(),
+        "console": args.parent_pid is not None,
+    }
 
 
 def cmd_a11y(cfg: Config, args) -> None:
@@ -2078,15 +2079,15 @@ def cmd_console(cfg: Config, args) -> None:
 
     config_path = Path(args.config)
     port = args.port or cfg.console.port
-    runner = runner_mod.Runner(Path.cwd(), cfg.console.child_port, cfg.console.stop_timeout, cfg.console.log_lines)
-    server = server_mod.ConsoleServer(config_path, SettingsStore(config_path), runner, port, cfg.console.child_port)
+    runner = runner_mod.Runner(Path.cwd(), cfg.viewer.port, cfg.console.stop_timeout, cfg.console.log_lines)
+    server = server_mod.ConsoleServer(config_path, SettingsStore(config_path), runner, port, cfg.viewer.port)
     try:
         url = server.start()
     except OSError as exc:
         raise SystemExit(f"管理面板起不来（127.0.0.1:{port}）：{exc}\n端口可能被占用了，用 console --port 换一个") from exc
     print(f"管理面板：{url}（只有本机能看）；Ctrl+C 结束（会先停掉团子）")
     if server.orphan:
-        print(f"注意：{cfg.console.child_port} 端口上有上次留下的团子，面板上可以让它退出")
+        print(f"注意：{cfg.viewer.port} 端口上有上次留下的团子，面板上可以让它退出")
     if not args.no_browser:
         import webbrowser
 
@@ -2113,8 +2114,6 @@ def cmd_run(cfg: Config, args) -> None:
         cfg.reply.dry_run = False
     if args.dry_run:  # 管理面板总是显式传 --live / --dry-run，config.toml 的 dry_run 不偷偷改掉面板上的选择
         cfg.reply.dry_run = True
-    if args.viewer_port is not None:  # 管理面板起的子进程：viewer 固定端口、只给本机
-        cfg.viewer.port, cfg.viewer.host = args.viewer_port, "127.0.0.1"
     import _thread
 
     from .console import watchdog
@@ -2136,7 +2135,9 @@ def cmd_run(cfg: Config, args) -> None:
     viewer = None
     try:
         if args.view:
-            viewer = _viewer(cfg, open_browser=not args.no_browser, brain=cfg.brain.enabled, on_shutdown=request_exit)
+            print("--view 已经不用了：接口总是开着，画面在管理面板「真机团子」页")
+        # 建好运行目录之后、碰设备之前开接口：端口被占（已经有一个团子）就在这里退出
+        viewer = _viewer(cfg, cfg.brain.enabled, request_exit, _run_info(cfg, run, args))
         if cfg.brain.enabled:
             _run_brain(cfg, run, None, args.duration, viewer, no_emotes=args.no_emotes)  # 真机世界在里面检查完令牌后再建
         else:
@@ -2589,30 +2590,27 @@ def _run_brain(
     if viewer is not None:
         viewer.brain = trace
         from .brain.manual import ManualControl
-        from .vision.viewer import LOCAL_HOSTS
 
-        if cfg.viewer.host in LOCAL_HOSTS:  # 手动控制：网页上直接让身体说话 / 做动作 / 转视角，只给本机
-            viewer.control = ManualControl(body, eyes, events)
-            # 内心页（spec 2026-09-30-inner-viewer §2）：都在身体线程里做，等 3 秒
-            viewer.inner = lambda: body.call(body.inner_snapshot, timeout=3)
-            viewer.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
-            if world.name != "sandbox":  # 真机聊天记录（spec 2026-10-01-console-live-page §3.2）：沙盒有自己的
-                from types import SimpleNamespace
+        # 手动控制：管理面板上直接让身体说话 / 做动作 / 转视角（接口只听本机）
+        viewer.control = ManualControl(body, eyes, events)
+        # 内心页（spec 2026-09-30-inner-viewer §2）：都在身体线程里做，等 3 秒
+        viewer.inner = lambda: body.call(body.inner_snapshot, timeout=3)
+        viewer.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
+        if world.name != "sandbox":  # 真机聊天记录（spec 2026-10-01-console-live-page §3.2）：沙盒有自己的
+            from types import SimpleNamespace
 
-                from .brain.transcript import Transcript, event_line
+            from .brain.transcript import Transcript, event_line
 
-                chat = Transcript(SimpleNamespace(wall=wall))
-                body.on_line = lambda kind, text, who, why: chat.add(kind, text, who, why=why)
+            chat = Transcript(SimpleNamespace(wall=wall))
+            body.on_line = lambda kind, text, who, why: chat.add(kind, text, who, why=why)
 
-                def _event(kind: str, text: str, who: str) -> None:
-                    line = event_line(kind, text, who)
-                    if line is not None:
-                        chat.add("event", line)
+            def _event(kind: str, text: str, who: str) -> None:
+                line = event_line(kind, text, who)
+                if line is not None:
+                    chat.add("event", line)
 
-                events.tap(_event)
-                viewer.chat = chat
-        else:
-            log.warning("可视化网页开在局域网（%s）：局域网模式下关掉了手动控制", cfg.viewer.host)
+            events.tap(_event)
+            viewer.chat = chat
     stop = threading.Event()
     brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)
@@ -3284,9 +3282,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-emotes", action="store_true", help="这次不做动作")
     p.add_argument("--brain", action="store_true", help="接统管大脑（已是默认，保留兼容）")
     p.add_argument("--no-brain", action="store_true", help="不接大脑，用旧的普通 Agent（调试用）")
-    p.add_argument("--view", action="store_true", help="开可视化网页：实时显示画面和识别框（地址见 [viewer]）")
-    p.add_argument("--viewer-port", type=int, help="可视化网页用这个端口、只给本机看（管理面板用）")
-    p.add_argument("--no-browser", action="store_true", help="开可视化网页时不打开浏览器")
+    p.add_argument("--view", action="store_true", help=argparse.SUPPRESS)  # 已经不用了（接口总是开），留着免得旧命令报错
     p.add_argument("--parent-pid", type=int, help="这个进程没了就自己退出（管理面板用）")
     p.set_defaults(func=lambda cfg, args: cmd_run(cfg, args))
 

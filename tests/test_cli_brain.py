@@ -38,6 +38,19 @@ def fake_brain_run(tmp_path, monkeypatch):
     return cfg, RunDir.create(cfg, "dry-brain"), log
 
 
+@pytest.fixture(autouse=True)
+def api_port_not_19391(monkeypatch):
+    """run 总在 [viewer] port（默认 19391）开接口：测试里换成随机端口，免得撞上本机正在跑的团子 / 管理面板。"""
+    real = cli._viewer
+
+    def viewer(cfg, *a, **k):
+        if cfg.viewer.port == 19391:
+            cfg.viewer.port = 0
+        return real(cfg, *a, **k)
+
+    monkeypatch.setattr(cli, "_viewer", viewer)
+
+
 class FakeViewer:
     brain = None
     control = None
@@ -54,15 +67,6 @@ def test_run_brain_with_viewer_attaches_control(tmp_path, monkeypatch):
     assert isinstance(v.control, ManualControl)
 
 
-def test_run_brain_on_lan_has_no_control(tmp_path, monkeypatch, caplog):
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.viewer.host = "0.0.0.0"
-    v = FakeViewer()
-    with caplog.at_level("WARNING"):
-        cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
-    assert v.control is None and "局域网模式下关掉了手动控制" in caplog.text
-
-
 def test_run_brain_with_viewer_attaches_chat(tmp_path, monkeypatch):
     from skydango.brain.transcript import Transcript
 
@@ -70,14 +74,6 @@ def test_run_brain_with_viewer_attaches_chat(tmp_path, monkeypatch):
     v = FakeViewer()
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
     assert isinstance(v.chat, Transcript)
-
-
-def test_run_brain_on_lan_has_no_chat(tmp_path, monkeypatch):
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.viewer.host = "0.0.0.0"
-    v = FakeViewer()
-    cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
-    assert v.chat is None  # 聊天原话只给本机看
 
 
 def test_run_brain_with_viewer_records_turns(tmp_path, monkeypatch):
@@ -226,23 +222,13 @@ def test_brain_env_error_mentions_no_brain(monkeypatch):
         cli._brain_env(Config())
 
 
-def test_viewer_serves_brain_before_browser_opens(monkeypatch):
-    # run --brain --view：浏览器一打开就请求 /brain；这时还没挂上 trace 会拿到 404，页面就不再请求
-    import urllib.request
-    import webbrowser
-
-    seen = {}
-
-    def fake_open(url):
-        with urllib.request.urlopen(url + "brain?after=0", timeout=5) as r:
-            seen["status"] = r.status
-
-    monkeypatch.setattr(webbrowser, "open", fake_open)
+def test_viewer_has_brain_trace_from_the_start(monkeypatch):
+    # 管理面板一连上就请求 /brain：trace 要在接口起来之前挂好
     cfg = Config()
     cfg.viewer.port = 0
-    viewer = cli._viewer(cfg, brain=True)
+    viewer = cli._viewer(cfg, True, lambda: None, {"pid": 1})
     try:
-        assert seen == {"status": 200} and isinstance(viewer.brain, BrainTrace)
+        assert isinstance(viewer.brain, BrainTrace) and viewer.run_info == {"pid": 1}
     finally:
         viewer.stop()
 
@@ -323,15 +309,55 @@ def test_run_live_and_dry_run_conflict():
         cli.main(["run", "--live", "--dry-run"])
 
 
-def test_run_viewer_port_forces_local_and_no_browser(tmp_path, monkeypatch):
-    seen = {}
-    monkeypatch.setattr(cli, "_viewer", lambda cfg, open_browser=True, brain=False, on_shutdown=None: seen.update(
-        host=cfg.viewer.host, port=cfg.viewer.port, open=open_browser))
-    monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: None)
+def test_old_viewer_flags_are_gone():  # spec 2026-10-04-console-attach §1
+    for argv in (["run", "--no-browser"], ["run", "--viewer-port", "1"]):
+        with pytest.raises(SystemExit) as err:
+            cli.main(argv)
+        assert err.value.code == 2
+
+
+def test_view_flag_is_ignored_with_notice(tmp_path, monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: seen.append(1))
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.toml").write_text('[viewer]\nhost = "0.0.0.0"\n', encoding="utf-8")
-    cli.main(["run", "--view", "--viewer-port", "19391", "--no-browser"])
-    assert seen == {"host": "127.0.0.1", "port": 19391, "open": False}
+    cli.main(["run", "--view"])
+    assert seen == [1] and "--view 已经不用了" in capsys.readouterr().out
+
+
+def test_run_always_opens_api_with_run_info(tmp_path, monkeypatch):
+    import os
+
+    seen = {}
+
+    def fake_brain(cfg, run, world=None, duration=0.0, viewer=None, **k):
+        seen.update(viewer=viewer, info=dict(viewer.run_info), run_dir=str(run.path.resolve()))
+
+    monkeypatch.setattr(cli, "_run_brain", fake_brain)
+    monkeypatch.setattr("skydango.console.watchdog.watch_parent", lambda pid, interrupt, **k: None)
+    monkeypatch.chdir(tmp_path)
+    cli.main(["run", "--dry-run", "--no-emotes", "--duration", "5", "--parent-pid", "4321"])
+    info = seen["info"]
+    assert seen["viewer"] is not None and seen["viewer"].on_shutdown is not None
+    assert info["pid"] == os.getpid() and info["run_dir"] == seen["run_dir"] and info["console"] is True
+    assert info["live"] is False and info["brain"] is True and info["emotes"] is False and info["duration"] == 5.0
+    assert abs(info["started"] - time.time()) < 60
+
+
+def test_run_refuses_when_port_taken(tmp_path, monkeypatch):
+    import socket
+
+    seen = []
+    monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: seen.append("brain"))
+    monkeypatch.setattr(cli, "_device", lambda cfg: pytest.fail("端口被占时不该碰设备"))
+    monkeypatch.chdir(tmp_path)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        port = s.getsockname()[1]
+        (tmp_path / "config.toml").write_text(f"[viewer]\nport = {port}\n", encoding="utf-8")
+        with pytest.raises(SystemExit) as err:
+            cli.main(["run"])
+    assert f"{port} 端口上已经有一个团子在跑" in str(err.value.code) and seen == []
 
 
 def test_run_parent_pid_starts_watchdog(tmp_path, monkeypatch):
@@ -339,29 +365,22 @@ def test_run_parent_pid_starts_watchdog(tmp_path, monkeypatch):
     monkeypatch.setattr("skydango.console.watchdog.watch_parent", lambda pid, interrupt, **k: seen.append((pid, interrupt)))
     monkeypatch.setattr(cli, "_run_brain", lambda *a, **k: None)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_viewer", lambda cfg, open_browser=True, brain=False, on_shutdown=None: seen.append(on_shutdown))
-    cli.main(["run", "--view", "--parent-pid", "4321"])
+    monkeypatch.setattr(cli, "_viewer", lambda cfg, brain, on_shutdown, run_info: seen.append(on_shutdown))
+    cli.main(["run", "--parent-pid", "4321"])
     pid, watch_hook = seen[0]
     assert pid == 4321 and seen[1] is watch_hook  # 看门狗和 /shutdown 共用同一个只触发一次的中断
 
 
 def test_viewer_hooks_shutdown_to_interrupt_main(monkeypatch):
-    monkeypatch.setattr("webbrowser.open", lambda url: None)
     calls = []
     monkeypatch.setattr(_thread, "interrupt_main", lambda: calls.append(1))
-    v = cli._viewer(Config(viewer=ViewerConfig(port=0)), open_browser=False)
+    from skydango.console.watchdog import once
+
+    v = cli._viewer(Config(viewer=ViewerConfig(port=0)), False, once(_thread.interrupt_main), {})
     try:
         v.on_shutdown()
         v.on_shutdown()
         assert calls == [1]
-    finally:
-        v.stop()
-
-
-def test_lan_viewer_has_no_shutdown(monkeypatch):  # 终审：局域网模式别人也能停团子
-    v = cli._viewer(Config(viewer=ViewerConfig(port=0, host="0.0.0.0")), open_browser=False)
-    try:
-        assert v.on_shutdown is None
     finally:
         v.stop()
 
