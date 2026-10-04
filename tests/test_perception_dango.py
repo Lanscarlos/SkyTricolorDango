@@ -228,3 +228,55 @@ def test_dango_sliding_with_panel_toggle_is_still_dango():
     end, on_end = Rect(small.x - 435, small.y, small.w, small.h), Rect(on_small.x - 435, on_small.y, on_small.w, on_small.h)
     t = run(w, det, [[me(end), on_me(on_end, 0.45)]] * 3 + [[on_me(on_end, 0.9)]] * 8, start=t + 0.36)
     assert w.strangers(t) == 0
+
+
+# ---- 评审（10-04）后补 ----
+def test_turning_camera_does_not_unmark_dango_as_pivot():
+    """评审 1：团子是镜头支点，转镜头时背景平移、团子在屏幕上不动。先拉近（框离开记住的位置），再转、一直不出 self：
+    团子轨迹的连续性不能只拿"按背景平移挪过的上一帧框"比（团子自己就对不上了）。"""
+    det = FakeDetector()
+    w = watcher(det, track_pan=True)
+    pans = []
+    w._pan_step = lambda frame, panel: pans.pop(0) if pans else (0.0, 0.0)
+    small, on_small = Rect(1009, 536, 105, 230), Rect(1006, 532, 156, 236)
+    t = run(w, det, [[me(small), on_me(on_small)]] * 4)
+    grow = [[on_me(Rect(on_small.x - 6 * i, on_small.y - 14 * i, on_small.w + 12 * i, on_small.h + 14 * i))] for i in range(1, 11)]
+    t = run(w, det, grow, start=t + 0.25)  # 拉近：框慢慢变大
+    big = grow[-1][0].box
+    pans[:] = [(-150.0, 0.0)] * 6
+    t = run(w, det, [[on_me(big)]] * 12, start=t + 0.25)  # 转镜头：团子不动
+    assert w.strangers(t) == 0
+
+
+def test_demoted_self_on_neighbour_with_own_player_box_is_not_a_ghost():
+    """评审 2：邻居身上 YOLO 常常同时出 player 和 self（按类别各自 NMS）：self 改成 player 后和她自己的 player 框重复，
+    不能多出一条没挂名字的"幽灵陌生人"。"""
+    det = FakeDetector()
+    w = watcher(det, ocr=FakeOcr({110: "懒洋洋大王"}))
+    head = tag(1165, 110, y=400)
+    t = run(w, det, [[me(SIT_ME), on_me(SIT_ON_ME, 0.9), friend(), head]] * 4, panel=True)
+    cycle = [[me(JUMP, 0.75), on_me(SIT_ON_ME, 0.9), friend(), head]] + [[on_me(SIT_ON_ME, 0.9), friend(), head]] * 3
+    t = run(w, det, cycle * 8, start=t + 0.25, panel=True)
+    assert w.nearby(t) == ["懒洋洋大王"] and w.strangers(t) == 0
+
+
+def test_relocation_with_flickering_self_is_believed():
+    """评审 3：团子身上的 self 常常断帧：在新位置隔一帧出一次，满 SELF_JUMP_HOLD 也要信（不能每次断帧就重新计时）。"""
+    from skydango.vision.perception import SELF_JUMP_HOLD
+
+    det = FakeDetector()
+    w = watcher(det, track_buffer=0.5)
+    t = run(w, det, [[me(), on_me()]] * 2)
+    new_me, new_on = Rect(1300, 470, 165, 395), Rect(1299, 468, 287, 399)
+    n = int(SELF_JUMP_HOLD / 0.25) + 3
+    t = run(w, det, [[me(new_me), on_me(new_on)], [on_me(new_on)]] * n, start=t + 1)
+    assert w._dango_mem[False][0] == new_me
+    assert w.strangers(t) == 0
+
+
+def test_one_self_near_preference_only_among_confident_boxes():
+    """评审 4：贴着团子的垃圾低分 self（点亮陌生人时检测器降到 0.2）不能把别处的高分 self 挤成 player。"""
+    from skydango.vision.perception import one_self
+
+    dets = [Detection("self", JUMP, 0.8), Detection("self", SIT_ME, 0.22)]
+    assert [d.cls for d in one_self(dets, near=[SIT_ON_ME], conf=0.35)] == ["self", "player"]
