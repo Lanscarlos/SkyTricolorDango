@@ -173,6 +173,14 @@ def test_replay_counts(tmp_path):
     assert r["frames"] == 2 and r["gt"] == 3
 
 
+def test_collect_merges_same_person_player_and_unlit(tmp_path):
+    # 运行时 merge_people 把同一个人的 player / player_unlit 两框合成一个（留分高的）；回放照做，不然多出来的那个算错报
+    frames = _replay_set(tmp_path)
+    det = FakeDet({1: [_d("player", 20, 0.9), _d("player_unlit", 21, 0.6), _d("player_unlit", 100, 0.8)], 2: []})
+    rec = at.collect(frames, det, FakeModel([[0.0, 1.0, 0.0]] * 2), 0.2)
+    assert [(d["cls"], d["box"].x) for d in rec[0]["dets"]] == [("player", 20), ("player_unlit", 100)]
+
+
 def test_replay_yolo_w_half_cannot_flip(tmp_path):
     """yolo_w = 0.5：player 框要外形头黑影占比恰好 1.0 才翻，0.98 翻不了 -> 第二层的认反数就是 YOLO 自己的。"""
     frames = _replay_set(tmp_path)

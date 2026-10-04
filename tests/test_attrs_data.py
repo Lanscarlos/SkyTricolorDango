@@ -103,6 +103,22 @@ def test_images_dedup_and_group(tmp_path):
     assert {r["group"] for r in _rows(out)} == {"r1", "rec2"}
 
 
+def test_crops_from_dataset_skips_boxes_already_cropped_and_merges_duplicates(tmp_path):
+    # 换个模型重裁（10-04 用 v10）：人已经判过的框（不是人 / 不要）位置差一点也不再裁；同一个人的 player / player_unlit 两框只裁一张
+    root = _dataset(tmp_path)
+    out = tmp_path / "attrs"
+    ad.crops_from_dataset(root, FakeDetector({1: [_det("player", 150, 5, 20, 40)]}), out, conf=0.2)
+    first = [r for r in _rows(out) if not r["known"]]
+    assert len(first) == 1
+    (out / "_discard").mkdir()
+    (out / "_unlabeled" / first[0]["crop"]).rename(out / "_discard" / first[0]["crop"])
+    counts = ad.crops_from_dataset(root, FakeDetector({1: [_det("player", 152, 6, 20, 40),
+                                                           _det("player", 100, 50, 30, 40, 0.8),
+                                                           _det("player_unlit", 101, 50, 30, 40, 0.5)]}), out, conf=0.2)
+    new = [r for r in _rows(out) if not r["known"]][1:]
+    assert counts["_unlabeled"] == 1 and [(r["yolo_cls"], r["box"][0]) for r in new] == [("player", 100)]
+
+
 def test_writeback(tmp_path):
     root = _dataset(tmp_path)
     out = tmp_path / "attrs"

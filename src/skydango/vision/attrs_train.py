@@ -339,7 +339,9 @@ def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | 
             continue
         img = imread(f)
         h, w = img.shape[:2]
-        dets = [d for d in detector.detect(img) if d.cls in PERSON_DETS and d.score >= conf_low]
+        from .perception import merge_people  # 运行时同一个人的 player / player_unlit 两框合成一个，回放照做
+
+        dets = merge_people([d for d in detector.detect(img) if d.cls in PERSON_DETS and d.score >= conf_low])[0]
         probs = model.predict([(d.cls, attrs.crop(img, d.box, model.pad("form"), model.size, model.keep("form")))
                                for d in dets]) if dets else []
         records.append({"gt": _gt_boxes(lf, w, h, spirit="spirit" in labels, fixes=fixes), "dets": [

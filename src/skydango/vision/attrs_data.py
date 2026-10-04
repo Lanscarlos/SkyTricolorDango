@@ -102,7 +102,12 @@ class _Writer:
     def __init__(self, out: Path, size: int, pad: float, keys: tuple[str, ...]):
         self.out, self.size, self.pad = Path(out), size, pad
         self.out.mkdir(parents=True, exist_ok=True)
-        self.done = {r["crop"] for r in _read_rows(self.out)}
+        rows = _read_rows(self.out)
+        self.done = {r["crop"] for r in rows}
+        self.boxes: dict[str, list[Rect]] = {}  # 原图 → 已经裁过的框（换模型重裁时，人判过的框位置差一点也不再裁）
+        for r in rows:
+            if isinstance(r.get("image"), str) and isinstance(r.get("box"), list) and len(r["box"]) == 4:
+                self.boxes.setdefault(r["image"], []).append(Rect(*r["box"]))
         self.counts: dict[str, int] = dict.fromkeys(keys, 0)
         self._fh = open(self.out / "_crops.jsonl", "a", encoding="utf-8")
 
@@ -111,6 +116,8 @@ class _Writer:
         if name in self.done:
             return
         self.done.add(name)
+        if isinstance(row.get("image"), str):
+            self.boxes.setdefault(row["image"], []).append(box)
         imwrite(self.out / folder / name, attrs.crop(img, box, self.pad, self.size))
         h, w = img.shape[:2]
         row = {"crop": name, **row, "box": [box.x, box.y, box.w, box.h], "size": [w, h]}
@@ -141,7 +148,10 @@ def _label_boxes(path: Path, w: int, h: int) -> list[tuple[int, Rect]]:
 
 
 def _people(detector, img, conf: float):
-    return [d for d in detector.detect(img) if d.cls in DETECT_CLASSES and d.score >= conf]
+    """人物框；同一个人的 player / player_unlit 两框按运行时的 merge_people 合成一个（留分高的）。"""
+    from .perception import merge_people
+
+    return merge_people([d for d in detector.detect(img) if d.cls in DETECT_CLASSES and d.score >= conf])[0]
 
 
 def crops_from_dataset(root: Path, detector, out: Path, conf: float, size: int = 224, pad: float = attrs.CROP_PAD) -> dict:
@@ -163,7 +173,8 @@ def crops_from_dataset(root: Path, detector, out: Path, conf: float, size: int =
                               {**base, "score": 1.0, "yolo_cls": ID_NAMES[cls], "known": True})
                 people = [b for c, b in labeled if c in PERSON_IDS]
                 for d in _people(detector, img, conf):
-                    if all(iou(d.box, b) < UNLABELED_IOU for b in people):
+                    cropped = w.boxes.get(base["image"], [])
+                    if all(iou(d.box, b) < UNLABELED_IOU for b in people) and all(iou(d.box, b) < DEDUP_IOU for b in cropped):
                         w.add(img, path.stem, d.box, "_unlabeled",
                               {**base, "score": round(float(d.score), 4), "yolo_cls": d.cls, "known": False})
     finally:
