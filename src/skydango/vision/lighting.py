@@ -43,6 +43,12 @@ def flame_area(me: Rect, cfg: SocialConfig, width: int, height: int) -> Rect:
     return Rect(x1, y1, max(0, x2 - x1), max(0, y2 - y1))
 
 
+def under_tag(pos: tuple[int, int], tag: Rect) -> bool:
+    """火焰落在这个名字标签下面（好友举蜡烛给团子点火的圆圈）：左右各放宽 0.5 倍标签宽、往下 4.5 倍标签高。"""
+    x1, y1, x2, y2 = round(tag.x - 0.5 * tag.w), tag.y, round(tag.x - 0.5 * tag.w) + 2 * tag.w, tag.y + round(4.5 * tag.h)
+    return x1 <= pos[0] < x2 and y1 <= pos[1] < y2
+
+
 def person_under(boxes: list[Rect], pos: tuple[int, int], r: float) -> int | None:
     """火焰往下那一块（横向 ±2r、纵向 −2r ~ +8r：火焰在胸口或头顶）里重叠最多的人物框是第几个；没有 None。"""
     area = Rect(round(pos[0] - 2 * r), round(pos[1] - 2 * r), round(4 * r), round(10 * r))

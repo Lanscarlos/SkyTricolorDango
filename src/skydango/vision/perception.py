@@ -51,7 +51,7 @@ from .catalog import Who, stranger_key
 from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
-from .lighting import DISK_EVERY, DISK_GAP, FlameWatch, flame_area, person_under
+from .lighting import DISK_EVERY, DISK_GAP, FlameWatch, flame_area, person_under, under_tag
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, OTHERS, WHO, CallSeen, Person, Seen, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
@@ -1940,8 +1940,7 @@ class PerceptionWatcher:
                         panel_visible: bool) -> str | None:
         """火焰落在这些地方当没看到：认出了名字的标签下面（好友举蜡烛给团子点火的圆圈）、篝火上方（"点燃"图标也是火焰圆圈）、开着的聊天面板。"""
         for t in tags:
-            b = t.box
-            if t.data.get("name") and _inside(pos, Rect(round(b.x - 0.5 * b.w), b.y, 2 * b.w, round(4.5 * b.h))):
+            if t.data.get("name") and under_tag(pos, t.box):
                 return f"在 {t.data['name']} 的名字标签下面"
         for t in bonfires:  # 图标浮在柴堆上方：左右各放宽 0.5 倍框宽、往上放宽 1 倍框高、下到框底
             b = t.box
