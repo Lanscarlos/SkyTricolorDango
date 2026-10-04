@@ -1048,3 +1048,85 @@ def test_unsure_marked_but_never_called_expires_normally():
     w.mark_unsure_called([p.id], t)  # 标了但身体没真喊（dry-run / 被拦）：没有窗口，只按正常时间作废
     run_img(w, det, [body], striped(body), t + 0.1, start + w.appearance_cfg.unsure_wait + w.call_window + 0.5)
     assert p.data.get("unsure_miss") is True and "unsure" not in p.data
+
+
+# ---- 启动时转一圈登记团子（spec 2026-10-03-identity-gallery §4） ----
+def _enroll_frames(n, boxes_by_frame, color=PINK):
+    """n 张转圈截图（团子框涂团子色）+ 每帧检测；boxes_by_frame(fi) → 这一帧的检测列表。"""
+    dets = [boxes_by_frame(fi) for fi in range(n)]
+    imgs = [(fi * 0.1, paint(*[(d, color) for d in dets[fi] if d.cls in ("self", "player")][:1])) for fi in range(n)]
+    return dets, imgs
+
+
+def _enroll_watcher(n, dets, enroll_max=16, enroll_dir=None):
+    w, det = make(acfg_kw={"enroll_max": enroll_max}, dino=DinoGuard(FakeDino()))
+    det.frames = list(dets) if n > 1 else [dets[0]]
+    if enroll_dir is not None:
+        w.enroll_dir = enroll_dir
+    return w, det
+
+
+def _self_det(x=900, y=500, w=90, h=220, score=0.9):
+    return Detection("self", Rect(x, y, w, h), score)
+
+
+def test_sweep_enroll_pins_self_samples():
+    from skydango.config import SpinConfig
+
+    dets, imgs = _enroll_frames(8, lambda fi: [_self_det()])
+    w, _ = _enroll_watcher(8, dets, enroll_max=16)
+    r = w.sweep(imgs, SpinConfig(), enroll=True)
+    assert r.enrolled == 8
+    assert w.appearance.me.gallery.pinned_count == 8
+
+
+def test_sweep_enroll_caps_and_spreads(tmp_path):
+    from skydango.config import SpinConfig
+
+    dets, imgs = _enroll_frames(30, lambda fi: [_self_det(h=200 + fi)])  # 框高带上帧号，事后从样本里认出挑了哪几帧
+    w, _ = _enroll_watcher(30, dets, enroll_max=4, enroll_dir=tmp_path / "enroll")
+    r = w.sweep(imgs, SpinConfig(), enroll=True)
+    assert r.enrolled == 4 and w.appearance.me.gallery.pinned_count == 4
+    assert sorted(int(p.stem) for p in (tmp_path / "enroll").glob("*.jpg")) == [0, 1, 2, 3]  # 文件名是序号
+    picked = sorted(round(s.h * 1080) - 200 for s in w.appearance.me.gallery.samples)
+    assert picked[0] == 0 and picked[-1] == 29
+    gaps = [b - a for a, b in zip(picked, picked[1:])]
+    assert max(gaps) - min(gaps) <= 1
+
+
+def test_sweep_enroll_falls_back_to_static_box():
+    from skydango.config import SpinConfig
+
+    dets, imgs = _enroll_frames(8, lambda fi: [Detection("player", Rect(900, 500, 90, 220), 0.9)])
+    w, _ = _enroll_watcher(8, dets)
+    r = w.sweep(imgs, SpinConfig(), enroll=True)
+    assert r.enrolled == 8
+
+
+def test_enroll_skips_blocked_self_boxes():
+    from skydango.config import SpinConfig
+
+    big = Detection("player", Rect(850, 450, 200, 320), 0.9)  # 盖住团子框
+    dets, imgs = _enroll_frames(8, lambda fi: [_self_det()] + ([big] if fi < 3 else []))
+    w, _ = _enroll_watcher(8, dets)
+    r = w.sweep(imgs, SpinConfig(), enroll=True)
+    assert r.enrolled == 5
+    assert w.appearance.me.gallery.pinned_count == 5
+
+
+def test_sweep_without_enroll_learns_nothing():
+    from skydango.config import SpinConfig
+
+    dets, imgs = _enroll_frames(8, lambda fi: [_self_det()])
+    w, _ = _enroll_watcher(8, dets)
+    r = w.sweep(imgs, SpinConfig())
+    assert r.enrolled == 0 and w.appearance.me is None
+
+
+def test_sweep_enroll_without_appearance_is_noop():
+    from skydango.config import SpinConfig
+
+    dets, imgs = _enroll_frames(8, lambda fi: [_self_det()])
+    w, det = make(appearance=False)
+    det.frames = list(dets)
+    assert w.sweep(imgs, SpinConfig(), enroll=True).enrolled == 0

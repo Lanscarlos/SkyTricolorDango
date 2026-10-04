@@ -317,6 +317,7 @@ class PerceptionWatcher:
         camera_settle: float = 0.6,  # 镜头缩放 / 走路 / 转圈后这么久画面才稳（同 [track] settle）
         attrs=None,  # vision.attrs.PersonAttrs：第二层（复核低分框、撤下误框、点没点火两边投票；None = 不接，行为照旧）
         catalog=None,  # vision.catalog.CatalogCollector：图鉴收集（None = 不收，行为照旧）
+        enroll_dir: Path | None = None,  # 启动登记团子时取到的裁图存这里（<序号>.jpg，None = 不存）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -358,6 +359,7 @@ class PerceptionWatcher:
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
         self.saver = saver
         self.catalog = catalog
+        self.enroll_dir = enroll_dir
         self._self_seen: tuple[float, list[Rect]] | None = None  # 最近一次看到团子框的时间和框（图鉴收集认团子用）
         self.call_window = call_window
         self._call: CallSeen | None = None  # 最近一次呼喊窗口（只留一次）；self._lock 保护
@@ -1722,8 +1724,9 @@ class PerceptionWatcher:
         return self.cfg.self_height * frame_h
 
     # ---- 二期：环绕扫描（设计 §1） ----
-    def sweep(self, frames: list[tuple[float, np.ndarray]], spin: SpinConfig) -> SweepResult:
-        """转一圈截下的帧 [(按住后第几秒, 图)] → 每个方向有谁。独立的一次观察：不碰追踪器、last_seen、请求。"""
+    def sweep(self, frames: list[tuple[float, np.ndarray]], spin: SpinConfig, enroll: bool = False) -> SweepResult:
+        """转一圈截下的帧 [(按住后第几秒, 图)] → 每个方向有谁。独立的一次观察：不碰追踪器、last_seen、请求。
+        enroll：顺带把团子的好样本钉进记忆簿（启动登记，spec 2026-10-03-identity-gallery §4；没挂记忆簿时不做）。"""
         friends = self.names()
         people: list[list[Detection]] = []
         tags: list[list[Detection]] = []
@@ -1767,7 +1770,46 @@ class PerceptionWatcher:
             log.info("转圈认出了团子：%s", found.box)
         ref = self._ref_height(height or self._frame_h)
         entries = merge(sightings, spin.merge_deg, ref, self.cfg.near, self.cfg.far)
-        return SweepResult(entries, found.box, len(frames), frames[-1][0] if frames else 0.0)
+        enrolled = 0
+        if enroll and self.appearance is not None:
+            try:
+                enrolled = self._enroll_self(frames, people, found.per_frame)
+            except Exception:
+                log.exception("启动登记团子出错")
+        return SweepResult(entries, found.box, len(frames), frames[-1][0] if frames else 0.0, enrolled)
+
+    def _enroll_self(self, frames: list[tuple[float, np.ndarray]], people: list[list[Detection]],
+                     static: dict[int, Rect]) -> int:
+        """转圈截图里取团子的好样本：每帧团子框 = 分数最高的 self 检测，没有就用转圈认出的静止框（static）；
+        别的人物框当遮挡（和团子同一个身体的不算）；有样本的帧按时间均匀挑最多 enroll_max 张，钉进团子底库
+        （pinned：不去重、不挤）。不喂描述用的裁图（crop=None）：团子的描述照旧靠平时的样本。"""
+        acfg = self.appearance_cfg
+        got: list[tuple[int, Sample, Rect, np.ndarray]] = []
+        for fi, (t, img) in enumerate(frames):
+            selfs = [d for d in people[fi] if d.cls == "self"]
+            box = max(selfs, key=lambda d: d.score).box if selfs else static.get(fi)
+            if box is None:
+                continue
+            others = [d.box for d in people[fi] if d.box is not box and not same_body(d.box, box)]
+            sample = make_sample(img, box, others, [], acfg, self.embedder, self.dino, self.clock())
+            if sample is not None:
+                got.append((fi, sample, box, img))
+        if not got:
+            return 0
+        k = min(acfg.enroll_max, len(got))
+        picks = sorted({int(round(i)) for i in np.linspace(0, len(got) - 1, k)}) if k > 1 else [0]
+        now = self.clock()
+        for n, i in enumerate(picks):
+            _, s, box, img = got[i]
+            self.appearance.learn("me", "", s.color, now, dino=s.dino, h=s.h, pinned=True)
+            if self.enroll_dir is not None:
+                try:
+                    self.enroll_dir.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(self.enroll_dir / f"{n}.jpg"), describe_crop(img, box))
+                except Exception:
+                    log.exception("存启动登记的团子裁图出错")
+        log.info("启动登记团子：转圈 %d 帧里 %d 帧是好样本，入库 %d 张", len(frames), len(got), len(picks))
+        return len(picks)
 
     @staticmethod
     def _tag_above(ring: Track, tags: list[Track]) -> Track | None:

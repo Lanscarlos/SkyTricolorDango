@@ -216,6 +216,7 @@ class Body:
         self.last_look = float("-inf")
         self.look_frame = None  # 最近一次 look（原图）看的那张，look_at 裁它
         self.blackout = False
+        self.enroll_note = ""  # 启动登记团子的结果（status 里写一行；空 = 没做 / 不适用）
         self.holding: str | None = None  # 推测正牵着谁的手
         self._holding_since = 0.0
         self._accepted_hand: tuple[str, float] | None = None
@@ -354,6 +355,10 @@ class Body:
         mode = "dry-run（只打印不执行）" if self.cfg.reply.dry_run else "LIVE（会真的说话、做动作）"
         log.info("身体启动，模式：%s；Ctrl+C 退出%s", mode, f"；{duration:.0f} 秒后自动结束" if duration > 0 else "")
         self.panel.start(self.clock())
+        try:  # 大脑第一轮之前转一圈，把团子自己的样子登记进记忆簿（出错只记日志，照常进主循环）
+            self.enroll_self()
+        except Exception:
+            log.exception("启动登记团子出错")
         # --duration 按真实时间：沙盒快进拨的是模拟时钟，不该让它提前下线
         deadline = time.monotonic() + duration if duration > 0 else float("inf")
         while time.monotonic() < deadline and not (stop is not None and stop.is_set()):
@@ -1746,6 +1751,46 @@ class Body:
             self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
         return result.text() + ("（中途画面黑了，可能在切场景，这一圈不准）" if shot.blackout else "") + stopped
 
+    def enroll_self(self) -> str:
+        """启动时转一圈，把团子自己的好样本钉进认装扮的记忆簿（spec 2026-10-03-identity-gallery §4）。
+        返回 status 用的文字并存进 self.enroll_note；不适用（没开认装扮 / 不是感知层 / 没挂 DINOv2）返回空串、什么都不记。
+        没转的原因和"转了但一张都没取到"都记 WARNING，不重试。"""
+        if not self.cfg.appearance.enabled or not hasattr(self.env, "sweep") or getattr(self.env, "dino", None) is None:
+            return ""
+        why = ""
+        if self._dry(False):
+            why = "dry-run"
+        elif self.blackout:
+            why = "画面黑着"
+        elif self.panels is not None and self.panels.state.others():
+            why = "别的面板开着"
+        elif self.camera is None:
+            why = "没有视角控制"
+        elif self.skills.active is not None:
+            why = f"正在{self.skills.active.goal}"
+        if why:
+            self.enroll_note = f"团子登记：没转（{why}）"
+            log.warning(self.enroll_note)
+            return self.enroll_note
+        spin = self.cfg.spin
+        try:
+            with self._held("camera"):  # 同 sweep_around 的 live 分支；Camera.spin 自己管聊天面板
+                shot = self.camera.spin(self.device.screenshot, 1, spin.seconds_per_turn, spin.fps)
+                result = self.env.sweep([(0.0, shot.before), *shot.frames], spin, enroll=True)
+        finally:
+            self._ref_thumb = None  # 自己转的镜头，不算画面大变
+            self._camera_moved("spin")
+        self.last_frame = shot.after
+        if not shot.panel_reopened:
+            self.events.put("panel", "转完一圈，聊天记录面板没重新打开")
+        if result.enrolled:
+            self.enroll_note = f"团子登记：{result.enrolled} 张"
+            log.info(self.enroll_note)
+        else:
+            self.enroll_note = "团子登记：转了一圈没认出自己"
+            log.warning(self.enroll_note)
+        return self.enroll_note
+
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
@@ -1763,6 +1808,8 @@ class Body:
         me = self.env.my_look() if hasattr(self.env, "my_look") else ""
         if me:
             parts.append("你自己：" + me)
+        if self.enroll_note:
+            parts.append(self.enroll_note)
         looks = self.env.looks(list(near)) if near and hasattr(self.env, "looks") else {}
         friends = "、".join(f"{n}（{looks[n]}）" if looks.get(n) else n for n in near)
         if near and self.ledger is not None:

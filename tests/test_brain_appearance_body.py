@@ -210,3 +210,92 @@ def test_attention_ignores_unsure_friend(clock):
     env.people_list = [unsure_person(), Person(2, "friend", "懒洋洋大王", Rect(800, 300, 100, 260), "前面", "近")]
     b, *_ = make(clock, env=env)
     assert [(t.kind, t.who) for t in b._attention_targets(clock())] == [("friend_present", "懒洋洋大王")]
+
+
+# ---- 启动时转一圈登记团子（spec 2026-10-03-identity-gallery §4） ----
+class EnrollEnv(FakeEnv):
+    """感知层开着认装扮、挂了 DINOv2 的样子：sweep 记下 enroll 参数。"""
+
+    def __init__(self, enrolled=5):
+        super().__init__()
+        self.enrolled = enrolled
+        self.dino = object()
+        self.enroll_args = []
+
+    def sweep(self, frames, spin, enroll=False):
+        from skydango.vision.sweep import SweepResult
+
+        self.enroll_args.append(enroll)
+        return SweepResult([], None, len(frames), 0.2, self.enrolled if enroll else 0)
+
+
+def enroll_body(clock, live=True, env=None, camera="spin", appearance=True):
+    from test_brain_body import SpinCamera
+
+    env = env if env is not None else EnrollEnv()
+    cam = SpinCamera() if camera == "spin" else camera
+    b, _, _, _ = body(clock, live=live, env=env, camera=cam)
+    b.cfg.appearance.enabled = appearance
+    return b, env, cam
+
+
+def test_enroll_self_spins_once_and_reports(clock):
+    b, env, cam = enroll_body(clock)
+    assert b.enroll_self() == "团子登记：5 张"
+    assert cam.spins == 1 and env.enroll_args == [True]
+    assert b.enroll_note == "团子登记：5 张" and "团子登记：5 张" in b.status()
+    assert env.holds == [("hold", "camera"), ("release", "camera")]
+
+
+def test_enroll_self_skipped_in_dry_run(clock, caplog):
+    b, env, cam = enroll_body(clock, live=False)
+    with caplog.at_level("WARNING"):
+        text = b.enroll_self()
+    assert text == "团子登记：没转（dry-run）" and cam.spins == 0
+    assert "团子登记：没转（dry-run）" in b.status() and "没转（dry-run）" in caplog.text
+
+
+def test_enroll_self_zero_samples_warns(clock, caplog):
+    b, env, cam = enroll_body(clock, env=EnrollEnv(enrolled=0))
+    with caplog.at_level("WARNING"):
+        assert b.enroll_self() == "团子登记：转了一圈没认出自己"
+    assert cam.spins == 1 and "没认出自己" in caplog.text
+
+
+@pytest.mark.parametrize("why, setup", [
+    ("画面黑着", lambda b: setattr(b, "blackout", True)),
+    ("别的面板开着", lambda b: setattr(b, "panels", type("P", (), {"state": type("S", (), {"others": lambda s: ["x"]})()})())),
+    ("正在找人", lambda b: setattr(b.skills, "active", type("T", (), {"goal": "找人"})())),
+])
+def test_enroll_self_skips_with_reason(clock, caplog, why, setup):
+    b, env, cam = enroll_body(clock)
+    setup(b)
+    with caplog.at_level("WARNING"):
+        assert b.enroll_self() == f"团子登记：没转（{why}）"
+    assert cam.spins == 0 and why in caplog.text
+
+
+def test_enroll_self_skipped_without_camera(clock):
+    b, env, cam = enroll_body(clock, camera=None)
+    assert b.enroll_self() == "团子登记：没转（没有视角控制）"
+
+
+@pytest.mark.parametrize("case", ["off", "no_sweep", "no_dino"])
+def test_enroll_self_not_applicable_is_silent(clock, caplog, case):
+    env = FakeEnv() if case == "no_sweep" else EnrollEnv()
+    if case == "no_dino":
+        env.dino = None
+    b, _, cam = enroll_body(clock, env=env, appearance=case != "off")
+    with caplog.at_level("WARNING"):
+        assert b.enroll_self() == ""
+    assert cam.spins == 0 and b.enroll_note == "" and "团子登记" not in b.status() and not caplog.records
+
+
+def test_run_enrolls_before_main_loop_and_survives_errors(clock):
+    b, env, cam = enroll_body(clock)
+    calls = []
+    b.enroll_self = lambda: calls.append("enroll") or (_ for _ in ()).throw(RuntimeError("炸了"))
+    b.step = lambda: calls.append("step")
+    stop = type("E", (), {"is_set": lambda s: len(calls) >= 2})()
+    b.run(duration=5, stop=stop)
+    assert calls[:2] == ["enroll", "step"]

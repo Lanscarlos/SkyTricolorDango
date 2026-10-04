@@ -327,6 +327,7 @@ def _appearance_parts(cfg: Config, run: RunDir | None = None) -> dict:
     return {
         "appearance": AppearanceBook(a, embedder.key, keep=cfg.perception.keep),
         "embedder": embedder, "appearance_cfg": a, "saver": saver,
+        "enroll_dir": run.path / "enroll" if run is not None else None,  # 启动登记团子的裁图，事后核对
     }
 
 

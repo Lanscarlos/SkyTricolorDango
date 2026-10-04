@@ -73,6 +73,7 @@ class SweepResult:
     self_box: Rect | None  # 转圈认出的团子
     frames: int
     seconds: float
+    enrolled: int = 0  # 启动登记（sweep(enroll=True)）钉进团子底库的样本张数
 
     def text(self) -> str:
         """"正前方：懒洋洋大王；右后方：2 个陌生人（1 个没点火）"。"""
