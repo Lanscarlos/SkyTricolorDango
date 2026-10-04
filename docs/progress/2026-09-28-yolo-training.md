@@ -253,6 +253,12 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 5. `perception attrs-train`，看 `report.md` 对门槛 1~3；`perception attrs-eval` 复评
 6. 晚上真机三步（门槛 4），都过了再开 `[attrs] enabled`
 
+**第一次粗训练**（10-04，只标了一部分：已确认 2673 张、`_unlabeled` 还剩 953 张；没做 writeback）：`perception attrs-train datasets/attrs --device cuda` → `models/attrs-20261004.npz`，报告 `tmp/attrs-train/20261004-103614/report.md`。
+- 数据：lit 1622 / unlit 953 / not_person 64 / spirit 15（并进 not_person）/ shared 17、morph 2（并进 lit）
+- 验证集宏平均 F1 0.72：not_person 精确率 46% / 召回 75%（24 张，lit 有 13 张被判成不是人）；lit 80% / 82%；unlit 81% / 75%。**点亮 / 黑影互相认错多**（lit→unlit 39、unlit→lit 53），要抽查这两类标注是不是有混的
+- 整帧回放（139 帧）：纯 YOLO 精确率 79% / 召回 68%；加外形头 conf_low 0.2 → 74% / 72%，0.25 → 76% / 70%；点没点火认反 9 次没变。建议阈值 accept 0.8 / reject 0.6
+- 结论：还没达到门槛 1、2（精确率掉了、召回只涨 4 个点、认反没少），**先别开 `[attrs] enabled`**；补 not_person 样本、标完剩下的再训
+
 ## 没做完 / 待办（按建议顺序）
 
 1. **用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，
