@@ -196,9 +196,10 @@ def _line(cls: int, box: Rect, w: int, h: int) -> str:
     return f"{cls} {(box.x + box.w / 2) / w:.6f} {(box.y + box.h / 2) / h:.6f} {box.w / w:.6f} {box.h / h:.6f}"
 
 
-def _edit_label(path: Path, w: int, h: int, fixes: list[tuple[Rect, int | None]], adds: list[tuple[int, Rect]]) -> tuple[int, int, int]:
+def _edit_label(path: Path, w: int, h: int, fixes: list[tuple[Rect, int | None]], adds: list[tuple[int, Rect]],
+                write: bool = True) -> tuple[int, int, int]:
     """改一个标注文件：fixes = 已有人物框（0 / 4 / 9）里和它 IoU ≥ DEDUP_IOU 最高的那行改类别（None 删掉）；
-    adds = 和已有人物框都不重叠（< DEDUP_IOU）才追加。别的行原样不动。返回 (改类别几行, 删了几行, 加了几行)。"""
+    adds = 和已有人物框都不重叠（< DEDUP_IOU）才追加。别的行原样不动。返回 (改类别几行, 删了几行, 加了几行)；write = False 只算不写。"""
     lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
     parsed = []  # [(原行, 类别, 框 | None)]
     for ln in lines:
@@ -230,7 +231,7 @@ def _edit_label(path: Path, w: int, h: int, fixes: list[tuple[Rect, int | None]]
         existing.append(box)
         parsed.append([_line(cls, box, w, h), cls, box])
         added += 1
-    if relabeled or removed or added:
+    if write and (relabeled or removed or added):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(ln + "\n" for ln, _, _ in parsed), encoding="utf-8")
     return relabeled, removed, added
@@ -241,7 +242,7 @@ def writeback(dataset: Path, out: Path, now: datetime) -> dict:
     - 本来没标（known == false）、现在躺在 out/form/<人形类>/ 里 → 补一个框；
     - 本来标了（known == true）、标注页确认过（`hand_labels`，现在还在那）且类别变了 → 改那一行的类别，确认是不是人 → 删掉那一行；
       没人确认的（导入的）、「不要」（看不清，不等于不是人）、撤销掉的都不动。
-    增强图（<帧>_blur / _dark，标注是原图的副本）一起改。写之前整个复制 labels/ 到 _backup/labels-<时间>。
+    增强图（<帧>_blur / _dark，标注是原图的副本）一起改。真有要改的才先整个复制 labels/ 到 _backup/labels-<时间>（重跑不多备份）。
     返回 {frames 改了几帧（只数原图）, boxes 加了几个框, relabeled 改了几个类别, removed 删了几个框}。"""
     dataset, out = Path(dataset), Path(out)
     hand = hand_labels(out)
@@ -276,19 +277,23 @@ def writeback(dataset: Path, out: Path, now: datetime) -> dict:
     if not todo:
         return res
     labels = dataset / "labels"
-    backup = dataset / "_backup" / f"labels-{now.strftime('%Y%m%d-%H%M%S')}"
-    shutil.copytree(labels, backup)
+    jobs = []  # [(要改的文件, 宽, 高, 任务, 是不是原图)]
     for (split, stem), job in sorted(todo.items()):
         if job["size"] is None:
             h, w = imread(dataset / "images" / split / f"{stem}.jpg").shape[:2]
         else:
             w, h = job["size"]
-        rl, rm, ad_ = _edit_label(labels / split / f"{stem}.txt", w, h, job["fixes"], job["adds"])
+        jobs.append((labels / split / f"{stem}.txt", w, h, job, True))
         for suffix in SUFFIXES:  # 增强图的标注副本
             aug = labels / split / f"{stem}{suffix}.txt"
             if aug.is_file():
-                _edit_label(aug, w, h, job["fixes"], job["adds"])
-        if rl or rm or ad_:
+                jobs.append((aug, w, h, job, False))
+    if not any(any(_edit_label(f, w, h, j["fixes"], j["adds"], write=False)) for f, w, h, j, _ in jobs):
+        return res
+    shutil.copytree(labels, dataset / "_backup" / f"labels-{now.strftime('%Y%m%d-%H%M%S')}")
+    for path, w, h, job, original in jobs:
+        rl, rm, ad_ = _edit_label(path, w, h, job["fixes"], job["adds"])
+        if original and (rl or rm or ad_):
             res["frames"] += 1
             res["boxes"] += ad_
             res["relabeled"] += rl

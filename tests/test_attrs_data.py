@@ -184,8 +184,9 @@ def test_writeback_relabels_and_removes_confirmed_known_boxes(tmp_path):
         assert [ln.split()[0] for ln in got] == ["4", "3"], stem  # self 行不碰
     assert (root / "labels/val/0002_2.00s.txt").read_text(encoding="utf-8") == "4 0.5 0.5 0.1 0.4\n"
     assert (root / "_backup" / "labels-20261004-020000" / "train" / "rec1_0001_1.00s_dark.txt").is_file()
-    # 再写一次：已经改过了，什么都不做
+    # 再写一次：已经改过了，什么都不做，也不再多一份备份
     assert ad.writeback(root, out, datetime(2026, 10, 4, 3, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
+    assert not (root / "_backup" / "labels-20261004-030000").exists()
 
 
 def test_writeback_discard_and_undone_keep_box(tmp_path):
