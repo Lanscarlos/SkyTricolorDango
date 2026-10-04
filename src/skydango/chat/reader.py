@@ -30,6 +30,7 @@ class Message:
     box: Rect
     seen_at: float
     speaker: str = ""  # 只有聊天记录面板能读到说话人
+    source: str = ""  # 无障碍读法：来自哪里（"panel" 面板行 / "bubble" 头顶气泡）；OCR 读法留空
 
 
 @dataclass(frozen=True)
