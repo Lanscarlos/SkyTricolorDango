@@ -12,6 +12,7 @@ from skydango.chat.a11yreader import A11yChatReader
 from skydango.chat.tracker import SelfFilter
 from skydango.config import ChatConfig, OcrConfig
 from skydango.device.a11y import parse_line
+from skydango.vision.a11yui import bubble_key
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "tmp" / "a11y-live" / "raw.jsonl"
@@ -51,6 +52,10 @@ def test_replay_local_recording():
         for m in reader.read(None, now):
             got.append(m)
             print(f"{now:8.2f} [{m.source}] {m.speaker}：{m.text}")
+    last: dict[tuple[str, str], float] = {}
     for m in got:
         assert m.speaker
         assert m.source in ("panel", "bubble")
+        k = (m.speaker, bubble_key(m.text))
+        assert k not in last or m.seen_at - last[k] > 20, f"20 秒内重复报：{m.speaker}：{m.text}"
+        last[k] = m.seen_at

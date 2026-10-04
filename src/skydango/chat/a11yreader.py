@@ -17,7 +17,7 @@ from pathlib import Path
 
 from ..config import ChatConfig, OcrConfig
 from ..device.a11y import Snapshot
-from ..vision.a11yui import Bubble, PanelRow, UiView, bubble_key, classify
+from ..vision.a11yui import Bubble, PanelRow, Tag, UiView, bubble_key, classify, strip_typing
 from ..vision.bubbles import Rect
 from ..vision.chatlog import LogRow
 from .reader import Detection, Message
@@ -30,11 +30,18 @@ _EMPTY = UiView(False, False, (), (), (), None)
 REPORTED_KEEP = 180.0  # 气泡报过的话留多久，等面板行来抵（§3.3）
 BUBBLE_KEEP = 30.0  # 名字标签看不见（闪一下 / 走出画面）时，他头上的气泡计数还记多久（气泡 20 多秒淡掉）
 PANEL_KEEP = 30.0  # 面板行报过的话留多久，等他头上同一句气泡来抵（约一条气泡的寿命）
+FRIENDS_TTL = 2.0  # 好友名单（friends.md）最多隔这么久重读一次：每圈要分类好几次
 
 
 def _rect(box: tuple[int, int, int, int]) -> Rect:
     l, t, r, b = box
     return Rect(l, t, r - l, b - t)
+
+
+def _in_view(view: UiView) -> list[Tag]:
+    """好友名单里的、不贴边的名字标签。贴边 = 他在画面外（光遇把标签贴在屏幕边上），他的气泡这时看不见：
+    当成在画面里会把他头上的计数清空，回来时还挂着的气泡又报一遍。"""
+    return [t for t in view.tags if t.known and not t.edge]
 
 
 def align(prev: list, cur: list) -> int | None:
@@ -53,7 +60,6 @@ def align(prev: list, cur: list) -> int | None:
 
 
 class A11yChatReader:
-    settling = False  # 没有淡入动画要等
     reads_bubbles = True
 
     def __init__(
@@ -63,9 +69,14 @@ class A11yChatReader:
         chat: ChatConfig,
         ocr_cfg: OcrConfig,
         self_filter: SelfFilter,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.source = source
         self.friends = friends
+        self._clock = clock
+        self._friends_cache: tuple[float, list[str]] | None = None
+        # 文字一开始就是全的、没有淡入要等；只有面板刚打开的过渡快照（行全“看不见”）那一份为真，免得面板管理器这时关面板
+        self.settling = False
         self.ocr_cfg = ocr_cfg
         self.self_filter = self_filter
         self.ignore = [re.compile(p) for p in chat.ignore_patterns]
@@ -86,9 +97,16 @@ class A11yChatReader:
         self._panel_reported: deque[tuple[str, str, float]] = deque()  # 面板行报过的，等气泡来抵（§3.3）
 
     # ---- 取快照 / 分类 ----
+    def _friend_names(self) -> list[str]:
+        now = self._clock()
+        cache = self._friends_cache
+        if cache is None or now - cache[0] >= FRIENDS_TTL:
+            cache = self._friends_cache = (now, list(self.friends()))
+        return cache[1]
+
     def _classify(self, frame) -> UiView:
         height, width = frame.shape[:2] if frame is not None else (1080, 1920)
-        return classify(self.source(), width, height, self.friends())
+        return classify(self.source(), width, height, self._friend_names())
 
     def view(self, frame=None) -> UiView:
         """最近一次 `read()` 分好类的结果。"""
@@ -107,8 +125,8 @@ class A11yChatReader:
 
     # ---- 给面板管理器 ----
     def tags_in_view(self) -> list[str]:
-        """最近一次 `read()` 看得见的好友名字标签。"""
-        return list(dict.fromkeys(t.name for t in self._view.tags))
+        """最近一次 `read()` 看得见的好友名字标签（名单外的、贴在屏幕边上的不算）。"""
+        return list(dict.fromkeys(t.name for t in _in_view(self._view)))
 
     def typing(self) -> list[str]:
         """最近一次 `read()` 里正在打字的好友：头上有只有点点的气泡，或者某句后面挂上了点点。"""
@@ -146,11 +164,11 @@ class A11yChatReader:
             self._reported.popleft()
 
     def _take_reported(self, speaker: str, text: str, now: float) -> bool:
-        """气泡报过同一句（说话人、原文相同）就划掉一条、返回 True：一条抵一条（§3.3）。"""
+        """气泡报过同一句（说话人、比较键相同）就划掉一条、返回 True：一条抵一条（§3.3）。"""
         self._expire_reported(now)
-        text = text.strip()
+        key = bubble_key(text)
         for item in self._reported:
-            if item[0] == speaker and item[1] == text:
+            if item[0] == speaker and bubble_key(item[1]) == key:
                 self._reported.remove(item)
                 return True
         return False
@@ -215,8 +233,8 @@ class A11yChatReader:
             cur[key] += 1
             boxes[key] = b.box
             orig = self._orig.setdefault((name, key), text)
-            if text == key and orig != key:
-                self._orig[(name, key)] = orig = key  # 第一次看到时正挂着打字的点：点是动画
+            if text == strip_typing(text) and orig != text:
+                self._orig[(name, key)] = orig = text  # 第一次看到时正挂着打字的点：点是动画
             if text != orig:
                 typing = True  # 这句后面挂上了点点：他在打下一句
         for k in [k for k in self._orig if k[0] == name and k[1] not in cur]:
@@ -228,7 +246,7 @@ class A11yChatReader:
         report = report and self._bubbles_ready
         self._bubbles_ready = True
 
-        groups: dict[str, list[Bubble]] = {t.name: [] for t in view.tags}
+        groups: dict[str, list[Bubble]] = {t.name: [] for t in _in_view(view)}
         for b in view.bubbles:
             if b.speaker is not None:
                 groups.setdefault(b.speaker, []).append(b)
@@ -250,7 +268,7 @@ class A11yChatReader:
                     if not report:
                         self._take_panel_reported(name, key, now)  # 面板开着时看到了：面板那条抵掉
                         continue
-                    text = self._orig[(name, key)]
+                    text = strip_typing(self._orig[(name, key)])  # 第一次看到时就挂着打字的点：报的时候去掉
                     if not self._passes(text, now) or self._take_panel_reported(name, key, now):
                         continue
                     fresh.append(Message(text, _rect(boxes[key]), now, name, source="bubble"))
@@ -262,15 +280,26 @@ class A11yChatReader:
 
     # ---- 面板行 ----
     def _panel_messages(self, view: UiView, now: float) -> list[Message]:
-        """面板行和上一次对齐，把新行变成消息；头顶气泡已经报过的同一句不再报。"""
-        cur = [r.key() for r in view.rows]
+        """面板行和上一次对齐，把新行变成消息；头顶气泡已经报过的同一句不再报。
+
+        对齐只用别人的行：自己的行靠坐标认（贴面板右边），面板刚打开时框还没到位就认不出来，会把对齐打乱。
+        自己的行照样记进 rows.log。
+        """
+        if view.rows and not any(r.visible for r in view.rows):
+            self.settling = True  # 面板刚打开的过渡快照（行先“看不见”、框很小）：不动基准、不报，等下一份
+            return []
+        rows = [r for r in view.rows if not r.is_self]
+        cur = [r.key() for r in rows]
         if not cur:
             return []  # 开着但一行都没有（刚登录、历史清空）：基准留着，等第一句进来对得上
         added_idx: list[int] = []
         j = align(self._prev, cur) if self._prev else None
         if j is None:
-            if self._prev and cur:
+            if self._prev:
                 log.info("面板历史对不上，当新基准")
+            for r in rows:  # 基准里有的、气泡报过的那几句算对上了：划掉（一条抵一条），免得之后他又说一遍被吃掉
+                if not r.masked:
+                    self._take_reported(r.speaker, r.text, now)
         else:
             added_idx = list(range(j + 1, len(cur)))
         self._prev = cur
@@ -279,12 +308,12 @@ class A11yChatReader:
             vkeys = [r.key() for r in visible]
             if vkeys != self._traced:
                 self._traced = vkeys
-                added = {i for i, r in enumerate(visible) if any(r is view.rows[a] for a in added_idx)}
+                added = {i for i, r in enumerate(visible) if any(r is rows[a] for a in added_idx)}
                 self._trace(now, visible, added)
         fresh: list[Message] = []
         for i in added_idx:
-            row = view.rows[i]
-            if row.is_self or row.masked or not self._passes(row.text, now):
+            row = rows[i]
+            if row.masked or not self._passes(row.text, now):
                 continue
             if self._take_reported(row.speaker, row.text, now):
                 continue
@@ -296,6 +325,7 @@ class A11yChatReader:
         """返回这一次新出现的、不是自己说的消息：面板开着读面板行，关着读好友头顶的气泡。"""
         view = self._classify(frame)
         self._view = view
+        self.settling = False
         if not view.in_game:
             self._typing = []  # 气泡计数留着：回到游戏后还在的气泡不重报
             if self.panel_closed_since is None:
@@ -408,7 +438,9 @@ class FallbackReader:
                 return False
             if self._dead_at is None:
                 if self._restarts >= len(RESTART_DELAYS):
-                    self._to_ocr(client.error or self._start_error or "客户端反复退出")
+                    # 有别人连着（多半是它把我们踢了）就不清：按名字清会把别人的客户端一起杀掉
+                    stop = not self.client.others_running()
+                    self._to_ocr(client.error or self._start_error or "客户端反复退出", stop=stop)
                     return False
                 self._dead_at = now
             if now >= self._dead_at + RESTART_DELAYS[self._restarts]:

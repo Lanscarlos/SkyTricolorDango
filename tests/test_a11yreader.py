@@ -1,6 +1,6 @@
 import re
 
-from a11ysnap import bubble, placeholder, row, self_row, snap, tag
+from a11ysnap import bubble, node, placeholder, row, self_row, snap, tag
 from skydango.chat.a11yreader import A11yChatReader, FallbackReader
 from skydango.chat.tracker import SelfFilter
 from skydango.config import ChatConfig, OcrConfig
@@ -394,6 +394,155 @@ def test_bubble_traced(tmp_path):
     assert "气泡 小明：怎么样" in r.trace_path.read_text(encoding="utf-8")
 
 
+def test_edge_tag_then_back_not_rereported():
+    """小明走出画面、名字标签贴在屏幕边上：不算在画面里，回来时还挂着的那句不重报（C1）。"""
+    r, h, _ = make()
+    h[0] = closed(*head())
+    r.read(None, 1.0)
+    h[0] = closed(*head("怎么样"))
+    assert len(r.read(None, 2.0)) == 1
+    off = (tag("小明", 78, TY), node("怎么样", (1000, 330, 1100, 368), visible=False))  # 气泡在画面外看不见
+    for t in (3.0, 6.0, 10.0):
+        h[0] = closed(*off)
+        assert r.read(None, t) == []
+        assert r.tags_in_view() == []
+    h[0] = closed(*head("怎么样"))
+    assert r.read(None, 15.0) == []
+
+
+def test_first_seen_with_dots_reported_clean_and_deduped():
+    """第一次看到时这句后面已挂着打字的点：报的是去掉点的原文，面板行对得上、不再报（I1）。"""
+    r, h, _ = make()
+    h[0] = opened([A])
+    r.read(None, 1.0)
+    h[0] = closed(*head())
+    r.read(None, 2.0)
+    h[0] = closed(*head("怎么样.."))
+    assert [(m.text, m.source) for m in r.read(None, 3.0)] == [("怎么样", "bubble")]
+    h[0] = opened([A, ("怎么样", "小明")])
+    assert r.read(None, 4.0) == []
+
+
+def test_wrapped_bubble_matches_panel_row():
+    """折行的气泡（换行 / 多空格）和面板行文字对得上：两边只报一次（I1）。"""
+    r, h, _ = make()
+    h[0] = opened([A])
+    r.read(None, 1.0)
+    h[0] = closed(*head())
+    r.read(None, 2.0)
+    h[0] = closed(*head("一起去" + chr(10) + "雨林  吗"))
+    assert len(r.read(None, 3.0)) == 1
+    h[0] = opened([A, ("一起去雨林 吗", "小明")])
+    assert r.read(None, 4.0) == []
+    # 反过来：面板行先报，面板关上后他头上折行的同一句不再报
+    h[0] = opened([A, ("一起去雨林 吗", "小明"), ("出发吧 走", "小明")])
+    assert [m.text for m in r.read(None, 5.0)] == ["出发吧 走"]
+    h[0] = closed(*head("一起去" + chr(10) + "雨林  吗", "出发吧" + chr(10) + "走"))
+    assert r.read(None, 6.0) == []
+
+
+def transition(*texts):
+    """面板刚打开的过渡快照：行都“看不见”，自己的行是很小的框（不满足自己行的规则）。"""
+    nodes = [placeholder()]
+    y = 100
+    for t in texts:
+        if t[0] == "self":
+            nodes.append(node(t[1], (13, 301, 52, 311), visible=False))
+        else:
+            nodes.append(row(t[0], t[1], y, visible=False))
+        y += 60
+    return snap(*nodes)
+
+
+def test_transition_snapshot_does_not_lose_rows():
+    """上次最后一行是团子自己说的 → 过渡快照 → 正常快照多一行好友的话：报出来（I2）。"""
+    r, h, _ = make()
+    S, N = ("self", "我在呢"), ("走吧", "小红")
+    h[0] = panel(A, S)
+    r.read(None, 1.0)
+    assert r.settling is False
+    h[0] = snap()
+    r.read(None, 2.0)
+    h[0] = transition(A, S, N)
+    assert r.read(None, 3.0) == []
+    assert r.settling is True  # 过渡态：面板管理器先别关
+    h[0] = panel(A, S, N)
+    assert [(m.speaker, m.text) for m in r.read(None, 3.3)] == [("小红", "走吧")]
+    assert r.settling is False
+
+
+def test_self_rows_not_used_for_alignment(tmp_path):
+    """对齐只用别人的行：自己的行一会儿有一会儿没有也不打乱；rows.log 照样记自己的行（I2）。"""
+    r, h, _ = make()
+    r.trace_path = tmp_path / "rows.log"
+    S = ("self", "我在呢")
+    h[0] = panel(A, S)
+    r.read(None, 1.0)
+    h[0] = panel(A, ("走吧", "小红"))  # 自己那行这一份没认出来
+    assert [m.text for m in r.read(None, 2.0)] == ["走吧"]
+    h[0] = panel(A, S, ("走吧", "小红"))
+    assert r.read(None, 3.0) == []
+    assert "我在呢" in r.trace_path.read_text(encoding="utf-8")
+
+
+def test_unknown_tag_reappearing_does_not_peek():
+    """名单外的名字标签消失又出现不叫看一眼；他头上的原文气泡照样看一眼（I3）。"""
+    r, h, _ = make()
+    h[0] = closed(*head())
+    r.read(None, 1.0)
+    for t in (2.0, 4.0):
+        h[0] = closed(*head(), tag("路人甲", 1500, TY))
+        assert r.read(None, t) == []
+        assert r.want_peek() is None
+        assert r.tags_in_view() == ["小明"]
+        h[0] = closed(*head())
+        r.read(None, t + 1)
+    h[0] = closed(*head(), *head("你好", name="路人甲", cx=1500))
+    assert r.read(None, 6.0) == []
+    assert r.want_peek() == "bubble_text"
+    r.read(None, 7.0)
+    assert r.want_peek() is None
+
+
+def test_rebaseline_consumes_bubble_reported():
+    """面板对不上、当新基准时，基准里气泡报过的那句划掉：之后他在画面外又说一遍照报（M1）。"""
+    r, h, _ = make()
+    h[0] = opened([A])
+    r.read(None, 1.0)
+    h[0] = closed(*head())
+    r.read(None, 2.0)
+    h[0] = closed(*head("怎么样"))
+    assert len(r.read(None, 3.0)) == 1
+    X, Y, q = ("甲甲甲", "小红"), ("乙乙乙", "小红"), ("怎么样", "小明")
+    h[0] = opened([X, Y, q])  # 对不上：当新基准
+    assert r.read(None, 4.0) == []
+    h[0] = opened([X, Y, q, q])
+    assert [(m.text, m.source) for m in r.read(None, 5.0)] == [("怎么样", "panel")]
+
+
+def test_friends_cached():
+    """好友名单最多每 2 秒重取一次（M3）。"""
+    calls, clock = [], [0.0]
+
+    def friends():
+        calls.append(clock[0])
+        return ["小明", "小红"]
+
+    holder = [closed(*head())]
+    r = A11yChatReader(
+        lambda: holder[0], friends, ChatConfig(), OcrConfig(), SelfFilter(30, 0.8), clock=lambda: clock[0]
+    )
+    r.read(None, 1.0)
+    r.panel_visible()
+    r.log_rows()
+    clock[0] = 1.9
+    r.read(None, 2.0)
+    assert len(calls) == 1
+    clock[0] = 2.1
+    r.read(None, 3.0)
+    assert len(calls) == 2
+
+
 # ---- FallbackReader（spec §5）----
 GOOD = object()  # 假快照
 FRAME = object()  # 假截图
@@ -589,6 +738,24 @@ def test_three_failed_restarts_switch_to_ocr(caplog):
         assert fb.read(FRAME, later) == ["ocr 的消息"]
     assert client.starts == 4  # 不再起
     assert "读聊天退回 OCR" in caplog.text
+
+
+def test_restarts_used_up_with_another_reader_connected_does_not_stop():
+    """重启用完要退回 OCR 时有别人连着：不清（按名字清会把别人的客户端杀掉）。"""
+    fb, client, a11y, ocr = fallback()
+    fb.read(FRAME, 0.0)
+    client.alive, client.snap = False, None
+    t = 10.0
+    fb.read(FRAME, t)
+    for delay in (2.0, 5.0, 10.0):
+        t += delay
+        fb.read(FRAME, t)  # 到点重启
+        client.alive = False  # 没快照又死了
+        client.others = delay == 10.0  # 最后一次是别人连上来把我们踢了
+        t += 0.1
+        fb.read(FRAME, t)
+    assert fb.using_ocr and client.starts == 4
+    assert client.stops == 0
 
 
 def test_restart_raising_counts_as_another_death():

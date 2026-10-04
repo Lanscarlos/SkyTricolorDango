@@ -27,9 +27,9 @@ def test_panel_rows_self_rows_and_placeholder():
 def test_panel_closed_tags_and_bubbles():
     v = cl(
         snap(
-            tag("小明", 1053, 279),
-            bubble("怎么样", 1053, 437),
-            bubble("团子", 1053, 498),
+            tag("小明", 1053, 279),  # 实测：标签底 321，下面一摞气泡相隔 20 多 px
+            bubble("怎么样", 1053, 341, lines=2),
+            bubble("团子", 1053, 437),
             bubble(".....", 1387, 279),
         )
     )
@@ -40,15 +40,57 @@ def test_panel_closed_tags_and_bubbles():
 
 
 def test_bubble_saying_friend_name_is_not_a_tag():
-    v = cl(snap(tag("小明", 1053, 279), bubble("小红", 1053, 437)))
+    v = cl(snap(tag("小明", 1053, 279), bubble("小红", 1053, 341)))
     assert [t.name for t in v.tags] == ["小明"]
     assert len(v.bubbles) == 1 and v.bubbles[0].text == "小红" and v.bubbles[0].speaker == "小明"
 
 
 def test_two_matching_same_column_topmost_is_tag():
-    v = cl(snap(tag("小明", 1053, 279), tag("小红", 1053, 400)))
+    v = cl(snap(tag("小明", 1053, 279), tag("小红", 1053, 340)))  # 竖着挨着：一摞里只有最上面的是标签
     assert [t.name for t in v.tags] == ["小明"]
     assert [b.text for b in v.bubbles] == ["小红"]
+
+
+def test_far_below_in_same_column_is_another_column():
+    """同一条竖线上隔得远（不挨着）的是另一个人：他自己的标签，近处那人的气泡不挂到远处的标签上。"""
+    v = cl(snap(tag("小红", 1053, 100), tag("小明", 1053, 500), bubble("嗨", 1053, 560)))
+    assert [t.name for t in v.tags] == ["小红", "小明"]
+    assert [(b.text, b.speaker) for b in v.bubbles] == [("嗨", "小明")]
+    v = cl(snap(tag("小红", 1053, 100), bubble("在吗", 1053, 600)))  # 近处那人的标签淡了
+    assert v.bubbles[0].speaker is None
+
+
+def test_stack_chains_from_tag():
+    """一摞气泡一句挨一句往下：每句都挂在最上面的标签上。"""
+    v = cl(snap(tag("小明", 1053, 279), bubble("一", 1053, 341, lines=2), bubble("二", 1053, 437), bubble("三", 1053, 498)))
+    assert [b.speaker for b in v.bubbles] == ["小明", "小明", "小明"]
+
+
+def test_edge_tag_is_flagged():
+    """好友在画面外：光遇把名字标签贴在屏幕边上，标 edge，下面的气泡不挂他。"""
+    v = cl(snap(tag("小明", 78, 279), bubble("嗨", 78, 329), tag("小红", 1842, 279), tag("小明", 1053, 600)))
+    assert [(t.name, t.edge) for t in v.tags] == [("小明", True), ("小红", True), ("小明", False)]
+    assert v.bubbles[0].speaker is None
+
+
+def test_unknown_name_tag():
+    """名单外的名字标签照样是标签（known=False），不当气泡；他列里的气泡挂不上已知好友。"""
+    v = cl(snap(tag("路人甲", 1053, 279), bubble("你好", 1053, 329)))
+    assert [(t.name, t.known) for t in v.tags] == [("路人甲", False)]
+    assert [(b.text, b.speaker) for b in v.bubbles] == [("你好", None)]
+
+
+def test_friend_tag_behind_panel_is_not_self_row():
+    """面板开着时好友名字标签落在自己行的 x 范围里：不是自己的行。"""
+    v = cl(snap(row("你好", "小明", 100), placeholder(), tag("小明", 560, 600)))
+    assert [r.key() for r in v.rows] == [(False, "小明", "你好")]
+
+
+def test_placeholder_ignored_when_input_open():
+    """输入栏开着时左下角的占位不算面板开着，只认看得见的别人的面板行。"""
+    assert cl(snap(input_bar(), placeholder())).panel_open is False
+    assert cl(snap(input_bar(), placeholder(), row("你好", "小明", 100))).panel_open is True
+    assert cl(snap(placeholder())).panel_open is True
 
 
 def test_bubble_attaches_to_tag_in_its_column():
@@ -78,5 +120,6 @@ def test_not_in_game():
 def test_bubble_key_and_dots():
     assert bubble_key("怎么样.. ") == "怎么样"
     assert bubble_key("怎么样") == "怎么样"
+    assert bubble_key("一起去" + chr(10) + "雨林 吗 ..") == "一起去雨林吗"  # 折行 / 空白都不算
     assert is_dots(" ..") and is_dots("…。")
     assert not is_dots("好吧...") and not is_dots("")
