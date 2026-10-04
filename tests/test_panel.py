@@ -667,6 +667,13 @@ def said(text="在吗", who="小明", source="bubble"):
     return Message(text, (0, 0, 10, 10), 0.0, who, source)
 
 
+def apeek(m, t):
+    """无障碍读法下看一眼：面板至少开 1 秒才关（A11Y_PEEK_MIN）。"""
+    m.tick(t, [], visible=False)
+    m.tick(t + 0.2, [], visible=True)
+    m.tick(t + 1.2, [], visible=True)
+
+
 def talking(m, t, who="小明"):
     m.tick(t, [said(who=who)], visible=False)
     assert m.state == "talking"
@@ -699,11 +706,11 @@ def test_talking_peeks_every_chat_peek():
     m.tick(20.0, [], visible=False)  # 进「聊着」15 秒：看一眼面板（接住画面外的人）
     assert presses(dev) == 1 and m.state == "peek"
     m.tick(20.2, [], visible=True)
-    m.tick(20.4, [], visible=True)
+    m.tick(21.2, [], visible=True)  # 无障碍读法：看一眼至少开 1 秒
     assert presses(dev) == 2 and m.state == "talking" and state.open is False  # 没新消息：关上、接着聊
-    m.tick(35.3, [], visible=False)
+    m.tick(36.1, [], visible=False)
     assert presses(dev) == 2
-    m.tick(35.5, [], visible=False)  # 上次读到面板 15 秒后再看
+    m.tick(36.2, [], visible=False)  # 上次读到面板 15 秒后再看
     assert presses(dev) == 3 and m.state == "peek"
 
 
@@ -718,8 +725,8 @@ def test_talking_peek_with_panel_message_enters_chatting():
 def test_talking_goes_idle_after_quiet_close():
     m, dev, state = a11y()
     talking(m, 5.0)
-    peek(m, 20.0)
-    peek(m, 36.0)
+    apeek(m, 20.0)
+    apeek(m, 36.5)
     assert m.state == "talking"
     m.tick(49.9, [], visible=False)
     assert m.state == "talking"
@@ -746,7 +753,7 @@ def test_peek_from_talking_after_quiet_close_goes_idle():
     m.tick(49.0, [], visible=False)
     assert m.state == "peek"
     m.tick(50.2, [], visible=True)
-    m.tick(50.4, [], visible=True)  # 看完已经安静 45 秒了
+    m.tick(51.2, [], visible=True)  # 看完已经安静 45 秒了
     assert m.state == "idle" and state.open is False
 
 
@@ -757,7 +764,7 @@ def test_bubble_during_idle_peek_returns_to_talking():
     m.tick(30.1, [said()], visible=False)  # 面板还没出来，气泡先读到了
     assert m.state == "peek"
     m.tick(30.2, [], visible=True)
-    m.tick(30.4, [], visible=True)
+    m.tick(31.2, [], visible=True)
     assert m.state == "talking" and state.open is False
 
 
@@ -911,3 +918,69 @@ def test_always_mode_unchanged():
     assert m.state == "chatting" and dev.calls == []
     m.before_speak(6.0)
     assert dev.calls == []
+
+
+def _ticker(m):
+    """让面板管理器的时钟（按键时刻）和 tick 的 now 一致。"""
+    clock = {"t": 0.0}
+    m.clock = lambda: clock["t"]
+
+    def tick(t, fresh=(), visible=False):
+        clock["t"] = t
+        m.tick(t, list(fresh), visible=visible)
+
+    return tick
+
+
+def test_a11y_peek_stays_open_until_rows_loaded():
+    """无障碍读法每 0.15 秒一份快照，「连着 2 帧看到」不到半秒就满足：面板行还没加载全就关了（10-04 真机）。至少开 1 秒。"""
+    m, dev, state = a11y()
+    tick = _ticker(m)
+    tick(30.0)  # 定时看一眼
+    assert m.state == "peek" and presses(dev) == 1
+    tick(30.2, visible=True)
+    tick(30.4, visible=True)
+    assert m.state == "peek" and presses(dev) == 1
+    tick(31.3, visible=True)
+    assert m.state == "idle" and presses(dev) == 2
+
+
+def test_a11y_panel_lingering_after_own_close_is_not_user_opened():
+    """关面板的动画约 2 秒，无障碍树里的面板节点这段时间还在、还会闪（10-04 真机：关了 2.6 秒后还"看得到"）。
+    团子自己关的 3.5 秒内看到面板不算别人打开的。"""
+    m, dev, state = a11y()
+    tick = _ticker(m)
+    tick(30.0)
+    tick(30.2, visible=True)
+    tick(31.3, visible=True)
+    assert m.state == "idle"
+    tick(32.0, visible=True)
+    tick(33.9, visible=True)
+    tick(34.5, visible=False)
+    assert m.state == "idle" and presses(dev) == 2
+    tick(36.0, visible=True)  # 关了 4.7 秒后又看到：这才是别人打开的
+    assert m.state == "chatting"
+
+
+def test_a11y_talking_peek_lingering_panel_stays_talking():
+    m, dev, state = a11y()
+    tick = _ticker(m)
+    talking(m, 5.0)
+    tick(20.0)
+    tick(20.2, visible=True)
+    tick(21.3, visible=True)
+    assert m.state == "talking" and presses(dev) == 2
+    tick(23.0, visible=True)  # 关面板的动画里还看得到
+    assert m.state == "talking"
+
+
+def test_ocr_reader_keeps_short_close_window():
+    """OCR 读法照旧：关了 1.5 秒后看到面板就算别人打开的、看一眼 2 帧就关。"""
+    m, dev, state = auto()
+    tick = _ticker(m)
+    tick(30.0)
+    tick(30.2, visible=True)
+    tick(30.4, visible=True)
+    assert m.state == "idle"
+    tick(32.0, visible=True)
+    assert m.state == "chatting"
