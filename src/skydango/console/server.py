@@ -154,6 +154,7 @@ class ConsoleServer:
         self.jobs = JobRunner(getattr(runner, "cwd", Path.cwd()))
         self.curate_poll = 1.0
         self._curate_after = False
+        self._curate_lock = threading.Lock()
         self._inbox_cache: tuple[float, dict] | None = None
         self.discover()  # 面板起来之前终端里已经在跑的团子：直接接上
 
@@ -238,7 +239,11 @@ class ConsoleServer:
         if body.get("stop_job") is True:
             self.jobs.stop()
             return None
-        return {"ok": False, "job": self.jobs.status(), "error": "整理还没完，等它做完，或者选「停掉整理再叫醒」"}
+        return self._job_busy()
+
+    def _job_busy(self) -> dict:
+        error = "整理还没完，等它做完，或者选「停掉整理再叫醒」"
+        return {"ok": False, "job": self.jobs.status(), "error": error, "text": error}
 
     def start_job(self, job: str) -> tuple[int, dict]:
         if job not in JOBS:
@@ -251,8 +256,8 @@ class ConsoleServer:
                 secrets = read_secrets(console_paths(self.config_path)[1])
             except ValueError as exc:
                 return 409, {"ok": False, "text": str(exc)}
-            cmd = [sys.executable, "-m", "skydango", "-c", str(self.config_path), "perception", "inbox",
-                   "process" if job == "inbox" else "retrain"]
+            cmd = [sys.executable, "-m", "skydango", "-c", str(self.config_path), "perception",
+                   *(["inbox", "process"] if job == "inbox" else ["retrain"])]
             try:
                 self.jobs.start(job, cmd, child_env(os.environ, secrets))
             except (RuntimeError, OSError) as exc:
@@ -274,20 +279,27 @@ class ConsoleServer:
         hard = len(list(hard_dir.glob("*.jpg"))) if hard_dir is not None and hard_dir.is_dir() else 0
         inbox = self.inbox_dir()
         pending = ib.pending_runs(inbox)
-        frames = hard + sum(int(r.get("frames") or 0) for r in ib._index_rows(inbox) if r["run"] in pending)
+        frames = hard + ib.pending_frames(inbox)
         try:
-            sec = float(ib._json_dict(inbox / ib.STATS).get("sec_per_frame") or 0) or DEFAULT_SEC_PER_FRAME
+            sec = float(ib.read_stats(inbox).get("sec_per_frame") or 0) or DEFAULT_SEC_PER_FRAME
         except (TypeError, ValueError):
             sec = DEFAULT_SEC_PER_FRAME
-        return {"hard": hard, "pending": len(pending), "eta_min": round(sec * frames / 60, 1), "ask": cfg.ask}
+        return {"hard": hard, "pending": len(pending), "eta_min": round(sec * frames / 60, 1),
+                "ask": bool(cfg.enabled and cfg.ask)}
 
-    def _curate_when_stopped(self) -> None:
-        """stop_run(curate) 的后半：等团子槽退出（最多 stop_timeout + 30 秒）再起整理任务。"""
+    def _curate_when_stopped(self, pid, run_dir) -> None:
+        """stop_run(curate) 的后半：等团子槽退出（最多 stop_timeout + 30 秒）再起整理任务。
+        pid / run_dir 是停的那个团子；槽里换成别的团子了（期间又叫醒过）就放弃，不替没要求整理的那次停止整理。"""
         wait = self.store._fallback().console.stop_timeout + 30
         deadline = time.monotonic() + wait
         try:
             while time.monotonic() < deadline:
-                if self.runner.status()["state"] in ("exited", "crashed", "idle"):
+                st = self.runner.status()
+                if st["state"] in BUSY and st.get("pid") != pid:
+                    return
+                if st["state"] in ("exited", "crashed", "idle"):
+                    if run_dir is not None and st.get("run_dir") != run_dir:
+                        return
                     code, res = self.start_job("inbox")
                     if code != 200:
                         log.warning("停团子后没能起整理：%s", res.get("text"))
@@ -295,7 +307,8 @@ class ConsoleServer:
                 time.sleep(self.curate_poll)
             log.warning("团子 %.0f 秒还没退出，不自动整理了", wait)
         finally:
-            self._curate_after = False
+            with self._curate_lock:
+                self._curate_after = False
 
     def start_run(self, body: dict) -> tuple[int, dict]:
         try:
@@ -308,6 +321,8 @@ class ConsoleServer:
         self.store.save({"console.brain": opts.brain, "console.live": opts.live, "console.emotes": opts.emotes,
                          "console.duration": opts.duration})  # 下次打开面板还是这次的选择
         with self._device_lock:  # 和设备检测互斥：检查完到真的起进程之间，检测不能插进来
+            if self.jobs.status()["state"] == "running":  # 锁里再看一次：整理任务可能刚被守护线程起了
+                return 409, self._job_busy()
             problems = self._run_problems(opts)
             if self._checking:
                 problems.append(problem("正在检测设备，等检测完再叫醒"))
@@ -406,9 +421,13 @@ class ConsoleServer:
         """真机团子的「停止」：只停团子（沙盒在跑时不动它）。body.curate 为真：团子退出后接着整理难例。"""
         st = self.runner.status()
         if _kind(st) == "dango":
-            if (body or {}).get("curate") and st["state"] in BUSY and not self._curate_after:
-                self._curate_after = True
-                threading.Thread(target=self._curate_when_stopped, name="console-curate", daemon=True).start()
+            if (body or {}).get("curate") and st["state"] in BUSY:
+                with self._curate_lock:
+                    start = not self._curate_after
+                    self._curate_after = True
+                if start:
+                    threading.Thread(target=self._curate_when_stopped, args=(st.get("pid"), st.get("run_dir")),
+                                     name="console-curate", daemon=True).start()
             self.runner.stop()
         return 200, {"ok": True}
 
@@ -475,6 +494,8 @@ class ConsoleServer:
         """起沙盒子进程（页面启动和回放共用；只有页面启动才记进录制）。"""
         port = self.sandbox_port()
         with self._device_lock:
+            if self.jobs.status()["state"] == "running":
+                return 409, self._job_busy()
             problems, orphan = self.sandbox_problems()
             if problems:
                 return 409, {"ok": False, "problems": problems, "orphan": orphan}

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 import threading
@@ -15,6 +16,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .runner import _popen_flags, kill_tree
+
+log = logging.getLogger(__name__)
 
 JOBS = ("inbox", "retrain")
 TAIL_LINES = 20
@@ -42,7 +45,7 @@ class JobRunner:
             logdir.mkdir(parents=True, exist_ok=True)
             self._log = logdir / f"{time.strftime('%Y%m%d-%H%M%S')}-{job}.log"
             self._proc = self._popen(
-                cmd, cwd=self.cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cmd, cwd=self.cwd, env={**env, "PYTHONUNBUFFERED": "1"}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **_popen_flags(sys.platform),
             )
             self._gen += 1
@@ -52,25 +55,29 @@ class JobRunner:
             proc, gen, log = self._proc, self._gen, self._log
         threading.Thread(target=self._read, args=(proc, gen, log), name=f"console-job-{job}", daemon=True).start()
 
-    def _read(self, proc, gen: int, log: Path) -> None:
-        with log.open("w", encoding="utf-8", errors="replace") as out:
-            for raw in proc.stdout:
-                text = raw.decode("utf-8", "replace").rstrip("\r\n")
-                out.write(text + "\n")
-                out.flush()
-                with self._lock:
-                    if self._gen != gen:
-                        continue
-                    self._tail.append(text)
-                    if text.startswith(PROGRESS):
-                        self._progress = text[len(PROGRESS):].strip()
-        code = proc.wait()
-        with self._lock:
-            if self._gen != gen:
-                return
-            self._exit_code = code
-            if self._state == RUNNING:
-                self._state = DONE if code == 0 else FAILED
+    def _read(self, proc, gen: int, path: Path) -> None:
+        code = None
+        try:
+            with path.open("w", encoding="utf-8", errors="replace") as out:
+                for raw in proc.stdout:
+                    text = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    out.write(text + "\n")
+                    out.flush()
+                    with self._lock:
+                        if self._gen != gen:
+                            continue
+                        self._tail.append(text)
+                        if text.startswith(PROGRESS):
+                            self._progress = text[len(PROGRESS):].strip()
+            code = proc.wait()
+        except Exception:
+            log.exception("读任务输出出错")
+        finally:  # 读管道出错也要收尾，不然任务永远"在跑"、叫醒一直 409
+            with self._lock:
+                if self._gen == gen:
+                    self._exit_code = code
+                    if self._state == RUNNING:
+                        self._state = DONE if code == 0 else FAILED
 
     def stop(self) -> None:
         with self._lock:

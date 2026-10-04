@@ -250,3 +250,81 @@ def test_stop_info_default_seconds_per_frame(srv):
     srv.fake_runner.run_dir = str(run_dir)
     res = request(srv.url + "api/inbox/stop-info")[1]
     assert res["hard"] == 40 and res["eta_min"] == round(1.5 * 40 / 60, 1)
+
+
+# ---- 第 1 轮评审修正 ----
+def test_retrain_job_command(srv):
+    assert post(srv, "api/jobs/start", {"job": "retrain"})[0] == 200
+    assert srv.jobs.started[0][1][-2:] == ["perception", "retrain"]
+
+
+def test_start_run_rechecks_job_under_lock(srv):
+    srv.jobs.state = "running"
+    srv._job_conflict = lambda body: None  # 锁外的检查已经过时：任务在检查之后才起
+    status, res = post(srv, "api/run/start", RUN)
+    assert status == 409 and "整理" in res["error"] and srv.fake_runner.started == []
+
+
+def test_launch_sandbox_rechecks_job_under_lock(srv):
+    srv.jobs.state = "running"
+    code, res = srv.launch_sandbox("resume")
+    assert code == 409 and "整理" in res["error"] and srv.fake_runner.started == []
+
+
+class PidRunner(KindRunner):
+    pid = None
+
+    def status(self):
+        return {**super().status(), "pid": self.pid}
+
+
+def test_curate_gives_up_when_another_dango_ran(tmp_path, upstream):
+    s = make(tmp_path, upstream)
+    s.runner = s.fake_runner = PidRunner()
+    try:
+        s.fake_runner.state, s.fake_runner.pid = "running", 100
+        post(s, "api/run/stop", {"curate": True})
+        s.fake_runner.state, s.fake_runner.pid = "running", 200  # 期间另一个团子起来了
+        time.sleep(0.1)
+        s.fake_runner.state = "exited"
+        time.sleep(0.1)
+        assert s.jobs.started == []
+        assert s._curate_after is False
+    finally:
+        s.stop()
+
+
+def test_job_reader_error_marks_failed(tmp_path):
+    class Boom:
+        pid = 1
+
+        class stdout:
+            def __iter__(self):
+                raise OSError("pipe")
+
+        def __init__(self):
+            self.stdout = self.stdout()
+
+        def wait(self, timeout=None):
+            return 0
+
+    jobs, _, _ = make_jobs(tmp_path, Boom())
+    jobs.start("inbox", ["py"], {})
+    assert wait_state(jobs, "failed")["state"] == "failed"
+
+
+def test_job_env_unbuffered_without_mutating(tmp_path):
+    jobs, popen, _ = make_jobs(tmp_path, FakeProc(""))
+    env = {"A": "1"}
+    jobs.start("inbox", ["py"], env)
+    assert popen.calls[0][1]["env"]["PYTHONUNBUFFERED"] == "1" and "PYTHONUNBUFFERED" not in env
+    wait_state(jobs, "done")
+
+
+def test_stop_info_ask_false_when_disabled(tmp_path, upstream):
+    (tmp_path / "config.toml").write_text("[inbox]\nenabled = false\nask = true\n", encoding="utf-8")
+    s = make_server(tmp_path, upstream, child_port=free_port())
+    try:
+        assert request(s.url + "api/inbox/stop-info")[1]["ask"] is False
+    finally:
+        s.stop()

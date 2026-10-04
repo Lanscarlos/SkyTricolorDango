@@ -102,6 +102,21 @@ def pending_runs(inbox: Path) -> list[str]:
     return [run for run, row in merged.items() if not row.get("processed_at")]
 
 
+def pending_frames(inbox: Path) -> int:
+    """没整理的运行在 index.jsonl 里记的帧数之和。"""
+    pending = set(pending_runs(inbox))
+    last: dict[str, int] = {}
+    for row in _index_rows(Path(inbox)):
+        if row["run"] in pending and row.get("frames") is not None:
+            last[row["run"]] = int(row["frames"])
+    return sum(last.values())
+
+
+def read_stats(inbox: Path) -> dict:
+    """`_stats.json`（没有或坏了是空字典）。"""
+    return _json_dict(Path(inbox) / STATS)
+
+
 @dataclass
 class Route:
     auto: str | None  # "agree" / "drop_low" / None（给人判）
