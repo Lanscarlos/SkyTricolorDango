@@ -1419,6 +1419,26 @@ def test_friend_bubble_calls_bubble_seen(clock):
     assert b.panel.state == "bubble"
 
 
+def test_typing_seen_ignored_when_reader_reads_bubbles(clock):
+    env = FakeEnv()
+    env.typing_seen = lambda now, within=1.0, strangers=False: True
+    b, _, reader, _ = auto_body(clock, env=env)
+    reader.reads_bubbles = True  # 无障碍读法：气泡直接读成消息，不拿 YOLO 的气泡叫面板
+    b.step()
+    b.step()
+    assert b.panel.state == "idle"
+
+
+def test_status_shows_typing_and_reader(clock):
+    b, _, reader, _ = body(clock)
+    assert "在打字" not in b.status() and "读聊天" not in b.status()
+    reader.typing = lambda: ["小明", "小红"]
+    reader.describe = lambda: "无障碍"
+    text = b.status()
+    assert "在打字：小明、小红" in text and "读聊天：无障碍" in text
+    assert text.index("聊天记录面板") < text.index("在打字") < text.index("读聊天") < text.index("输入框")
+
+
 def chatting_body(clock, **kw):
     b, device, reader, events = auto_body(clock, **kw)
     reader.state.open = True

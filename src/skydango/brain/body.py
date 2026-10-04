@@ -1042,6 +1042,13 @@ class Body:
             self._scene_event_at = now
         self._ref_thumb, self._ref_at = t, now
 
+    def _yolo_typing(self, now: float) -> bool:
+        """YOLO 看到好友头顶冒"正在输入"气泡、该叫面板等着。无障碍读法（reader.reads_bubbles）时不用它：
+        气泡直接读成消息，打字只写进 status。"""
+        if getattr(self.reader, "reads_bubbles", False) or not hasattr(self.env, "typing_seen"):
+            return False
+        return bool(self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers))
+
     def _watch_people(self, now: float) -> None:
         near = self.env.nearby(now)  # 只取一次：账本和人来人走看的是同一份名单
         self._lull_near = list(near)
@@ -1053,7 +1060,7 @@ class Body:
             for pop in ("pop_approaches", "pop_gestures", "pop_stranger_backs"):
                 if hasattr(self.env, pop):
                     getattr(self.env, pop)()
-            if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
+            if self._yolo_typing(now):
                 self.panel.bubble_seen(now)
             self._watch_outfits()  # 装扮照记（账本）
         else:
@@ -1158,7 +1165,7 @@ class Body:
             elif not n and self._strangers:
                 self.events.put("stranger", "陌生人都走开了")
             self._strangers = n
-        if hasattr(self.env, "typing_seen") and self.env.typing_seen(now, strangers=self.cfg.panel.bubble_strangers):
+        if self._yolo_typing(now):
             self.panel.bubble_seen(now)  # 好友头顶冒出"正在输入"：开着面板等他发出来
         if hasattr(self.env, "pop_approaches"):  # 有人朝团子走过来（眼睛不因此自动看，省额度）
             for who in self.env.pop_approaches():
@@ -1808,6 +1815,13 @@ class Body:
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
+        typing = getattr(self.reader, "typing", None)  # 无障碍读法才有：头上冒着点点的好友
+        typists = typing() if callable(typing) else []
+        if typists:
+            parts.append("在打字：" + "、".join(typists))
+        source = getattr(self.reader, "describe", None)
+        if callable(source):
+            parts.append("读聊天：" + source())
         if self._bubble_at is not None:
             parts.append("输入框：开着（身体替你开的，想好就 say）")
         else:

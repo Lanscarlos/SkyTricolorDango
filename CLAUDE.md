@@ -74,7 +74,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 |---|---|
 | `src/skydango/device/adb.py` | 截图（raw screencap）、tap/swipe、`hw_key*`（sendevent 模拟实体键盘）、ADBKeyboard 输入、`ime_shown()` |
 | `src/skydango/device/mumu.py` | MuMu 原生截图（external_renderer_ipc.dll，约 9 ms/张），`AdbDevice.screenshot()` 优先用它 |
-| `src/skydango/device/a11y.py` `android/a11y/` `assets/a11y/` | 读游戏的无障碍节点（聊天行、头顶名字 / 气泡的文字 + 坐标，不用 OCR；见 game-ops §3「无障碍节点」）：`A11yReader` 推 jar、`app_process` 常驻 UiAutomation 客户端、`latest()` 取快照；jar 源码在 `android/a11y/`，`python android/a11y/build.py` 编译（要 javac + `.pydeps/r8/` 的 R8）。**还没接进读聊天 / 认人** |
+| `src/skydango/device/a11y.py` `android/a11y/` `assets/a11y/` | 读游戏的无障碍节点（聊天行、头顶名字 / 气泡的文字 + 坐标，不用 OCR；见 game-ops §3「无障碍节点」）：`A11yReader` 推 jar、`app_process` 常驻 UiAutomation 客户端、`latest()` 取快照；jar 源码在 `android/a11y/`，`python android/a11y/build.py` 编译（要 javac + `.pydeps/r8/` 的 R8）。读聊天已接上（下面两行），**认人还没接** |
+| `src/skydango/vision/a11yui.py` | 无障碍快照分类（纯计算）：`classify` → `UiView`（面板行、头顶名字标签、按列挂好说话人的气泡、输入栏、面板占位）；坐标按 1920×1080 量、按比例缩放，只认光遇包名的快照 |
+| `src/skydango/chat/a11yreader.py` | 用无障碍节点读聊天（`[vision] source = "a11y"`，见「聊天面板」）：`A11yChatReader`（接口同 `ChatReader`；面板行精确对齐、面板关着读好友头顶气泡、两边读到同一句只报一次，`Message.source` = panel / bubble；`tags_in_view` / `typing` / `want_peek` 给面板管理器）、`FallbackReader`（读不到自动重启 3 次、再不行整次 run 退回 OCR，`reads_bubbles` / `describe`） |
 | `src/skydango/vision/chatlog.py` | 解析聊天记录面板（C）：分行、拆说话人、认自己的消息 / 被屏蔽的消息、前后帧对齐找新消息 |
 | `src/skydango/vision/icons.py` | 动作图标的剪影匹配（多尺度 matchTemplate） |
 | `src/skydango/vision/bubbles.py` | 旧方案：3D 画面里找头顶气泡（不推荐，见 game-ops） |
@@ -195,7 +197,12 @@ dir = "private/sandbox"
   读到新消息就一直开着，安静 45 秒再关；团子说话前先开面板。**老测试要常开的在辅助函数里写明 `mode = "always"`**
 - **新代码要关面板一律 `with panel.borrow("谁"):`**（点屏幕会顺带关面板的用 `close=False`），不许自己按 C；
   嵌套时最外层归还才恢复，闲着时归还不重开
-- 聊天内容只从面板读；YOLO 的 `typing` 气泡只用来判断"该去看了"（这一类还没标注数据，气泡触发要等重训）
+- **读聊天走无障碍节点**（`[vision] source = "a11y"`，默认；`"ocr"` = 原来截图 OCR 的读法，逐字照旧；设计 `docs/superpowers/specs/2026-10-04-a11y-chat-reader-design.md`，**还没在真机上跑过**，spec §8 四步）：
+  面板开着读面板行（精确对齐、没有错字），面板关着读好友头顶的气泡（说话人 = 名字标签，只有点点 = 在打字）；挂不上名字的原文气泡不报、叫面板看一眼（`want_peek`）。
+  读不到自动重启（最多 3 次），3 次都失败或 30 秒没快照就整次 run 退回 OCR（status「读聊天：OCR（无障碍读不到：…）」）；同一时间只能有一个无障碍连接（`view` 和 `run` 同时开，后起的退回 OCR）
+- **「聊着（面板关着）」**（`talking`，只在 `auto` + 无障碍读法时有）：新消息全是从头顶气泡读到的 → 不开面板，每 `chat_peek`（15 秒）看一眼面板接住画面外的人，安静 `quiet_close` 秒回闲着；
+  读到面板行的新消息照旧进聊天中、开着面板；团子说话前跟谁聊的名字标签都还看得见就不开面板，否则照旧开；中途退回 OCR 立刻改成聊天中、开面板。`always` 模式不受影响
+- OCR 读法下聊天内容只从面板读；YOLO 的 `typing` 气泡只用来判断"该去看了"（这一类还没标注数据，气泡触发要等重训）。无障碍读法下身体不拿 YOLO 气泡叫面板，谁在打字直接写进 status（"在打字：小明"）
 
 ## 识别环境（`[env]`）
 

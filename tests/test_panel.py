@@ -628,3 +628,228 @@ def test_hold_off_does_not_block_chatting():
     m.hold_off(7.0, 5.0)
     chatting(m, state, 5.5)  # 推迟中读到新消息
     assert m.state == "chatting"
+
+
+# ---- 无障碍读法：跟画面里的好友聊天时面板关着（聊着 talking） ----
+from skydango.chat.reader import Message  # noqa: E402
+
+
+class BubbleReader:
+    """无障碍读法的 reader（FallbackReader 的接口）：能读气泡、看得见哪些名字标签、想不想看一眼面板。"""
+
+    def __init__(self, state):
+        self.state = state
+        self.panel_closed_since = None
+        self.reads_bubbles = True
+        self.tags: list[str] = []
+        self.peek: str | None = None
+
+    def panel_visible(self, frame):
+        return self.state.open
+
+    def tags_in_view(self):
+        return list(self.tags)
+
+    def want_peek(self):
+        peek, self.peek = self.peek, None
+        return peek
+
+
+def a11y(open_=False, mode="auto"):
+    device = FakeDevice([scene()])
+    m, state = fake_panel(device, open_=open_, mode=mode)
+    m.reader = BubbleReader(state)
+    m.start(0.0)
+    return m, device, state
+
+
+def said(text="在吗", who="小明", source="bubble"):
+    return Message(text, (0, 0, 10, 10), 0.0, who, source)
+
+
+def talking(m, t, who="小明"):
+    m.tick(t, [said(who=who)], visible=False)
+    assert m.state == "talking"
+
+
+def test_bubble_message_enters_talking_without_key():
+    m, dev, state = a11y()
+    m.tick(5.0, [said()], visible=False)
+    assert m.state == "talking" and dev.calls == [] and state.open is False
+    assert m.should_be_open() is False
+
+
+def test_panel_message_still_enters_chatting():
+    m, dev, state = a11y(open_=True)
+    m.tick(5.0, [said(source="panel")], visible=True)
+    assert m.state == "chatting"
+
+
+def test_mixed_message_enters_chatting():
+    m, dev, state = a11y()
+    m.tick(5.0, [said(), said("嗯", who="小红", source="panel")], visible=False)
+    assert m.state == "chatting"
+
+
+def test_talking_peeks_every_chat_peek():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.tick(19.9, [], visible=False)
+    assert presses(dev) == 0 and m.state == "talking"
+    m.tick(20.0, [], visible=False)  # 进「聊着」15 秒：看一眼面板（接住画面外的人）
+    assert presses(dev) == 1 and m.state == "peek"
+    m.tick(20.2, [], visible=True)
+    m.tick(20.4, [], visible=True)
+    assert presses(dev) == 2 and m.state == "talking" and state.open is False  # 没新消息：关上、接着聊
+    m.tick(35.3, [], visible=False)
+    assert presses(dev) == 2
+    m.tick(35.5, [], visible=False)  # 上次读到面板 15 秒后再看
+    assert presses(dev) == 3 and m.state == "peek"
+
+
+def test_talking_peek_with_panel_message_enters_chatting():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.tick(20.0, [], visible=False)
+    m.tick(20.2, [said("我在这边", who="小红", source="panel")], visible=True)
+    assert m.state == "chatting" and state.open is True
+
+
+def test_talking_goes_idle_after_quiet_close():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    peek(m, 20.0)
+    peek(m, 36.0)
+    assert m.state == "talking"
+    m.tick(49.9, [], visible=False)
+    assert m.state == "talking"
+    m.tick(50.0, [], visible=False)  # 45 秒没动静
+    assert m.state == "idle" and state.open is False
+
+
+def test_bubble_message_refreshes_talking():
+    m, dev, state = a11y()
+    m.cfg.chat_peek = 100.0  # 不看一眼，只看安静计时
+    talking(m, 5.0)
+    m.tick(40.0, [said("还在")], visible=False)
+    m.tick(50.0, [], visible=False)
+    assert m.state == "talking"
+    m.tick(85.0, [], visible=False)
+    assert m.state == "idle" and dev.calls == []
+
+
+def test_peek_from_talking_after_quiet_close_goes_idle():
+    m, dev, state = a11y()
+    m.cfg.chat_peek = 100.0  # 只靠 trigger 看一眼
+    talking(m, 5.0)
+    m.trigger("approach", 49.0)
+    m.tick(49.0, [], visible=False)
+    assert m.state == "peek"
+    m.tick(50.2, [], visible=True)
+    m.tick(50.4, [], visible=True)  # 看完已经安静 45 秒了
+    assert m.state == "idle" and state.open is False
+
+
+def test_bubble_during_idle_peek_returns_to_talking():
+    m, dev, state = a11y()
+    m.tick(30.0, [], visible=False)  # 定时看一眼
+    assert m.state == "peek"
+    m.tick(30.1, [said()], visible=False)  # 面板还没出来，气泡先读到了
+    assert m.state == "peek"
+    m.tick(30.2, [], visible=True)
+    m.tick(30.4, [], visible=True)
+    assert m.state == "talking" and state.open is False
+
+
+def test_before_speak_keeps_panel_closed_when_partner_in_view():
+    m, dev, state = a11y()
+    m.cfg.chat_peek = 100.0  # 不看一眼，只看安静计时
+    talking(m, 5.0)
+    m.reader.tags = ["小明", "小红"]
+    m.before_speak(10.0)
+    assert dev.calls == [] and m.state == "talking"
+    m.tick(54.9, [], visible=False)  # 说话刷新了活动时间
+    assert m.state == "talking"
+    m.tick(55.0, [], visible=False)
+    assert m.state == "idle"
+
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.before_speak(10.0)  # 他不在画面里了：照旧开面板
+    assert presses(dev) == 1 and state.open is True and m.state == "chatting"
+
+
+def test_before_speak_opens_panel_when_any_partner_out_of_view():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    talking(m, 6.0, who="小红")
+    m.reader.tags = ["小明"]
+    m.before_speak(10.0)
+    assert presses(dev) == 1 and m.state == "chatting"
+
+
+def test_want_peek_triggers_peek():
+    m, dev, state = a11y()
+    m.reader.peek = "bubble_text"
+    m.tick(5.0, [], visible=False)
+    assert presses(dev) == 1 and m.state == "peek"
+
+
+def test_want_peek_while_talking():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.reader.peek = "bubble_text"
+    m.tick(6.0, [], visible=False)
+    assert presses(dev) == 1 and m.state == "peek"
+
+
+def test_fallback_to_ocr_while_talking_opens_panel():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.reader.reads_bubbles = False
+    m.tick(6.0, [], visible=False)
+    assert m.state == "chatting" and presses(dev) == 1 and state.open is True
+
+
+def test_talking_panel_opened_by_someone_else_becomes_chatting():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    state.open = True
+    m.tick(8.0, [], visible=True)
+    assert m.state == "chatting" and presses(dev) == 0
+
+
+def test_bubble_seen_while_talking_changes_nothing():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    m.bubble_seen(6.0)
+    m.tick(6.0, [], visible=False)
+    assert m.state == "talking" and presses(dev) == 0
+
+
+def test_talking_describe():
+    m, dev, state = a11y()
+    talking(m, 5.0)
+    assert m.describe(8.0) == "聊着（面板关着，12 秒后看一眼）"
+
+
+def test_ocr_reader_unchanged():
+    m, dev, _ = auto()  # 现有的假 reader：没有 reads_bubbles 这些属性
+    m.tick(5.0, [said()], visible=False)
+    assert m.state == "chatting"
+
+
+def test_ocr_fallback_reader_unchanged():
+    m, dev, _ = a11y()
+    m.reader.reads_bubbles = False
+    m.reader.peek = "bubble_text"
+    m.tick(5.0, [said()], visible=False)
+    assert m.state == "chatting" and dev.calls == []
+
+
+def test_always_mode_unchanged():
+    m, dev, state = a11y(open_=True, mode="always")
+    m.tick(5.0, [said()], visible=True)
+    assert m.state == "chatting" and dev.calls == []
+    m.before_speak(6.0)
+    assert dev.calls == []

@@ -2,7 +2,10 @@
 
 - always：一直开着，关久了自动重开（原来的做法）
 - auto：平时关着（闲着 idle），定时 / 有人来时按一下看一眼（peek），读到新消息就一直开着（聊天中 chatting），
-  安静 quiet_close 秒再关上；好友头顶冒出"正在输入"气泡时开着等（bubble），对方发出来才进面板管理者自己不读聊天：主循环照常 reader.read()，把结果和"这一帧面板开没开"交给 tick()
+  安静 quiet_close 秒再关上；好友头顶冒出"正在输入"气泡时开着等（bubble），对方发出来才进
+- auto + 无障碍读法（reader.reads_bubbles 为真）：新消息全是从头顶气泡读到的 → 聊着（talking），面板关着，
+  每 chat_peek 秒看一眼面板（接住画面外的人），安静 quiet_close 秒回闲着；团子说话时跟谁聊的名字标签都还看得见就不开面板
+- 面板管理者自己不读聊天：主循环照常 reader.read()，把结果和"这一帧面板开没开"交给 tick()
 - 转镜头、换轮盘、接互动、好友树、技能要面板关着时用 borrow() 借走，用完归还；嵌套时最外层归还才恢复
 """
 
@@ -60,6 +63,9 @@ class PanelManager:
         self._last_bubble = 0.0  # 等气泡：上次看到气泡
         self._hold_until: float | None = None  # 空闲注意力"先看一眼"：闲着时推迟到这个时间再开面板
         self._held_once = False  # 这个 _pending 已经推迟过一次
+        self._talk_with: set[str] = set()  # 聊着：跟谁聊（从头顶气泡读到过的说话人）
+        self._talk_since = 0.0  # 聊着：什么时候开始的（看一眼的计时从这儿和上次读到面板里晚的那个算）
+        self._peek_from = "idle"  # 看一眼 / 等气泡从哪个状态发起：没读到新消息时回到它（聊着 / 闲着）
 
     @property
     def auto(self) -> bool:
@@ -98,14 +104,18 @@ class PanelManager:
         log.info("聊天面板按需打开：平时关着，每 %.0f 秒看一眼", self.cfg.idle_peek)
         return True
 
+    def _reads_bubbles(self) -> bool:
+        """reader 现在能读头顶气泡（无障碍读法）；OCR 的 ChatReader 没有这个属性。"""
+        return bool(getattr(self.reader, "reads_bubbles", False))
+
     def should_be_open(self) -> bool:
         if self.lent is not None:
             return False
         return self.state == "chatting" if self.auto else True
 
     def trigger(self, reason: str, now: float) -> None:
-        """闲着时有事（有人来了、走近、画面恢复、大脑要看聊天）：尽快看一眼（冷却中先记着）。"""
-        if self.auto and self.state == "idle" and self._pending is None:
+        """闲着 / 聊着时有事（有人来了、走近、画面恢复、大脑要看聊天、挂不上名字的气泡）：尽快看一眼（冷却中先记着）。"""
+        if self.auto and self.state in ("idle", "talking") and self._pending is None:
             self._pending = reason
 
     @property
@@ -134,7 +144,7 @@ class PanelManager:
         return True
 
     def bubble_seen(self, now: float) -> None:
-        """这一圈看到了该触发的"正在输入"气泡（好友的；bubble_strangers 时陌生人的也算）。"""
+        """这一圈看到了该触发的"正在输入"气泡（好友的；bubble_strangers 时陌生人的也算）。聊着时什么都不做。"""
         if not self.auto:
             return
         if self.state == "idle":
@@ -143,9 +153,15 @@ class PanelManager:
             self._last_bubble = now
 
     def before_speak(self, now: float) -> None:
-        """团子要说话（按 Enter 之前）：面板要开着，说完对方的回复才能马上读到；进聊天中。"""
+        """团子要说话（按 Enter 之前）：面板要开着，说完对方的回复才能马上读到；进聊天中。
+        聊着、跟谁聊的名字标签都还看得见：不开面板（他的回复从头顶气泡读），只刷新活动时间。"""
         if not self.auto:
             return
+        if self.state == "talking" and self._talk_with and self._reads_bubbles():
+            tags = getattr(self.reader, "tags_in_view", None)
+            if self._talk_with <= set(tags() if callable(tags) else ()):
+                self._last_activity = max(self._last_activity, now)
+                return
         self._last_activity = max(self._last_activity, now)
         self._missing_since = None
         if self.state != "chatting":
@@ -183,6 +199,8 @@ class PanelManager:
             return f"闲着（{max(0, math.ceil(self._until_peek(now)))} 秒后看一眼）"
         if self.state == "bubble":
             return f"等气泡（还剩 {max(0, math.ceil(self.cfg.bubble_wait - (now - self._bubble_start)))} 秒）"
+        if self.state == "talking":
+            return f"聊着（面板关着，{max(0, math.ceil(self._until_chat_peek(now)))} 秒后看一眼）"
         return {"peek": "看一眼", "chatting": "聊天中"}.get(self.state, self.state)
 
     def shutdown(self) -> None:
@@ -208,6 +226,14 @@ class PanelManager:
         if not self.auto:
             self._maybe_reopen(now)
             return
+        if self._reads_bubbles():
+            want = getattr(self.reader, "want_peek", None)
+            reason = want() if callable(want) else None
+            if reason:
+                self.trigger(reason, now)
+        if fresh and self._reads_bubbles() and all(getattr(m, "source", "") == "bubble" for m in fresh):
+            self._heard_bubbles(now, fresh)
+            return
         if fresh:
             self._last_read = self._last_activity = now
             self._missing_since = None
@@ -224,11 +250,57 @@ class PanelManager:
             self._tick_bubble(now, visible)
         elif self.state == "chatting":
             self._tick_chatting(now, visible, blackout)
+        elif self.state == "talking":
+            self._tick_talking(now, visible, blackout)
 
     def _set(self, state: str, why: str) -> None:
-        names = {"idle": "闲着", "peek": "看一眼", "bubble": "等气泡", "chatting": "聊天中"}
+        names = {"idle": "闲着", "peek": "看一眼", "bubble": "等气泡", "chatting": "聊天中", "talking": "聊着"}
         log.info("面板：%s → %s（%s）", names.get(self.state, self.state), names.get(state, state), why)
+        if state in ("idle", "chatting"):
+            self._talk_with = set()
         self.state = state
+
+    def _heard_bubbles(self, now: float, fresh: list) -> None:
+        """这一圈的新消息全是从头顶气泡读到的（无障碍读法）：不开面板，进聊着 / 刷新活动时间。"""
+        self._last_activity = now
+        if self.state == "chatting":
+            return
+        self._talk_with |= {m.speaker for m in fresh if getattr(m, "speaker", "")}
+        if self.state in ("peek", "bubble"):  # 面板正在开：看完回聊着
+            self._peek_from = "talking"
+        elif self.state != "talking":
+            self._talk_since = now
+            self._set("talking", "从头顶气泡读到消息")
+
+    def _until_chat_peek(self, now: float) -> float:
+        return self.cfg.chat_peek - (now - max(self._last_read, self._talk_since))
+
+    def _after_peek(self, now: float) -> str:
+        """看一眼 / 等气泡没读到新消息：回到聊着（从聊着发起、还没安静够、还能读气泡）还是闲着。"""
+        if (self._peek_from == "talking" and self._reads_bubbles()
+                and now - self._last_activity < self.cfg.quiet_close):
+            return "talking"
+        return "idle"
+
+    def _tick_talking(self, now: float, visible: bool, blackout: bool) -> None:
+        if not self._reads_bubbles():  # 中途退回了 OCR：读不了气泡，照原来的做法开着面板聊
+            self._last_activity = now
+            self._set("chatting", "读聊天退回了 OCR")
+            self.ensure_open()
+            return
+        if visible:
+            if now - self._closed_at > self.cfg.open_timeout:  # 刚关上的那一两帧还看得到，不算
+                self._last_activity = now
+                self._set("chatting", "面板开着（不是自己开的）")
+            return
+        if now - self._last_activity >= self.cfg.quiet_close:
+            self._set("idle", f"安静 {self.cfg.quiet_close:.0f} 秒")
+            return
+        due = self._until_chat_peek(now) <= 0
+        wanted = self._pending is not None and now - self._last_peek >= self.cfg.peek_cooldown
+        if blackout or not (due or wanted):
+            return
+        self._open_peek(now, self._pending if wanted else "聊着：看一眼面板")
 
     def _tick_idle(self, now: float, visible: bool, blackout: bool) -> None:
         if visible:
@@ -245,6 +317,7 @@ class PanelManager:
         self._open_peek(now, self._pending if wanted else "定时")
 
     def _open_peek(self, now: float, reason: str) -> None:
+        self._peek_from = self.state
         self._pending = None
         self._hold_until, self._held_once = None, False
         if self.device.ime_shown():  # 按键会打出字母；输入框开着说明在说话，本来就该是聊天中
@@ -263,19 +336,19 @@ class PanelManager:
         if visible:
             self._seen += 1
             if self._seen >= 2 and not self._settling():  # 第一帧面板可能还没画完；读聊天的还在等确认也先别关
-                self._close(now, "看一眼：没有新消息")
+                self._close(now, "看一眼：没有新消息", self._after_peek(now))
                 self._last_peek = now
         elif now - self._opened_at >= self.cfg.open_timeout:
             log.warning("按了键 %.1f 秒聊天记录面板还没出现（被别的界面挡住了？），下个周期再看", self.cfg.open_timeout)
             self._last_read = self._last_peek = now
-            self._set("idle", "没打开")
+            self._set(self._after_peek(now), "没打开")
 
     def _tick_bubble(self, now: float, visible: bool) -> None:
         if not visible:
             if now - self._opened_at >= self.cfg.open_timeout and now - self._last_read >= self.cfg.open_timeout:
                 log.warning("按了键 %.1f 秒聊天记录面板还没出现（被别的界面挡住了？）", self.cfg.open_timeout)
                 self._last_read = self._last_peek = now
-                self._set("idle", "没打开")
+                self._set(self._after_peek(now), "没打开")
             return
         if now - self._last_bubble >= self.cfg.bubble_gone:
             why = f"气泡没了 {self.cfg.bubble_gone:.0f} 秒也没等到消息"
@@ -285,7 +358,7 @@ class PanelManager:
             return
         if self._settling():
             return
-        self._close(now, why)
+        self._close(now, why, self._after_peek(now))
         self._last_peek = now
 
     def _tick_chatting(self, now: float, visible: bool, blackout: bool) -> None:
@@ -309,7 +382,7 @@ class PanelManager:
             self._set("idle", f"安静 {self.cfg.quiet_close:.0f} 秒")
         self._last_read, self._missing_since = now, None
 
-    def _close(self, now: float, why: str) -> None:
+    def _close(self, now: float, why: str, to: str = "idle") -> None:
         if self.device.ime_shown():  # 按键会打出字母；输入框开着说明在说话，就当聊天中
             self._last_activity = now
             self._set("chatting", "输入框开着")
@@ -318,7 +391,7 @@ class PanelManager:
         # 记真按键的时刻，不是这一圈开始的 now：这一圈读聊天、跑识别可能已经花了快 1 秒，
         # 读聊天确认面板关了又要晚零点几秒，用 now 会超过 open_timeout，被当成"别人打开的"（2026-09-30 实测）
         self._closed_at = self._pressed_at
-        self._set("idle", why)
+        self._set(to, why)
 
     def _settling(self) -> bool:
         """读聊天的看到了新行、在等下一帧确认（ChatReader.settling）：这时关面板会让消息拖到下一次才读到。"""
@@ -366,7 +439,8 @@ class PanelManager:
                     log.info("面板借给 %s", who)
                     if self.state in ("peek", "bubble"):  # 看一眼 / 等气泡被打断：归还后补上
                         self._pending = "bubble" if self.state == "bubble" else (self._pending or "补看")
-                        self.state = "idle"
+                        # 从聊着发起的回聊着（安静够了 _tick_talking 自己回闲着）
+                        self.state = "talking" if self._peek_from == "talking" and self._reads_bubbles() else "idle"
                     self._settle()
                     was_open = self.visible_now()
                     if close and was_open and not self.device.ime_shown():  # 输入框开着按键会打出字母
