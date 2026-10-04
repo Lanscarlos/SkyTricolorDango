@@ -361,3 +361,22 @@ def test_frames_page():  # spec 2026-10-04-hardcase-inbox §5.2：标注页第�
 def test_form_page_inbox_filter():  # 外形页「来自整理」筛选：c.inbox === true，计数照「回放用」
     lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
     assert "c.inbox === true" in lab and '"inbox"' in lab and "来自整理" in lab
+
+
+def test_frames_load_queues_while_in_flight():  # 评审：load 正在跑时再调不能丢掉 pick（startEdit 没 await 的 load + 紧接着回车保存）
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = (f"const F=require({json.dumps(str(STATIC / 'frames.js'))});(async()=>{{const log=[];"
+          "const run=F.serial(async p=>{log.push('start');await new Promise(r=>setTimeout(r,20));if(p)log.push(p())});"
+          "const a=run(),b=run(()=>'second'),c=run();await a;"
+          "const d=run(()=>'again');await d;"
+          "console.log(JSON.stringify([log,a===b&&b===c,a===d]))})()")
+    out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+    assert out == [["start", "start", "second", "start", "again"], True, False]  # 排队的只跑一次、没带 pick 的不盖掉之前的 pick
+
+
+def test_frames_tab_badge():  # 评审：「整帧（N）」打开标注页就有，不用先点进整帧页
+    fr = [{"state": s} for s in ("glance", "edit", "crops", "done", "glance")]
+    assert _frames_js(f"[F.badgeText({json.dumps(fr)}),F.badgeText([{{state:'done'}}]),F.badgeText([])]") == ["整帧（3）", "整帧", "整帧"]
+    lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
+    show = lab.split("  show() {", 1)[1].split("\n  },", 1)[0]
+    assert "FramesTab.peek()" in show

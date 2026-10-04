@@ -78,6 +78,30 @@ function resizeBox(b, part, dx, dy) {
   return [x, y, w, h];
 }
 
+/* 一次只跑一个：跑着时再调就排一次（只排一次；带了 pick 的留最新的 pick，不带的不盖掉），返回的 Promise 等排着的也跑完 */
+function serial(fn) {
+  let running = null, queued = null;
+  return function run(pick) {
+    if (running) { queued = {pick: pick || (queued && queued.pick) || null}; return running; }
+    running = (async () => {
+      let next = {pick: pick || null};
+      try {
+        while (next) {
+          queued = null;
+          try { await fn(next.pick); } catch (e) { console.error("整帧页：读收件箱出错", e); }
+          next = queued;
+        }
+      } finally { running = null; }
+    })();
+    return running;
+  };
+}
+/* 标注页顶上「整帧（N）」：所有运行里待过目 + 要编辑的帧 */
+function badgeText(list) {
+  const n = (list || []).filter(f => f.state === "glance" || f.state === "edit").length;
+  return n ? `整帧（${n}）` : "整帧";
+}
+
 /* ---- 页面 ---- */
 const STATES = [["glance", "待过目"], ["edit", "要编辑"], ["crops", "等判裁图"], ["done", "已通过"], ["discarded", "不要了"], ["error", "整理出错"]];
 const STATE_NAME = Object.fromEntries(STATES);
@@ -98,7 +122,7 @@ const ZOOM_MAX = 16, HANDLE = 4;
 const FR = {data: null, run: "", filter: "glance", list: [], cur: null, mode: "glance",
   boxes: [], sel: -1, cls: 0, steps: [], dirty: false,  // 编辑中：框的副本、选中、新框类别、撤一步用的快照
   hide: false, space: false, drag: null, view: null, fitted: true, img: null, imgFor: null, imgBad: false,
-  done: [], busy: false, loading: false, bound: false};
+  done: [], busy: false, bound: false};
 
 function colorOf(cls) { const C = (globalThis.Stage && globalThis.Stage.COLORS) || {}; return C[CLASS_KIND[cls]] || "#ffffff"; }
 function className(cls) { return CLASS_NAMES[cls] || `类别 ${cls}`; }
@@ -149,9 +173,7 @@ function renderCounts() {
     b.onclick = () => setFilter(k);
     box.append(b);
   }
-  const g = frames().filter(f => f.state === "glance" || f.state === "edit").length;  // 标签上的数：所有运行里等人看的
-  const t = document.querySelector('#lb-tabs [data-tab="frames"]');
-  if (t) t.textContent = g ? `整帧（${g}）` : "整帧";
+  setBadge(frames());
 }
 function renderList() {
   const box = $("fr-list");
@@ -530,13 +552,17 @@ function nextAfter(old, name) {  // 原列表里排在它后面、还留在新�
 
 /* ---- 读数据 ---- */
 function isOpen() { return window.LabelingTab === "frames"; }
-async function load(pick) {
-  if (FR.loading) return;
-  FR.loading = true;
+function setBadge(list) { const t = document.querySelector('#lb-tabs [data-tab="frames"]'); if (t) t.textContent = badgeText(list); }
+async function peek() {  // 标注页打开时只为标签上的数读一次（整帧页没开过）；开过的用手上的数据
+  if (FR.data) { setBadge(frames()); return; }
+  try { const d = await getJSON("api/frames/state"); if (d && d.ok && !FR.data) setBadge(d.frames); }
+  catch (e) { /* 读不到就不标数 */ }
+}
+const load = serial(loadOnce);  // startEdit 不等的 load 还在跑时，保存后的 load(跳下一帧) 排在它后面、不丢
+async function loadOnce(pick) {
   let d;
   try { d = await getJSON("api/frames/state"); }
   catch (e) { d = {ok: false, text: "读不到收件箱（面板停了？）"}; }
-  finally { FR.loading = false; }
   const banner = $("fr-empty");
   if (!d || !d.ok) {
     if (editing()) { toast((d && d.text) || "读不到收件箱", "bad"); return; }  // 编辑中别把改了一半的框扔掉
@@ -607,9 +633,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   window.FramesTab = {
     load() { bind(); return load(); },
     hasData() { return !!FR.data; },
+    peek,
     key,
     hide() { release(); cancelDrag(); },
   };
 }
-if (typeof module !== "undefined" && module.exports) module.exports = {toImage, toScreen, normBox, hitTest, resizeBox, keyClass, KEY_CLASS, zoomAt};
+if (typeof module !== "undefined" && module.exports) module.exports = {toImage, toScreen, normBox, hitTest, resizeBox, keyClass, KEY_CLASS, zoomAt, serial, badgeText};
 })();

@@ -565,6 +565,7 @@ Pages.labeling = {
     if (!LB.keyBound) { document.addEventListener("keydown", onKey); LB.keyBound = true; }
     startTimer();
     reload();
+    if (LB.tab !== "frames" && window.FramesTab) window.FramesTab.peek();  // 标签上的「整帧（N）」不用先点进去
   },
   hide() {
     LB.active = false;
