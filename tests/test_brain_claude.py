@@ -1,10 +1,12 @@
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
-from skydango.brain.claude import ClaudeError, StreamProcess, check_result, claude_env, one_shot, resolve_claude
+from skydango.brain.claude import (ClaudeError, ClaudeGate, StreamProcess, check_result, claude_down, claude_env,
+                                   one_shot, resolve_claude)
 
 FAKE = [sys.executable, str(Path(__file__).parent / "fake_claude.py")]
 IMG = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}
@@ -112,3 +114,36 @@ def test_claude_llm_raises_on_limit(tmp_path):
     with pytest.raises(ClaudeError) as err:
         llm.complete("s", [{"role": "user", "content": "x"}])
     assert err.value.limit
+
+
+def test_check_result_recognises_auth_errors():
+    for m in ({"subtype": "error", "is_error": True, "result": "x", "api_error_status": 401},
+              {"subtype": "success", "is_error": True, "result": "401 Authentication Fails, Your api key: ****gwAA is invalid"},
+              {"subtype": "success", "is_error": True, "result": "OAuth token has expired"}):
+        with pytest.raises(ClaudeError) as e:
+            check_result(m)
+        assert e.value.auth and not e.value.limit and claude_down(e.value) == "auth"
+
+
+def test_check_result_limit_and_other():
+    with pytest.raises(ClaudeError) as e:
+        check_result({"subtype": "error", "is_error": True, "result": "x", "api_error_status": 429})
+    assert claude_down(e.value) == "limit"
+    assert claude_down(ClaudeError("超时")) is None and claude_down(RuntimeError("x")) is None
+
+
+def test_gate_trips_once_and_stays_closed(caplog):
+    g = ClaudeGate()
+    assert g.ok() and g.reason is None
+    assert g.trip("auth", "401 bad key") is True
+    assert g.trip("limit", "429") is False
+    assert not g.ok() and g.reason.startswith("认证失败")
+    assert sum("Claude 不能用了" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_gate_trip_from_many_threads_once(caplog):
+    g = ClaudeGate()
+    ts = [threading.Thread(target=g.trip, args=("auth", "401")) for _ in range(20)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert not g.ok() and sum("Claude 不能用了" in r.getMessage() for r in caplog.records) == 1

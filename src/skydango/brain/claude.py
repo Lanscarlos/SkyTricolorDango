@@ -22,16 +22,49 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 LIMIT_WORDS = ("limit", "上限", "额度")
+AUTH_WORDS = ("authentication", "invalid api key", "invalid x-api-key", "oauth token")
 # 子进程不继承的（ANTHROPIC_* 另外整个去掉）：用户自己的登录令牌、改走 Bedrock / Vertex 的开关
 _DROP_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
 
 
 class ClaudeError(RuntimeError):
-    """Claude Code 这一轮没成：起不来、挂了、超时、返回错误。limit=True 表示订阅额度用完了。"""
+    """Claude Code 这一轮没成：起不来、挂了、超时、返回错误。limit=True 表示订阅额度用完了，auth=True 表示认证失败。"""
 
-    def __init__(self, message: str, limit: bool = False) -> None:
+    def __init__(self, message: str, limit: bool = False, auth: bool = False) -> None:
         super().__init__(message)
         self.limit = limit
+        self.auth = auth
+
+
+def claude_down(exc: BaseException) -> str | None:
+    """这个异常说明 Claude 整个不能用了吗：'limit'（额度）/ 'auth'（认证）/ None（别的错，只认 ClaudeError）。"""
+    if isinstance(exc, ClaudeError):
+        if exc.limit:
+            return "limit"
+        if exc.auth:
+            return "auth"
+    return None
+
+
+class ClaudeGate:
+    """Claude 总闸：额度用完 / 认证失败后关上，这次运行里不再起 claude 进程。线程安全，只关不开。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reason: str | None = None
+
+    def ok(self) -> bool:
+        return self.reason is None
+
+    def trip(self, kind: str, detail: str) -> bool:
+        """关闸；返回这次是不是刚关上（已经关了返回 False，原因不改）。"""
+        why = "额度用完" if kind == "limit" else f"认证失败：{detail[:80]}"
+        with self._lock:
+            if self.reason is not None:
+                return False
+            self.reason = why
+        log.warning("Claude 不能用了（%s），这次运行里记忆、反思改走 DeepSeek，眼睛和装扮描述停用", why)
+        return True
 
 
 def claude_env(token: str, config_dir: str | Path) -> dict[str, str]:
@@ -145,8 +178,11 @@ def check_result(m: dict) -> str:
     text = m.get("result") or ""
     if m.get("subtype") != "success" or m.get("is_error"):
         detail = text or str(m.get("subtype") or "未知错误")
-        limit = m.get("api_error_status") == 429 or any(w in detail.lower() for w in LIMIT_WORDS)
-        raise ClaudeError(f"Claude Code 这一轮失败：{detail}", limit=limit)
+        status = m.get("api_error_status")
+        limit = status == 429 or any(w in detail.lower() for w in LIMIT_WORDS)
+        # 两个都成立时只算额度
+        auth = not limit and (status == 401 or any(w in detail.lower() for w in AUTH_WORDS))
+        raise ClaudeError(f"Claude Code 这一轮失败：{detail}", limit=limit, auth=auth)
     return text
 
 
