@@ -51,10 +51,11 @@ def test_split_speaker(text, expected):
 class FakeRun:
     """假的 subprocess.run：按命令里的关键字回话。"""
 
-    def __init__(self, remote_md5="", dump=b""):
+    def __init__(self, remote_md5="", dump=b"", pgrep=b""):
         self.cmds = []
         self.remote_md5 = remote_md5
         self.dump = dump
+        self.pgrep = pgrep
 
     def __call__(self, cmd, capture_output=True, timeout=None):
         self.cmds.append(cmd)
@@ -63,6 +64,8 @@ class FakeRun:
             out = f"{self.remote_md5}  /data/local/tmp/skydango-a11y.jar\n".encode()
         elif cmd[-1].endswith(" dump"):
             out = self.dump
+        elif cmd[-1].startswith("pgrep"):
+            out = self.pgrep
         return subprocess.CompletedProcess(cmd, 0, out, b"")
 
 
@@ -82,6 +85,24 @@ def test_push_only_when_changed(tmp_path):
     run = FakeRun(remote_md5=md5)
     A11yReader("adb", "emulator-5554", jar=jar, run=run).ensure_pushed()
     assert not any("push" in c for c in run.cmds)
+
+
+def test_others_running():
+    run = FakeRun(pgrep=b"12345\n")
+    reader = A11yReader("adb", "emulator-5554", run=run)
+    assert reader.others_running() is True
+    assert run.cmds[-1] == ["adb", "-s", "emulator-5554", "shell", "pgrep -f '^skydango-a11y'"]
+    assert A11yReader("adb", "x", run=FakeRun(pgrep=b"")).others_running() is False
+    assert A11yReader("adb", "x", run=FakeRun(pgrep=b"\n")).others_running() is False
+
+
+def test_others_running_adb_error_is_false(caplog):
+    def broken(cmd, capture_output=True, timeout=None):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    with caplog.at_level("DEBUG"):
+        assert A11yReader("adb", "x", run=broken).others_running() is False
+    assert "pgrep" in caplog.text or "别的读取器" in caplog.text
 
 
 def test_dump(tmp_path):

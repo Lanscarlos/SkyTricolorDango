@@ -407,6 +407,10 @@ class FakeClient:
         self.starts = 0
         self.stops = 0
         self.fail: Exception | None = None
+        self.others = False  # 设备上有别的读取器的客户端（别的进程起的 / 上次留下的）
+
+    def others_running(self):
+        return self.others
 
     def start(self):
         self.starts += 1
@@ -476,12 +480,51 @@ class FakeA11y:
         return "bubble_text"
 
 
-def fallback(fail: Exception | None = None):
+def fallback(fail: Exception | None = None, others: bool = False, sleep=None):
     client, a11y, ocr = FakeClient(), FakeA11y(), FakeOcrReader()
-    client.fail = fail
-    fb = FallbackReader(client, a11y, ocr)
+    client.fail, client.others = fail, others
+    fb = FallbackReader(client, a11y, ocr, sleep=sleep or (lambda s: None))
     fb.start()
     return fb, client, a11y, ocr
+
+
+def test_another_reader_connected_at_start_uses_ocr():  # 后起的那个退回 OCR，不踢别人
+    waits = []
+    fb, client, a11y, ocr = fallback(others=True, sleep=waits.append)
+    assert waits == [2.0]  # 等一下再看（上次被强杀留下的会自己退）
+    assert fb.using_ocr and "另一个读取器正连着" in fb.reason
+    assert client.starts == 0 and client.stops == 0  # 没起、也没清别人的
+    assert fb.read(FRAME, 1.0) == ["ocr 的消息"]
+    fb.stop()
+    assert client.stops == 0  # 收尾也不清（会把别人的客户端杀掉）
+
+
+def test_stale_leftover_that_exits_is_fine():
+    client_box = []
+
+    def sleep(s):
+        client_box[0].others = False  # 上次留下的那个在等的时候退了
+
+    client, a11y, ocr = FakeClient(), FakeA11y(), FakeOcrReader()
+    client.others = True
+    client_box.append(client)
+    fb = FallbackReader(client, a11y, ocr, sleep=sleep)
+    fb.start()
+    assert not fb.using_ocr and client.starts == 1
+
+
+def test_another_reader_took_over_while_ours_was_dead():
+    fb, client, a11y, ocr = fallback()
+    fb.read(FRAME, 1.0)
+    client.alive, client.snap = False, None  # 被踢掉了
+    client.others = True  # 别人连着
+    fb.read(FRAME, 2.0)
+    assert not fb.using_ocr  # 还没到重启的时候
+    fb.read(FRAME, 4.0)  # 到点：先看有没有别人
+    assert fb.using_ocr and "另一个读取器正连着" in fb.reason
+    assert client.starts == 1 and client.stops == 0  # 不重启、不清别人的
+    fb.read(FRAME, 30.0)
+    assert client.starts == 1
 
 
 def test_healthy_reads_a11y():
@@ -646,6 +689,16 @@ def test_stop_swallows_errors():
 
     client.stop = boom
     fb.stop()  # 不抛
+
+
+def test_stop_after_falling_back_does_not_stop_again():  # 退回 OCR 时停过了；再 stop 会把后来连上的别人的客户端杀掉
+    fb, client, a11y, ocr = fallback()
+    client.snap = None
+    fb.read(FRAME, 0.0)
+    fb.read(FRAME, 31.0)
+    assert fb.using_ocr and client.stops == 1
+    fb.stop()
+    assert client.stops == 1
 
 
 def test_ocr_mode_has_no_bubbles():

@@ -319,6 +319,8 @@ class A11yChatReader:
 RESTART_DELAYS = (2.0, 5.0, 10.0)  # 客户端死了以后第几次重启前等多久；用完了又死 → 这次 run 剩下的时间都用 OCR
 STALE = 30.0  # 客户端活着、这么久没收到快照（心跳每秒一份）→ 退回 OCR
 MAX_AGE = 2.0  # 比这旧的快照不算（客户端死了以后最后一份会一直留着）
+OTHERS_WAIT = 2.0  # 起之前看到别的读取器的客户端：等这么久再看一次（上次被强杀留下的，管子断了 1 秒心跳内自己退）
+OTHERS = "另一个读取器正连着"
 
 
 class FallbackReader:
@@ -329,9 +331,11 @@ class FallbackReader:
     - 活着但 `STALE` 秒没快照 → 切到 OCR
     - 不健康期间 `read()` 返回空，面板开没开借 OCR reader 看截图（便宜，不跑 OCR），免得面板管理器乱按键
     - 切到 OCR 后这次 run 剩下的时间都交给 `ocr`（它从空基准开始，不会把历史当新消息；切换期间漏的几句不补）
+    - 同一时间只能有一个无障碍连接，`client.start()` 会清掉设备上别人的客户端：第一次起之前、每次重启之前先问
+      `client.others_running()`，有别人连着就退回 OCR（后起的那个让），不起、也不清别人的
     """
 
-    def __init__(self, client, a11y: A11yChatReader, ocr) -> None:
+    def __init__(self, client, a11y: A11yChatReader, ocr, sleep: Callable[[float], None] = time.sleep) -> None:
         self.client = client  # device.a11y.A11yReader
         self.a11y = a11y
         self.ocr = ocr  # chat.reader.ChatReader
@@ -343,18 +347,30 @@ class FallbackReader:
         self._restarts = 0
         self._start_error = ""
         self._stopped = False
+        self._running = False  # 设备上的客户端是我们起的、还没停：只有这时 stop 才去清（清的时候按名字杀，会连别人的一起杀）
+        self._sleep = sleep
         self._closed_since: float | None = None  # 无障碍模式下自己维护的“面板从什么时候关着”
         self._trace_path: Path | None = None
 
     # ---- 起停 ----
     def start(self) -> None:
+        if self.client.others_running():
+            self._sleep(OTHERS_WAIT)  # 上次被强杀留下的会自己退
+            if self.client.others_running():
+                self._to_ocr(OTHERS)
+                return
         try:
             self.client.start()
         except Exception as exc:
             self._to_ocr(str(exc) or type(exc).__name__)
+            return
+        self._running = True
 
     def stop(self) -> None:
         self._stopped = True  # 收尾时身体还可能借 reader 看面板：别再重启客户端
+        if not self._running:
+            return  # 没起过 / 已经停了：再停会把后来连上的别人的客户端杀掉
+        self._running = False
         try:
             self.client.stop()
         except Exception:
@@ -363,10 +379,13 @@ class FallbackReader:
     def describe(self) -> str:
         return f"OCR（无障碍读不到：{self.reason}）" if self.using_ocr else "无障碍"
 
-    def _to_ocr(self, reason: str) -> None:
+    def _to_ocr(self, reason: str, stop: bool = True) -> None:
+        """stop=False：我们的客户端已经死了、别人连着，不去清（清就把别人的杀了）。"""
         self.using_ocr, self.reason, self._ok = True, reason, False
         log.warning("读聊天退回 OCR：%s", reason)
         self.ocr.panel_closed_since = self._closed_since  # 面板关着的时间接着算，不跳
+        if not stop:
+            self._running = False
         self.stop()
 
     # ---- 健康检查 ----
@@ -374,7 +393,7 @@ class FallbackReader:
         self._restarts += 1
         self._dead_at = None
         self._good_at = now  # 重启后给它 STALE 秒出第一份快照
-        log.warning("无障碍客户端退出了，第 %d 次重启", self._restarts)
+        log.warning("第 %d 次重启无障碍客户端", self._restarts)  # 退出的原因 A11yReader 已经记过
         try:
             self.client.start()
         except Exception as exc:  # 起不来就当又死了一次：下一圈看到 alive 为假接着等
@@ -393,6 +412,9 @@ class FallbackReader:
                     return False
                 self._dead_at = now
             if now >= self._dead_at + RESTART_DELAYS[self._restarts]:
+                if self.client.others_running():  # 多半是别人连上来把我们踢了：让给它
+                    self._to_ocr(OTHERS, stop=False)
+                    return False
                 self._restart(now)
             return False
         if client.latest(max_age=MAX_AGE) is not None:

@@ -16,7 +16,7 @@ mode = "log"                  # 读聊天记录面板（光遇按 C 打开）；
 # log 模式下怎么读（设计见 docs/superpowers/specs/2026-10-04-a11y-chat-reader-design.md）：
 # "a11y" = 读游戏的无障碍节点（准、面板关着也能读好友头顶气泡），读不到自动退回 OCR；"ocr" = 截图识别（原来的做法）
 source = "a11y"
-roi =[0.0, 0.0, 1.0, 0.85]   # 只在这块区域里找气泡，排除底部操作栏
+roi = [0.0, 0.0, 1.0, 0.85]   # 只在这块区域里找气泡，排除底部操作栏
 
 [vision.bubble]
 # 用 `skydango detect 截图.png` 反复试这几项

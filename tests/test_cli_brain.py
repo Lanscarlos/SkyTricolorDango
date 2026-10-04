@@ -883,6 +883,9 @@ class FakeA11yClient:
     def latest(self, max_age=None):
         return None
 
+    def others_running(self):
+        return False
+
 
 def chat_cfg(monkeypatch, source="a11y", mode="log"):
     FakeA11yClient.made = []
@@ -952,4 +955,51 @@ def test_game_world_close_stops_reader(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(), SelfFilter(60, 0.8, "")))
     world = cli._game_world(cfg, run, True)
     world.close()
+    assert stopped == [True]
+
+
+class StoppingReader(FakeReader):
+    def __init__(self, stopped):
+        super().__init__()
+        self.stopped = stopped
+
+    def stop(self):
+        self.stopped.append(True)
+
+
+def _raise(exc):
+    def f(*args, **kwargs):
+        raise exc
+
+    return f
+
+
+def test_game_world_build_interrupted_stops_reader(tmp_path, monkeypatch):  # Ctrl+C / 面板点停止时还在建
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    stopped = []
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_camera", _raise(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        cli._game_world(cfg, run, True)
+    assert stopped == [True]
+
+
+def test_game_world_close_stops_reader_even_if_panels_fail(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    stopped = []
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_stop_scene", _raise(RuntimeError("env 停不下来")))
+    world = cli._game_world(cfg, run, True)
+    with pytest.raises(RuntimeError):
+        world.close()
+    assert stopped == [True]
+
+
+def test_run_agent_build_failure_stops_reader(tmp_path, monkeypatch):
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    stopped = []
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_camera", _raise(RuntimeError("镜头建不起来")))
+    with pytest.raises(RuntimeError, match="镜头"):
+        cli._run_agent(cfg, run, no_emotes=True)
     assert stopped == [True]

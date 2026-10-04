@@ -127,6 +127,17 @@ class A11yReader:
                 err = (res.stderr or res.stdout or b"").decode("utf-8", "replace").strip()
                 raise A11yError(f"推不上无障碍客户端：{err}")
 
+    def others_running(self) -> bool:
+        """设备上有没有别的读取器的客户端在跑（别的进程起的，或者上次被强杀留下的）；adb 出错算没有。
+
+        同一时间只能有一个连接：`start()` 会先清掉它们，所以要不要起先问这个（spec §5「后起的那个退回 OCR」）。"""
+        try:
+            out = self._shell(f"pgrep -f '^{NAME}'", timeout=3)
+        except Exception:
+            log.debug("查别的读取器（pgrep）失败", exc_info=True)
+            return False
+        return any(part.isdigit() for part in out.decode("utf-8", "replace").split())
+
     def _kill_remote(self) -> None:
         # --nice-name 改的是 cmdline（comm 是 "main"，所以 -x 匹配不上）；锚定开头，不然连执行 pkill 的那个 sh -c 一起杀
         self._shell(f"pkill -f '^{NAME}'; true", timeout=3)

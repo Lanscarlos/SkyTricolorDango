@@ -2330,45 +2330,49 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
 
     dev = _device(cfg)
     reader, self_filter = _chat_reader(cfg, dev)
-    reader.trace_path = run.rows_log
-    panel = _panel(cfg, dev, reader)
-    llm = make_llm(cfg.llm)
-    from .chat.memory import MemoryStore
+    try:
+        reader.trace_path = run.rows_log
+        panel = _panel(cfg, dev, reader)
+        llm = make_llm(cfg.llm)
+        from .chat.memory import MemoryStore
 
-    # #friend/#remember 是主人自己的本地操作，不算"团子回复了什么"：不受 dry_run 影响，配了就写
-    command_store = MemoryStore(cfg.reply.memory_dir) if cfg.reply.memory_dir else None
-    store = notes = None
-    if cfg.reply.memory_dir and not cfg.reply.dry_run:  # dry-run 的聊天回复没真的发出去，不记
-        from .chat.memory import NotesKeeper
+        # #friend/#remember 是主人自己的本地操作，不算"团子回复了什么"：不受 dry_run 影响，配了就写
+        command_store = MemoryStore(cfg.reply.memory_dir) if cfg.reply.memory_dir else None
+        store = notes = None
+        if cfg.reply.memory_dir and not cfg.reply.dry_run:  # dry-run 的聊天回复没真的发出去，不记
+            from .chat.memory import NotesKeeper
 
-        store = command_store
-        if not store.profile():
-            log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
-        notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
-    icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
-    social = None
-    if env and icons:
-        from .game.social import SocialHandler
+            store = command_store
+            if not store.profile():
+                log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
+            notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
+        icons = _icon_classifier(cfg) if cfg.env.enabled else None
+        env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
+        social = None
+        if env and icons:
+            from .game.social import SocialHandler
 
-        social = SocialHandler(dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel=panel)
+            social = SocialHandler(dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel=panel)
 
-    def env_text() -> str:  # 现在的环境 + 刚接受的互动，每次回复前现取
-        now = time.monotonic()
-        return "\n".join(p for p in (env.describe(now), social.describe(now) if social else "") if p)
+        def env_text() -> str:  # 现在的环境 + 刚接受的互动，每次回复前现取
+            now = time.monotonic()
+            return "\n".join(p for p in (env.describe(now), social.describe(now) if social else "") if p)
 
-    emotes = _build_emotes(cfg, dev, panel, no_emotes)
-    responder = Responder(
-        llm, cfg.reply, store=store, notes=notes, env=env_text if env else None,
-        available_emotes=emotes.available if emotes else None,
-        env_snapshot=(lambda: snapshot(env, time.monotonic())) if env else None,
-    )
-    sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
-    agent = Agent(
-        cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store,
-        viewer=viewer, camera=_camera(cfg, dev, panel), panel=panel,
-    )
-    ime = _ime_switch(cfg, dev)
+        emotes = _build_emotes(cfg, dev, panel, no_emotes)
+        responder = Responder(
+            llm, cfg.reply, store=store, notes=notes, env=env_text if env else None,
+            available_emotes=emotes.available if emotes else None,
+            env_snapshot=(lambda: snapshot(env, time.monotonic())) if env else None,
+        )
+        sender = ChatSender(dev, cfg.sender, _screen_size_fn(dev))
+        agent = Agent(
+            cfg, dev, reader, responder, sender, self_filter, run=run, env=env, social=social, emotes=emotes, store=command_store,
+            viewer=viewer, camera=_camera(cfg, dev, panel), panel=panel,
+        )
+        ime = _ime_switch(cfg, dev)
+    except BaseException:  # 建到一半出错 / Ctrl+C / 面板点停止：别把设备上的无障碍客户端漏在那儿
+        _stop_reader(reader)
+        raise
     try:
         agent.run(duration)
     except KeyboardInterrupt:
@@ -2498,32 +2502,38 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
 
     dev = _device(cfg)
     reader, self_filter = _chat_reader(cfg, dev)
-    reader.trace_path = run.rows_log
-    panel = _panel(cfg, dev, reader)
-    icons = _icon_classifier(cfg) if cfg.env.enabled else None
-    env = _scene_watcher(cfg, icons, dev, run=run, light=True) if cfg.env.enabled else None
-    social = None
-    if env and icons:
-        from .game.social import SocialHandler
+    try:
+        reader.trace_path = run.rows_log
+        panel = _panel(cfg, dev, reader)
+        icons = _icon_classifier(cfg) if cfg.env.enabled else None
+        env = _scene_watcher(cfg, icons, dev, run=run, light=True) if cfg.env.enabled else None
+        social = None
+        if env and icons:
+            from .game.social import SocialHandler
 
-        social = SocialHandler(dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel=panel)
-    emotes = _build_emotes(cfg, dev, panel, no_emotes)
-    camera = _camera(cfg, dev, panel)
-    friend_checker = _friend_checker(cfg, dev, panel) if cfg.friend_check.enabled else None
-    panels, panel_ops = _panels(cfg, dev, reader)
+            social = SocialHandler(dev, cfg.social, icons, _friend_names(cfg), dry_run=cfg.reply.dry_run, panel=panel)
+        emotes = _build_emotes(cfg, dev, panel, no_emotes)
+        camera = _camera(cfg, dev, panel)
+        friend_checker = _friend_checker(cfg, dev, panel) if cfg.friend_check.enabled else None
+        panels, panel_ops = _panels(cfg, dev, reader)
 
-    def close() -> None:
-        _stop_scene(env)
-        if panels is not None:
-            panels.close()
+        def close() -> None:
+            try:
+                _stop_scene(env)
+                if panels is not None:
+                    panels.close()
+            finally:
+                _stop_reader(reader)
+
+        ime = _ime_switch(cfg, dev)  # 最后才切：前面建东西出错时不用切回
+        return World(
+            device=dev, reader=reader, self_filter=self_filter, panel=panel, env=env, social=social, emotes=emotes, camera=camera,
+            locomotion=Locomotion(dev, cfg.brain.move_step), sender=ChatSender(dev, cfg.sender, _screen_size_fn(dev)),
+            friend_checker=friend_checker, panels=panels, panel_ops=panel_ops, close=close, restore=ime.stop,
+        )
+    except BaseException:  # 建到一半出错 / Ctrl+C / 面板点停止：别把设备上的无障碍客户端漏在那儿
         _stop_reader(reader)
-
-    ime = _ime_switch(cfg, dev)  # 最后才切：前面建东西出错时不用切回
-    return World(
-        device=dev, reader=reader, self_filter=self_filter, panel=panel, env=env, social=social, emotes=emotes, camera=camera,
-        locomotion=Locomotion(dev, cfg.brain.move_step), sender=ChatSender(dev, cfg.sender, _screen_size_fn(dev)),
-        friend_checker=friend_checker, panels=panels, panel_ops=panel_ops, close=close, restore=ime.stop,
-    )
+        raise
 
 
 def _run_brain(
