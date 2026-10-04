@@ -434,7 +434,7 @@ dir = "private/sandbox"
   身体走动过、黑屏过之后参照图作废（只粗转）。工具 / 手动控制的 `camera_reset` 等 60 秒（`RESET_TIMEOUT`）；退出时先恢复轮盘、再复位镜头，细调限 8 秒
 - **空闲注意力（东张西望）**（`[attention]`，`brain/attention.py` 纯决策 + `brain/search.py` 怎么找 + `Body._watch_attention`；spec `docs/superpowers/specs/2026-09-30-idle-attention-design.md`、
   **10-03 改成有意识地找** `docs/superpowers/specs/2026-10-03-attention-search-design.md`、计划 `docs/superpowers/plans/2026-10-03-attention-search.md`；**未在真机验证，数字都是估的**）：
-  **只在 `[panel] mode = "auto"`、聊天面板关着、身体闲着时动**（always 模式下完全不动）。
+  **只在 `[panel] mode = "auto"`、聊天面板关着、身体闲着时动**（always 模式下完全不动；「聊着」（面板关着跟画面里的好友聊）时 `PanelManager.quiet()` 为假，也不动，不把镜头从聊天对象身上转走）。
   被动注意照旧：候选目标（好友 / 陌生人说话、走近、挥手鞠躬、站着的好友）按基础兴趣 ×（1 − 看腻）挑一个，`Camera.nudge` 小步拉向画面中间；冒气泡 / 有人走近时**先看一眼再开面板**（`PanelManager.hold_off`，最多 `look_first` 2 s）。
   **随意看删了，没有动机就不转**；没有被动目标时做"找"（`search.py`，分段转：一段 `seg_presses` 下、停 `dwell` 秒）：
   ① **找刚走开的好友**（身体按 `env.labels` 里他名字标签最后的位置发起）：从画面边上出去的先往那边转 `lost_segments` 段、再按 Q 看名字贴在哪边；在中间淡掉的先按 Q（**自动喊并进来了**，额度照 `[call]`；注意力接管时 `_watch_call` 不再自己判断），画面里还有没挂名字的人就不转；
