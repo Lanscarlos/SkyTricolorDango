@@ -160,6 +160,8 @@ MuMu 用的键位方案是 **「PC端操作方案」**：没有任何键位映�
   推到 `/data/local/tmp`、`app_process` 起一个 UiAutomation 连接、不等 idle，每个快照一行 JSON。单读一次约 1.1 秒（起 JVM），
   常驻（`watch`）时 0.3 秒出第一份、之后变了就出，设备上 CPU 0~0.5%、内存约 116 MB；adb 断开后自己退出（最多 1 秒心跳）
 - **同一时间只能有一个 UiAutomation 连接**：客户端开着时 `uiautomator dump / events` 连不上，反过来也一样
+  （第二个报 `IllegalStateException: … already registered!`）。`adb exec-out` 不分 stderr、也不传返回码，报错都混在 stdout 里
+- 设备上的进程名：`--nice-name` 改的是 cmdline，`comm` 是 `main`，所以清理用 `pkill -f '^skydango-a11y'`（`pkill -x` 匹配不上）
 - 游戏能察觉有无障碍客户端连着（`AccessibilityManager`），和任何读法一样；不装 App、不改系统设置，比装无障碍服务低调，但不等于看不见
 - `python -m skydango a11y [--watch 秒] [--all]` 打印出来看
 

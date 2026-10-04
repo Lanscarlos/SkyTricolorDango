@@ -3,10 +3,11 @@ import io
 import json
 import subprocess
 import threading
+from pathlib import Path
 
 import pytest
 
-from skydango.device.a11y import A11yReader, Node, Snapshot, parse_line, split_speaker
+from skydango.device.a11y import A11yError, A11yReader, Node, Snapshot, parse_line, split_speaker
 
 LINE = json.dumps({
     "t": 1759539000000,
@@ -153,11 +154,65 @@ def test_latest_respects_max_age(tmp_path):
     assert reader.latest(max_age=1) is None
 
 
-def test_watch_records_error_when_process_dies(tmp_path):
+def test_watch_records_error_from_stdout(tmp_path):
+    # adb exec-out 没有单独的 stderr：设备端的报错（客户端的 "error: …"、被系统杀掉时 sh 打的 "Killed"）都在 stdout 里
     jar, md5 = make_jar(tmp_path)
-    proc = FakeProc([], stderr=b"java.lang.IllegalStateException: UiAutomationService already registered!\n")
+    proc = FakeProc([LINE.encode("utf-8") + b"\n", b"Killed \n"], stderr=b"error: device offline\n")
     reader = A11yReader("adb", "x", jar=jar, run=FakeRun(remote_md5=md5), popen=lambda *a, **k: proc)
     reader.start()
     reader._thread.join(2)
     assert not reader.alive
+    assert "Killed" in reader.error and "device offline" in reader.error
+
+
+def test_watch_survives_odd_lines(tmp_path):
+    jar, md5 = make_jar(tmp_path)
+    odd = b'{"t":1,"pkg":"p","nodes":[1, 2]}\n'  # nodes 里不是对象
+    proc = FakeProc([odd, LINE.encode("utf-8") + b"\n"])
+    reader = A11yReader("adb", "x", jar=jar, run=FakeRun(remote_md5=md5), popen=lambda *a, **k: proc)
+    reader.start()
+    reader._thread.join(2)
+    assert reader.count == 1
+
+
+def test_start_twice_stops_the_old_one(tmp_path):
+    jar, md5 = make_jar(tmp_path)
+    procs = [FakeProc([]), FakeProc([])]
+    it = iter(procs)
+    reader = A11yReader("adb", "x", jar=jar, run=FakeRun(remote_md5=md5), popen=lambda *a, **k: next(it))
+    reader.start()
+    reader.start()
+    assert procs[0].killed and not procs[1].killed
+    reader.stop()
+
+
+class FailingPush(FakeRun):
+    def __call__(self, cmd, capture_output=True, timeout=None):
+        res = super().__call__(cmd, capture_output, timeout)
+        if "push" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, b"", b"adb: error: failed to get feature set: device offline")
+        return res
+
+
+def test_push_failure_raises(tmp_path):
+    jar, _ = make_jar(tmp_path)
+    with pytest.raises(A11yError, match="device offline"):
+        A11yReader("adb", "x", jar=jar, run=FailingPush(remote_md5="")).ensure_pushed()
+
+
+def test_dump_without_snapshot_keeps_reason(tmp_path):
+    jar, md5 = make_jar(tmp_path)
+    run = FakeRun(remote_md5=md5, dump=b"error: java.lang.IllegalStateException: already registered\n")
+    reader = A11yReader("adb", "x", jar=jar, run=run)
+    assert reader.dump() is None
     assert "already registered" in reader.error
+
+
+def test_committed_jar_has_dex():
+    import zipfile
+
+    from skydango.device.a11y import JAR
+
+    root = Path(__file__).resolve().parents[1]
+    with zipfile.ZipFile(root / JAR) as z:
+        assert "classes.dex" in z.namelist()

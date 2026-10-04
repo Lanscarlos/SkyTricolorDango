@@ -6,11 +6,14 @@ shell 用户经 app_process 起一个 UiAutomation 连接（和系统的 uiautom
 只往 /data/local/tmp 推一个文件，不装 App、不改系统设置。
 
 - 同一时间设备上只能有一个 UiAutomation 连接：开着它时 `uiautomator dump / events`、appium 之类连不上，反过来也一样
+  （10-04 实测：第二个连上来的 connect 抛 `IllegalStateException: … already registered!`，进了 `error`；`start()` 会先清掉自己上次留下的）
 - App 能察觉有无障碍客户端连着（`AccessibilityManager`），这一点和别的读法一样
+- `adb exec-out` 没有单独的 stderr：设备端的报错都混在 stdout 里，不是 JSON 的行收进 `error`
 """
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import logging
@@ -27,6 +30,10 @@ JAR = Path("assets/a11y/skydango-a11y.jar")
 REMOTE = "/data/local/tmp/skydango-a11y.jar"
 NAME = "skydango-a11y"  # 设备上的进程名（app_process --nice-name），清理残留用
 SEP = " - "  # 聊天行：「内容 - 说话人」
+
+
+class A11yError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -62,7 +69,7 @@ def parse_line(line: bytes | str, at: float) -> Snapshot | None:
             for n in data["nodes"]
         )
         return Snapshot(at, int(data.get("t", 0)), data.get("pkg"), nodes)
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
@@ -75,7 +82,10 @@ def split_speaker(text: str) -> tuple[str, str] | None:
 
 
 class A11yReader:
-    """设备上常驻一个客户端，后台线程收快照，`latest()` 取最近一份；`dump()` 单读一次（约 1 秒，多半花在起 JVM 上）。"""
+    """设备上常驻一个客户端，后台线程收快照，`latest()` 取最近一份；`dump()` 单读一次（约 1 秒，多半花在起 JVM 上）。
+
+    客户端每秒至少出一份（心跳），常驻时取快照要传 `max_age`（比如 2 秒）：客户端死了以后最后一份会一直留着。
+    """
 
     def __init__(
         self,
@@ -97,7 +107,7 @@ class A11yReader:
         self._thread: threading.Thread | None = None
         self._latest: Snapshot | None = None
         self.count = 0  # 收到几份快照
-        self.error = ""  # 客户端退出时 stderr 的最后一段
+        self.error = ""  # 出错的原因：客户端输出里不是快照的行（设备端报错）+ adb 自己的 stderr
 
     def _cmd(self, mode: str) -> str:
         return f"CLASSPATH={REMOTE} app_process /system/bin --nice-name={NAME} skydango.A11y {mode}"
@@ -106,22 +116,33 @@ class A11yReader:
         return self._run(self.adb + ["shell", script], capture_output=True, timeout=timeout).stdout or b""
 
     def ensure_pushed(self) -> None:
-        """设备上的 jar 和本地不一样（或没有）才推。"""
+        """设备上的 jar 和本地不一样（或没有）才推；推不上去抛 A11yError（不然会悄悄跑设备上的旧版本）。"""
         local = hashlib.md5(self.jar.read_bytes()).hexdigest()
         remote = self._shell(f"md5sum {REMOTE} 2>/dev/null").decode("utf-8", "replace").split()
         if not remote or remote[0] != local:
-            self._run(self.adb + ["push", str(self.jar), REMOTE], capture_output=True, timeout=30)
+            res = self._run(self.adb + ["push", str(self.jar), REMOTE], capture_output=True, timeout=30)
+            if res.returncode != 0:
+                err = (res.stderr or res.stdout or b"").decode("utf-8", "replace").strip()
+                raise A11yError(f"推不上无障碍客户端：{err}")
 
     def _kill_remote(self) -> None:
-        self._shell(f"pkill -f {NAME}; true")
+        # --nice-name 改的是 cmdline（comm 是 "main"，所以 -x 匹配不上）；锚定开头，不然连执行 pkill 的那个 sh -c 一起杀
+        self._shell(f"pkill -f '^{NAME}'; true", timeout=3)
 
     def dump(self) -> Snapshot | None:
+        """单读一次；读不到返回 None，原因在 `error`。"""
         self.ensure_pushed()
         out = self._run(self.adb + ["exec-out", self._cmd("dump")], capture_output=True, timeout=15)
+        other = []
         for line in (out.stdout or b"").splitlines():
             snap = parse_line(line, self._clock())
             if snap is not None:
+                self.error = ""
                 return snap
+            if line.strip():
+                other.append(line.decode("utf-8", "replace").strip())
+        other.append((out.stderr or b"").decode("utf-8", "replace").strip())
+        self.error = "\n".join(s for s in other if s)[-500:] or "客户端没有输出"
         return None
 
     # ---- 常驻 ----
@@ -130,6 +151,8 @@ class A11yReader:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> None:
+        if self._proc is not None:
+            self.stop()
         self.ensure_pushed()
         self._kill_remote()  # 上次没收好留下的（同一时间只能有一个连接）
         self.error = ""
@@ -139,13 +162,21 @@ class A11yReader:
         self._thread.start()
 
     def _pump(self, proc) -> None:
-        for line in proc.stdout:
-            snap = parse_line(line, self._clock())
-            if snap is not None:
-                self._latest = snap
-                self.count += 1
-        err = proc.stderr.read().decode("utf-8", "replace").strip() if proc.stderr else ""
-        self.error = err[-500:]
+        other: collections.deque[str] = collections.deque(maxlen=20)  # 不是快照的行：设备端的报错
+        try:
+            for line in proc.stdout:
+                snap = parse_line(line, self._clock())
+                if snap is None:
+                    if line.strip():
+                        other.append(line.decode("utf-8", "replace").strip())
+                elif proc is self._proc:  # 停掉之后别再往里写
+                    self._latest = snap
+                    self.count += 1
+            if proc.stderr:
+                other.append(proc.stderr.read().decode("utf-8", "replace").strip())
+        except Exception as exc:
+            other.append(f"读取出错：{exc!r}")
+        self.error = "\n".join(s for s in other if s)[-500:]
         if proc is self._proc:  # 不是 stop() 叫停的
             log.warning("无障碍客户端退出了：%s", self.error or "（没有输出）")
 

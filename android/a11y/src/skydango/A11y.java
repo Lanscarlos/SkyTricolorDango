@@ -32,16 +32,34 @@ public final class A11y {
 
     private static volatile long eventAt;  // 最近一次无障碍事件（System.nanoTime）
 
+    /**
+     * adb exec-out 没有单独的 stderr（设备端 stderr 并进 stdout），所以出错时往 stdout 打一行 "error: …"，
+     * 不是 JSON，Python 端收进 error。最后一律 System.exit：别让还开着的线程把进程挂在设备上。
+     */
     public static void main(String[] args) throws Exception {
+        PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
+        int code = 0;
+        try {
+            run(args, out);
+        } catch (Throwable e) {
+            out.println("error: " + e);
+            code = 1;
+        }
+        out.flush();
+        System.exit(code);
+    }
+
+    private static void run(String[] args, PrintStream out) throws Exception {
         String mode = args.length > 0 ? args[0] : "dump";
         long interval = args.length > 1 ? Long.parseLong(args[1]) : 200;
-        PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
 
         HandlerThread thread = new HandlerThread("skydango-a11y");
         thread.start();
         UiAutomation ui = new UiAutomation(thread.getLooper(), new UiAutomationConnection());
-        ui.connect(FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
+        boolean connected = false;
         try {
+            ui.connect(FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
+            connected = true;
             AccessibilityServiceInfo info = ui.getServiceInfo();
             info.flags |= AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
                     | AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
@@ -81,7 +99,13 @@ public final class A11y {
                 Thread.sleep(interval);
             }
         } finally {
-            ui.disconnect();
+            if (connected) {
+                try {
+                    ui.disconnect();
+                } catch (Throwable ignored) {
+                    // 连接已经断了；别盖掉原来的异常
+                }
+            }
             thread.quit();
         }
     }

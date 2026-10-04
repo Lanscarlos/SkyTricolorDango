@@ -776,7 +776,7 @@ def cmd_a11y(cfg: Config, args) -> None:
 
     def show(snap) -> None:
         if snap is None:
-            print("没读到（客户端没输出）")
+            print("没读到：", reader.error)
             return
         nodes = [n for n in snap.nodes if args.all or n.visible]
         print(f"[{time.strftime('%H:%M:%S')}] {snap.package or '（拿不到窗口）'}：{len(nodes)} 个节点")
