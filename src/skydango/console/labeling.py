@@ -256,7 +256,8 @@ class FormLabels(_Moves):
     def _item(self, crop: str, where: str, rows: dict, guesses: dict, hand: dict) -> dict:
         r = rows.get(crop) or {}
         return {"crop": crop, "where": where, "guess": self._guess(guesses.get(crop)), "image": r.get("image"), "box": r.get("box"),
-                "confirmed": where in FORMS and hand.get(crop) == where}
+                "confirmed": where in FORMS and hand.get(crop) == where,
+                "replay": r.get("source") == "dataset" and r.get("split") == "val"}  # attrs-train 整帧回放的标准答案
 
     def _fresh(self, crop: str, where: str) -> dict:
         return self._item(crop, where, self._rows(), self._guesses(), hand_labels(self.root))

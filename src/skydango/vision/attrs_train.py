@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Callable
@@ -20,7 +21,7 @@ from ..config import AttrsConfig
 from ..imageio import imread
 from . import attrs
 from .attrs import FORMS, PERSON_FORMS
-from .attrs_data import hand_labels
+from .attrs_data import WRITEBACK_ID, hand_labels
 from .augment import IMAGE_EXTS
 from .bubbles import Rect
 from .gesture_train import macro_f1
@@ -32,7 +33,9 @@ L2_CHOICES = (1e-4, 1e-3, 1e-2)
 ACCEPT_GRID = (0.5, 0.6, 0.7, 0.8)
 REJECT_GRID = (0.6, 0.7, 0.8, 0.9)
 MATCH_IOU = 0.4  # 回放里预测框和标注框的 IoU 到这个算对
-GT_PERSON = {0: "player", 4: "player_unlit", 9: "spirit"}  # 数据集里算"人"的类别（3 = self 两边都不算）
+GT_PERSON = {0: "player", 4: "player_unlit", 9: "spirit"}
+FIX_IOU = 0.5  # 回放答案修正：确认过的裁图框和标注框 IoU 到这个算同一个人
+_CROP_BOX = re.compile(r"__(-?\d+)_(-?\d+)_(\d+)_(\d+)$")  # attrs_data.crop_name 的 <帧>__x_y_w_h  # 数据集里算"人"的类别（3 = self 两边都不算）
 PERSON_DETS = ("player", "player_unlit")
 
 
@@ -136,14 +139,23 @@ def merge_labels(counts: dict[str, int], min_per_class: int) -> tuple[dict[str, 
     return mapping, notes
 
 
-def features(paths: list[Path], embedder, cache: Path, flip: bool) -> np.ndarray:
-    """每张图过主干得单位向量，按 embedder.key 分目录缓存成 .npy（flip = 左右镜像，另存一份）。"""
+def crop_box(name: str) -> tuple[int, int] | None:
+    """裁图名 <帧>__x_y_w_h.jpg 里框的 (宽, 高)；不是这个格式 → None。"""
+    m = _CROP_BOX.search(Path(name).stem)
+    return (int(m.group(3)), int(m.group(4))) if m else None
+
+
+def features(paths: list[Path], embedder, cache: Path, flip: bool,
+             boxes: list[tuple[float, float] | None] | None = None, keep: float | None = None) -> np.ndarray:
+    """每张图过主干得单位向量，按 embedder.key（和 keep）分目录缓存成 .npy（flip = 左右镜像，另存一份）。
+    keep 不是 None：按 boxes 里这张图的框（宽, 高）框外填灰（`attrs.mask_crop`，存盘的裁图是 pad = CROP_PAD 裁的）；框是 None 的不遮挡。"""
     if not paths:
         return np.zeros((0, 0), np.float32)
-    d = Path(cache) / hashlib.sha1(str(embedder.key).encode("utf-8")).hexdigest()[:12]
+    key = str(embedder.key) if keep is None else f"{embedder.key}|keep={keep:g}"
+    d = Path(cache) / hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
     d.mkdir(parents=True, exist_ok=True)
     out = []
-    for p in paths:
+    for i, p in enumerate(paths):
         f = d / f"{p.parent.name}__{p.stem}{'_flip' if flip else ''}.npy"
         if f.exists():
             out.append(np.load(f))
@@ -151,6 +163,9 @@ def features(paths: list[Path], embedder, cache: Path, flip: bool) -> np.ndarray
         img = imread(p)
         if flip:
             img = cv2.flip(img, 1)
+        box = boxes[i] if boxes is not None else None
+        if keep is not None and box is not None:
+            img = attrs.mask_crop(img, box[0], box[1], attrs.CROP_PAD, keep)
         v = np.asarray(embedder.embed(img), np.float32).reshape(-1)
         np.save(f, v)
         out.append(v)
@@ -221,7 +236,7 @@ def evaluate(truth: list[int], pred: list[int], labels: list[str]) -> dict:
 
 
 def run_training(root: Path, embedder, cache: Path, min_per_class: int = MIN_PER_CLASS, seed: int = 0,
-                 confirmed_only: bool = False) -> dict:
+                 confirmed_only: bool = False, keep: float | None = attrs.CROP_KEEP) -> dict:
     """切分 → 合并类别 → 特征（训练集加左右镜像）→ 挑 l2 训练 → 验证集评估。
     返回 {head（给 attrs.save_model）, labels, split, counts, notes, l2, eval, on_train}；类别不够抛 ValueError。"""
     root = Path(root)
@@ -240,18 +255,28 @@ def run_training(root: Path, embedder, cache: Path, min_per_class: int = MIN_PER
         rows = [by_name[n] for n in names if n in by_name and by_name[n][1] is not None]
         return [p for p, _ in rows], np.array([index[lb] for _, lb in rows], int)
 
+    rows = crop_rows(root)
+
+    def box_of(p: Path) -> tuple[float, float] | None:
+        b = (rows.get(p.name) or {}).get("box")
+        return (b[2], b[3]) if isinstance(b, list) and len(b) == 4 else crop_box(p.name)
+
     ptr, ytr = pick(sp["train"])
     pva, yva = pick(sp["val"])
-    Xtr = np.concatenate([features(ptr, embedder, cache, False), features(ptr, embedder, cache, True)])
+    btr, bva = [box_of(p) for p in ptr], [box_of(p) for p in pva]
+    if keep is not None:
+        nobox = sum(b is None for b in btr + bva)
+        notes.append(f"框外 {keep:g} 倍以外填灰（attrs.CROP_KEEP）" + (f"；{nobox} 张找不到框，没遮挡" if nobox else ""))
+    Xtr = np.concatenate([features(ptr, embedder, cache, False, btr, keep), features(ptr, embedder, cache, True, btr, keep)])
     ytr2 = np.concatenate([ytr, ytr])
-    Xva = features(pva, embedder, cache, False)
+    Xva = features(pva, embedder, cache, False, bva, keep)
     on_train = not len(yva)
     if on_train:
         notes.append("没有验证集（图太少），指标是训练集上的")
     W, b, l2 = fit_head(Xtr, ytr2, Xva, yva, len(labels))
-    ex, ey = (features(ptr, embedder, cache, False), ytr) if on_train else (Xva, yva)
+    ex, ey = (features(ptr, embedder, cache, False, btr, keep), ytr) if on_train else (Xva, yva)
     ev = evaluate(list(map(int, ey)), [int(i) for i in (ex @ W + b).argmax(1)], labels)
-    head = {"W": W, "b": b, "labels": labels, "applies_to": list(PERSON_DETS), "pad": attrs.CROP_PAD}
+    head = {"W": W, "b": b, "labels": labels, "applies_to": list(PERSON_DETS), "pad": attrs.CROP_PAD, "keep": keep}
     if sp.get("pinned"):
         notes.append("这些录像在数据集和裁图里都有，按数据集的切分整组定了训练 / 验证（避免近似帧跨集）："
                      + "、".join(f"{g}→{w}" for g, w in sp["pinned"].items()))
@@ -265,8 +290,24 @@ def _label_file(frame: Path) -> Path:
     return frame.parents[2] / "labels" / frame.parent.name / f"{frame.stem}.txt"
 
 
-def _gt_boxes(path: Path, w: int, h: int, spirit: bool = True) -> list[tuple[Rect, int]]:
-    """spirit = False：外形头没有单独的先祖类（不够数并进了 not_person，会把先祖框撤掉），先祖不算要保留的人。"""
+def gt_fixes(root: Path) -> dict[tuple[str, str], list[tuple[Rect, int | None]]]:
+    """回放答案的修正（10-04）：datasets/sky 的人物标注没人核对过（点没点火标反、漏标的人都有）。
+    数据集来的裁图人在标注页确认过的 → {(split, 帧名): [(框, 类别号；不是人 / 丢弃 = None)]}；只在内存里用，不动 labels/。"""
+    hand = hand_labels(root)
+    out: dict[tuple[str, str], list[tuple[Rect, int | None]]] = {}
+    for r in crop_rows(root).values():
+        to = hand.get(r.get("crop"))
+        if r.get("source") != "dataset" or to is None or to == "_unlabeled" or not r.get("image") or not r.get("split"):
+            continue
+        x, y, w, h = r["box"]
+        out.setdefault((r["split"], Path(r["image"]).stem), []).append((Rect(x, y, w, h), WRITEBACK_ID.get(to)))
+    return out
+
+
+def _gt_boxes(path: Path, w: int, h: int, spirit: bool = True,
+              fixes: dict[tuple[str, str], list[tuple[Rect, int | None]]] | None = None) -> list[tuple[Rect, int]]:
+    """spirit = False：外形头没有单独的先祖类（不够数并进了 not_person，会把先祖框撤掉），先祖不算要保留的人。
+    fixes（`gt_fixes`）：和标注框 IoU ≥ FIX_IOU 的改类别（None 删掉），对不上的补进来。"""
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
         parts = line.split()
@@ -274,10 +315,19 @@ def _gt_boxes(path: Path, w: int, h: int, spirit: bool = True) -> list[tuple[Rec
             continue
         cx, cy, bw, bh = (float(v) for v in parts[1:5])
         out.append((Rect(round((cx - bw / 2) * w), round((cy - bh / 2) * h), round(bw * w), round(bh * h)), int(parts[0])))
-    return out
+    for box, cid in (fixes or {}).get((Path(path).parent.name, Path(path).stem), []):
+        hit = max(range(len(out)), key=lambda i: iou(box, out[i][0]), default=None)
+        if hit is not None and iou(box, out[hit][0]) >= FIX_IOU:
+            if cid is None:
+                out.pop(hit)
+            else:
+                out[hit] = (out[hit][0], cid)
+        elif cid is not None:
+            out.append((box, cid))
+    return [(b, c) for b, c in out if spirit or c != 9]
 
 
-def collect(frames: list[Path], detector, model, conf_low: float) -> list[dict]:
+def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | None = None) -> list[dict]:
     """每帧跑一次检测（只留分 ≥ conf_low 的人物框）和外形头：[{gt: [(框, 类别号)], dets: [{cls, box, score, p}]}]。
     p = {外形: 概率}，外形头对这个类别没有头时是 None。没有 labels/ 对应文件的帧跳过。"""
     records = []
@@ -289,8 +339,9 @@ def collect(frames: list[Path], detector, model, conf_low: float) -> list[dict]:
         img = imread(f)
         h, w = img.shape[:2]
         dets = [d for d in detector.detect(img) if d.cls in PERSON_DETS and d.score >= conf_low]
-        probs = model.predict([(d.cls, attrs.crop(img, d.box, model.pad("form"), model.size)) for d in dets]) if dets else []
-        records.append({"gt": _gt_boxes(lf, w, h, spirit="spirit" in labels), "dets": [
+        probs = model.predict([(d.cls, attrs.crop(img, d.box, model.pad("form"), model.size, model.keep("form")))
+                               for d in dets]) if dets else []
+        records.append({"gt": _gt_boxes(lf, w, h, spirit="spirit" in labels, fixes=fixes), "dets": [
             {"cls": d.cls, "box": d.box, "score": d.score,
              "p": ({lb: float(v) for lb, v in zip(labels, r["form"])} if "form" in r else None)}
             for d, r in zip(dets, probs)]})
@@ -401,7 +452,7 @@ def bench_attrs(get_frame: Callable[[int], np.ndarray], detector, model, n: int,
         t1 = time.perf_counter()
         people = sorted((d for d in dets if d.cls in PERSON_DETS), key=lambda d: -d.score)[:max_crops]
         if people:
-            model.predict([(d.cls, attrs.crop(frame, d.box, model.pad("form"), model.size)) for d in people])
+            model.predict([(d.cls, attrs.crop(frame, d.box, model.pad("form"), model.size, model.keep("form"))) for d in people])
         t2 = time.perf_counter()
         if i >= warmup:
             plain.append((t1 - t0) * 1000)

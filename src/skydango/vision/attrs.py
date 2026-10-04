@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 FORMS = ("not_person", "lit", "unlit", "spirit", "shared", "morph")
 PERSON_FORMS = FORMS[1:]
 CROP_PAD = 0.15  # 裁图时框四周各放这么多倍宽 / 高（训练时写进每个头的 pad）
+# 框外遮挡（10-04）：瘦高的框补成正方形会把左右旁边的人整个裁进来（中间黑影、旁边点亮的人 → 判成点亮）。
+# 框四周留 CROP_KEEP 倍宽 / 高，再往外填灰；离线对比 5 折 F1 0.76 → 0.90（tmp/attrs-mask/report-fixed.md）。
+# 训练时写进头的 keep，运行时照模型的 keep 裁；旧模型没有 keep = 不遮挡
+CROP_KEEP = 0.05
+MASK_GRAY = 114
 
 
 class Embedder(Protocol):
@@ -30,8 +35,24 @@ class Embedder(Protocol):
     def embed(self, img: np.ndarray) -> np.ndarray: ...  # 单位向量
 
 
-def crop(img: np.ndarray, box: Rect, pad: float, size: int) -> np.ndarray:
-    """框四周各放 pad 倍宽 / 高，短边补到和长边一样（以框中心为中心），越界填黑，缩放成 size×size。"""
+def mask_crop(c: np.ndarray, w: float, h: float, pad: float, keep: float | None) -> np.ndarray:
+    """对 `crop` 裁出的正方形图（框 w×h、放了 pad）：框四周 keep 倍宽 / 高以外填灰。keep = None 原样返回。
+    裁图以框中心为中心、边长 max(w, h)×(1+2×pad)，所以已经存盘的裁图也能事后遮挡。"""
+    if keep is None:
+        return c
+    n = c.shape[0]
+    s = n / max(max(w, h) * (1 + 2 * pad), 1e-6)
+    kw, kh = w * (1 + 2 * keep) * s, h * (1 + 2 * keep) * s
+    x1, x2 = max(int(round(n / 2 - kw / 2)), 0), min(int(round(n / 2 + kw / 2)), n)
+    y1, y2 = max(int(round(n / 2 - kh / 2)), 0), min(int(round(n / 2 + kh / 2)), n)
+    out = np.full_like(c, MASK_GRAY)
+    out[y1:y2, x1:x2] = c[y1:y2, x1:x2]
+    return out
+
+
+def crop(img: np.ndarray, box: Rect, pad: float, size: int, keep: float | None = None) -> np.ndarray:
+    """框四周各放 pad 倍宽 / 高，短边补到和长边一样（以框中心为中心），越界填黑，缩放成 size×size；
+    keep 不是 None 时框四周 keep 倍以外填灰（`mask_crop`）。"""
     cx, cy = box.x + box.w / 2, box.y + box.h / 2
     side = max(box.w * (1 + 2 * pad), box.h * (1 + 2 * pad))
     x1, y1 = int(round(cx - side / 2)), int(round(cy - side / 2))
@@ -41,7 +62,7 @@ def crop(img: np.ndarray, box: Rect, pad: float, size: int) -> np.ndarray:
     sx1, sy1, sx2, sy2 = max(x1, 0), max(y1, 0), min(x1 + s, w), min(y1 + s, h)
     if sx2 > sx1 and sy2 > sy1:
         out[sy1 - y1:sy2 - y1, sx1 - x1:sx2 - x1] = img[sy1:sy2, sx1:sx2, :3]
-    return cv2.resize(out, (size, size), interpolation=cv2.INTER_AREA)
+    return mask_crop(cv2.resize(out, (size, size), interpolation=cv2.INTER_AREA), box.w, box.h, pad, keep)
 
 
 def _softmax(z: np.ndarray) -> np.ndarray:
@@ -60,6 +81,7 @@ class AttrModel:
         self._labels = {h: [str(x) for x in data[f"{h}.labels"]] for h in self.heads}
         self._applies = {h: [str(x) for x in data[f"{h}.applies_to"]] for h in self.heads}
         self._pad = {h: float(data[f"{h}.pad"]) for h in self.heads}
+        self._keep = {h: float(data[f"{h}.keep"]) if f"{h}.keep" in data else None for h in self.heads}  # 旧模型没有：不遮挡
 
     @property
     def size(self) -> int:
@@ -73,6 +95,9 @@ class AttrModel:
 
     def pad(self, head: str) -> float:
         return self._pad[head]
+
+    def keep(self, head: str) -> float | None:
+        return self._keep[head]
 
     def predict(self, items: list[tuple[str, np.ndarray]]) -> list[dict[str, np.ndarray]]:
         """每项 = (YOLO 类别, 已裁好的图)；返回每项 {头: softmax 概率}，只含 applies_to 里有该类别的头。"""
@@ -89,7 +114,7 @@ class AttrModel:
 
 
 def save_model(path: Path, heads: dict[str, dict], backbone_name: str, backbone_key: str, trained: str) -> None:
-    """存成 npz：heads 列表、<头>.W / b / labels / applies_to / pad，加主干文件名、主干键、训练日期。"""
+    """存成 npz：heads 列表、<头>.W / b / labels / applies_to / pad（/ keep，有才存），加主干文件名、主干键、训练日期。"""
     data: dict[str, np.ndarray] = {
         "heads": np.array(list(heads)),
         "backbone_name": np.array(backbone_name),
@@ -102,6 +127,8 @@ def save_model(path: Path, heads: dict[str, dict], backbone_name: str, backbone_
         data[f"{name}.labels"] = np.array(list(h["labels"]))
         data[f"{name}.applies_to"] = np.array(list(h["applies_to"]))
         data[f"{name}.pad"] = np.array(float(h["pad"]))
+        if h.get("keep") is not None:
+            data[f"{name}.keep"] = np.array(float(h["keep"]))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:  # 直接给文件对象：np.savez 不会再往文件名后面补 .npz
@@ -202,8 +229,8 @@ class PersonAttrs:
         probs: list[np.ndarray | None] = []
         if picks:
             try:
-                pad, size = self.model.pad("form"), self.model.size
-                res = self.model.predict([(t.cls, crop(frame, t.box, pad, size)) for t in picks])
+                pad, size, keep = self.model.pad("form"), self.model.size, self.model.keep("form")
+                res = self.model.predict([(t.cls, crop(frame, t.box, pad, size, keep)) for t in picks])
                 probs = [r.get("form") for r in res]
             except Exception:
                 self.errors += 1

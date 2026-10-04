@@ -50,6 +50,31 @@ def test_crop_is_square_padded_and_sized():
     assert (out[:, 0] == 0).all()  # 贴着图片左边：左侧补黑
 
 
+def test_crop_keep_fills_outside_box_gray():
+    # 10-04 实验：瘦高的框补成正方形会带进旁边的人；框外 keep 倍宽高以外填灰，分类 F1 0.76 → 0.90
+    img = np.full((400, 400, 3), 200, np.uint8)
+    box = Rect(150, 100, 100, 200)
+    plain, masked = crop(img, box, 0.15, 64), crop(img, box, 0.15, 64, keep=0.05)
+    assert (plain == 200).all()
+    assert (masked[:, :5] == attrs.MASK_GRAY).all() and (masked[:, -5:] == attrs.MASK_GRAY).all()  # 左右多裁的那块
+    assert (masked[28:36, 28:36] == 200).all()  # 框里不动
+    assert (masked[1, 32] == attrs.MASK_GRAY).all()  # 上下 pad 区域在 keep 以外也填灰
+    stored = crop(img, box, 0.15, 64)
+    assert (attrs.mask_crop(stored, box.w, box.h, 0.15, 0.05) == masked).all()  # 存好的裁图事后遮挡 = 当场遮挡
+    assert attrs.mask_crop(stored, box.w, box.h, 0.15, None) is stored
+
+
+def test_keep_round_trip_and_old_models_have_none(tmp_path):
+    heads = _heads()
+    heads["form"]["keep"] = 0.05
+    p = tmp_path / "k.npz"
+    save_model(p, heads, "dinov2-small.onnx", "64:imagenet", "2026-10-04")
+    m = load_model(AttrsConfig(model=str(p), backbone="models/dinov2-small.onnx"), "cpu", embedder=FakeEmbedder())
+    assert abs(m.keep("form") - 0.05) < 1e-6 and m.keep("icon") is None
+    _, old = _model(tmp_path)
+    assert old.keep("form") is None
+
+
 def test_predict_uses_only_heads_for_that_class(tmp_path):
     _, m = _model(tmp_path)
     img = np.zeros((10, 10, 3), np.uint8)
@@ -115,6 +140,9 @@ class FakeModel:
 
     def pad(self, head):
         return 0.15
+
+    def keep(self, head):
+        return None
 
     def labels(self, head):
         return ["not_person", "lit", "unlit"]

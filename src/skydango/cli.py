@@ -1002,8 +1002,9 @@ def _perception_crops(cfg: Config, args) -> None:
     print(f"裁图在 {out}（_unlabeled/ 等 Claude 初分、标注页确认）")
 
 
-def _attrs_replays(cfg: Config, frames: list, model, notes: list[str]):
-    """在验证帧上回放 0.2 和 [perception] low_conf 两档：([回放结果], 建议阈值)。检测器建不起来 / 没有带标注的帧就返回空。"""
+def _attrs_replays(cfg: Config, frames: list, model, notes: list[str], attrs_root: Path | None = None):
+    """在验证帧上回放 0.2 和 [perception] low_conf 两档：([回放结果], 建议阈值)。检测器建不起来 / 没有带标注的帧就返回空。
+    attrs_root：外形裁图目录，标准答案按标注页确认过的结果修正（`attrs_train.gt_fixes`，只在内存里）。"""
     from .vision import attrs_train as at
     from .vision.detect import make_detector
 
@@ -1016,9 +1017,13 @@ def _attrs_replays(cfg: Config, frames: list, model, notes: list[str]):
     except Exception as exc:
         notes.append(f"YOLO 检测器加载失败（{exc}），没做整帧回放")
         return [], None
+    fixes = at.gt_fixes(attrs_root) if attrs_root is not None and Path(attrs_root).is_dir() else {}
+    if fixes:
+        notes.append(f"回放的标准答案用 {attrs_root} 里标注页确认过的结果修正了 {sum(len(v) for v in fixes.values())} 处"
+                     "（改点没点火、删不是人、补漏标的人；只在内存里，datasets/sky 的 labels/ 没动）")
     replays, suggest = [], None
     for low in sorted({0.2, p.low_conf}):
-        records = at.collect(frames, detector, model, low)
+        records = at.collect(frames, detector, model, low, fixes)
         if suggest is None or low == p.low_conf:
             suggest = at.sweep_thresholds(records, p.conf)
         replays.append({**at.simulate(records, p.conf, a.accept, a.reject, a.yolo_w), "conf_low": low, "conf": p.conf,
@@ -1052,7 +1057,8 @@ def _perception_attrs_train(cfg: Config, args) -> None:
     except Exception as exc:
         raise SystemExit(f"主干 {a.backbone} 加载失败：{exc}") from None
     try:
-        res = at.run_training(data, embedder, data / "_features", confirmed_only=not getattr(args, "all", False))
+        res = at.run_training(data, embedder, data / "_features", confirmed_only=not getattr(args, "all", False),
+                              keep=None if getattr(args, "no_mask", False) else attrs.CROP_KEEP)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
     ev = res["eval"]
@@ -1068,7 +1074,7 @@ def _perception_attrs_train(cfg: Config, args) -> None:
         frames = []
         for root in sorted({r["dataset"] for r in at.crop_rows(data).values() if r.get("source") == "dataset" and r.get("dataset")}):
             frames += at.frames_in(Path(root))
-        replays, suggest = _attrs_replays(cfg, frames, model, notes)
+        replays, suggest = _attrs_replays(cfg, frames, model, notes, data)
     for r in replays:
         print(f"回放 conf_low = {r['conf_low']:g}：纯 YOLO 精确率 {r['baseline']['precision']:.0%}、召回率 {r['baseline']['recall']:.0%}；"
               f"加外形头 {r['second']['precision']:.0%} / {r['second']['recall']:.0%}")
@@ -1093,7 +1099,7 @@ def _perception_attrs_eval(cfg: Config, args) -> None:
     if model is None:
         raise SystemExit(f"外形头模型 {args.model} 加载失败（原因见上面的警告）")
     notes: list[str] = []
-    replays, suggest = _attrs_replays(cfg, at.frames_in(Path(args.dataset)), model, notes)
+    replays, suggest = _attrs_replays(cfg, at.frames_in(Path(args.dataset)), model, notes, Path(getattr(args, "attrs_data", None) or "datasets/attrs"))
     now = dt.datetime.now()
     for r in replays:
         print(f"conf_low = {r['conf_low']:g}")
@@ -3173,9 +3179,11 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--force", action="store_true", help="允许 --out 直接覆盖 [attrs] model 正在用的模型")
     q.add_argument("--device", choices=["cuda", "dml", "cpu"], help="主干提特征用的后端（默认 [attrs] device，空 = 跟 [perception]）")
     q.add_argument("--all", action="store_true", help="form/ 里的图全用（默认只用标注页确认过的；datasets/sky 导进来、没确认的标签不可靠）")
+    q.add_argument("--no-mask", action="store_true", help="按旧裁法训练（不遮挡框外，attrs.CROP_KEEP；对比用）")
     q = psub.add_parser("attrs-eval", help="外形头只做整帧回放：数据集 images/val 上比较纯 YOLO 和加外形头复核，写报告")
     q.add_argument("dataset", help="YOLO 数据集目录（含 images/val 和 labels/val）")
     q.add_argument("--model", required=True, help="外形头 .npz")
+    q.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录：回放答案按这里标注页确认过的结果修正（默认 datasets/attrs，没有就不修正）")
     q.add_argument("--device", choices=["cuda", "dml", "cpu"])
     q = psub.add_parser("gesture-label", help="动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json")
     q.add_argument("source", nargs="?", help="片段目录的上级（默认 <[gesture] dataset>/_unlabeled）")

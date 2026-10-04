@@ -5,6 +5,7 @@
  * 页顶「动作 / 外形 / 动作名」三个标签：外形页标人物裁图（api/form/*，Enter / 1~6 = 外形类别 / 0 不要 / Z 撤销，只在外形页开着时有效）；
  * 动作名页给动作图标起名（emotenames.js，这里只管切过去和刷新，开着时这里的按键都不生效）。
  * 外形页的「导入未确认」筛选（10-04）：datasets/sky 直接导进 form/ 的裁图没人看过（后端 confirmed = false）；在原类别上按一下 = 原地确认。
+ * 其中「回放用」（后端 replay）是数据集验证集帧里的框 = attrs-train 整帧回放的标准答案，先过它们回放才算得准。
  * 模型写的理由一律 textContent。 */
 (function () {
 "use strict";
@@ -46,6 +47,7 @@ function matches(c, f) {
   if (f.startsWith("guess:")) return c.where === UNL && guessKey(c) === f.slice(6);
   if (f.startsWith("done:")) return c.where === f.slice(5);
   if (f === "unconfirmed") return unconfirmed(c);
+  if (f === "replay") return unconfirmed(c) && c.replay === true;
   if (f.startsWith("unconfirmed:")) return unconfirmed(c) && c.where === f.slice(12);
   return false;
 }
@@ -69,7 +71,7 @@ function pValid(P, f) {
   if (f === "todo" || f === "discard") return true;
   if (f.startsWith("done:")) return labels.includes(f.slice(5));
   if (f.startsWith("guess:")) return [...labels, "unsure", "-"].includes(f.slice(6));
-  if (P.confirmable && f === "unconfirmed") return true;
+  if (P.confirmable && (f === "unconfirmed" || f === "replay")) return true;
   if (P.confirmable && f.startsWith("unconfirmed:")) return labels.includes(f.slice(12));
   return false;
 }
@@ -90,6 +92,7 @@ function pRenderFilter(P) {
     for (const c of un) un1[c.where] = (un1[c.where] || 0) + 1;
     const g3 = el("optgroup"); g3.label = "导入未确认（没人看过）";
     g3.append(opt("unconfirmed", `全部（${un.length}）`));
+    g3.append(opt("replay", `回放用的（${un.filter(c => c.replay === true).length}）`));
     for (const l of P.labels()) if (un1[l] || P.s.filter === "unconfirmed:" + l) g3.append(opt("unconfirmed:" + l, `${P.name(l)}（${un1[l] || 0}）`));
     sel.append(g3);
   }
@@ -110,7 +113,12 @@ function pRenderCounts(P) {
     box.append(b);
   };
   item("todo", "待确认", UNL);
-  if (P.confirmable) { n.unconfirmed = pItems(P).filter(unconfirmed).length; item("unconfirmed", "导入未确认", "unconfirmed"); }
+  if (P.confirmable) {
+    const un = pItems(P).filter(unconfirmed);
+    n.unconfirmed = un.length; n.replay = un.filter(c => c.replay === true).length;
+    item("unconfirmed", "导入未确认", "unconfirmed");
+    if (n.replay || P.s.filter === "replay") item("replay", "其中回放用", "replay");
+  }
   for (const l of P.labels()) item("done:" + l, P.name(l), l);
   item("discard", "丢弃", DIS);
   P.onCounts(n);
@@ -125,7 +133,7 @@ function pRenderList(P) {
   box.textContent = "";
   if (!P.s.list.length) {
     box.append(el("p", "none lb-empty", P.s.filter === "todo" ? (pItems(P).length ? "都标完了。" : `还没有${P.noun}。`)
-      : P.s.filter.startsWith("unconfirmed") ? "导入的都确认过了。" : `这里没有${P.noun}。`));
+      : P.s.filter.startsWith("unconfirmed") || P.s.filter === "replay" ? "导入的都确认过了。" : `这里没有${P.noun}。`));
     return;
   }
   const frag = document.createDocumentFragment();
@@ -368,7 +376,7 @@ function renderSide() {
 
 function fmName(l) { return l === "discard" || l === DIS ? "不要" : l === UNL ? "待确认" : l === "unsure" ? "看不清" : FORM_NAMES[l] || l; }
 function fmWhereText(w) { return w === UNL ? "待确认" : w === DIS ? "丢弃了" : `已确认：${fmName(w)}`; }
-function fmRowWhere(c) { return unconfirmed(c) ? `导入未确认：${fmName(c.where)}` : fmWhereText(c.where); }
+function fmRowWhere(c) { return unconfirmed(c) ? `导入未确认${c.replay ? "（回放用）" : ""}：${fmName(c.where)}` : fmWhereText(c.where); }
 
 function cropUrl(name) { return `api/form/crop?name=${encodeURIComponent(name)}`; }
 function fmShowImages() {

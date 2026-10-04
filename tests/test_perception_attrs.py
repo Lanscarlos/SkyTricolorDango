@@ -33,6 +33,9 @@ class FakeModel:
     def pad(self, head):
         return 0.15
 
+    def keep(self, head):
+        return None
+
     def labels(self, head):
         return list(FORMS)
 

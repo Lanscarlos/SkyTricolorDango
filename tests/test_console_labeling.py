@@ -337,6 +337,20 @@ def test_form_confirm_in_place_and_confirmed_flag(tmp_path):
     assert body["where"] == "lit" and body["confirmed"] is True
 
 
+def test_form_items_flag_replay_crops(tmp_path):
+    # 「导入未确认 · 回放用」筛选：数据集验证集帧里的框是 attrs-train 整帧回放的标准答案，先过它们回放才算得准
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/lit", "v.jpg")
+    make_crop(tmp_path, "form/lit", "t.jpg")
+    make_crop(tmp_path, "form/lit", "h.jpg")
+    rows = [{"crop": "v.jpg", "source": "dataset", "split": "val"}, {"crop": "t.jpg", "source": "dataset", "split": "train"},
+            {"crop": "h.jpg", "source": "images", "split": None}]
+    (tmp_path / "_crops.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    items = {i["crop"]: i for i in FormLabels(tmp_path).state()["items"]}
+    assert items["v.jpg"]["replay"] is True and items["t.jpg"]["replay"] is False and items["h.jpg"]["replay"] is False
+
+
 def test_form_discard_in_place_is_still_conflict(tmp_path):
     from skydango.console.labeling import FormLabels
 

@@ -120,6 +120,9 @@ class FakeModel:
     def pad(self, head):
         return 0.15
 
+    def keep(self, head):
+        return None
+
     def labels(self, head):
         return ["not_person", "lit", "unlit"]
 
@@ -256,7 +259,8 @@ def test_run_training_end_to_end(tmp_path):
             imwrite(root / "form" / form / f"{i}.jpg", np.full((16, 16, 3), level + i, np.uint8))
     res = at.run_training(root, BucketEmbedder(), tmp_path / "cache", min_per_class=3)
     assert res["labels"] == ["not_person", "lit", "unlit"] and res["mapping"]["spirit"] == "not_person"
-    assert res["eval"]["macro_f1"] == 1.0 and res["val_n"] > 0 and len(res["notes"]) == 3
+    assert res["eval"]["macro_f1"] == 1.0 and res["val_n"] > 0 and len(res["notes"]) == 4
+    assert "找不到框" in res["notes"][3]  # 0.jpg 这种名字里没有框：不遮挡
     from skydango.vision import attrs
     out = tmp_path / "m.npz"
     attrs.save_model(out, {"form": res["head"]}, "d.onnx", "8:imagenet", "20261002")
@@ -285,6 +289,60 @@ def test_confirmed_only_skips_unreviewed_imports(tmp_path):
     assert "lit/imp.jpg" not in sp["train"] + sp["val"]
     res = at.run_training(root, BucketEmbedder(), tmp_path / "cache", min_per_class=3, confirmed_only=True)
     assert res["counts"]["lit"] == 8 and any("没确认的 2 张" in n for n in res["notes"])
+
+
+def test_training_masks_stored_crops_and_records_keep(tmp_path):
+    # 10-04：存盘的裁图是没遮挡的（标注页要看上下文），提特征时按框（_crops.jsonl 或裁图名里的框）事后遮挡；模型记下 keep
+    from skydango.vision import attrs
+
+    root = tmp_path / "attrs"
+    seen = []
+
+    class Spy(BucketEmbedder):
+        def embed(self, img):
+            seen.append(img.copy())
+            return super().embed(img)
+
+    for form, level in (("not_person", 20), ("lit", 120), ("unlit", 220)):
+        for i in range(4):
+            imwrite(root / "form" / form / f"f{form}{i}_0001_0.00s__10_10_20_80.jpg", np.full((64, 64, 3), level + i, np.uint8))
+    res = at.run_training(root, Spy(), tmp_path / "cache", min_per_class=2)
+    assert res["head"]["keep"] == attrs.CROP_KEEP
+    assert seen and all((im[:, :3] == attrs.MASK_GRAY).all() for im in seen)  # 框 20×80：左右多出来的都填灰了
+    assert all(abs(int(im[32, 32, 0]) - attrs.MASK_GRAY) > 5 for im in seen)
+    seen.clear()
+    res = at.run_training(root, Spy(), tmp_path / "cache", min_per_class=2, keep=None)
+    assert res["head"].get("keep") is None
+    assert seen and not any((im[:, :3] == attrs.MASK_GRAY).all() for im in seen)  # 换了 keep 不拿遮挡过的缓存
+    assert at.crop_box("a_0001_0.00s__10_10_20_80.jpg") == (20, 80) and at.crop_box("0.jpg") is None
+
+
+def test_gt_fixes_apply_hand_labels(tmp_path):
+    # 回放的标准答案（datasets/sky 的 labels）没人核对过；用标注页确认过的修正：改点没点火、删不是人、补漏标的人
+    from skydango.vision.bubbles import Rect
+
+    root = tmp_path / "attrs"
+    rows = [
+        {"crop": "a.jpg", "source": "dataset", "split": "val", "image": "/d/images/val/f1.jpg", "box": [10, 10, 20, 40], "known": True},
+        {"crop": "b.jpg", "source": "dataset", "split": "val", "image": "/d/images/val/f1.jpg", "box": [60, 10, 20, 40], "known": True},
+        {"crop": "c.jpg", "source": "dataset", "split": "val", "image": "/d/images/val/f1.jpg", "box": [100, 10, 20, 40], "known": False},
+        {"crop": "d.jpg", "source": "dataset", "split": "val", "image": "/d/images/val/f1.jpg", "box": [140, 10, 20, 40], "known": True},
+        {"crop": "e.jpg", "source": "images", "image": "/x.jpg", "box": [0, 0, 5, 5]},
+    ]
+    root.mkdir()
+    (root / "_crops.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    log = [{"crop": "a.jpg", "from": "lit", "to": "unlit"}, {"crop": "b.jpg", "from": "lit", "to": "not_person"},
+           {"crop": "c.jpg", "from": "_unlabeled", "to": "lit"}, {"crop": "e.jpg", "from": "_unlabeled", "to": "lit"}]
+    (root / "_labels.jsonl").write_text("\n".join(json.dumps(e) for e in log), encoding="utf-8")
+    fixes = at.gt_fixes(root)
+    assert set(fixes) == {("val", "f1")} and len(fixes[("val", "f1")]) == 3  # d 没人看过、e 不是数据集来的
+    lf = tmp_path / "labels" / "val" / "f1.txt"
+    lf.parent.mkdir(parents=True)
+    lf.write_text("0 0.1 0.15 0.1 0.2\n0 0.35 0.15 0.1 0.2\n0 0.75 0.15 0.1 0.2\n", encoding="utf-8")  # 200×200：a、b、d
+    gt = at._gt_boxes(lf, 200, 200, fixes=fixes)
+    assert sorted((b.x, c) for b, c in gt) == [(10, 4), (100, 0), (140, 0)]
+    assert sorted((b.x, c) for b, c in at._gt_boxes(lf, 200, 200)) == [(10, 0), (60, 0), (140, 0)]
+    assert isinstance(gt[0][0], Rect)
 
 
 def test_default_out_and_final_path_guard(tmp_path, monkeypatch):
