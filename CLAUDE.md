@@ -261,7 +261,7 @@ dir = "private/sandbox"
   `--only <通配>`（fnmatch 按图片文件名，带不带 `.jpg` 都行，可多次 / 逗号分隔）只处理匹配的帧，别的帧不核对、不写回、不进清单；
   烛火、光之翼等收集品不做（刷资源）。上线门槛和操作顺序见训练进度文档
 - 普通模式主人命令 `#spin [圈数]`：转一圈、截图存 `runs/<…>/spin/<时间>/`，打开感知层时回复带扫描结果；大脑模式不加
-- **本机在用 `models/sky-yolo-v7.pt`**（2026-09-30，539 帧，能认头顶气泡 `typing`；v4 在 run 里真机用过、v5 / v6 没上线），进度、数据、标注规则、各版对比和待办见 `docs/progress/2026-09-28-yolo-training.md`；
+- **本机在用 `models/sky-yolo-v10.pt`**（2026-10-04，标注页核对过的人物写回 datasets/sky 后重训，回放召回 62% → 75%；之前是 v7（09-30，能认头顶气泡 `typing`），v8 / v9 是座位试训、没上线），进度、数据、标注规则、各版对比和待办见 `docs/progress/2026-09-28-yolo-training.md`；
   **标气泡别只靠 Claude**：它标不出好友名字下方叠着的文字气泡，要 OCR 兜底（做法见进度文档 09-30 一节）；
   感知层已在真机 `run` 里用过多次（好友走远、标签淡掉后轨迹断开被判成陌生人，下面「追踪和接回」修的就是它）；**下面这些阈值还没在真机标定**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
 - **追踪和接回**（spec `docs/superpowers/specs/2026-10-01-tracking-relink-motion-design.md`，计划 `docs/superpowers/plans/2026-10-01-tracking-relink-motion.md`；**代码已完成，还没在录像 / 真机上标定**，spec §8 真机验证四步）：

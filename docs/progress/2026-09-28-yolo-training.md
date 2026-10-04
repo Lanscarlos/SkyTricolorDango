@@ -297,6 +297,14 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 - **但答案不全**：`fp_sheet.py` → `fp_v10.jpg`：v10 的 63 个"错报"多是答案里没有的真人（茶座坐着的人、雪人变身、点过火的人——v7 认不出、当初没裁出来给人确认）+ 约 6 个 player / player_unlit 重复框（运行时 `merge_people` 会合并，回放没合）；真错报只有几个。
   回放和 mAP 都拿这份不全的答案算，对认得多的模型不公平，**v7 / v10 现在比不出高下**
 
+**补全答案后 v10 上线**（10-04 傍晚）：`crops datasets/sky --model v10`（重裁跳过已裁过的框、同一人两框只裁一张）→ 141 个答案里没有的人；
+外形头 + YOLO 类别一致且把握 ≥ 0.9 自动确认 34 个（`tmp/attrs-mask/screen_new.py`），用户标完 107 个 → 写回：88 帧补 98 个人（训练 +62 / 验证 +36）。
+回放也照运行时 `merge_people` 合并重复框。答案补全后（309 个人物标注）：
+- mAP50（三列 v7 / v9 / v10）旧 val：player 0.714 / 0.690 / 0.707、player_unlit 0.633 / 0.624 / **0.693**、self 0.812 / 0.831 / 0.851；茶座：player 0.527 / 0.637 / 0.587、player_unlit 0.671 / 0.602 / **0.688**
+- 回放（门槛 0.35）：v7 88% / 62%、认反 22 / 190；v7 + 外形头 89% / 67%、4；**v10 87% / 75%、31 / 226；v10 + 外形头 88% / 77%、3 / 233**
+- **本机 `config.toml` 已换成 `models/sky-yolo-v10.pt`**（改之前的配置 `tmp/config.before-v10.toml`；回退改回 v7）。感知层的阈值（conf / low_conf、far_crops、halo 等）都是照 v7 定的，v10 分数整体偏高，**晚上真机要看**陌生人 / 走近事件会不会变多
+- v11 在训（`train_v11.py`，补全后的数据集）
+
 ## 没做完 / 待办（按建议顺序）
 
 1. **用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，
