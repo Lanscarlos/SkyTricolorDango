@@ -272,6 +272,33 @@ def test_shared_dino_uses_attrs_device(monkeypatch, tmp_path):
     assert sorted((e.path, e.device) for e in FakeEmbedder.built) == sorted([(str(onnx), "cpu"), (str(other), "cuda")])
 
 
+def test_dino_on_cpu_warns_when_perception_on_cuda(monkeypatch, caplog, tmp_path):
+    """[perception] device = cuda 而认装扮自己的 DINOv2 在 CPU 上（一张裁图约 30 ms）：警告一次，建议 [appearance] device = "cuda"（终审 8）。"""
+    fake_models(monkeypatch)
+    monkeypatch.setattr("skydango.vision.embed.OnnxEmbedder", FakeEmbedder)
+    onnx = tmp_path / "dinov2-small.onnx"
+    onnx.write_bytes(b"x")
+    cfg = Config()
+    cfg.perception.enabled = True
+    cfg.perception.device = "cuda"
+    cfg.appearance.enabled = True
+    cfg.appearance.dino = str(onnx)  # appearance.device 默认 cpu，第二层没开：不共用
+    with caplog.at_level("WARNING"):
+        cli._dino_embedder(cfg)
+    assert caplog.text.count('认装扮的 DINOv2 在 CPU 上跑') == 1 and '[appearance] device 改成 "cuda"' in caplog.text
+    caplog.clear()
+    cfg.appearance.device = "cuda"  # 已经是 cuda：不警告
+    with caplog.at_level("WARNING"):
+        cli._dino_embedder(cfg)
+    assert "在 CPU 上跑" not in caplog.text
+    caplog.clear()
+    cfg.appearance.device = "cpu"
+    cfg.perception.device = "cpu"  # 感知层本来就在 CPU：不警告
+    with caplog.at_level("WARNING"):
+        cli._dino_embedder(cfg)
+    assert "在 CPU 上跑" not in caplog.text
+
+
 def test_dino_embedder_missing_file_warns(monkeypatch, caplog):
     fake_models(monkeypatch)
     cfg = Config()

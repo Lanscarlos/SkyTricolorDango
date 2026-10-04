@@ -973,6 +973,22 @@ def test_unsure_not_listed_when_called_or_tag_fresh():
     w.mark_unsure_called([999], t)  # 不认识的轨迹 id：忽略
 
 
+def test_unsure_not_listed_when_label_fresh_but_not_on_a_track():
+    """他的名字标签 PEOPLE_STALE 秒内刚亮过（没挂在任何轨迹上，比如贴边 / 被挡）：那是名字在说话，不用喊。"""
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    (p,) = players(w)
+    t = run_img(w, det, [body], striped(body), t + 0.1, p.data["unsure"][1] + w.appearance_cfg.unsure_wait + 0.1)
+    assert [x[1] for x in w.unsure(t)] == [XIAOMING]
+    stale = w.labels.get(XIAOMING)
+    w.labels[XIAOMING] = (1500, 100, 80, 20, t - 2.0)  # 老标签：不挡
+    assert [x[1] for x in w.unsure(t)] == [XIAOMING]
+    w.labels[XIAOMING] = (1500, 100, 80, 20, t - 0.3)  # 刚亮过：不列
+    assert w.unsure(t) == []
+    if stale is None:
+        del w.labels[XIAOMING]
+
+
 def start_call(w, det, body, t):
     """unsure 挂满 unsure_wait 后为这条轨迹喊一声（窗口从 t 开始）。"""
     (p,) = players(w)

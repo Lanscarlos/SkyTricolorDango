@@ -477,3 +477,42 @@ def test_unsure_waits_while_a_call_is_pending(clock):
     env.unsure_list.append((8, "小红", clock() - 3.0))
     b._watch_call(clock())  # 上一声的结果还没收：一次只收一个
     assert pressed(device) == 1
+
+
+def test_unsure_call_marks_window_start_before_the_press_returns(clock):
+    """按 Q 之前（不是 call_out 回来之后）就按窗口开始的时间打上标记：连拍那 1 秒里 unsure_called 不能留着旧时间（终审 4）。"""
+    b, device, env, _ = call_body(clock, step=0.1)
+    at_press = []
+    real = b.device.hw_key
+
+    def hw_key(code):
+        if code == LINUX_KEY_Q:
+            at_press.append(env.marked[-1])
+        real(code)
+
+    b.device.hw_key = hw_key
+    unsure_one(b, clock)
+    b._watch_call(clock())
+    assert len(at_press) == 1 and at_press[0] == ([5], b.last_call.at)
+    assert len(env.marked) == 2  # 预打标记一次 + 按键前一次，返回之后不再补
+
+
+def test_on_press_error_never_blocks_the_press(clock, caplog):
+    b, device, env, _ = call_body(clock)
+
+    def boom(at):
+        raise RuntimeError("炸了")
+
+    with caplog.at_level("WARNING"):
+        r = b.call_out("auto", on_press=boom)
+    assert not r.refused and pressed(device) == 1 and "炸了" in caplog.text
+
+
+def test_unsure_call_refused_still_marked_and_not_pending(clock):
+    """call_out 拒绝了（比如输入框开着）：预打的标记留着（不排队）、_pending_auto 保持 None、没按键。"""
+    b, device, env, _ = call_body(clock)
+    device.shown = True  # call_out 里 ime_shown：别人开着输入框
+    unsure_one(b, clock)
+    b._watch_call(clock())
+    assert pressed(device) == 0 and b._pending_auto is None
+    assert env.marked == [([5], clock())]

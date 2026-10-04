@@ -1475,7 +1475,7 @@ class Body:
 
     def _recognized(self, now: float) -> list[str]:
         """现在画面里认得出名字的人（找不到某人时告诉大脑）。"""
-        names = [p.name for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        names = [p.name for p in self.env.people(now) if p.name and not p.unsure] if hasattr(self.env, "people") else []
         names += [n for n, v in dict(self.env.labels).items() if now - v[4] <= self.cfg.env.interval * 2 + 1]
         return list(dict.fromkeys(names))
 
@@ -1569,7 +1569,7 @@ class Body:
 
     def _body_of(self, name: str, now: float, since: float | None = None) -> Rect | None:
         """这个人的身体框；since：只要感知层在 since 之后又看到过的（people() 会给 1 秒内的旧框）。"""
-        people = [p for p in self.env.people(now) if p.name] if hasattr(self.env, "people") else []
+        people = [p for p in self.env.people(now) if p.name and not p.unsure] if hasattr(self.env, "people") else []
         if since is not None:
             seen = {t.id for t in list(getattr(self.env, "last_tracks", ())) if t.last >= since}
             people = [p for p in people if p.track_id in seen]
@@ -1758,9 +1758,21 @@ class Body:
         if not self.cfg.appearance.enabled or not hasattr(self.env, "sweep") or getattr(self.env, "dino", None) is None:
             return ""
         why = ""
+        black = False
         if self._dry(False):
             why = "dry-run"
-        elif self.blackout:
+        else:
+            try:  # run() 在第一个 step() 之前调它：blackout / 面板状态还没人更新过，先截一张现看（同 _sense / _watch_panels）
+                frame = self.device.screenshot()
+                black = is_black(frame)
+                if self.panels is not None:
+                    self.panels.observe(frame, self.clock())
+            except Exception:
+                log.debug("启动登记团子：截图 / 看面板出错", exc_info=True)
+                why = "截不到图"
+        if why:
+            pass
+        elif black:
             why = "画面黑着"
         elif self.panels is not None and self.panels.state.others():
             why = "别的面板开着"
@@ -2295,9 +2307,10 @@ class Body:
         return result + (OWNER_NOTE if relaxed else "")
 
     # ---- 按 Q 喊一声（spec 2026-10-01-q-call §2） ----
-    def call_out(self, reason: str, *, live: bool = False) -> CallResult:
+    def call_out(self, reason: str, *, live: bool = False, on_press: Callable[[float], None] | None = None) -> CallResult:
         """短按 Q 喊一声：同步按键 + 连拍 burst 秒看光圈，开感知层的呼喊窗口（结果约 window 秒后 env.call_result(at) 才有）。
-        reason："brain" / "auto" / "manual"。不能喊时不抛异常，CallResult.refused 写原因。约 1~1.3 秒。"""
+        reason："brain" / "auto" / "manual"。不能喊时不抛异常，CallResult.refused 写原因。约 1~1.3 秒。
+        on_press(at)：按键命令发出之前、用窗口开始的时间 at 调一次（拿不准那种自动喊靠它按 at 打标记，免得连拍那 1 秒里标记过期）；它出错只记日志、不拦按键。"""
         cfg = self.cfg.call
         now = self.clock()
         if not cfg.enabled:
@@ -2337,6 +2350,11 @@ class Body:
                           and not t.data.get("dango") and not any(iou(t.box, s.box) >= 0.5 for s in selfs)})
             at = self.clock()  # 按键命令发出之前：adb 往返之后才记会把最亮那一下算到窗口之前
             watch = HaloWatch(base, heads, at, cfg)
+            if on_press is not None:
+                try:
+                    on_press(at)
+                except Exception:
+                    log.warning("喊一声：按键前的回调出错（照常按）", exc_info=True)
             self.device.hw_key(LINUX_KEY_Q)
             if at - moved < self.cfg.track.settle:
                 watch.skipped = True  # 镜头刚动过：头顶区域对不上
@@ -2416,9 +2434,7 @@ class Body:
                 self._call_times.append(now)
                 log.info("拿不准 %s 是不是%s：自动喊一声", "、".join(f"轨迹{i}" for i, _n in unsure),
                          "、".join(dict.fromkeys(n for _i, n in unsure)))
-                r = self.call_out("unsure")
-                if not r.refused and not r.dry:
-                    self._mark_unsure(ids, r.at)  # 窗口真正开始的时间：感知层按它收尾
+                r = self.call_out("unsure", on_press=lambda at: self._mark_unsure(ids, at))  # 按键前按窗口真正开始的时间重新打标记：感知层按它收尾
             if r.refused:
                 log.info("自动喊一声没喊成：%s", r.refused)
             elif not r.dry:

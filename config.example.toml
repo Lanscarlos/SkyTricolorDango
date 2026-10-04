@@ -154,7 +154,7 @@ enabled = false
 model = "color"                 # "color" = 内置颜色直方图；或 .onnx 特征模型路径
 size = 224                      # 同 [places]
 norm = "imagenet"
-device = "cpu"                  # cuda / dml / cpu，同 [perception]
+device = "cpu"                  # cuda / dml / cpu，同 [perception]；DINOv2 文件和 [attrs] backbone 是同一个时共用一个会话、建在 [attrs]/[perception] 的 device 上（不看这一项）
 every = 3                       # 每条轨迹每几帧算一次特征
 max_per_frame = 4               # 一帧最多算几个
 min_height = 0.13               # 好样本的框高（相对截图高度；10-03 spike：< 0.13 两种特征都认不出）

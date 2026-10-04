@@ -330,10 +330,28 @@ def _dino_embedder(cfg: Config):
 
     try:
         device = _attrs_device(cfg) if _attrs_shares_dino(cfg) else a.device  # 共用时跟第二层的 device，第二层不降级
-        return OnnxEmbedder(a.dino, a.size, "imagenet", device, what="appearance.dino")
+        embedder = OnnxEmbedder(a.dino, a.size, "imagenet", device, what="appearance.dino")
     except Exception as exc:
         log.warning("认装扮：DINOv2 加载失败（%s），只用颜色", exc)
         return None
+    if not _attrs_shares_dino(cfg):  # 共用时第二层那边已经警告过
+        _warn_dino_on_cpu(cfg, embedder, device)
+    return embedder
+
+
+def _warn_dino_on_cpu(cfg: Config, embedder, device: str) -> None:
+    """[perception] device = cuda，认装扮自己的 DINOv2 会话却只有 CPU 后端（[appearance] device 还是默认的 cpu、或 onnxruntime 是 CPU 版）：警告一次。
+    实测 CPU 上 DINOv2-small 一张裁图约 30 ms，会拖慢感知层。"""
+    if cfg.perception.device != "cuda":
+        return
+    get = getattr(getattr(embedder, "session", None), "get_providers", None)
+    on_cpu = set(get()) <= {"CPUExecutionProvider"} if get is not None else device == "cpu"
+    if not on_cpu:
+        return
+    if device != "cuda":
+        log.warning('认装扮的 DINOv2 在 CPU 上跑（一张裁图约 30 ms），会拖慢感知层：把 [appearance] device 改成 "cuda"')
+    else:
+        log.warning("认装扮的 DINOv2 在 CPU 上跑（onnxruntime 是 CPU 版，一张裁图约 30 ms），会拖慢感知层：装 onnxruntime-gpu")
 
 
 _UNSET = object()

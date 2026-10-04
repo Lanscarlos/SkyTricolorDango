@@ -415,7 +415,7 @@ class AppearanceConfig:
     dino: str = "models/dinov2-small.onnx"  # 第二个特征（DINOv2）模型，没有这个文件就只用颜色
     dango_match: float = 0.80  # 认团子自己（底库）的门槛
     gallery_max: int = 40  # 每个身份底库最多留几张样本
-    enroll_max: int = 16  # 一次最多入库几张（名字标签证实的样本）
+    enroll_max: int = 16  # 启动转圈登记团子时，一次最多钉进底库几张
     # 判换装（outfit_change 开着时）：低于它算换了装。10-01 标定：颜色特征下同一身衣服常跌到 0.15~0.5，所以默认不判
     changed: float = 0.40
     # false：不判换装（不追加新的一套、不发换装事件、上线中途不重新描述），好友 / 团子每次上线描述一次、覆盖最近那一套

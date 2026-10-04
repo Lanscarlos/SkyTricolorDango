@@ -203,7 +203,7 @@ class AppearanceBook:
     def learn(self, kind: str, who: str, feat, now: float, crop: tuple[int, np.ndarray] | None = None,
               *, dino=None, h: float = 0.0, pinned: bool = False) -> Profile:
         """滑动平均更新（第一次直接用，判换装用），同时把这张样本放进底库（认人用）。kind：friend / stranger / me。
-        feat 是颜色特征，dino 是 DINOv2 特征（没开就不传），h 是框高，pinned = 名字标签证实过的（底库满了也不挤）。"""
+        feat 是颜色特征，dino 是 DINOv2 特征（没开就不传），h 是框高，pinned = 启动转圈登记的团子样本（底库满了也不挤）。"""
         feat = unit(feat)
         with self._lock:
             p = self._get(kind, who)
