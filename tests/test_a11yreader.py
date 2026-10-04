@@ -328,8 +328,51 @@ def test_tag_flicker_does_not_rereport():
     assert len(r.read(None, 2.0)) == 1
     h[0] = closed(*head("怎么样", with_tag=False))  # 名字标签闪了一下
     assert r.read(None, 2.5) == []
+    assert r.want_peek() is None  # 这句已经认出是小明的，不用看一眼
     h[0] = closed(*head("怎么样"))
     assert r.read(None, 3.0) == []
+
+
+def test_panel_then_bubble_offscreen_not_rereported():
+    """面板开着时小明在画面外：面板行报了，面板关上后他头上那条气泡不再报。"""
+    r, h, _ = make()
+    h[0] = opened([A])
+    r.read(None, 1.0)
+    q = ("看我", "小明")
+    h[0] = opened([A, q])  # 画面里看不到小明
+    assert [(m.text, m.source) for m in r.read(None, 2.0)] == [("看我", "panel")]
+    h[0] = closed(*head("看我"))
+    assert r.read(None, 3.0) == []
+
+
+def test_peek_then_tag_returns_not_rereported():
+    """标签淡了 → 看一眼 → 面板行报出；面板关上后他走近、标签回来，气泡不再报。"""
+    r, h, _ = make()
+    h[0] = opened([A])
+    r.read(None, 1.0)
+    h[0] = closed(*head())
+    r.read(None, 2.0)
+    h[0] = closed(*head("在吗", with_tag=False))
+    assert r.read(None, 3.0) == []
+    assert r.want_peek() == "bubble_text"
+    h[0] = opened([A, ("在吗", "小明")], *head("在吗", with_tag=False))
+    assert [(m.text, m.source) for m in r.read(None, 4.0)] == [("在吗", "panel")]
+    h[0] = closed(*head("在吗"))
+    assert r.read(None, 5.0) == []
+
+
+def test_panel_entry_consumed_then_real_repeat_reported():
+    """面板开着时气泡也看到了（抵掉面板那条）：之后他真的又说一遍，气泡照报。"""
+    r, h, _ = make()
+    h[0] = opened([A])
+    r.read(None, 1.0)
+    q = ("怎么样", "小明")
+    h[0] = opened([A, q], *head("怎么样"))
+    assert [m.source for m in r.read(None, 2.0)] == ["panel"]
+    h[0] = closed(*head("怎么样"))
+    assert r.read(None, 3.0) == []
+    h[0] = closed(*head("怎么样", "怎么样"))
+    assert [(m.text, m.source) for m in r.read(None, 4.0)] == [("怎么样", "bubble")]
 
 
 def test_tags_in_view():

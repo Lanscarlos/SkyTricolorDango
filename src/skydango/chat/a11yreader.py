@@ -29,6 +29,7 @@ _EMPTY = UiView(False, False, (), (), (), None)
 
 REPORTED_KEEP = 180.0  # 气泡报过的话留多久，等面板行来抵（§3.3）
 BUBBLE_KEEP = 30.0  # 名字标签看不见（闪一下 / 走出画面）时，他头上的气泡计数还记多久（气泡 20 多秒淡掉）
+PANEL_KEEP = 30.0  # 面板行报过的话留多久，等他头上同一句气泡来抵（约一条气泡的寿命）
 
 
 def _rect(box: tuple[int, int, int, int]) -> Rect:
@@ -82,6 +83,7 @@ class A11yChatReader:
         self._peek: str | None = None
         self._typing: list[str] = []
         self._reported: deque[tuple[str, str, float]] = deque()  # 气泡报过的 (说话人, 原文, 时间)（§3.3）
+        self._panel_reported: deque[tuple[str, str, float]] = deque()  # 面板行报过的，等气泡来抵（§3.3）
 
     # ---- 取快照 / 分类 ----
     def _classify(self, frame) -> UiView:
@@ -153,80 +155,109 @@ class A11yChatReader:
                 return True
         return False
 
+    def _take_panel_reported(self, speaker: str, key: str, now: float) -> bool:
+        """面板行报过他这句（比较键相同）就划掉一条、返回 True：一条抵一条（§3.3，反过来那一半）。"""
+        while self._panel_reported and now - self._panel_reported[0][2] > PANEL_KEEP:
+            self._panel_reported.popleft()
+        for item in self._panel_reported:
+            if item[0] == speaker and bubble_key(item[1]) == key:
+                self._panel_reported.remove(item)
+                return True
+        return False
+
     # ---- 头顶气泡 ----
+    def _counted(self, key: str, now: float) -> bool:
+        """这句现在还记在某个好友名下（他的标签 `BUBBLE_KEEP` 秒内看到过）。"""
+        return any(
+            key in counts and now - self._tag_seen.get(name, now) <= BUBBLE_KEEP
+            for name, counts in self._counts.items()
+        )
+
+    def _note_loose(self, bubbles: list[Bubble], now: float, report: bool) -> None:
+        """挂不上名字的原文气泡：新冒出来的、不是团子自己的、也没认出是谁的 → 想看一眼面板。"""
+        loose: set[str] = set()
+        new = False
+        for b in bubbles:
+            key = bubble_key(b.text)
+            if not key:
+                continue
+            loose.add(key)
+            if key in self._loose or self._counted(key, now):
+                continue  # 同一句只记一次；标签闪一下 / 人走远了，这句已经知道是谁的
+            if not self.self_filter.is_self(b.text.strip(), now):
+                new = True  # 好友离远了、标签淡了：等面板行带着说话人报
+        self._loose = loose
+        if new and report:
+            self._peek = "bubble_text"
+            log.debug("有挂不上名字的气泡，想看一眼面板")
+
+    def _forget_stale(self, in_view: set[str], now: float) -> None:
+        """名字标签一时看不见的：计数先留着（标签闪一下不重报），`BUBBLE_KEEP` 秒没见才忘。"""
+        for name in list(self._counts):
+            if name not in in_view and now - self._tag_seen.get(name, now) > BUBBLE_KEEP:
+                del self._counts[name]
+                for k in [k for k in self._orig if k[0] == name]:
+                    del self._orig[k]
+
+    def _count(self, name: str, bubbles: list[Bubble]) -> tuple[Counter[str], dict[str, tuple], bool]:
+        """他头上每句（比较键）几个、每句的框、是不是在打字；顺带记 / 清每句第一次出现时的原文。"""
+        cur: Counter[str] = Counter()
+        boxes: dict[str, tuple] = {}
+        typing = False
+        for b in bubbles:
+            if b.typing_only:
+                typing = True
+                continue
+            text = b.text.strip()
+            key = bubble_key(text)
+            if not key:
+                continue
+            cur[key] += 1
+            boxes[key] = b.box
+            orig = self._orig.setdefault((name, key), text)
+            if text == key and orig != key:
+                self._orig[(name, key)] = orig = key  # 第一次看到时正挂着打字的点：点是动画
+            if text != orig:
+                typing = True  # 这句后面挂上了点点：他在打下一句
+        for k in [k for k in self._orig if k[0] == name and k[1] not in cur]:
+            del self._orig[k]
+        return cur, boxes, typing
+
     def _bubble_messages(self, view: UiView, now: float, report: bool) -> list[Message]:
         """更新每个好友头上的气泡计数；`report` 为假（面板开着）或第一份快照时只记成见过、不报。"""
         report = report and self._bubbles_ready
         self._bubbles_ready = True
 
         groups: dict[str, list[Bubble]] = {t.name: [] for t in view.tags}
-        loose: set[str] = set()
-        new_loose = False
         for b in view.bubbles:
             if b.speaker is not None:
                 groups.setdefault(b.speaker, []).append(b)
-                continue
-            if b.typing_only:
-                continue  # 陌生人 / 挂不上名字的点点：不管
-            key = bubble_key(b.text)
-            if not key:
-                continue
-            loose.add(key)
-            if key not in self._loose and not self.self_filter.is_self(b.text.strip(), now):
-                new_loose = True  # 团子自己刚说的丢掉；别的（好友离远了、标签淡了）等面板行带着说话人报
-        self._loose = loose
-        if new_loose and report:
-            self._peek = "bubble_text"
-            log.debug("有挂不上名字的气泡，想看一眼面板")
-
-        # 名字标签一时看不见的：计数先留着（标签闪一下不重报），太久没见才忘
-        for name in list(self._counts):
-            if name not in groups and now - self._tag_seen.get(name, now) > BUBBLE_KEEP:
-                del self._counts[name]
-                for k in [k for k in self._orig if k[0] == name]:
-                    del self._orig[k]
+        # 陌生人 / 挂不上名字的点点不管
+        self._note_loose([b for b in view.bubbles if b.speaker is None and not b.typing_only], now, report)
+        self._forget_stale(set(groups), now)
 
         fresh: list[Message] = []
-        typing: list[str] = []
+        self._typing = []
         for name, bubbles in groups.items():
             self._tag_seen[name] = now
             prev = self._counts.get(name, Counter())
-            cur: Counter[str] = Counter()
-            boxes: dict[str, tuple[int, int, int, int]] = {}
-            is_typing = False
-            for b in bubbles:
-                if b.typing_only:
-                    is_typing = True
-                    continue
-                text = b.text.strip()
-                key = bubble_key(text)
-                if not key:
-                    continue
-                cur[key] += 1
-                boxes[key] = b.box
-                orig = self._orig.setdefault((name, key), text)
-                if text == key and orig != key:
-                    self._orig[(name, key)] = orig = key  # 第一次看到时正挂着打字的点：点是动画
-                if text != orig:
-                    is_typing = True  # 这句后面挂上了点点：他在打下一句
-            for k in [k for k in self._orig if k[0] == name and k[1] not in cur]:
-                del self._orig[k]
+            cur, boxes, typing = self._count(name, bubbles)
             self._counts[name] = cur
-            if is_typing:
-                typing.append(name)
-            if not report:
-                continue
+            if typing:
+                self._typing.append(name)
             for key, n in cur.items():
                 for _ in range(n - prev[key]):
+                    if not report:
+                        self._take_panel_reported(name, key, now)  # 面板开着时看到了：面板那条抵掉
+                        continue
                     text = self._orig[(name, key)]
-                    if not self._passes(text, now):
+                    if not self._passes(text, now) or self._take_panel_reported(name, key, now):
                         continue
                     fresh.append(Message(text, _rect(boxes[key]), now, name, source="bubble"))
                     self._expire_reported(now)
                     self._reported.append((name, text, now))
                     if self.trace_path:
                         self._trace_bubble(now, name, text)
-        self._typing = typing
         return fresh
 
     # ---- 面板行 ----
@@ -258,6 +289,7 @@ class A11yChatReader:
             if self._take_reported(row.speaker, row.text, now):
                 continue
             fresh.append(Message(row.text, _rect(row.box), now, row.speaker, source="panel"))
+            self._panel_reported.append((row.speaker, row.text.strip(), now))
         return fresh
 
     def read(self, frame, now: float) -> list[Message]:
@@ -278,5 +310,6 @@ class A11yChatReader:
         if self.panel_closed_since is not None:
             log.info("聊天记录面板又出现了，读面板行")
             self.panel_closed_since = None
-        self._bubble_messages(view, now, report=False)
-        return self._panel_messages(view, now)
+        fresh = self._panel_messages(view, now)
+        self._bubble_messages(view, now, report=False)  # 在面板行之后：同一份里的气泡能抵掉刚报的面板行
+        return fresh
