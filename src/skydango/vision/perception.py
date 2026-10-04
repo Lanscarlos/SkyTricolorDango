@@ -1387,24 +1387,27 @@ class PerceptionWatcher:
 
         学：团子（self 框、_mark_dango 打了标记的 player 框）进团子底库；这一帧挂着名字标签的好友进他的底库；
         像小明 / 可能是小明 / 接回的 / 看着像团子的都不学（陌生人编号在 _appearance_stranger 里学）。
-        认（只拿这一帧新算的样本比，这一帧没算出样本的轨迹保持上一帧的结论）：先看像不像团子（DINOv2，dango_look），
-        再看像哪个好友：过 match 是"像小明"（maybe），落在 [unsure, match) 是"可能是小明"（unsure，先不判陌生人、等喊一声）。"""
+        认（只拿这一帧新算的样本比，这一帧没算出样本的轨迹保持上一帧的结论）：先看像不像团子（DINOv2，dango_look；
+        团子只有一个，见 _one_dango），再看像哪个好友：过 match 是"像小明"（maybe），落在 [unsure, match) 是"可能是小明"
+        （unsure，先不判陌生人、等喊一声）。"""
         book, acfg = self.appearance, self.appearance_cfg
         for me in selfs + dangos:
             if me.id in fresh:
                 self._learn("me", "", fresh[me.id], frame, now)
+        dango_here = bool(selfs or dangos)  # 这一帧已经认出团子了
         cands: dict[int, np.ndarray] = {}
+        looks: dict[int, float] = {}  # 这一帧判像团子的：轨迹 id → 团子底库最高分
         for p in players:
             d = p.data
             if self._unlit(p):  # 变成黑影了：没有外观可比
-                for key in ("maybe", "maybe_by", "miss", "unsure", "dango_look"):
+                for key in ("maybe", "maybe_by", "miss", "unsure", "dango_look", "dango_score"):
                     d.pop(key, None)
                 continue
             tag = tagged.get(p.id)
             if tag is not None:  # 名字标签永远说了算
                 name = tag.data.get("name")
                 maybe = d.pop("maybe", None)
-                for key in ("maybe_by", "miss", "sid", "unsure", "unsure_first", "dango_look"):
+                for key in ("maybe_by", "miss", "sid", "unsure", "unsure_first", "dango_look", "dango_score"):
                     d.pop(key, None)
                 if maybe and name and maybe != name:
                     log.info("轨迹 %d 按外观认成 %s，名字标签是 %s", p.id, maybe, name)
@@ -1429,12 +1432,9 @@ class PerceptionWatcher:
             if p.id not in fresh or d.get("samples", 0) < acfg.min_samples:
                 continue  # 这一帧没算出新样本：保持上一帧的结论
             sample = fresh[p.id][0]
-            if book.looks_like_dango(sample.dino):
-                if not self._dangoish(p, now):
-                    log.info("轨迹 %d 没看到名字，看着像团子", p.id)
-                d["dango_look"] = now
-                for key in ("maybe", "miss", "unsure"):
-                    d.pop(key, None)
+            score = None if dango_here else book.dango_score(sample.dino)
+            if score is not None:
+                looks[p.id] = score  # 挑完最像的那个再记（_one_dango）
                 continue
             if self._dangoish(p, now):
                 continue  # 刚才还像团子（DANGO_LOOK_HOLD 内）：不改认成好友
@@ -1446,6 +1446,7 @@ class PerceptionWatcher:
                     d.pop("miss", None)
                 continue
             cands[p.id] = sample.color
+        self._one_dango(players, looks, dango_here, now)
         if not cands:
             return
         byid = {p.id: p for p in players}
@@ -1483,6 +1484,26 @@ class PerceptionWatcher:
             u = p.data.get("unsure")
             if u and p.id not in assigned and u[0] in gone:
                 p.data.pop("unsure", None)
+
+    def _one_dango(self, players: list[Track], looks: dict[int, float], dango_here: bool, now: float) -> None:
+        """团子只有一个：这一帧已经认出团子（self 框 / 团子标记）时别人都不算"看着像团子"；没认出时最多留一个——
+        这一帧判像的（looks）和还在 DANGO_LOOK_HOLD 里的比团子底库最高分，一样像留原来那个。
+        10-04 晚旁边的人被判"像团子"：DINOv2 补成正方形的裁图把旁边的团子也裁了进去。"""
+        holding = {p.id for p in players if now - p.data.get("dango_look", float("-inf")) <= DANGO_LOOK_HOLD}
+        held = {i: p.data.get("dango_score", 0.0) for p in players if (i := p.id) in holding and i not in looks}
+        best = None if dango_here else max({**held, **looks}.items(), key=lambda kv: kv[1], default=(None, 0.0))[0]
+        for p in players:
+            d = p.data
+            if p.id == best and p.id in looks:
+                if p.id not in holding:
+                    log.info("轨迹 %d 没看到名字，看着像团子", p.id)
+                d["dango_look"], d["dango_score"] = now, looks[p.id]
+                for key in ("maybe", "miss", "unsure"):
+                    d.pop(key, None)
+            elif p.id != best and p.id in holding:
+                log.info("轨迹 %d 不算像团子了：%s", p.id, "团子在画面上" if dango_here else "另一个人更像团子")
+                d.pop("dango_look", None)
+                d.pop("dango_score", None)
 
     # ---- 失踪好友接回（spec §4） ----
     def _note_lost(self, now: float) -> None:

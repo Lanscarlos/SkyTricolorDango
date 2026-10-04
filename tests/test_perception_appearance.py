@@ -742,6 +742,61 @@ def test_dango_look_expires():
     assert [x.kind for x in w.people(t)] == ["stranger"]
 
 
+LIGHT = (120, 200, 120)  # 有点像团子（DINOv2 余弦约 0.91，过 dango_match），但不如团子色像
+
+
+def test_no_dango_look_while_dango_on_screen():
+    """团子只有一个：这一帧已经认出团子（self 框），别人再像团子也不判（10-04 晚旁边的人被判"像团子"）。"""
+    w, det = make_g()
+    run(w, det, [(SELF_AT, DANGO)], 0.0, 1.0)
+    assert w.appearance.me is not None
+    other = player(300)
+    t = 1.1
+    while t <= 4.0:
+        t = run(w, det, [(SELF_AT, DANGO), (other, DANGO)], t, t)
+        (p,) = players(w)
+        assert "dango_look" not in p.data, t
+        assert [b for b in w.overlay(t) if b["kind"] == "dango_look"] == [], t
+        t = round(t + 0.1, 3)
+    assert p.data.get("stranger") is True
+
+
+def test_dango_look_dropped_when_dango_reappears():
+    w, det = make_g()
+    t = dango_elsewhere(w, det)
+    (p,) = players(w)
+    assert p.data.get("dango_look")
+    t = run(w, det, [(SELF_AT, DANGO), (Detection("player", p.box, 0.9), DANGO)], t + 0.1, t + 0.1)  # 团子回到画面上
+    (q,) = players(w)
+    assert q.id == p.id and "dango_look" not in q.data
+    assert [b for b in w.overlay(t) if b["kind"] == "dango_look"] == []
+    assert w._catalog_who(q).kind != "self"
+
+
+def test_only_one_dango_look_keeps_the_most_alike():
+    """团子不在画面上时，两个人都像团子：只留最像的那个。"""
+    w, det = make_g()
+    w.dino._embedder.table[LIGHT] = unit(_basis(4) * 0.9 + _basis(1) * 0.4)
+    t = dango_elsewhere(w, det, extra=[(player(600), LIGHT)])
+    looks = [p for p in players(w) if w._dangoish(p, t)]
+    assert len(looks) == 1 and looks[0].box.x == 300
+    assert len([b for b in w.overlay(t) if b["kind"] == "dango_look"]) == 1
+
+
+def test_more_alike_newcomer_takes_dango_look():
+    """先来的那个已经"像团子"、每帧还在重新判；更像的人来了：先来的摘掉。"""
+    w, det = make_g()
+    w.dino._embedder.table[LIGHT] = unit(_basis(4) * 0.9 + _basis(1) * 0.4)
+    first = player(600)
+    t = dango_elsewhere(w, det)  # 2.1~5.1：团子色的人在 300
+    t = run(w, det, [(first, LIGHT)], t + 0.1, t + 4.0)  # 300 那个走了，600 来了个有点像的
+    (p,) = players(w)
+    assert p.data.get("dango_look")
+    t = run(w, det, [(first, LIGHT), (player(300), DANGO)], t + 0.1, t + 1.0)  # 更像的回来了
+    looks = [q for q in players(w) if w._dangoish(q, t)]
+    assert [q.box.x for q in looks] == [300]
+
+
 def unsure_scene(w, det, until):
     """小明（粉、挂标签）0~1 秒，走开；2.5 秒起画面左边来了个粉里掺白的人（像小明，但拿不准）。"""
     run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.0, 1.0)
