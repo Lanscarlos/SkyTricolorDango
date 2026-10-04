@@ -687,13 +687,23 @@ def _embed_ms(library) -> float:
     return (time.perf_counter() - started) * 1000 / 3
 
 
-def _stop_scene(env) -> None:
-    """退出时停掉感知线程；收集了难例就告诉用户在哪（runs/ 只留最近几次，要用的及时收进数据集）。"""
+def _stop_scene(env, inbox=None) -> None:
+    """退出时停掉感知线程；收集了难例就收进收件箱（inbox 非 None 且开着），出错只记日志。"""
     if hasattr(env, "stop"):
         env.stop()
     hard = getattr(env, "hardcases", None)
     if hard is not None and hard.saved:
-        print(f"难例：存了 {hard.saved} 张 → {hard.folder}（收进数据集：perception label runs --from-runs）")
+        collected = False
+        if inbox is not None and inbox.enabled:
+            try:
+                from .vision import inbox as hardcase_inbox
+
+                hardcase_inbox.collect(Path(hard.folder).parent, Path(inbox.dir))
+                collected = True
+            except Exception as exc:  # noqa: BLE001 收件失败不能挡住退出
+                log.warning("难例收进收件箱失败：%s", exc)
+        tail = "已收进 datasets/inbox，管理面板里整理" if collected else "收进数据集：perception inbox collect"
+        print(f"难例：存了 {hard.saved} 张 → {hard.folder}（{tail}）")
     unknown = getattr(env, "unknown", None)
     if unknown is not None and unknown.entries:
         print(f"没认出的名字：{len(unknown.entries)} 个 → {unknown.folder}（汇总：perception unknown-names）")
@@ -871,6 +881,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_compare(cfg, args)
     elif args.action == "unknown-names":
         _perception_unknown_names(cfg, args)
+    elif args.action == "inbox":
+        _perception_inbox(cfg, args)
     elif args.action == "clips":
         _perception_clips(cfg, args)
     elif args.action == "gesture-eval":
@@ -1370,6 +1382,17 @@ def _perception_gesture_eval(cfg: Config, args) -> None:
         print(f"{data / SPLIT_FILE} 里没有验证集：评全部片段（包括训练过的，结果会偏好）")
     clf = gesture.OnnxGestureClassifier(g.model, g.labels, cfg.perception.device)
     _print_gesture_eval(gesture.evaluate(data, clf, g, only=only), g)
+
+
+def _perception_inbox(cfg: Config, args) -> None:
+    """难例收件箱：collect = 把 runs/*/hard 收进 [inbox] dir。"""
+    from .vision import inbox as hardcase_inbox
+
+    if args.inbox_action == "collect":
+        inbox = Path(cfg.inbox.dir)
+        runs = hardcase_inbox.collect_all(Path(args.runs), inbox)
+        frames = sum(len(list((inbox / r / "raw").glob("*.jpg"))) for r in runs)
+        print(f"收了 {len(runs)} 次运行 / 共 {frames} 张 → {cfg.inbox.dir}")
 
 
 def _perception_unknown_names(cfg: Config, args) -> None:
@@ -2314,7 +2337,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
-        _stop_scene(env)
+        _stop_scene(env, cfg.inbox)
         if emotes is not None:
             try:
                 emotes.restore()
@@ -2455,7 +2478,7 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
 
         def close() -> None:
             try:
-                _stop_scene(env)
+                _stop_scene(env, cfg.inbox)
                 if panels is not None:
                     panels.close()
             finally:
@@ -3188,6 +3211,10 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")
     q.add_argument("--runs", default="runs", help="运行目录的上级（默认 runs/）")
     q.add_argument("--last", type=int, default=5, help="看最近几次运行")
+    q = psub.add_parser("inbox", help="难例收件箱（live 存下的难例 → datasets/inbox）")
+    isub = q.add_subparsers(dest="inbox_action", required=True)
+    qi = isub.add_parser("collect", help="把各次运行 runs/*/hard 里的难例收进收件箱（已收的跳过）")
+    qi.add_argument("runs", nargs="?", default="runs", help="运行目录的上级（默认 runs/）")
     q = psub.add_parser("clips", help="动作识别的数据：录像按人物轨迹切成 16 帧的片段（人工再分到 <动作>/ 目录）")
     q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
     q.add_argument("-o", "--output", help="输出目录（默认 <[gesture] dataset>/_unlabeled）")
