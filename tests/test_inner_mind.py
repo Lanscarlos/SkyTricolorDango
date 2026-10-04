@@ -106,6 +106,25 @@ def test_parse_reflection_merges_split_objects():
     assert parse_reflection('{"grudge": null}\n然后是：{"wants_add": []} {"坏": ') == {"grudge": None, "wants_add": []}
 
 
+def test_parse_reflection_unescaped_quotes():
+    # 10-04 下午 / 晚上真机两次：下线反思（sonnet）在日记 / 要点里用英文双引号引别人的话、没转义，
+    # 提示词说了用「」也照样，json 在引号处断掉，两篇日记都丢了（内容换成了占位）
+    text = ('{"mood": {"level": "低落", "text": "小明一直喊我，后来走了"}, "grudge": null, "wants_add": [], '
+            '"wants_done": [], "diary": "下次他喊我，别总想着"他在忙"就不说话了。少点这种"你先来""你怎么不说"的循环。", '
+            '"memos": ["2026-10-04：小明说"昨天说好一起玩"，可能记错了", "和小明的老梗：别每次都用"], '
+            '"persona_add": {"catchphrases": [], "jokes": [], "opinions": []}, "persona_used": []}')
+    got = parse_reflection(text)
+    assert got is not None
+    assert got["mood"] == {"level": "低落", "text": "小明一直喊我，后来走了"}
+    assert got["grudge"] is None and got["persona_used"] == []
+    assert got["diary"] == "下次他喊我，别总想着「他在忙」就不说话了。少点这种「你先来」「你怎么不说」的循环。"
+    assert got["memos"] == ["2026-10-04：小明说「昨天说好一起玩」，可能记错了", "和小明的老梗：别每次都用"]
+    # 前面的对象是好的、后面那个夹着引号：都收下
+    assert parse_reflection('{"grudge": null} {"diary": "他说"好"了"}') == {"grudge": None, "diary": "他说「好」了"}
+    # 本来就合法的转义引号不动
+    assert parse_reflection(r'{"diary": "他说\"好\"了"}') == {"diary": '他说"好"了'}
+
+
 def test_mind_roundtrip_and_bad_file(tmp_path):
     st = InnerStore(tmp_path)
     m = Mind(Mood("开心", "x", T0), Grudge("小明", "y", T0, T0 + 5), [Want("想做", "a", "", T0, T0 + 1)], T0)

@@ -202,23 +202,61 @@ class Mind:
 
 
 _FENCE = re.compile(r"```[a-zA-Z]*")
+_CLOSERS = ",}]:"
+
+
+def _fix_quotes(text: str) -> str:
+    """字符串里没转义的英文双引号换成「」（10-04：提示词说了用「」，sonnet 写日记照样用 "他在忙"，整份解析失败）。
+    在字符串里碰到 "：后面（跳过空白）是 , } ] : 或到头了才算收尾，否则是正文里的引号，按出现顺序交替换成「 」。"""
+    out: list[str] = []
+    in_str = False
+    inner_open = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if not in_str:
+            if ch == '"':
+                in_str, inner_open = True, False
+            out.append(ch)
+        elif ch == "\\":
+            out.append(text[i:i + 2])
+            i += 1
+        elif ch == '"':
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j >= n or text[j] in _CLOSERS:
+                in_str = False
+                out.append(ch)
+            else:
+                out.append("」" if inner_open else "「")
+                inner_open = not inner_open
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def parse_reflection(text: str | None) -> dict | None:
-    """反思的回答 → dict；容忍 ```json 围栏、前后有字；不是 JSON 对象就 None。
+    """反思的回答 → dict；容忍 ```json 围栏、前后有字、字符串里没转义的英文双引号；不是 JSON 对象就 None。
     模型有时把一份回答拆成几个对象回（10-03：心情 / 日记一个、性格一个），一个接一个往后读、按顺序合并；
-    碰到坏的就停（不往坏对象里面找，免得把里面嵌套的 {"level": …} 当成整份回答）。"""
+    碰到坏的先把后面的引号修一次（`_fix_quotes`）再读，还坏就停（不往坏对象里面找，免得把里面嵌套的 {"level": …} 当成整份回答）。"""
     if not text:
         return None
     text = _FENCE.sub("", text)
     dec = json.JSONDecoder()
     data: dict | None = None
+    fixed = False
     i = text.find("{")
     while i >= 0:
         try:
             obj, end = dec.raw_decode(text, i)
         except ValueError:
-            break
+            if fixed:
+                break
+            fixed = True
+            text = text[:i] + _fix_quotes(text[i:])
+            continue
         if isinstance(obj, dict):
             data = {**(data or {}), **obj}
         i = text.find("{", end)
