@@ -90,7 +90,7 @@ function loops() { L.gen++; const g = L.gen; stageLoop(g); chatLoop(g); pullStat
 
 /* ---- 画面 ---- */
 async function stageLoop(gen) {
-  if (typeof Stage === "undefined") { $("lv-stage-none").textContent = "画面脚本加载不了（static/stage.js）"; return; }
+  if (typeof Stage === "undefined") { $("lv-stage-none").textContent = "画面脚本加载不了（console/static/stage.js）"; return; }
   while (alive(gen) && !L.paused) {
     try {
       const r = await fetch(`live/snapshot?after=${L.seq}`, {cache: "no-store"});

@@ -37,7 +37,7 @@ skydango = "skydango.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-skydango = ["console/static/*.html", "console/static/*.css", "console/static/*.js", "vision/static/*.js", "vision/static/*.css"]
+skydango = ["console/static/*.html", "console/static/*.css", "console/static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -24,9 +24,9 @@ def test_skeleton():
         assert f'src="console/static/{n}"' in page
     assert page.index('src="console/static/common.js"') < page.index('src="console/static/brainlog.js"') < page.index('src="console/static/sandbox.js"')
     assert page.index('src="console/static/chatlog.js"') < page.index('src="console/static/sandbox.js"')
-    assert 'src="static/stage.js"' in page and page.index('src="static/stage.js"') < page.index('src="console/static/live.js"')
+    assert 'src="console/static/stage.js"' in page and page.index('src="console/static/stage.js"') < page.index('src="console/static/live.js"')
     assert page.index('src="console/static/chatlog.js"') < page.index('src="console/static/live.js"')
-    assert "brain_trace" not in page  # 沙盒页换成 brainlog.js 的控制台；brain_trace.* 只给 viewer 用
+    assert "brain_trace" not in page and 'src="static/' not in page  # viewer 网页删了，画框脚本挪进 console/static/
 
 
 def test_nav_has_pages_and_marks():

@@ -1,11 +1,13 @@
-"""识别过程可视化：本机开一个网页，实时显示身体看到的画面 + 识别框（好友名字、陌生人、黑影、团子、互动圆圈、
-聊天面板、新消息）+ 右侧状态。浏览器打开 http://127.0.0.1:<端口> 就能看。设计见 docs/superpowers/specs/2026-09-28-viewer-design.md。
+"""团子的 HTTP 接口（给管理面板「真机团子」页用）：画面 + 识别框（好友名字、陌生人、黑影、团子、互动圆圈、
+聊天面板、新消息）+ 状态、大脑时间线、聊天记录、手动控制、内心、退出。自己没有网页（2026-10-04 删了，
+spec docs/superpowers/specs/2026-10-04-console-attach-design.md），框和中文字由管理面板的 stage.js 画。
 
-- 只用标准库起 HTTP 服务，不加依赖；框和中文字在浏览器里画（OpenCV 画不了中文）
+- 只用标准库起 HTTP 服务，不加依赖
 - 画面、框、状态放在同一份快照里（/snapshot 长轮询），框不会和画面错位
-- 身体每圈调 update() 只是记下最新一帧和框（很便宜）；有浏览器在看时才压 JPEG，同一帧只压一次
-- 只监听 127.0.0.1：画面里有好友昵称和聊天，别开到局域网
-- `run --brain --view` 时 brain 是 brain.trace.BrainTrace：/brain 长轮询给画面下方的大脑时间线，和画面分开
+- 身体每圈调 update() 只是记下最新一帧和框（很便宜）；有人在看时才压 JPEG，同一帧只压一次
+- 只监听 127.0.0.1：画面里有好友昵称和聊天
+- /status 带上 run_info（这次 run 的身份）：管理面板靠它认出团子、接管终端起的团子
+- 大脑模式时 brain 是 brain.trace.BrainTrace：/brain 长轮询给大脑控制台
 """
 
 from __future__ import annotations
@@ -68,21 +70,6 @@ def post_guard(headers, port: int, max_body: int) -> tuple[int, str] | None:
     return None
 
 
-STATIC = ("brain_trace.js", "brain_trace.css", "stage.js")  # vision/static/ 里给页面用的共用文件（大脑时间线、画框）
-_STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
-
-
-def static_asset(name: str) -> tuple[str, bytes] | None:
-    """(Content-Type, 内容)；只认 STATIC 里的名字（不拼路径），别的返回 None。管理面板共用。"""
-    if name not in STATIC:
-        return None
-    import importlib.resources
-
-    data = (importlib.resources.files("skydango.vision") / "static" / name).read_bytes()
-    return _STATIC_TYPES[name[name.rindex("."):]], data
-
-
-# ---- viewer 和大脑沙盒（sandbox/server.py）共用的接口处理 ----
 def brain_body(trace, after: int, wait: float = WAIT) -> bytes:
     """/brain：大脑时间线长轮询的响应体。errors="replace"：截断在 emoji 中间的半个代理字符不能让整条时间线卡在"连不上"。"""
     return json.dumps(trace.since(after, wait), ensure_ascii=False).encode(errors="replace")
@@ -202,6 +189,8 @@ class Viewer:
         self.inner: Callable[[], dict] | None = None
         self.forget: Callable[[str, str, str, str], str] | None = None
         self._updated: float | None = None  # 最近一帧记下时的 time.monotonic()，/status 算 age
+        # 这次 run 的身份（pid、运行目录、live / dry……，见 cli._run_info）：/status 带上它，管理面板才认得出是团子
+        self.run_info: dict | None = None
         self.frames = 0  # 更新了多少帧（测试 / 统计用）
         self.encodes = 0  # 压了多少次 JPEG（测试用）
 
@@ -260,7 +249,10 @@ class Viewer:
         """只有状态、不带图（管理面板真机团子页每 2 秒拉一次）。age：离最近一帧多少秒，没帧是 None。"""
         with self._cond:
             age = None if self._updated is None else max(0.0, time.monotonic() - self._updated)
-            return {"seq": self._seq, "age": age, "info": dict(self._info)}
+            out = {"seq": self._seq, "age": age, "info": dict(self._info)}
+        if self.run_info is not None:  # 管理面板认团子靠它（spec 2026-10-04-console-attach §1）
+            out["run"] = dict(self.run_info)
+        return out
 
     def snapshot(self, after: int = 0, timeout: float = WAIT) -> bytes | None:
         """等到有比 after 新的一帧（最多 timeout 秒），返回 JSON；没有新帧返回 None。"""
@@ -306,11 +298,7 @@ class Viewer:
         class Handler(JsonHandler):
             def do_GET(self) -> None:  # noqa: N802
                 url = urlparse(self.path)
-                if url.path == "/":
-                    self._send(200, "text/html; charset=utf-8", PAGE.encode())
-                elif url.path[1:] in STATIC:  # 大脑时间线的共用脚本 / 样式
-                    self._send(200, *static_asset(url.path[1:]))
-                elif url.path == "/snapshot":
+                if url.path == "/snapshot":
                     body = viewer.snapshot(self._after(url))
                     if body is None:
                         self._send(204, "application/json", b"")
@@ -428,162 +416,3 @@ def describe_env(env, now: float) -> dict:
         recent = list(timings)[-30:]
         out["检测耗时"] = f"{sum(d for d, _ in recent) / len(recent):.1f} ms（整帧 {sum(t for _, t in recent) / len(recent):.1f} ms）"
     return out
-
-
-PAGE = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>团子看到的</title>
-<link rel="stylesheet" href="brain_trace.css"><script src="brain_trace.js"></script><script src="stage.js"></script>
-<style>
-:root{--bg:#0f1115;--panel:#171a21;--text:#e6e8ee;--muted:#8b93a7;--line:#2a2f3a}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
-main{display:flex;gap:12px;padding:12px 16px;align-items:flex-start}
-#stage{flex:1;min-width:0}canvas{width:100%;height:auto;display:block;border-radius:8px;background:#000}
-aside{width:300px;flex:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
-h1{font-size:15px;margin:0 0 8px}dl{margin:0}dt{color:var(--muted);font-size:12px;margin-top:8px}dd{margin:0;word-break:break-all}
-dd ul{margin:0;padding-left:16px}
-.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;color:var(--muted);font-size:12px}
-button{background:#232833;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 10px;cursor:pointer;font:inherit}
-.legend{display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
-#status{margin-left:auto}#status.off{color:#f87171}
-#control{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}#control[hidden]{display:none}
-#control .row{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin:6px 0;font-size:13px}
-#control .row>b{width:3em;flex:none;color:var(--muted);font-weight:600}
-#control input[type=text]{flex:1;min-width:160px}#control input[type=number]{width:4em}
-#control input[type=text],#control input[type=number],#control select{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px;font:inherit}
-#control button:disabled,#control select:disabled,#control input:disabled{opacity:.45;cursor:not-allowed}
-#ctl-warn{color:#facc15;font-size:12px}#ctl-count,#ctl-pick-tip{color:var(--muted);font-size:12px}
-#ctl-pick.on{border-color:#f472b6;color:#f472b6}#ctl-busy{margin-left:auto;color:#60a5fa;font-size:12px}
-#ctl-log{list-style:none;margin:6px 0 0;padding:6px 0 0;border-top:1px solid var(--line);font:12px/1.6 ui-monospace,Consolas,monospace}
-#ctl-log li{word-break:break-all}#ctl-log .ok{color:#3ddc84}#ctl-log .bad{color:#f87171}#ctl-log .t{color:var(--muted)}
-#brain{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}#brain[hidden]{display:none}
-.bhead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:6px;font-size:13px}
-.bhead label{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer}
-@media (max-width:900px){main{flex-direction:column}aside{width:100%}}
-</style></head><body><main>
-<div id="stage"><div class="bar"><button id="pause">暂停</button><button id="boxes">隐藏框</button><button id="save">存图</button>
-<span id="status">连接中…</span></div><canvas id="c"></canvas>
-<section id="control" hidden><div class="bhead"><b>手动控制</b><span id="ctl-warn" hidden>手动操作会真的在游戏里执行（大脑是 dry-run 也一样）</span><span id="ctl-busy"></span></div>
-<div class="row" id="ctl-say"><b>说话</b><input type="text" id="ctl-say-text" placeholder="让团子说一句…"><span id="ctl-count"></span><button id="ctl-say-go">说</button></div>
-<div class="row" id="ctl-emote"><b>动作</b><select id="ctl-emote-name"></select><button id="ctl-emote-go">做</button></div>
-<div class="row" id="ctl-camera"><b>视角</b><button data-cam="left">左转</button><button data-cam="right">右转</button><button data-cam="up">抬头</button><button data-cam="down">低头</button><button data-cam="zoom_in">拉近</button><button data-cam="zoom_out">拉远</button>
-步数<input type="number" id="ctl-steps" value="1" min="1"><button id="ctl-reset">复位</button><button id="ctl-around">环视一圈</button></div>
-<div class="row"><b>看人</b><button id="ctl-pick">在画面上选人</button><span id="ctl-pick-tip" class="n"></span></div>
-<div class="row"><b>喊</b><button id="ctl-call">喊一声（Q）</button><span id="ctl-call-tip" class="n"></span></div>
-<div class="row" id="ctl-track"><b>盯人</b><input type="text" id="ctl-track-name" placeholder="好友名字"><button id="ctl-track-pick">在画面上选</button>
-秒<input type="number" id="ctl-track-sec" value="30" min="1"><button id="ctl-track-go">盯</button><button id="ctl-stop">停下</button><span id="ctl-track-tip" class="n"></span></div>
-<div class="row" id="ctl-panels" hidden><b>面板</b><button id="ctl-panel-read">读面板</button><button id="ctl-panel-close">关面板</button></div>
-<ul id="ctl-log"></ul></section>
-<section id="brain" hidden></section></div>
-<aside><h1>团子看到的</h1><dl id="info"></dl><div class="legend" id="legend"></div></aside>
-</main><script>
-const $=id=>document.getElementById(id),c=$("c"),ctx=c.getContext("2d"),img=new Image();
-let seq=0,paused=false,running=false,showBoxes=true,last=null,times=[];
-$("legend").innerHTML=Object.entries(Stage.NAMES).map(([k,v])=>`<span><i style="background:${Stage.COLORS[k]}"></i>${v}</span>`).join("");
-$("pause").onclick=e=>{paused=!paused;e.target.textContent=paused?"继续":"暂停";if(!paused)loop()};
-$("boxes").onclick=e=>{showBoxes=!showBoxes;e.target.textContent=showBoxes?"隐藏框":"显示框";if(last)draw(last)};
-$("save").onclick=()=>{if(!last)return;const a=document.createElement("a");
-  a.download=`dango-${new Date().toISOString().replace(/[-:T]/g,"").slice(0,14)}.png`;a.href=c.toDataURL("image/png");a.click()};
-let hover=null;  // 鼠标在画布上的位置（画布像素）：落在有 desc 的框里时写一行装扮描述
-function draw(s){Stage.draw(c,img,s,{boxes:showBoxes,mark:K.mark,hover})}
-c.addEventListener("mousemove",e=>{const r=c.getBoundingClientRect();hover=[(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height];if(last)draw(last)});
-c.addEventListener("mouseleave",()=>{hover=null;if(last)draw(last)});
-function info(s){const dl=$("info");dl.innerHTML="";
-  for(const [k,v] of Object.entries(s.info)){const dt=document.createElement("dt"),dd=document.createElement("dd");dt.textContent=k;
-    if(Array.isArray(v)&&v.length>1){const ul=document.createElement("ul");for(const x of v){const li=document.createElement("li");li.textContent=x;ul.append(li)}dd.append(ul)}
-    else dd.textContent=Array.isArray(v)?(v[0]??"—"):String(v);
-    dl.append(dt,dd);}}
-function status(t,off){const el=$("status");el.textContent=t;el.className=off?"off":""}
-async function loop(){
-  if(running)return;running=true;
-  while(!paused){
-    try{const r=await fetch(`snapshot?after=${seq}`,{cache:"no-store"});if(r.status===204)continue;if(!r.ok)throw new Error(r.status);
-      const s=await r.json();if(paused)break;seq=s.seq;
-      await new Promise((ok,bad)=>{img.onload=ok;img.onerror=bad;img.src="data:image/jpeg;base64,"+s.image});last=s;draw(s);info(s);
-      const now=performance.now();times.push(now);times=times.filter(t=>now-t<2000);
-      status(`${(times.length/2).toFixed(1)} 帧/秒 · ${s.width}×${s.height}`);
-    }catch(e){status("连不上（程序停了？）",true);await new Promise(r=>setTimeout(r,1000));}
-  }
-  running=false;
-}
-loop();
-// ---- control ----
-function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
-const CAM={left:"左转",right:"右转",up:"抬头",down:"低头",zoom_in:"拉近",zoom_out:"拉远"};
-const K={opts:null,busy:false,picking:false,trackPick:false,mark:null};
-function controlLine(action,args,res){const a=args||{};let what;
-  if(action==="say")what=`说「${a.text}」`;else if(action==="emote")what=`动作「${a.name}」`;
-  else if(action==="camera")what=`${CAM[a.action]||a.action} ×${a.steps}`;else if(action==="camera_reset")what="复位";
-  else if(action==="look_around")what="环视一圈";else if(action==="panel_read")what="读面板";else if(action==="panel_close")what="关面板";else if(action==="check_friend")what=`看人 (${a.x}, ${a.y})`;
-  else if(action==="track")what=`盯着${a.name}（${a.seconds} 秒）`;else if(action==="stop_task")what="停下";else if(action==="call")what="喊一声";else what=action;
-  return `${what} → ${res.text}`}
-function ctlApply(){const o=K.opts;if(!o)return;
-  $("ctl-warn").hidden=!o.dry_run;
-  const sel=$("ctl-emote-name"),keep=sel.value;
-  if([...sel.options].map(x=>x.value).join("|")!==o.emotes.join("|")){  // 列表变了才重建：定时刷新时别把打开的下拉框关掉
-    while(sel.firstChild)sel.firstChild.remove();
-    for(const n of o.emotes){const op=el("option","",n);op.value=n;sel.append(op)}if(o.emotes.includes(keep))sel.value=keep}
-  $("ctl-steps").max=o.max_steps;ctlCount();ctlLock()}
-function ctlLock(){const o=K.opts||{emotes:[],camera:[]},b=K.busy;
-  $("ctl-say-text").disabled=b;$("ctl-say-go").disabled=b||!$("ctl-say-text").value.trim();
-  $("ctl-emote-name").disabled=$("ctl-emote-go").disabled=b||!o.emotes.length;
-  for(const x of document.querySelectorAll("#ctl-camera button,#ctl-steps"))x.disabled=b||!o.camera.length;
-  const pick=$("ctl-pick");pick.disabled=b||!o.friend_check;pick.title=o.friend_check?"":"[friend_check] enabled = false";
-  $("ctl-pick-tip").textContent=o.friend_check?(K.picking?"点一下画面上的人":""):"没开（[friend_check] enabled = false）";
-  pick.className=K.picking?"on":"";
-  const tr=!!o.track;$("ctl-track-name").disabled=$("ctl-track-sec").disabled=$("ctl-track-pick").disabled=b||!tr;
-  $("ctl-track-go").disabled=b||!tr||!$("ctl-track-name").value.trim();$("ctl-stop").disabled=b;
-  $("ctl-track-sec").max=o.max_track_seconds||60;$("ctl-track-pick").className=K.trackPick?"on":"";
-  if(!tr)$("ctl-track-tip").textContent="要开感知层（[perception]）和镜头";
-  else if(K.trackPick)$("ctl-track-tip").textContent="点一下画面上的好友";
-  $("ctl-call").disabled=b||!o.call;$("ctl-call-tip").textContent=o.call?"":"要开 [call] 和感知层（[perception]）";
-  $("ctl-panels").hidden=!o.panels;$("ctl-panel-read").disabled=$("ctl-panel-close").disabled=b||!o.panels}
-function ctlCount(){const n=[...$("ctl-say-text").value.trim()].length,max=K.opts?K.opts.max_chars:0;
-  $("ctl-count").textContent=`${n} / ${max}`;ctlLock()}
-function ctlLog(action,args,res){const li=el("li");li.append(el("span","t",new Date().toTimeString().slice(0,8)+" "),el("span",res.ok?"ok":"bad",controlLine(action,args,res)));
-  const ul=$("ctl-log");ul.prepend(li);while(ul.children.length>10)ul.lastChild.remove()}
-async function ctlOptions(retry){
-  try{const r=await fetch("control/options",{cache:"no-store"});
-    if(r.status===404){if(retry)setTimeout(()=>ctlOptions(true),3000);return}  // 身体还没建好：3 秒后再试
-    if(!r.ok)throw new Error(r.status);K.opts=await r.json();$("control").hidden=false;ctlApply();
-  }catch(e){if(retry)setTimeout(()=>ctlOptions(true),3000)}}
-async function ctlSend(action,args){if(K.busy)return;K.busy=true;ctlLock();let res;
-  $("ctl-busy").textContent=`正在做：${controlLine(action,args,{text:"…"}).split(" → ")[0]}…（身体排队执行，环视要几十秒）`;
-  try{const r=await fetch("control",{method:"POST",headers:{"Content-Type":"application/json","X-Skydango":"1"},body:JSON.stringify({action,args})});
-    res=await r.json().catch(()=>({ok:false,text:`HTTP ${r.status}`}));if(!r.ok&&res.ok===undefined)res={ok:false,text:`HTTP ${r.status}`};
-  }catch(e){res={ok:false,text:"连不上（程序停了？）"}}
-  ctlLog(action,args,res);$("ctl-busy").textContent="";K.busy=false;ctlLock();await ctlOptions(false);return res}
-// 动作刚做完有冷却（能做的列表暂时变空）：定时刷新，不用等下一次操作
-setInterval(()=>{if(K.opts&&!K.busy)ctlOptions(false)},5000);
-$("ctl-say-text").oninput=ctlCount;
-$("ctl-say-text").onkeydown=e=>{if(e.key==="Enter"&&!e.isComposing)$("ctl-say-go").click()};
-$("ctl-say-go").onclick=async()=>{const t=$("ctl-say-text").value.trim();if(!t)return;const res=await ctlSend("say",{text:t});if(res&&res.ok){$("ctl-say-text").value="";ctlCount()}};
-$("ctl-emote-go").onclick=()=>ctlSend("emote",{name:$("ctl-emote-name").value});
-for(const x of document.querySelectorAll("#ctl-camera button[data-cam]"))
-  x.onclick=()=>{const max=K.opts?K.opts.max_steps:4,n=Math.min(max,Math.max(1,parseInt($("ctl-steps").value,10)||1));$("ctl-steps").value=n;ctlSend("camera",{action:x.dataset.cam,steps:n})};
-$("ctl-reset").onclick=()=>ctlSend("camera_reset",{});
-$("ctl-around").onclick=()=>ctlSend("look_around",{});
-$("ctl-panel-read").onclick=()=>ctlSend("panel_read",{});
-$("ctl-panel-close").onclick=()=>ctlSend("panel_close",{});
-$("ctl-pick").onclick=()=>{K.picking=!K.picking;K.trackPick=false;K.mark=null;ctlLock();if(last)draw(last)};
-$("ctl-track-name").oninput=ctlLock;
-$("ctl-track-pick").onclick=()=>{K.trackPick=!K.trackPick;K.picking=false;$("ctl-track-tip").textContent="";ctlLock()};
-$("ctl-track-go").onclick=()=>{const name=$("ctl-track-name").value.trim();if(!name)return;
-  const max=K.opts&&K.opts.max_track_seconds||60,n=Math.min(max,Math.max(1,parseInt($("ctl-track-sec").value,10)||30));
-  $("ctl-track-sec").value=n;ctlSend("track",{name,seconds:n})};
-$("ctl-stop").onclick=()=>ctlSend("stop_task",{});
-$("ctl-call").onclick=()=>ctlSend("call",{});
-c.addEventListener("click",e=>{if(!K.trackPick||!last)return;  // 盯人：按快照里的框认出点的是谁，填进名字
-  const [x,y]=Stage.toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height),name=Stage.nameAt(last.boxes||[],x,y);
-  K.trackPick=false;$("ctl-track-tip").textContent=name?"":"那里没认出好友的名字，换个地方点，或者直接输入";
-  if(name)$("ctl-track-name").value=name;ctlLock()});
-c.addEventListener("click",e=>{if(!K.picking||!last)return;
-  const [x,y]=Stage.toFrame(e.clientX,e.clientY,c.getBoundingClientRect(),last.width,last.height);K.mark=[x,y];draw(last);
-  setTimeout(async()=>{const go=confirm(`点 (${x}, ${y}) 这个人？`);K.picking=false;ctlLock();
-    if(go)await ctlSend("check_friend",{x,y});K.mark=null;if(last)draw(last)},30)});
-ctlOptions(true);
-// ---- brain ----（时间线在共用的 brain_trace.js 里）
-if(window.mountBrainTrace)mountBrainTrace($("brain"),"brain");
-</script></body></html>
-"""

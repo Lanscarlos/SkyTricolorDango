@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..config import Config, console_paths, read_secrets
-from ..vision.viewer import is_local_host, post_guard, static_asset
+from ..vision.viewer import is_local_host, post_guard
 from . import probes
 from .devicecheck import ime_state, run_checks
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
@@ -646,13 +646,6 @@ class ConsoleServer:
                 url = urlparse(self.path)
                 if url.path == "/":
                     self._send(200, "text/html; charset=utf-8", _page())
-                    return
-                if url.path.startswith("/static/"):  # 和 viewer 共用的大脑时间线脚本 / 样式（同页面一样公开）
-                    asset = static_asset(url.path[len("/static/"):])
-                    if asset is None:
-                        self._json(404, {"ok": False, "text": "没有这个地址"})
-                    else:
-                        self._send(200, *asset)
                     return
                 if url.path.startswith("/console/static/"):  # 面板自己的样式 / 脚本（同页面一样公开）
                     asset = _console_static(url.path[len("/console/static/"):])

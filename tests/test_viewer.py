@@ -1,5 +1,4 @@
 import json
-import re
 import shutil
 import subprocess
 import threading
@@ -15,13 +14,12 @@ from skydango.brain.trace import BrainTrace
 from skydango.chat.reader import Message
 from skydango.config import Config, EnvConfig, PerceptionConfig, ViewerConfig
 from skydango.game.social import IDLE, Request
-from skydango.imageio import imwrite
 from skydango.vision.bubbles import Rect
 from skydango.vision.detect import Detection
 from skydango.vision.env import EnvWatcher
 from skydango.vision.ocr import OcrLine
 from skydango.vision.perception import PerceptionWatcher
-from skydango.vision.viewer import PAGE, Viewer, describe_env, is_local_host, panel_box
+from skydango.vision.viewer import Viewer, describe_env, is_local_host, panel_box
 
 
 def frame(w=1920, h=1080):
@@ -178,13 +176,11 @@ def test_long_poll_wakes_up_on_new_frame():
     assert out and out[0] is not None
 
 
-def test_http_server_serves_page_and_snapshot():
+def test_http_server_serves_snapshot():
     v = viewer()
     url = v.start()
     try:
         assert url.startswith("http://127.0.0.1:") and not url.endswith(":0/")
-        page = urllib.request.urlopen(url, timeout=5).read().decode()
-        assert "团子看到的" in page and "snapshot?after=" in page
         v.update(frame(), 0.0, panel=Rect(0, 0, 10, 10))
         with urllib.request.urlopen(url + "snapshot?after=0", timeout=5) as r:
             assert r.status == 200 and json.loads(r.read())["boxes"][0]["kind"] == "panel"
@@ -303,99 +299,6 @@ def test_agent_shows_each_step(clock, fail):
     assert info["模式"] == "LIVE" and info["待回复"] == "0 条" and info["刚说过"] == "还没说话"
 
 
-# ---- view --images：回放 ----
-def test_view_replays_images_with_boxes(tmp_path):
-    from skydango import cli
-
-    for i in range(2):
-        imwrite(tmp_path / f"{i:03d}.png", frame())
-    cfg = Config()
-    cfg.vision.mode = "roi"
-    cfg.env.interval = 0.0
-
-    class LabelOcr:
-        def recognize(self, region):
-            return [OcrLine("懒洋洋大王", 0.99, Rect(1320, 300, 160, 44))]
-
-    class NoRead:
-        panel_closed_since = None
-
-        def read(self, frame, now):
-            return []
-
-    env = EnvWatcher(LabelOcr(), cfg.env, lambda: ["懒洋洋大王"], cfg.vision.log_roi, background=False)
-    v = viewer()
-    t = iter([0.0, 0.0, 1.0, 1.0])
-    seen = []
-    orig = v.update
-
-    def update(*a, **kw):
-        ok = orig(*a, **kw)
-        seen.append(snap(v))
-        return ok
-
-    v.update = update
-    shown = cli._view(cfg, cli._view_frames(cli._images(str(tmp_path)), None), NoRead(), env, v,
-                      clock=lambda: next(t), sleep=lambda s: None)
-    assert shown == 2
-    assert [s["info"]["来源"] for s in seen] == ["回放 000.png（1/2）", "回放 001.png（2/2）"]
-    assert seen[-1]["boxes"][0]["label"] == "懒洋洋大王" and seen[-1]["info"]["身边的好友"] == ["懒洋洋大王"]
-
-
-def test_view_frames_skips_failed_screenshots():
-    from skydango import cli
-
-    class Flaky:
-        def __init__(self):
-            self.n = 0
-
-        def screenshot(self):
-            self.n += 1
-            if self.n == 1:
-                raise RuntimeError("adb 超时")
-            return frame()
-
-    frames = cli._view_frames([], Flaky(), sleep=lambda s: None)
-    img, source = next(frames)
-    assert img.shape == (1080, 1920, 3) and "实时截图" in source
-
-
-def test_view_marks_black_frames():
-    from skydango import cli
-
-    cfg = Config()
-    cfg.vision.mode = "roi"
-
-    class NoRead:
-        panel_closed_since = None
-
-        def read(self, frame, now):
-            return []
-
-    class NoEnv:
-        requests = {}
-        cfg = EnvConfig()
-
-        def observe(self, *a, **kw):
-            pass
-
-        def nearby(self, now):
-            return []
-
-    v = viewer()
-    cli._view(cfg, iter([(np.zeros((1080, 1920, 3), np.uint8), "x")]), NoRead(), NoEnv(), v, sleep=lambda s: None)
-    assert snap(v)["info"]["画面"].startswith("黑着")
-
-
-def test_view_command_is_registered():
-    from skydango import cli
-
-    with pytest.raises(SystemExit):
-        cli.main(["view", "--help"])
-    with pytest.raises(SystemExit):
-        cli.main(["run", "--help"])
-
-
 def test_page_has_typing_colour_and_legend():
     stage = _stage_path().read_text(encoding="utf-8")
     assert 'typing:"#e879f9"' in stage and 'typing:"正在输入"' in stage
@@ -404,71 +307,7 @@ def test_page_has_typing_colour_and_legend():
 def _stage_path():
     import importlib.resources
 
-    return importlib.resources.files("skydango.vision") / "static" / "stage.js"
-
-
-def _trace_js() -> str:
-    """大脑时间线抽成了共用的 vision/static/brain_trace.js（沙盒计划 Task 7）：时间线的检查改看它。"""
-    import importlib.resources
-
-    return (importlib.resources.files("skydango.vision") / "static" / "brain_trace.js").read_text(encoding="utf-8")
-
-
-def test_page_has_brain_section():
-    from skydango.vision.viewer import PAGE
-
-    assert 'id="brain"' in PAGE and 'mountBrainTrace($("brain"),"brain")' in PAGE
-    script = _trace_js()
-    for part in ("brain-state", "brain-turns", "brain-acted", "?after="):
-        assert part in script
-
-
-def test_page_never_uses_innerhtml_for_brain_data():
-    assert "innerHTML" not in _trace_js()
-
-
-def test_page_restarts_brain_list_when_program_restarts():
-    assert "d.boot" in _trace_js()  # 换了进程（boot 变了）就清空、从头拉
-
-
-def test_page_uses_shared_brain_trace_script():
-    from skydango.vision.viewer import PAGE
-
-    assert "const B={turns:" not in PAGE and "function brainMerge" not in PAGE  # 不再内联一份
-    assert 'src="brain_trace.js"' in PAGE and 'href="brain_trace.css"' in PAGE
-    assert "function mountBrainTrace" in _trace_js()
-
-
-def test_viewer_serves_brain_trace_assets():
-    v = viewer()
-    url = v.start()
-    try:
-        with urllib.request.urlopen(url + "brain_trace.js", timeout=5) as r:
-            assert r.status == 200 and "javascript" in r.headers["Content-Type"]
-            assert "function mountBrainTrace" in r.read().decode("utf-8")
-        with urllib.request.urlopen(url + "brain_trace.css", timeout=5) as r:
-            assert r.status == 200 and "text/css" in r.headers["Content-Type"] and b".turn" in r.read()
-    finally:
-        v.stop()
-
-
-def test_brain_trace_script_parses(tmp_path):
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("没有 node")
-    path = tmp_path / "brain_trace.js"
-    path.write_text(_trace_js(), encoding="utf-8")
-    assert subprocess.run([node, "--check", str(path)]).returncode == 0
-
-
-def test_viewer_page_script_parses(tmp_path):
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("没有 node")
-    [script] = re.findall(r"<script>(.*?)</script>", PAGE, re.S)
-    path = tmp_path / "viewer.js"
-    path.write_text(script, encoding="utf-8")
-    assert subprocess.run([node, "--check", str(path)]).returncode == 0
+    return importlib.resources.files("skydango.console") / "static" / "stage.js"  # 画框代码只剩管理面板用
 
 
 def test_brain_endpoint_survives_lone_surrogate():
@@ -489,16 +328,6 @@ def _node(script: str) -> str:
     if node is None:
         pytest.skip("没有 node")
     return subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30, check=True).stdout.strip()
-
-
-def test_newest_turn_stays_open_until_the_next_one_starts():
-    # 边跑边看：正在看的那一轮收尾时不能自己收起；下一轮开始后，没点过的旧轮次收起；点过的按用户的来
-    [fn] = [line for line in _trace_js().splitlines() if line.startswith("function wantOpen(")]
-    out = _node(fn + """
-const live={id:5,end:null},done={id:5,end:1},old={id:4,end:1};
-console.log(JSON.stringify([wantOpen(live,undefined,5),wantOpen(done,undefined,5),wantOpen(old,undefined,5),
-  wantOpen(old,true,5),wantOpen(done,false,5)]));""")
-    assert json.loads(out) == [True, True, False, True, False]
 
 
 # ---- 手动控制（/control） ----
@@ -591,40 +420,11 @@ def test_control_bad_body():
         v.stop()
 
 
-def _control_script():
-    from skydango.vision.viewer import PAGE
-
-    assert "// ---- control ----" in PAGE
-    return PAGE.split("// ---- control ----", 1)[1].split("// ---- brain ----", 1)[0]
-
-
-def test_page_has_control_section():
-    from skydango.vision.viewer import PAGE
-
-    for part in ('id="control"', 'id="ctl-say"', 'id="ctl-emote"', 'id="ctl-camera"', 'id="ctl-pick"', 'id="ctl-log"',
-                 "control/options", "X-Skydango"):
-        assert part in PAGE
-
-
-def test_control_script_never_uses_innerhtml():
-    assert "innerHTML" not in _control_script()
-
-
 def test_click_maps_to_frame_pixels():
     # 画布被 CSS 缩放显示：按显示尺寸换算回原图像素
     out = _node(f"const S=require({json.dumps(str(_stage_path()))});"
                 "console.log(JSON.stringify(S.toFrame(650, 400, {left:50, top:100, width:960, height:540}, 1920, 1080)));")
     assert json.loads(out) == [1200, 600]
-
-
-def test_page_has_track_controls():
-    from skydango.vision.viewer import PAGE
-
-    for part in ('id="ctl-track"', 'id="ctl-track-name"', 'id="ctl-track-sec"', 'id="ctl-track-pick"', 'id="ctl-track-go"',
-                 'id="ctl-stop"'):
-        assert part in PAGE
-    script = _control_script()
-    assert 'ctlSend("track"' in script and 'ctlSend("stop_task"' in script
 
 
 def test_click_picks_friend_name():
@@ -649,21 +449,6 @@ def test_reviewed_prefix_only_when_drawing():
         f"const B={json.dumps(boxes, ensure_ascii=False)};const P='\\u590d\\u6838\\u00b7';" + \
         "console.log(JSON.stringify([S.nameAt(B,150,300),S.boxText(B[0])===P+'ming 0.30',S.boxText(B[1])]));"
     assert json.loads(_node(script)) == ["ming", True, "bai 0.90"]
-
-
-def test_page_retries_control_options():
-    # 控制对象要等身体建好才挂上：拿到 404 过 3 秒再试，不能像时间线那样就此放弃
-    script = _control_script()
-    assert "404" in script and "3000" in script
-
-
-def test_control_refreshes_options_and_shows_busy_action():
-    # 动作刚做完有冷却，列表暂时为空：要定时刷新，不能等下一次操作；环视要几十秒，忙的时候显示在做什么
-    from skydango.vision.viewer import PAGE
-
-    script = _control_script()
-    assert "setInterval" in script and "5000" in script
-    assert 'id="ctl-busy"' in PAGE and "正在做" in script
 
 
 # ---- 面板 ----
@@ -704,15 +489,8 @@ def test_update_without_panels_says_nothing_open():
 
 
 def test_page_has_panel_colors_and_buttons():
-    from skydango.vision.viewer import PAGE
-
     stage = _stage_path().read_text(encoding="utf-8")  # 颜色表在共用的 stage.js 里
-    assert "panel_unknown" in stage and "button_never" in stage and 'id="ctl-panel-close"' in PAGE and 'id="ctl-panel-read"' in PAGE
-
-
-# ---- 管理面板用：/status、/shutdown、相对路径 ----
-def test_page_uses_relative_urls_so_it_works_under_live():
-    assert not re.search(r"""fetch\(\s*[`"']/""", PAGE)
+    assert "panel_unknown" in stage and "button_never" in stage
 
 
 def test_status_reports_last_info_without_image():
@@ -800,7 +578,6 @@ def test_page_has_maybe_style_and_hover():
     assert 'maybe:"#86efac"' in stage
     assert 'maybe:"按外观认的好友"' in stage
     assert "[6,4]" in stage
-    assert "mousemove" in PAGE and "mouseleave" in PAGE
 
 
 # ---- 真机聊天记录（spec 2026-10-01-console-live-page §3.2）----
@@ -835,17 +612,32 @@ def test_chat_endpoint_long_polls():
         v.stop()
 
 
-def test_page_uses_shared_stage_script():
-    assert 'src="stage.js"' in PAGE and "Stage.draw(" in PAGE
-    for inline in ("function nameAt(", "function toFrame(", "function drawHover(", "const COLORS="):
-        assert inline not in PAGE  # 不再内联一份
-
-
-def test_viewer_serves_stage_script():
+# ---- 只剩接口（spec 2026-10-04-console-attach §1）----
+def test_root_page_is_gone():
     v = viewer()
     url = v.start()
     try:
-        with urllib.request.urlopen(url + "stage.js", timeout=5) as r:
-            assert r.status == 200 and "javascript" in r.headers["Content-Type"] and "function nameAt" in r.read().decode("utf-8")
+        assert request(url)[0] == 404
+        assert request(url + "stage.js")[0] == 404 and request(url + "brain_trace.js")[0] == 404
     finally:
         v.stop()
+
+
+def test_status_has_run_section_only_when_set():
+    v = viewer()
+    url = v.start()
+    try:
+        assert "run" not in request(url + "status")[1]
+        v.run_info = {"pid": 7, "run_dir": "r", "live": True, "brain": True, "emotes": True, "duration": 0.0, "started": 1.0,
+                      "console": False}
+        assert request(url + "status")[1]["run"]["pid"] == 7
+    finally:
+        v.stop()
+
+
+def test_view_command_is_gone():
+    from skydango import cli
+
+    with pytest.raises(SystemExit) as err:
+        cli.main(["view"])
+    assert err.value.code == 2

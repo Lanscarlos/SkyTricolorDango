@@ -261,12 +261,11 @@ def test_unknown_routes_404(srv):
 # ---- 静态文件（页面本身的测试在 test_console_page.py）----
 
 
-def test_serves_shared_brain_trace_assets(srv):  # 沙盒页的大脑时间线和 viewer 用同一份脚本
-    for name, kind, word in (("brain_trace.js", "javascript", "function mountBrainTrace"), ("brain_trace.css", "text/css", ".turn")):
-        with urllib.request.urlopen(srv.url + "static/" + name, timeout=5) as r:
-            assert r.status == 200 and kind in r.headers["Content-Type"] and word in r.read().decode("utf-8")
-    assert request(srv.url + "static/../server.py")[0] == 404
-    assert request(srv.url + "static/nope.js")[0] == 404
+def test_serves_stage_js_from_console_static(srv):  # spec 2026-10-04-console-attach §1：viewer 网页删了，画框脚本归面板
+    with urllib.request.urlopen(srv.url + "console/static/stage.js", timeout=5) as r:
+        assert r.status == 200 and "javascript" in r.headers["Content-Type"] and "Stage" in r.read().decode("utf-8")
+    for gone in ("static/stage.js", "static/brain_trace.js", "static/brain_trace.css"):
+        assert request(srv.url + gone)[0] == 404
 
 
 def test_start_refused_while_orphan_holds_port(tmp_path, upstream):  # 终审 Important 3：别起第二个团子

@@ -86,7 +86,7 @@ def _build_reader(cfg: Config):
 
 
 def _chat_reader(cfg: Config, dev):
-    """run / view 读聊天用的：`[vision] source = "a11y"`（log 模式、有设备）时先读无障碍节点、读不到自动退回 OCR，
+    """run 读聊天用的：`[vision] source = "a11y"`（log 模式、有设备）时先读无障碍节点、读不到自动退回 OCR，
     否则就是 OCR 的 `_build_reader`。用完要 `_stop_reader`（清掉设备上的客户端进程）。"""
     if cfg.vision.source not in ("a11y", "ocr"):
         raise ValueError(f"vision.source 只能是 a11y / ocr，现在是 {cfg.vision.source!r}")
@@ -389,7 +389,7 @@ _UNSET = object()
 
 def _appearance_parts(cfg: Config, run: RunDir | None = None, dino_embedder=_UNSET) -> dict:
     """认装扮（spec 2026-10-01-appearance）：给 PerceptionWatcher 的关键字参数（记忆簿、特征模型、配置、存训练数据）。
-    [appearance] 没开时是空的；没有运行目录（view、perception detect）或 save = false 时不存训练数据。描述器由 _run_brain 挂。
+    [appearance] 没开时是空的；没有运行目录（perception detect 等）或 save = false 时不存训练数据。描述器由 _run_brain 挂。
     dino_embedder：调用方已经建好的 DINOv2（和第二层共用同一个会话）；不给就自己建。"""
     a = cfg.appearance
     if not a.enabled:
@@ -413,7 +413,7 @@ def _appearance_parts(cfg: Config, run: RunDir | None = None, dino_embedder=_UNS
 
 def _catalog_collector(cfg: Config, run: RunDir | None):
     """装扮图鉴收集（spec 2026-10-02-catalog-collect §4）：[catalog] 开着、有运行目录（run 的 dry-run / live）才建；
-    view、perception detect 没有运行目录，不收。[perception] 没开时 _scene_watcher 根本不走到这里。"""
+    perception detect 等没有运行目录，不收。[perception] 没开时 _scene_watcher 根本不走到这里。"""
     if not cfg.catalog.enabled or run is None:
         return None
     from .vision.catalog import CatalogCollector
@@ -721,86 +721,6 @@ def _viewer(cfg: Config, open_browser: bool = True, brain: bool = False, on_shut
         except Exception:
             log.debug("打不开浏览器", exc_info=True)
     return viewer
-
-
-def _view_frames(files: list[Path], dev, sleep=time.sleep):
-    """view 的帧：回放就按顺序读图，实时就一直截图（截图失败跳过这一圈，网页上保留上一帧）。产出 (帧, 来源)。"""
-    if files:
-        for i, path in enumerate(files, 1):
-            try:
-                frame = imread(path)
-            except Exception:
-                log.warning("读不了 %s，跳过", path)
-                continue
-            yield frame, f"回放 {path.name}（{i}/{len(files)}）"
-        return
-    while True:
-        try:
-            yield dev.screenshot(), "实时截图（只看，不操作游戏）"
-        except Exception as exc:
-            log.warning("截图失败：%s", (str(exc).splitlines() or [type(exc).__name__])[0])
-            sleep(0.5)
-
-
-def _view(cfg: Config, frames, reader, env, viewer, clock=time.monotonic, sleep=time.sleep) -> int:
-    """view 的主循环：读聊天记录面板 + 认人 → 交给网页。只看，不往游戏里发任何输入。返回显示了几帧。"""
-    from .brain.images import is_black
-    from .vision.viewer import panel_box
-
-    period = 1.0 / max(cfg.viewer.fps, 0.1)
-    shown = 0
-    for frame, source in frames:
-        started = clock()
-        fresh = []
-        try:
-            fresh = reader.read(frame, started)
-        except Exception:
-            log.exception("读聊天出错")
-        panel = panel_box(cfg.vision, reader, frame)
-        try:
-            env.observe(frame, started, panel_visible=panel is not None)
-        except Exception:
-            log.exception("识别出错")
-        info = {"画面": "黑着（切场景？）"} if is_black(frame) else {}
-        shown += viewer.update(frame, started, env=env, panel=panel, messages=fresh, info=info, source=source)
-        for m in fresh:
-            log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
-        sleep(max(0.0, period - (clock() - started)))
-    return shown
-
-
-def cmd_view(cfg: Config, args) -> None:
-    """只看不动：实时截图 → 读聊天记录面板 + 认人（整图 OCR 或 YOLO）→ 网页上画框。不往游戏里发任何输入。"""
-    if args.model:
-        cfg.perception.enabled, cfg.perception.model = True, args.model
-    if args.port is not None:
-        cfg.viewer.port = args.port
-    files = _images(args.images) if args.images else []
-    if files:  # 回放：每张图都当场认完再显示（不在后台线程、不按间隔跳过），结果可复现
-        cfg.env.interval = 0.0
-        cfg.perception.fps, cfg.perception.capture = 1000.0, "body"
-    dev = None if files else _device(cfg)
-    reader, _ = _chat_reader(cfg, dev)  # 回放（没有设备）时就是 OCR
-    try:
-        env = _scene_watcher(cfg, _icon_classifier(cfg), dev=dev, background=not files)
-        viewer = _viewer(cfg, open_browser=not args.no_browser)
-    except BaseException:
-        _stop_reader(reader)
-        raise
-    print("只看，不操作游戏；Ctrl+C 结束" + (f"。回放 {len(files)} 张图" if files else ""))
-    try:
-        _view(cfg, _view_frames(files, dev), reader, env, viewer)
-        if files:
-            print("回放完了，网页停在最后一张；Ctrl+C 结束")
-            while True:
-                time.sleep(1.0)
-    except KeyboardInterrupt:
-        print("\n已停止")
-    finally:
-        if hasattr(env, "stop"):
-            env.stop()
-        viewer.stop()
-        _stop_reader(reader)
 
 
 def cmd_a11y(cfg: Config, args) -> None:
@@ -3341,13 +3261,6 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("name", help="模板文件名，比如 pencil.png")
     q.add_argument("--roi", required=True, help="x1,y1,x2,y2（0~1 归一化）")
     p.set_defaults(func=cmd_panels)
-
-    p = sub.add_parser("view", help="只看不动：实时截图 → 认人 / 读聊天 → 网页上画识别框（不操作游戏）")
-    p.add_argument("--images", help="回放这个目录 / 这张图（比如 record 录的），不用连模拟器")
-    p.add_argument("--model", help="用这个 YOLO 模型（等于临时打开 [perception]）")
-    p.add_argument("--port", type=int, help="网页端口（默认 viewer.port）")
-    p.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
-    p.set_defaults(func=cmd_view)
 
     p = sub.add_parser("console", help="管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面")
     p.add_argument("--port", type=int, help="面板端口（默认 [console] port = 19390）")
