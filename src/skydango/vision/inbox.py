@@ -94,22 +94,31 @@ def collect_all(runs: Path, inbox: Path) -> list[str]:
     return out
 
 
+def _unprocessed(inbox: Path, run: str) -> int:
+    """raw/ 里有、frames.json 里还没有的图（整理完之后下线时又补收进来的也算）；frames.json 坏了按全部没整理算。"""
+    raw = Path(inbox) / run / "raw"
+    files = [p.name for p in raw.glob("*.jpg")] if raw.is_dir() else []
+    if not files:
+        return 0
+    try:
+        frames = load_frames(inbox, run)
+    except (OSError, ValueError):
+        frames = {}
+    return sum(1 for f in files if frame_name(run, f) not in frames)
+
+
 def pending_runs(inbox: Path) -> list[str]:
-    """收了、还没 processed_at 的运行（同一运行多行，后面的行覆盖前面的字段）。"""
+    """要整理的运行：收了、还没 processed_at 的（同一运行多行，后面的行覆盖前面的字段），
+    或者整理过、但 raw/ 里又有了 frames.json 里没有的图（process 只做没做过的帧）。"""
     merged: dict[str, dict] = {}
     for row in _index_rows(Path(inbox)):
         merged.setdefault(row["run"], {}).update(row)
-    return [run for run, row in merged.items() if not row.get("processed_at")]
+    return [run for run, row in merged.items() if not row.get("processed_at") or _unprocessed(inbox, run)]
 
 
 def pending_frames(inbox: Path) -> int:
-    """没整理的运行在 index.jsonl 里记的帧数之和。"""
-    pending = set(pending_runs(inbox))
-    last: dict[str, int] = {}
-    for row in _index_rows(Path(inbox)):
-        if row["run"] in pending and row.get("frames") is not None:
-            last[row["run"]] = int(row["frames"])
-    return sum(last.values())
+    """要整理的运行里 raw/ 有、frames.json 还没有的图数之和。"""
+    return sum(_unprocessed(inbox, run) for run in pending_runs(inbox))
 
 
 def read_stats(inbox: Path) -> dict:

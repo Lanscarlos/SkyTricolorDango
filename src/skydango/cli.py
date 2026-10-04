@@ -1407,6 +1407,9 @@ def _perception_inbox(cfg: Config, args) -> None:
     """难例收件箱：collect = 把 runs/*/hard 收进 [inbox] dir。"""
     from .vision import inbox as hardcase_inbox
 
+    if getattr(args, "runs", None) is None and args.inbox_action in ("collect", "process"):
+        args.runs = cfg.run.dir  # 没给运行目录：用配置里的 [run] dir
+
     if args.inbox_action == "collect":
         inbox = Path(cfg.inbox.dir)
         runs = hardcase_inbox.collect_all(Path(args.runs), inbox)
@@ -3309,9 +3312,9 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("inbox", help="难例收件箱（live 存下的难例 → datasets/inbox）")
     isub = q.add_subparsers(dest="inbox_action", required=True)
     qi = isub.add_parser("collect", help="把各次运行 runs/*/hard 里的难例收进收件箱（已收的跳过）")
-    qi.add_argument("runs", nargs="?", default="runs", help="运行目录的上级（默认 runs/）")
+    qi.add_argument("runs", nargs="?", help="运行目录的上级（默认 [run] dir）")
     qi = isub.add_parser("process", help="整理收件箱：去重、YOLO 预标注、外形头分流（可续跑）")
-    qi.add_argument("runs", nargs="?", default="runs", help="运行目录的上级（默认 runs/；整理前先补收）")
+    qi.add_argument("runs", nargs="?", help="运行目录的上级（默认 [run] dir；整理前先补收）")
     qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
     qi = isub.add_parser("status", help="收件箱各次运行各状态的帧数")
     qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")

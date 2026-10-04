@@ -4,7 +4,7 @@ import pytest
 from skydango import cli
 from skydango.config import InboxConfig, load_config
 from skydango.vision.bubbles import Rect
-from skydango.vision.inbox import collect, collect_all, crop_place, final_boxes, frame_name, frame_state, pending_runs, route, split_of
+from skydango.vision.inbox import collect, collect_all, crop_place, final_boxes, frame_name, frame_state, pending_runs, route, save_frames, split_of
 
 
 def test_split_of_whole_run_same_side():
@@ -47,6 +47,7 @@ def test_collect_all_and_pending(tmp_path):
     assert collect_all(runs, inbox) == []
     with (inbox / "_index.jsonl").open("a", encoding="utf-8") as f:
         f.write('{"run": "a", "processed_at": "2026-10-04T20:00:00"}\n')
+    save_frames(inbox, "a", {frame_name("a", "0.jpg"): {"file": "raw/0.jpg", "boxes": []}})  # 整理过：raw 里的图都在 frames.json 里
     assert pending_runs(inbox) == ["c"]
 
 
@@ -120,6 +121,21 @@ def test_cli_inbox_collect(tmp_path, capsys):
     cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "collect", str(tmp_path / "runs")])
     assert "收了 1 次运行 / 共 1 张" in capsys.readouterr().out
     assert (tmp_path / "inbox" / "r1" / "raw" / "1.jpg").is_file()
+
+
+def test_cli_inbox_runs_default_from_config(tmp_path, capsys, monkeypatch):
+    # 终审 8：collect / process 不给运行目录时用配置里的 [run] dir，不写死 runs
+    run = tmp_path / "myruns" / "r1"
+    (run / "hard").mkdir(parents=True)
+    (run / "hard" / "1.jpg").write_bytes(b"x")
+    lines = ["[run]", f'dir = "{(tmp_path / "myruns").as_posix()}"', "[inbox]", f'dir = "{(tmp_path / "inbox").as_posix()}"']
+    (tmp_path / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "collect"])
+    assert "收了 1 次运行 / 共 1 张" in capsys.readouterr().out
+    seen = []
+    monkeypatch.setattr(cli, "_inbox_process", lambda cfg, args: seen.append(args.runs))
+    cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "process"])
+    assert seen == [(tmp_path / "myruns").as_posix()]
 
 
 @pytest.mark.parametrize("cls,score,probs,want", [
@@ -389,6 +405,24 @@ def test_process_routes_and_writes(tmp_path):
     assert [b for b in entry["boxes"] if b["cls"] == "name_tag"][0]["crop"] is None
     assert res["frames"] == 1 and res["auto"] == 1 and res["to_judge"] == 1
     assert not pending_runs(inbox)
+
+
+
+def test_raw_added_after_processing_is_pending(tmp_path):
+    # 终审 7：运行标了 processed_at 之后，下线时补收进 raw/ 的图也算没整理，再整理只做新的那张
+    inbox = tmp_path / "inbox"
+    _setup_run(inbox, "r1", {"192000_a.jpg": _img(40)})
+    calls = []
+    run = lambda: _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), lambda f: calls.append(1) or [],
+                                 lambda f, d: [], lambda f, b: [], progress=lambda s: None)
+    run()
+    assert not pending_runs(inbox) and _inbox.pending_frames(inbox) == 0
+    cv2.imwrite(str(inbox / "r1" / "raw" / "192100_b.jpg"), _img(200))
+    assert pending_runs(inbox) == ["r1"] and _inbox.pending_frames(inbox) == 1
+    calls.clear()
+    run()
+    assert len(calls) == 1 and list(_inbox.load_frames(inbox, "r1")) == ["r1_192000_a", "r1_192100_b"]
+    assert not pending_runs(inbox) and _inbox.pending_frames(inbox) == 0
 
 
 def test_process_dedupes(tmp_path):
