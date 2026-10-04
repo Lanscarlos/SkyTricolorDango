@@ -24,6 +24,10 @@ log = logging.getLogger(__name__)
 
 CLOSE_DELAY = 0.8  # 按键关面板后等它消失
 POLL = 0.1  # 等面板出现时多久截一张图看
+# 无障碍读法（10-04 晚真机）：关面板的动画约 2 秒，这段时间树里的面板节点还在、还会闪（关了 2.6 秒后还"看得到"），
+# 自己关的这么久之内看到面板不算别人打开的；快照每 0.15 秒一份，看一眼至少开这么久，等面板行加载完再关
+A11Y_CLOSE_SETTLE = 3.5
+A11Y_PEEK_MIN = 1.0
 
 
 class PanelManager:
@@ -53,6 +57,7 @@ class PanelManager:
         self._closed_at = float("-inf")  # 上次自己关上面板
         self._opened_at = 0.0  # 看一眼：什么时候按的键
         self._seen = 0  # 看一眼：打开后连续几帧看到了面板
+        self._seen_at: float | None = None  # 看一眼：第一次看到面板的时刻
         self._pending: str | None = None  # 闲着时等着看一眼的原因（冷却中先记着）
         self._missing_since: float | None = None  # 聊天中：面板从什么时候开始不见了
         self._bubble_start = 0.0  # 等气泡：什么时候开始等
@@ -107,6 +112,11 @@ class PanelManager:
     def _reads_bubbles(self) -> bool:
         """reader 现在能读头顶气泡（无障碍读法）；OCR 的 ChatReader 没有这个属性。"""
         return bool(getattr(self.reader, "reads_bubbles", False))
+
+    def _user_opened(self, now: float) -> bool:
+        """面板开着、不是刚被自己关上还在动画里：算别人（玩家）打开的。"""
+        settle = max(self.cfg.open_timeout, A11Y_CLOSE_SETTLE) if self._reads_bubbles() else self.cfg.open_timeout
+        return now - self._closed_at > settle
 
     def should_be_open(self) -> bool:
         if self.lent is not None:
@@ -299,7 +309,7 @@ class PanelManager:
             self.ensure_open()
             return
         if visible:
-            if now - self._closed_at > self.cfg.open_timeout:  # 刚关上的那一两帧还看得到，不算
+            if self._user_opened(now):  # 刚关上的那一阵还看得到，不算
                 self._last_activity = now
                 self._set("chatting", "面板开着（不是自己开的）")
             return
@@ -320,7 +330,7 @@ class PanelManager:
 
     def _tick_idle(self, now: float, visible: bool, blackout: bool) -> None:
         if visible:
-            if now - self._closed_at > self.cfg.open_timeout:  # 刚关上的那一两帧还看得到，不算
+            if self._user_opened(now):  # 刚关上的那一阵还看得到，不算
                 self._last_activity = now
                 self._set("chatting", "面板开着（不是自己开的）")
             return
@@ -341,7 +351,7 @@ class PanelManager:
             self._set("chatting", "输入框开着")
             return
         self._press(True)
-        self._opened_at, self._seen = now, 0
+        self._opened_at, self._seen, self._seen_at = now, 0, None
         if reason == "bubble":  # 对方还在打字：开着等他发出来
             self._bubble_start = self._last_bubble = now
             self._set("bubble", "好友头顶冒出了气泡")
@@ -351,7 +361,10 @@ class PanelManager:
     def _tick_peek(self, now: float, visible: bool) -> None:
         if visible:
             self._seen += 1
-            if self._seen >= 2 and not self._settling():  # 第一帧面板可能还没画完；读聊天的还在等确认也先别关
+            if self._seen_at is None:
+                self._seen_at = now
+            long_enough = not self._reads_bubbles() or now - self._seen_at >= A11Y_PEEK_MIN
+            if self._seen >= 2 and long_enough and not self._settling():  # 第一帧面板可能还没画完；读聊天的还在等确认也先别关
                 self._end_peek(now, "看一眼：没有新消息")
         elif now - self._opened_at >= self.cfg.open_timeout:
             log.warning("按了键 %.1f 秒聊天记录面板还没出现（被别的界面挡住了？），下个周期再看", self.cfg.open_timeout)
