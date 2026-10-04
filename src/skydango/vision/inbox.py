@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 import zlib
@@ -173,3 +174,89 @@ def final_boxes(entry: dict, place: Callable[[str], str | None], classes: list[s
         x, y, w, h = (int(v) for v in b["box"])
         out.append((classes.index(cls), Rect(x, y, w, h)))
     return out
+
+
+def load_frames(inbox: Path, run: str) -> dict:
+    """inbox/<运行>/frames.json：帧名 → 条目；没有就是空。"""
+    path = Path(inbox) / run / "frames.json"
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_frames(inbox: Path, run: str, frames: dict) -> None:
+    path = Path(inbox) / run / "frames.json"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(frames, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def pass_frame(
+    inbox: Path,
+    run: str,
+    frame: str,
+    attrs_root: Path,
+    dataset: Path,
+    classes: list[str],
+    boxes: list[tuple[int, Rect]] | None = None,
+) -> str:
+    """整帧通过：写最终标注，复制原图和标注进 dataset；返回 "<split>/<frame>"。
+    目标已存在抛 FileExistsError（什么都不写）；复制到一半失败删掉已复制的再抛。"""
+    from ..imageio import imread
+    from .weaklabel import yolo_line
+
+    inbox, dataset = Path(inbox), Path(dataset)
+    frames = load_frames(inbox, run)
+    entry = frames[frame]
+    split = entry["split"]
+    dst_img = dataset / "images" / split / f"{frame}.jpg"
+    dst_lbl = dataset / "labels" / split / f"{frame}.txt"
+    if dst_img.exists() or dst_lbl.exists():
+        raise FileExistsError(f"{split}/{frame} 已在数据集里")
+    edited = boxes is not None
+    if boxes is None:
+        boxes = final_boxes(entry, lambda c: crop_place(attrs_root, c), classes)
+    src_img = inbox / run / entry["file"]
+    height, width = imread(src_img).shape[:2]
+    text = "".join(yolo_line(c, b, width, height) + "\n" for c, b in boxes)
+    label = inbox / run / "labels" / f"{frame}.txt"
+    label.parent.mkdir(parents=True, exist_ok=True)
+    label.write_text(text, encoding="utf-8")
+    dst_img.parent.mkdir(parents=True, exist_ok=True)
+    dst_lbl.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copyfile(src_img, dst_img)
+        shutil.copyfile(label, dst_lbl)
+    except BaseException:
+        dst_img.unlink(missing_ok=True)
+        dst_lbl.unlink(missing_ok=True)
+        raise
+    entry["decision"] = {"what": "pass", "edited": edited, "t": time.time(), "dataset": f"{split}/{frame}"}
+    entry["editing"] = False
+    save_frames(inbox, run, frames)
+    return f"{split}/{frame}"
+
+
+def discard_frame(inbox: Path, run: str, frame: str) -> None:
+    frames = load_frames(inbox, run)
+    frames[frame]["decision"] = {"what": "discard", "t": time.time()}
+    save_frames(inbox, run, frames)
+
+
+def undo_frame(inbox: Path, run: str, frame: str, dataset: Path) -> None:
+    """撤销决定；通过的要把 datasets/sky 里那两个文件删掉。"""
+    frames = load_frames(inbox, run)
+    entry = frames[frame]
+    decision = entry.get("decision") or {}
+    if decision.get("what") == "pass":
+        split = decision["dataset"].split("/")[0]
+        (Path(dataset) / "images" / split / f"{frame}.jpg").unlink(missing_ok=True)
+        (Path(dataset) / "labels" / split / f"{frame}.txt").unlink(missing_ok=True)
+    entry["decision"] = None
+    save_frames(inbox, run, frames)
+
+
+def set_editing(inbox: Path, run: str, frame: str, on: bool) -> None:
+    frames = load_frames(inbox, run)
+    frames[frame]["editing"] = bool(on)
+    save_frames(inbox, run, frames)
