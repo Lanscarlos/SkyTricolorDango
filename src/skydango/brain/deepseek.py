@@ -110,6 +110,8 @@ class DeepSeekBrain:
         deadline = self.clock() + self.turn_timeout
         final = ""
         rounds = 0
+        requests = 0
+        usage: dict | None = None
         while True:
             if self.clock() >= deadline:
                 raise ClaudeError("超时")
@@ -122,6 +124,12 @@ class DeepSeekBrain:
                 raise
             except Exception as exc:
                 raise ClaudeError(f"DeepSeek 出错：{exc}") from None
+            requests += 1
+            u = getattr(resp, "usage", None)  # 取不到就不累加；有一次取到就给 dict
+            if u is not None:
+                usage = usage or {"input_tokens": 0, "output_tokens": 0}
+                usage["input_tokens"] += int(getattr(u, "prompt_tokens", 0) or 0)
+                usage["output_tokens"] += int(getattr(u, "completion_tokens", 0) or 0)
             message = resp.choices[0].message
             content = message.content or ""
             tool_calls = list(message.tool_calls or [])
@@ -136,6 +144,8 @@ class DeepSeekBrain:
             if not tool_calls or rounds >= self.max_steps + 2:
                 break
             rounds += 1
+            if content.strip() and self.on_message is not None:  # 工具调用前的中间文字：时间线上也要看到
+                self.on_message({"type": "assistant", "message": {"content": [{"type": "text", "text": content}]}})
             for tc in tool_calls:
                 name = tc.function.name
                 try:
@@ -162,4 +172,4 @@ class DeepSeekBrain:
                 done.append((name, args, out, is_error))
         if self.history > 0:
             self._past = (self._past + [(text, _summary(done, final))])[-self.history:]
-        return {"result": final, "subtype": "success"}
+        return {"result": final, "subtype": "success", "num_turns": requests, "usage": usage}

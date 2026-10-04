@@ -10,8 +10,9 @@ from skydango.brain.deepseek import FALLBACK_NOTE, DeepSeekBrain, build_client
 from skydango.config import LlmConfig
 
 
-def msg(content=None, tool_calls=None):
-    return SimpleNamespace(content=content, tool_calls=tool_calls)
+def msg(content=None, tool_calls=None, usage=None):
+    """usage=(prompt, completion)：FakeClient 把它放到响应的 .usage 上；不给就没有 usage 属性。"""
+    return SimpleNamespace(content=content, tool_calls=tool_calls, fake_usage=usage)
 
 
 def tool_call(name, arguments):
@@ -38,7 +39,10 @@ class FakeClient:
         item = self.script.pop(0) if self.script else ok()
         if isinstance(item, Exception):
             raise item
-        return SimpleNamespace(choices=[SimpleNamespace(message=item)])
+        resp = SimpleNamespace(choices=[SimpleNamespace(message=item)])
+        if getattr(item, "fake_usage", None) is not None:
+            resp.usage = SimpleNamespace(prompt_tokens=item.fake_usage[0], completion_tokens=item.fake_usage[1])
+        return resp
 
 
 def client(script):
@@ -73,7 +77,7 @@ def say_schema():
 
 def test_no_tool_calls_returns_text():
     brain = DeepSeekBrain(client(ok("好")), "sys", toolbox(), [], model="deepseek-chat", temperature=0.8, max_tokens=4096)
-    assert brain.send("在吗") == {"result": "好", "subtype": "success"}
+    assert brain.send("在吗") == {"result": "好", "subtype": "success", "num_turns": 1, "usage": None}
 
 
 def test_single_tool_call_then_text():
@@ -163,6 +167,33 @@ def test_on_message_reports_unknown_tool_as_error():
     brain.send("在吗")
     tool_result = msgs[1]["message"]["content"][0]
     assert tool_result["content"] == "没有这个工具：look" and tool_result["is_error"] is True
+
+
+def test_text_alongside_tool_calls_goes_to_timeline():
+    msgs = []
+    script = [msg(content="我想想", tool_calls=[tool_call("say", '{"text":"你好"}')]), ok("好")]
+    brain = DeepSeekBrain(client(script), "sys", toolbox(), tools=[say_schema()],
+                          model="deepseek-chat", temperature=0.8, max_tokens=4096, on_message=msgs.append)
+    brain.send("在吗")
+    assert [m["type"] for m in msgs] == ["assistant", "assistant", "user"]
+    assert msgs[0]["message"]["content"] == [{"type": "text", "text": "我想想"}]
+    assert msgs[1]["message"]["content"][0]["type"] == "tool_use"
+
+
+def test_usage_is_summed_over_requests():
+    script = [msg(content=None, tool_calls=[tool_call("say", '{"text":"你好"}')], usage=(100, 10)), msg(content="好", usage=(120, 5))]
+    brain = DeepSeekBrain(client(script), "sys", toolbox(), tools=[say_schema()],
+                          model="deepseek-chat", temperature=0.8, max_tokens=4096)
+    r = brain.send("在吗")
+    assert r["usage"] == {"input_tokens": 220, "output_tokens": 15}
+    assert r["num_turns"] == 2 and r["subtype"] == "success" and r["result"] == "好"
+
+
+def test_usage_none_when_client_gives_none():
+    brain = DeepSeekBrain(client([ok("好")]), "sys", toolbox(), tools=[say_schema()],
+                          model="deepseek-chat", temperature=0.8, max_tokens=4096)
+    r = brain.send("在吗")
+    assert r["usage"] is None and r["num_turns"] == 1
 
 
 # ---- 短期记忆（10-03 晚：每轮只发 [system, 这一轮]，同一句话跨运行说 4 遍、隔 8 秒说两遍）----
