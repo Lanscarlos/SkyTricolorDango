@@ -238,6 +238,42 @@ def test_pass_refuses_clash(tmp_path):
     assert (ds / "images" / "train" / f"{frame}.jpg").read_bytes() == b"old"
 
 
+
+@pytest.mark.parametrize("other", ["images", "labels"])
+def test_pass_refuses_clash_in_other_split(tmp_path, other):
+    # 终审 6：旧的 --from-runs 按帧名哈希分边，同名帧可能在另一边：两边都查，免得 train / val 泄漏
+    inbox, run, frame, attrs_root, ds = _setup_frame(tmp_path, "train")
+    ext = "jpg" if other == "images" else "txt"
+    (ds / other / "val").mkdir(parents=True)
+    (ds / other / "val" / f"{frame}.{ext}").write_bytes(b"old")
+    with pytest.raises(FileExistsError):
+        _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)
+    assert _inbox.load_frames(inbox, run)[frame]["decision"] is None
+    assert not (ds / "images" / "train").exists() and not (inbox / run / "labels" / f"{frame}.txt").exists()
+
+
+def test_pass_records_final_boxes_and_undo_keeps_edited_ones(tmp_path):
+    # 终审 4：通过时把最终框（编号 + 框）记进 decision；撤销编辑过的通过，框留在 last_boxes，
+    # 这一帧按它显示、按回车直接通过也写它；撤销没编辑的通过不留（照旧跟着外形页的判断）
+    inbox, run, frame, attrs_root, ds = _setup_frame(tmp_path)
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)
+    e = _inbox.load_frames(inbox, run)[frame]
+    assert e["decision"]["boxes"] == [{"cls": 0, "box": [20, 10, 40, 60]}, {"cls": 6, "box": [100, 50, 50, 20]}]
+    _inbox.undo_frame(inbox, run, frame, ds)
+    assert "last_boxes" not in _inbox.load_frames(inbox, run)[frame]
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES, boxes=[(3, Rect(0, 0, 100, 50))])
+    assert _inbox.load_frames(inbox, run)[frame]["decision"]["boxes"] == [{"cls": 3, "box": [0, 0, 100, 50]}]
+    _inbox.undo_frame(inbox, run, frame, ds)
+    e = _inbox.load_frames(inbox, run)[frame]
+    assert e["decision"] is None and e["last_boxes"] == [{"cls": 3, "box": [0, 0, 100, 50]}]
+    assert _inbox.frame_state(e, lambda c: "_discard") == "glance"  # 编辑过的帧：框已经人定了，不再要编辑
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)  # 不编辑直接通过：写上次编辑的框
+    lines = (ds / "labels" / "train" / f"{frame}.txt").read_text(encoding="utf-8").splitlines()
+    assert lines == [yolo_line(3, Rect(0, 0, 100, 50), 200, 100)]
+    e = _inbox.load_frames(inbox, run)[frame]
+    assert e["decision"]["edited"] is True and "last_boxes" not in e
+
+
 def test_pass_rolls_back_on_copy_failure(tmp_path, monkeypatch):
     inbox, run, frame, attrs_root, ds = _setup_frame(tmp_path)
     real, calls = _shutil.copyfile, []

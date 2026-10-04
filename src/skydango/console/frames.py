@@ -100,9 +100,31 @@ class FramesApi:
                 return now, "auto" if b.get("auto") == "agree" and now == cls else "judged", False
         return cls, "auto" if b.get("auto") == "agree" else "yolo", False
 
+    def _fixed(self, boxes) -> list[dict]:
+        """存好的最终框（decision["boxes"] / last_boxes，编号 + 框）摆给页面；编号不对的跳过。"""
+        out = []
+        for b in boxes:
+            try:
+                cls, box = b["cls"], [int(v) for v in b["box"]]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if isinstance(cls, int) and not isinstance(cls, bool) and 0 <= cls < len(self.classes) and len(box) == 4:
+                out.append({"cls": cls, "box": box, "src": "edited", "dropped": False})
+        return out
+
     def _boxes(self, entry: dict) -> list[dict]:
-        """按当前判断合成的框（`final_boxes` 之前的样子），不列人判成"不是人"/"不要"的；已通过的帧也是这个合成。
-        src：auto = 外形头自动确认 / 自动丢，judged = 人在外形页判过，yolo = 其余。"""
+        """这一帧要显示的框。已通过的 = 通过时写进去的最终框（decision["boxes"]，src：编辑过 edited / 没编辑 final）；
+        撤销过编辑过的通过 = last_boxes（src edited，再编辑从它开始）；其余 = 按当前判断合成（`final_boxes` 之前的样子），
+        不列人判成"不是人"/"不要"的，src：auto = 外形头自动确认 / 自动丢，judged = 人在外形页判过，yolo = 其余。"""
+        decision = entry.get("decision") or {}
+        if decision.get("what") == "pass" and isinstance(decision.get("boxes"), list):
+            out = self._fixed(decision["boxes"])
+            if not decision.get("edited"):
+                for b in out:
+                    b["src"] = "final"
+            return out
+        if isinstance(entry.get("last_boxes"), list):
+            return self._fixed(entry["last_boxes"])
         out = []
         for b in entry.get("boxes", []):
             cls, src, dropped = self._resolve(b)
@@ -181,6 +203,8 @@ class FramesApi:
                 return 409, {"ok": False, "text": "这一帧整理时出错"}
             if state == "dup":
                 return 409, {"ok": False, "text": "这是重复帧"}
+            if state == "edit":  # 有裁图被判了不要（或别处正在编辑）：直接通过会把那个人悄悄去掉
+                return 409, {"ok": False, "text": "这一帧要先编辑：有裁图被判了不要（或正在编辑），按 E 改好框再保存"}
         else:
             parsed = self._parse(run, entry, boxes)
             if isinstance(parsed, str):
@@ -190,12 +214,16 @@ class FramesApi:
             where = pass_frame(self.inbox, run, frame, self.attrs_root, self.dataset, self.classes, final)
         except FileExistsError:
             return 409, {"ok": False, "text": "datasets/sky 里已经有同名的帧"}
+        except ValueError as exc:  # final_boxes：框的类别不在 [perception] classes 里（写任何东西之前）
+            return 409, {"ok": False, "text": f"通过不了：{exc}"}
+        except RuntimeError as exc:  # 原图读不了（写任何东西之前）
+            return 500, {"ok": False, "text": f"读不了这一帧的原图：{exc}"}
         except OSError as exc:
             return 500, {"ok": False, "text": f"写盘失败：{exc}"}
         if final is not None:
             try:
                 self._crop_edited(run, frame, entry, final)
-            except OSError as exc:
+            except (OSError, RuntimeError) as exc:
                 return 500, {"ok": False, "text": f"帧已通过，但裁图写盘失败：{exc}"}
         return 200, {"ok": True, "dataset": where}
 

@@ -358,6 +358,14 @@ def test_frames_page():  # spec 2026-10-04-hardcase-inbox §5.2：标注页第�
     assert "FramesTab" in lab and '"frames"' in lab
 
 
+
+def test_frames_plain_pass_guard_and_final_src():  # 终审 9 / 4：「要编辑」的帧回车只提示先编辑；通过时写的框有自己的来源名
+    js = (STATIC / "frames.js").read_text(encoding="utf-8")
+    body = js.split("async function passFrame()", 1)[1].split("async function discardFrame()", 1)[0]
+    assert 'f.state === "edit"' in body and "toast(" in body and body.index('f.state === "edit"') < body.index('do: "pass"')
+    assert 'final: "' in js
+
+
 def test_form_page_inbox_filter():  # 外形页「来自整理」筛选：c.inbox === true，计数照「回放用」
     lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
     assert "c.inbox === true" in lab and '"inbox"' in lab and "来自整理" in lab

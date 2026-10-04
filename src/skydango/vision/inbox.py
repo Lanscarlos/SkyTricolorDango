@@ -166,6 +166,8 @@ def frame_state(entry: dict, place: Callable[[str], str | None]) -> str:
         return "done"
     if what == "discard":
         return "discarded"
+    if entry.get("last_boxes") is not None:  # 撤销过编辑过的通过：框人已经定了（last_boxes），不再看裁图
+        return "edit" if entry.get("editing") else "glance"
     places = [place(b["crop"]) for b in entry.get("boxes", []) if b.get("crop")]
     if "_unlabeled" in places:
         return "crops"
@@ -191,6 +193,8 @@ def final_boxes(entry: dict, place: Callable[[str], str | None], classes: list[s
                 cls = FORM_CLS.get(where)
                 if cls is None:
                     continue
+        if cls not in classes:
+            raise ValueError(f"类别 {cls} 不在 [perception] classes 里")
         x, y, w, h = (int(v) for v in b["box"])
         out.append((classes.index(cls), Rect(x, y, w, h)))
     return out
@@ -221,7 +225,9 @@ def pass_frame(
     boxes: list[tuple[int, Rect]] | None = None,
 ) -> str:
     """整帧通过：写最终标注，复制原图和标注进 dataset；返回 "<split>/<frame>"。
-    目标已存在抛 FileExistsError（什么都不写）；复制到一半失败删掉已复制的再抛。"""
+    boxes 为 None：有 last_boxes（撤销过的编辑）就写它（算编辑过），否则按 final_boxes。最终框（编号 + 框）记进 decision["boxes"]。
+    数据集 train / val 任一边已有同名帧抛 FileExistsError（旧的 --from-runs 按帧名哈希分边，只查自己那边会泄漏；什么都不写）；
+    类别不在 classes 里抛 ValueError、原图读不了抛 RuntimeError（都在写任何东西之前）；复制到一半失败删掉已复制的再抛。"""
     from ..imageio import imread
     from .weaklabel import yolo_line
 
@@ -231,9 +237,13 @@ def pass_frame(
     split = entry["split"]
     dst_img = dataset / "images" / split / f"{frame}.jpg"
     dst_lbl = dataset / "labels" / split / f"{frame}.txt"
-    if dst_img.exists() or dst_lbl.exists():
-        raise FileExistsError(f"{split}/{frame} 已在数据集里")
+    for side in ("train", "val"):
+        if (dataset / "images" / side / f"{frame}.jpg").exists() or (dataset / "labels" / side / f"{frame}.txt").exists():
+            raise FileExistsError(f"{side}/{frame} 已在数据集里")
     edited = boxes is not None
+    if boxes is None and entry.get("last_boxes") is not None:
+        boxes = [(int(b["cls"]), Rect(*(int(v) for v in b["box"]))) for b in entry["last_boxes"]]
+        edited = True
     if boxes is None:
         boxes = final_boxes(entry, lambda c: crop_place(attrs_root, c), classes)
     src_img = inbox / run / entry["file"]
@@ -248,8 +258,10 @@ def pass_frame(
     try:
         shutil.copyfile(src_img, dst_img)
         shutil.copyfile(label, dst_lbl)
-        entry["decision"] = {"what": "pass", "edited": edited, "t": time.time(), "dataset": f"{split}/{frame}"}
+        entry["decision"] = {"what": "pass", "edited": edited, "t": time.time(), "dataset": f"{split}/{frame}",
+                             "boxes": [{"cls": int(c), "box": [b.x, b.y, b.w, b.h]} for c, b in boxes]}
         entry["editing"] = False
+        entry.pop("last_boxes", None)
         save_frames(inbox, run, frames)
     except BaseException:
         dst_img.unlink(missing_ok=True)
@@ -267,7 +279,8 @@ def discard_frame(inbox: Path, run: str, frame: str) -> None:
 
 
 def undo_frame(inbox: Path, run: str, frame: str, dataset: Path) -> None:
-    """撤销决定；通过的要把 datasets/sky 里那两个文件删掉。"""
+    """撤销决定；通过的要把 datasets/sky 里那两个文件删掉。编辑过的通过：最终框留进 last_boxes
+    （这一帧之后按它显示、再编辑从它开始、直接通过也写它；没编辑的通过不留，照旧跟着外形页的判断）。"""
     frames = load_frames(inbox, run)
     entry = frames[frame]
     decision = entry.get("decision") or {}
@@ -275,6 +288,8 @@ def undo_frame(inbox: Path, run: str, frame: str, dataset: Path) -> None:
         split = decision["dataset"].split("/")[0]
         (Path(dataset) / "images" / split / f"{frame}.jpg").unlink(missing_ok=True)
         (Path(dataset) / "labels" / split / f"{frame}.txt").unlink(missing_ok=True)
+        if decision.get("edited") and isinstance(decision.get("boxes"), list):
+            entry["last_boxes"] = decision["boxes"]
     entry["decision"] = None
     save_frames(inbox, run, frames)
 

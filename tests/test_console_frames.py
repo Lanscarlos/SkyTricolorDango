@@ -299,6 +299,44 @@ def test_parse_rejects_infinity_and_state_survives_unknown_class(tmp_path):
     assert [b["box"][0] for b in api.state()["frames"][0]["boxes"]] == [6]
 
 
+
+def test_state_shows_final_boxes_after_edit_and_after_undo(tmp_path):
+    # 终审 4：编辑通过后「已通过」显示最终框；撤销后这一帧照旧显示刚才的最终框（再进编辑从它开始）
+    api, inbox, attrs, ds = make(tmp_path)
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 9, "box": [30, 20, 40, 60]}]})[0] == 200
+    f = api.state()["frames"][0]
+    assert f["state"] == "done" and [(b["cls"], b["box"], b["src"]) for b in f["boxes"]] == [(9, [30, 20, 40, 60], "edited")]
+    assert api.act({"frame": FRAME, "do": "undo"})[0] == 200
+    f = api.state()["frames"][0]
+    assert f["state"] == "glance" and [(b["cls"], b["box"]) for b in f["boxes"]] == [(9, [30, 20, 40, 60])]
+    # 没编辑直接通过：显示通过时写进去的框
+    api.act({"frame": FRAME, "do": "pass"})
+    assert [(b["cls"], b["box"]) for b in api.state()["frames"][0]["boxes"]] == [(9, [30, 20, 40, 60])]
+
+
+def test_plain_pass_refused_when_frame_needs_edit(tmp_path):
+    # 终审 9：状态是「要编辑」（有裁图被判不要）的帧不能不带框直接通过，不然那个人会被悄悄去掉
+    api, inbox, attrs, ds = make(tmp_path)
+    put_crop(attrs, "_discard", "c1.jpg")
+    code, body = api.act({"frame": FRAME, "do": "pass"})
+    assert code == 409 and "编辑" in body["text"] and not (ds / "labels").exists()
+    assert ib.load_frames(inbox, "r1")[FRAME]["decision"] is None
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 6, "box": [100, 50, 50, 20]}]})[0] == 200
+
+
+def test_pass_unknown_class_or_unreadable_image_is_clean_error(tmp_path):
+    # 终审 10：final_boxes 的类别不在 classes 里 / 原图读不了：回中文错误，不留半截状态
+    api, inbox, attrs, ds = make(tmp_path, [{"cls": "mystery", "box": [1, 1, 5, 5], "auto": None, "crop": None}])
+    code, body = api.act({"frame": FRAME, "do": "pass"})
+    assert code == 409 and "mystery" in body["text"] and not (ds / "labels").exists()
+    assert ib.load_frames(inbox, "r1")[FRAME]["decision"] is None
+    api, inbox, attrs, ds = make(tmp_path / "b")
+    (inbox / "r1" / "raw" / "a.jpg").write_bytes(b"not a jpeg")
+    code, body = api.act({"frame": FRAME, "do": "pass"})
+    assert code == 500 and "读不了" in body["text"] and not (ds / "labels").exists()
+    assert ib.load_frames(inbox, "r1")[FRAME]["decision"] is None and not (inbox / "r1" / "labels").exists()
+
+
 # ---------- 重训：最近一次报告、换上 / 回退 ----------
 
 import hashlib  # noqa: E402

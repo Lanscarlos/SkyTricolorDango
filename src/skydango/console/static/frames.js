@@ -1,7 +1,7 @@
 /* 标注页第四个标签「整帧」（spec 2026-10-04-hardcase-inbox §5.2）：难例收件箱里整理好的帧，整张截图 + 全部类别的框。
  * 左 帧列表（运行 / 状态筛选、各状态计数），中 画布（滚轮以光标为中心缩放、拖动 / 按住空格拖动画面），右 这一帧、操作、类别、按键。
  * 两种模式，画面上方一直标着：
- *   过目（默认）：回车 通过、E 编辑、0 整帧不要、Z 撤销上一步、← → 翻帧、H / 按住空格 隐藏框；通过 / 不要后自动跳下一帧
+ *   过目（默认）：回车 通过（「要编辑」的帧只提示先按 E）、E 编辑、0 整帧不要、Z 撤销上一步、← → 翻帧、H / 按住空格 隐藏框；通过 / 不要后自动跳下一帧
  *   编辑中：空白处拖 = 画新框、点框 = 选中、拖框内 = 移动、拖边角 = 调大小、Delete = 删、数字键 = 类别（1 点过火的人 … 0 乐器）、
  *          Z = 撤一步、回车 = 保存并通过、Esc = 放弃修改（空格只用来拖画面）
  * 接口 api/frames/state | image | act（后端 console/frames.py），框的类别用 [perception] classes 的编号。
@@ -106,7 +106,7 @@ function badgeText(list) {
 const STATES = [["glance", "待过目"], ["edit", "要编辑"], ["crops", "等判裁图"], ["done", "已通过"], ["discarded", "不要了"], ["error", "整理出错"]];
 const STATE_NAME = Object.fromEntries(STATES);
 const STATE_TAG = {glance: "sakura", edit: "warn", crops: "", done: "ok", discarded: "bad", error: "bad"};
-const SRC = {auto: "自动", judged: "你判的", yolo: "YOLO 预标", drawn: "你画的", edited: "你改的"};
+const SRC = {auto: "自动", judged: "你判的", yolo: "YOLO 预标", drawn: "你画的", edited: "你改的", final: "通过时的"};  // final：没编辑直接通过时写进去的框
 const REASONS = {
   attrs_reject: "外形头撤下了 YOLO 的高分框", attrs_disagree: "YOLO 和外形头对点没点火意见相反", low_conf: "置信度低",
   flicker: "框一闪一闪", unlit_vs_player: "点没点火来回变", ocr_only: "整图 OCR 读到好友、YOLO 没认出", appearance: "按外观认的人和名字标签对不上",
@@ -267,6 +267,7 @@ function renderSide() {
     const boxes = editing() ? FR.boxes : f.boxes.filter(b => !b.dropped), dropped = f.boxes.filter(b => b.dropped).length;
     row("框", `${boxes.length} 个${dropped ? `（另有 ${dropped} 个自动丢掉的，淡虚线）` : ""}`);
     if (f.state === "crops") row("提示", "还有裁图没在「外形」页判，判完才能直接通过；也可以按 E 自己改框");
+    if (f.state === "edit") row("提示", "有裁图被判了不要：按 E 改好框、回车保存才能通过");
   }
   const acts = $("fr-actions"); acts.textContent = "";
   const off = !f || FR.busy;
@@ -519,6 +520,7 @@ async function saveEdit() {
 async function passFrame() {
   const f = byName(FR.cur);
   if (!f || editing() || FR.busy) return;
+  if (f.state === "edit") { toast("这一帧要先编辑：有裁图被判了不要，按 E 改好框再回车保存", "warn"); return; }  // 直接通过会把那个人悄悄去掉（后端也回 409）
   const old = FR.list.slice(), name = f.frame;
   if (!(await act({frame: name, do: "pass"}))) return;
   FR.done.push(name);
