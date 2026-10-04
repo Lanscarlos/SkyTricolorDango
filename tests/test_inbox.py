@@ -509,3 +509,20 @@ def test_cli_inbox_process_model_load_failure(tmp_path, capsys, monkeypatch):
         cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "process", str(tmp_path / "runs")])
     out = capsys.readouterr().out
     assert e.value.code == 1 and "整理不了" in out and "坏主干" in out and not (inbox / "r1" / "frames.json").exists()
+
+
+def test_process_skips_player_box_on_dango(tmp_path):
+    inbox, attrs_root = tmp_path / "inbox", tmp_path / "attrs"
+    _setup_run(inbox, "r1", {"192000_a.jpg": _img(40)})
+    dets = [_Det("self", Rect(1385, 458, 371, 433), 0.84), _Det("player", Rect(1386, 458, 373, 434), 0.354),
+            _Det("player", Rect(200, 300, 100, 240), 0.8)]
+    seen = []
+
+    def judge(frame, boxes):
+        seen.append(list(boxes))
+        return [{"lit": 0.95, "not_person": 0.05} for _ in boxes]
+
+    _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: dets, lambda f, d: [(x.cls, x.box) for x in d], judge, progress=lambda s: None)
+    assert seen == [[Rect(200, 300, 100, 240)]]
+    boxes = _inbox.load_frames(inbox, "r1")["r1_192000_a"]["boxes"]
+    assert sorted((b["cls"], tuple(b["box"])) for b in boxes) == [("player", (200, 300, 100, 240)), ("self", (1385, 458, 371, 433))]

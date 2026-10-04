@@ -352,12 +352,16 @@ def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) 
     """一帧：检测 + 弱标注 → 人物框裁图、外形头判、分流。返回 (boxes, 自动一致几个, 给人判几个)。"""
     from .attrs_data import FORM_PROMPT_VERSION, crop_name
     from .perception import merge_people
+    from .track import iou
 
     cfg, writer = ctx["cfg"], ctx["writer"]
     dets = [d for d in ctx["detect"](img) if d.score >= cfg.perception.low_conf]
     sure = [d for d in dets if d.score >= cfg.perception.conf]
     boxes = _other_boxes(sure, ctx["weak"](img, sure))
-    people = merge_people([d for d in dets if d.cls in PAIR])[0]
+    selfs = [d for d in sure if d.cls == "self"]
+    # 团子身上常同时出 self 和 player 两个框：和 self 框重合的人物框是团子的重复框，不裁、不判、不写
+    people = [d for d in merge_people([d for d in dets if d.cls in PAIR])[0]
+              if not any(iou(d.box, s.box) >= 0.5 for s in selfs)]
     probs = ctx["judge"](img, [d.box for d in people]) if people else []
     auto = human = 0
     for d, p in zip(people, probs):
