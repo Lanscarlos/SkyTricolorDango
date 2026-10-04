@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from skydango.brain.claude import (ClaudeError, ClaudeGate, StreamProcess, check_result, claude_down, claude_env,
-                                   one_shot, resolve_claude)
+from skydango.brain.claude import (ClaudeError, ClaudeGate, GatedLlm, StreamProcess, check_result, claude_down,
+                                   claude_env, gated_describe, one_shot, resolve_claude)
 
 FAKE = [sys.executable, str(Path(__file__).parent / "fake_claude.py")]
 IMG = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}
@@ -147,3 +147,76 @@ def test_gate_trip_from_many_threads_once(caplog):
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert not g.ok() and sum("Claude 不能用了" in r.getMessage() for r in caplog.records) == 1
+
+
+class _Fake:
+    """假的 LLM：按脚本返回或抛，记调用次数。"""
+
+    def __init__(self, result="ok", exc=None):
+        self.result, self.exc, self.calls = result, exc, 0
+
+    def complete(self, system, messages, max_tokens=None):
+        self.calls += 1
+        if self.exc:
+            raise self.exc
+        return self.result
+
+
+def test_gated_llm_uses_claude_while_open():
+    claude, backup, gate = _Fake("来自claude"), _Fake("来自backup"), ClaudeGate()
+    llm = GatedLlm(claude, backup, gate)
+    assert llm.complete("s", [{"role": "user", "content": "x"}]) == "来自claude"
+    assert (claude.calls, backup.calls) == (1, 0)
+    assert (llm.claude, llm.backup, llm.gate) == (claude, backup, gate)
+
+
+def test_gated_llm_auth_error_trips_and_uses_backup():
+    claude, backup, gate = _Fake(exc=ClaudeError("bad token", auth=True)), _Fake("来自backup"), ClaudeGate()
+    llm = GatedLlm(claude, backup, gate)
+    assert llm.complete("s", []) == "来自backup"
+    assert not gate.ok()
+    assert (claude.calls, backup.calls) == (1, 1)
+
+
+def test_gated_llm_closed_gate_skips_claude():
+    claude, backup, gate = _Fake("来自claude"), _Fake("来自backup"), ClaudeGate()
+    gate.trip("limit", "")
+    assert GatedLlm(claude, backup, gate).complete("s", []) == "来自backup"
+    assert (claude.calls, backup.calls) == (0, 1)
+
+
+def test_gated_llm_timeout_does_not_trip():
+    claude, backup, gate = _Fake(exc=ClaudeError("超时")), _Fake("来自backup"), ClaudeGate()
+    with pytest.raises(ClaudeError):
+        GatedLlm(claude, backup, gate).complete("s", [])
+    assert gate.ok()
+    assert backup.calls == 0
+
+
+def test_gated_llm_no_backup_raises_without_calling_claude():
+    claude, gate = _Fake("来自claude"), ClaudeGate()
+    gate.trip("limit", "")
+    with pytest.raises(ClaudeError):
+        GatedLlm(claude, None, gate).complete("s", [])
+    assert claude.calls == 0
+
+
+def test_gated_describe_skips_and_trips():
+    calls = []
+
+    def describe(content):
+        calls.append(content)
+        raise ClaudeError("额度", limit=True)
+
+    gate = ClaudeGate()
+    wrapped = gated_describe(describe, gate)
+    with pytest.raises(ClaudeError):
+        wrapped("img")
+    assert not gate.ok() and calls == ["img"]
+    with pytest.raises(ClaudeError) as info:
+        wrapped("img2")
+    assert info.value.limit and calls == ["img"]  # 闸关了不再调
+
+
+def test_gated_describe_passes_through_while_open():
+    assert gated_describe(lambda c: f"看到{c}", ClaudeGate())("x") == "看到x"

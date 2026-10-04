@@ -226,3 +226,48 @@ class ClaudeLlm:
     def complete(self, system: str, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
         content = "\n\n".join(m["content"] for m in messages)  # NotesKeeper 只发一条 user 消息
         return one_shot(self.command(system), self.env, self.cwd, content, self.timeout)
+
+
+class GatedLlm:
+    """给一次性文字调用套上总闸：闸开走 Claude；额度 / 认证出错就关闸、这一笔改走备用（DeepSeek）；闸关着直接走备用。
+
+    超时等别的错原样抛出、不关闸。没有备用时闸关着抛 ClaudeError（不再起 claude 进程）。
+    """
+
+    def __init__(self, claude, backup, gate: ClaudeGate) -> None:
+        self.claude = claude
+        self.backup = backup
+        self.gate = gate
+
+    def complete(self, system: str, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
+        if self.gate.ok():
+            try:
+                return self.claude.complete(system, messages, max_tokens)
+            except ClaudeError as exc:
+                kind = claude_down(exc)
+                if kind is None:
+                    raise
+                self.gate.trip(kind, str(exc))
+                if self.backup is None:
+                    raise
+        elif self.backup is None:
+            raise ClaudeError(f"Claude 不能用了（{self.gate.reason}），也没有备用模型", limit=True)
+        log.debug("Claude 不能用了：%s，这一笔改走 DeepSeek", self.gate.reason)
+        return self.backup.complete(system, messages, max_tokens)
+
+
+def gated_describe(describe: Callable[[object], str], gate: ClaudeGate) -> Callable[[object], str]:
+    """给看图（眼睛、装扮描述）套上总闸：闸关着不调 describe、直接抛；额度 / 认证出错关闸后原样抛。"""
+
+    def wrapped(content):
+        if not gate.ok():
+            raise ClaudeError("Claude 不能用了，看不了图", limit=True)
+        try:
+            return describe(content)
+        except ClaudeError as exc:
+            kind = claude_down(exc)
+            if kind is not None:
+                gate.trip(kind, str(exc))
+            raise
+
+    return wrapped
