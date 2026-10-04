@@ -226,6 +226,7 @@ def test_form_state_lists_items(tmp_path):
     a = s["items"][0]
     assert a["where"] == "_unlabeled" and a["guess"] == {"label": "lit", "confidence": 0.9, "reason": "有光"}
     assert a["image"] == "/x/a.jpg" and a["box"] == [10, 20, 30, 40]
+    assert a["inbox"] is False
     assert s["items"][1]["where"] == "unlit" and s["items"][1]["guess"] is None
     assert FormLabels(tmp_path / "nope").state()["ok"] is False
 
@@ -394,3 +395,14 @@ def test_form_api_routes(tmp_path, upstream, monkeypatch):  # noqa: F811
         assert st == 200 and d["where"] == "_unlabeled"
     finally:
         s.stop()
+
+
+def test_form_items_flag_inbox_crops(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path)
+    make_crop(tmp_path, name="c0002.jpg")
+    with (tmp_path / "_crops.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"crop": "c0002.jpg", "source": "inbox"}) + "\n")
+    items = {i["crop"]: i for i in FormLabels(tmp_path).state()["items"]}
+    assert items[CROP]["inbox"] is False and items["c0002.jpg"]["inbox"] is True

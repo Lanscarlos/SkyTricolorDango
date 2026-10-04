@@ -257,6 +257,7 @@ class FormLabels(_Moves):
         r = rows.get(crop) or {}
         return {"crop": crop, "where": where, "guess": self._guess(guesses.get(crop)), "image": r.get("image"), "box": r.get("box"),
                 "confirmed": where in FORMS and hand.get(crop) == where,
+                "inbox": r.get("source") == "inbox",  # 来自难例收件箱整理（外形页的「来自整理」筛选）
                 "replay": r.get("source") == "dataset" and r.get("split") == "val"}  # attrs-train 整帧回放的标准答案
 
     def _fresh(self, crop: str, where: str) -> dict:

@@ -33,6 +33,7 @@ from .devicecheck import ime_state, run_checks
 from .jobs import JOBS, JobRunner
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
 from .emotenames import EmoteNames
+from .frames import FramesApi
 from .labeling import FormLabels, GestureLabels
 from .preflight import preflight, problem
 from .reports import list_reports, read_report
@@ -445,6 +446,10 @@ class ConsoleServer:
     def form_labels(self) -> FormLabels:
         return FormLabels(Path("datasets/attrs"))  # 配置里没有这个路径；和 perception crops 的默认 --out 一致
 
+    def frames_api(self) -> FramesApi:
+        cfg = self.store._fallback()
+        return FramesApi(Path(cfg.inbox.dir), Path(ATTRS_ROOT), Path("datasets/sky"), cfg.perception.classes)
+
     def emote_names(self) -> EmoteNames:
         cfg = self.store._fallback()
         return EmoteNames(Path(cfg.wheel.library_dir), cfg)
@@ -838,6 +843,14 @@ class ConsoleServer:
                         self._json(404, {"ok": False, "text": "没有这张图"})
                     else:
                         self._send(200, "image/jpeg", data)
+                elif url.path == "/api/frames/state":
+                    self._json(200, console.frames_api().state())
+                elif url.path == "/api/frames/image":
+                    path = console.frames_api().image(parse_qs(url.query).get("frame", [""])[0])
+                    if path is None:
+                        self._json(404, {"ok": False, "text": "没有这一帧"})
+                    else:
+                        self._send(200, "image/jpeg", path.read_bytes())
                 elif url.path == "/api/emotes/state":
                     self._json(200, console.emote_names().state())
                 elif url.path == "/api/emotes/icon":
@@ -890,7 +903,8 @@ class ConsoleServer:
                     "/api/gesture/undo": lambda body: console.gesture_labels().undo(),
                     "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or "")),
                     "/api/form/undo": lambda body: console.form_labels().undo(),
-                    "/api/emotes/name": lambda body: console.emote_names().name(body.get("id"), body.get("name")),
+                    "/api/frames/act": lambda body: console.frames_api().act(body),
+                    "/api/emotes/name":lambda body: console.emote_names().name(body.get("id"), body.get("name")),
                     "/api/emotes/clear": lambda body: console.emote_names().clear(body.get("id")),
                     "/api/sandbox/start": console.start_sandbox,
                     "/api/sandbox/stop": lambda body: console.stop_sandbox(),
