@@ -158,7 +158,7 @@ class PanelManager:
 
     def hold_still(self, who: str | None) -> None:
         """面板先别动（who = 谁要的，None = 放手）：期间 tick 不按开面板的键——不看一眼、不关、不重开，状态照记，放手后照常。
-        开关面板时画面横移约 400 px，点亮陌生人这种盯着画面里一个位置的事会跟丢（10-04 19:51:45）。
+        开关面板时画面横移 300~400 px，点亮陌生人这种盯着画面里一个位置的事会跟丢（10-04 19:51:45）。
         团子说话（before_speak）、借面板（borrow）是明确要按键的，不受影响。"""
         if who != self.still and self.active:
             log.debug("面板先别动：%s" if who else "面板照常（%s 放手了）", who or self.still)

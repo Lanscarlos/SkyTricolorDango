@@ -39,6 +39,11 @@ class AllowAll(FakeSocial):
         return True
 
 
+class DenyAll(FakeSocial):
+    def allowed(self, req):
+        return False
+
+
 def lb(clock, live=True, social=None):
     from conftest import FakeDevice, scene
 
@@ -531,3 +536,73 @@ def test_light_busy_error_does_not_hold_panel(clock):
     env.light_busy = lambda now: 1 / 0
     b.step()
     assert b.panel.still is None
+
+
+# ---- 评审补的：light 请求挂着、身体还没举（min_gap / 鞠躬排着）也拦；身体不会举就不拦 ----
+PANEL_KEY = ("hw_key", 46)
+
+
+def lb_auto(clock):
+    """同 lb，但聊天面板是按需打开（auto）的假面板：按 46 开关。"""
+    from conftest import FakeDevice, scene
+
+    dev = FakeDevice([scene()])
+    emotes = LightEmotes(dev)
+    emotes.clock = clock
+    env = LightEnv()
+    b, dev, reader, events = body(clock, live=True, env=env, emotes=emotes, social=AllowAll(), device_override=dev,
+                                  panel_mode="auto")
+    b.step()
+    events.drain()
+    return b, dev, env, emotes, events
+
+
+def test_no_panel_press_while_light_request_waits_for_min_gap(clock):
+    """刚鞠完躬（min_gap 4 秒内不举），第二个黑影的请求挂着、感知层的窗口已经过了；有人走近要看一眼：举起前后都不按 C。"""
+    b, dev, env, emotes, events = lb_auto(clock)
+    env.light_busy = lambda now: False
+    emotes.perform("鞠躬")
+    offer(env, clock)
+    b.panel.trigger("approach", clock())
+    for _ in range(int(b.cfg.reflex.min_gap / 0.5) + 2):
+        clock.advance(0.5)
+        if LIGHT_KEY in env.requests:
+            offer(env, clock)  # 感知层每次扫描都刷新请求
+        b.step()
+    assert presses(dev) == 1 and dev.calls.count(PANEL_KEY) == 0
+    b.step()
+    assert dev.calls.count(PANEL_KEY) == 0  # 举着蜡烛：照样不按
+
+
+def test_light_request_hold_is_capped(clock):
+    """请求一直挂着、身体一直举不了（牵着手）：最多拦 LIGHT_HOLD_MAX 秒，别把面板一直定住。"""
+    from skydango.brain.body import LIGHT_HOLD_MAX
+
+    b, dev, env, emotes, events = lb_auto(clock)
+    env.light_busy = lambda now: False
+    b.holding = "小明"  # 牵着手：不举
+    offer(env, clock)
+    b.step()
+    assert b.panel.still == "点亮陌生人"
+    clock.advance(LIGHT_HOLD_MAX + 0.5)
+    offer(env, clock)
+    b.step()
+    assert b.panel.still is None and presses(dev) == 0
+
+
+def test_no_hold_when_body_will_not_light(clock):
+    """大脑关了点亮陌生人：火焰冒出来、请求挂着都不拦面板。"""
+    b, dev, env, emotes, events = lb_auto(clock)
+    b.social = DenyAll()
+    env.light_busy = lambda now: True
+    offer(env, clock)
+    b.step()
+    assert b.panel.still is None
+
+
+def test_chat_log_says_panel_held_while_lighting(clock):
+    b, dev, env, emotes, events = lb_auto(clock)
+    env.light_busy = lambda now: True
+    b.step()
+    out = b.chat_log()
+    assert "点亮陌生人" in out and dev.calls.count(PANEL_KEY) == 0
