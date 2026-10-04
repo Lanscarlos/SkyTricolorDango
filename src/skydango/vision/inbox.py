@@ -477,9 +477,12 @@ def process(
                         done += 1
                 except Exception as exc:  # 单帧出错记下来跳过，其余照常
                     frames[name] = {**base, "error": f"{type(exc).__name__}: {exc}"}
-                save_frames(inbox, run, frames)
+                # 只把这一帧的新条目并进磁盘上的现状：整理期间页面上做的决定（通过 / 不要 / 编辑中）不能被内存里的旧拷贝盖掉
+                latest = load_frames(inbox, run)
+                latest[name] = frames[name]
+                save_frames(inbox, run, latest)
                 progress(f"PROGRESS {i}/{len(files)} {run}")
-            counts = _state_counts(frames, attrs_root)
+            counts = _state_counts(load_frames(inbox, run), attrs_root)
             total["runs"] += 1
             total["glance"] += counts.get("glance", 0)
             with (inbox / INDEX).open("a", encoding="utf-8") as f:

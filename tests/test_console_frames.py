@@ -127,14 +127,15 @@ def test_edit_save_normalizes(tmp_path):
 
 def test_edit_save_crops_new_and_reclassified_people(tmp_path):
     api, inbox, attrs, ds = make(tmp_path)
+    put_crop(attrs, "form/lit", "c1.jpg")  # 原框（auto agree）的裁图
     boxes = [{"cls": 0, "box": [20, 10, 40, 60]},        # 原框，没变：不裁
              {"cls": 4, "box": [120, 10, 40, 60]},        # 新画的黑影
-             {"cls": 9, "box": [20, 10, 40, 60]},         # 同位置改成先祖：类别变了，裁
+             {"cls": 9, "box": [150, 40, 40, 50]},        # 新画的先祖
              {"cls": 3, "box": [0, 0, 30, 30]}]           # 非人物：不裁
     assert api.act({"frame": FRAME, "do": "pass", "boxes": boxes})[0] == 200
     assert [p.name for p in (attrs / "form" / "unlit").iterdir()] == [f"{FRAME}__120_10_40_60.jpg"]
-    assert [p.name for p in (attrs / "form" / "spirit").iterdir()] == [f"{FRAME}__20_10_40_60.jpg"]
-    assert not (attrs / "form" / "lit").exists()
+    assert [p.name for p in (attrs / "form" / "spirit").iterdir()] == [f"{FRAME}__150_40_40_50.jpg"]
+    assert [p.name for p in (attrs / "form" / "lit").iterdir()] == ["c1.jpg"]
     rows = [json.loads(x) for x in (attrs / "_labels.jsonl").read_text(encoding="utf-8").splitlines()]
     assert {(r["to"], r["by"], r["from"]) for r in rows} == {("unlit", "frame-edit", "_unlabeled"), ("spirit", "frame-edit", "_unlabeled")}
     crops = [json.loads(x) for x in (attrs / "_crops.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -176,3 +177,106 @@ def test_frames_api_routes(tmp_path, upstream, monkeypatch):  # noqa: F811
         assert request(u + "api/frames/state")[1]["counts"] == {"discarded": 1}
     finally:
         s.stop()
+
+def _crop_row(attrs, name, yolo="player"):
+    with (attrs / "_crops.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"crop": name, "image": "x", "source": "inbox", "yolo_cls": yolo}) + "\n")
+
+
+def _labels(attrs):
+    return [json.loads(x) for x in (attrs / "_labels.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_edit_moves_existing_crop_when_class_changes(tmp_path):
+    name = f"{FRAME}__20_10_40_60.jpg"
+    boxes = [{"cls": "player", "box": [20, 10, 40, 60], "score": 0.9, "crop": name, "auto": "agree"}]
+    api, inbox, attrs, ds = make(tmp_path, boxes)
+    put_crop(attrs, "form/lit", name)
+    _crop_row(attrs, name)
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 9, "box": [20, 10, 40, 60]}]})[0] == 200
+    assert not (attrs / "form" / "lit" / name).exists() and (attrs / "form" / "spirit" / name).is_file()
+    row = _labels(attrs)[-1]
+    assert (row["crop"], row["from"], row["to"], row["by"]) == (name, "lit", "spirit", "frame-edit")
+
+
+def test_edit_compares_against_judged_class(tmp_path):
+    name = f"{FRAME}__20_10_40_60.jpg"
+    boxes = [{"cls": "player", "box": [20, 10, 40, 60], "score": 0.9, "crop": name, "auto": None}]
+    api, inbox, attrs, ds = make(tmp_path, boxes)
+    put_crop(attrs, "form/unlit", name)  # 人在外形页判成黑影
+    _crop_row(attrs, name)
+    # 编辑里改回 player(0)：和展示的黑影不同，要把裁图挪回 lit
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 0, "box": [20, 10, 40, 60]}]})[0] == 200
+    assert (attrs / "form" / "lit" / name).is_file() and not (attrs / "form" / "unlit" / name).exists()
+    assert _labels(attrs)[-1]["from"] == "unlit"
+
+
+def test_edit_person_to_non_person_moves_crop_to_not_person(tmp_path):
+    name = f"{FRAME}__20_10_40_60.jpg"
+    boxes = [{"cls": "player", "box": [20, 10, 40, 60], "score": 0.9, "crop": name, "auto": "agree"}]
+    api, inbox, attrs, ds = make(tmp_path, boxes)
+    put_crop(attrs, "form/lit", name)
+    _crop_row(attrs, name)
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 7, "box": [20, 10, 40, 60]}]})[0] == 200
+    assert (attrs / "form" / "not_person" / name).is_file()
+    assert _labels(attrs)[-1]["to"] == "not_person"
+
+
+def test_edit_unchanged_class_leaves_crop(tmp_path):
+    name = f"{FRAME}__20_10_40_60.jpg"
+    boxes = [{"cls": "player", "box": [20, 10, 40, 60], "score": 0.9, "crop": name, "auto": "agree"}]
+    api, inbox, attrs, ds = make(tmp_path, boxes)
+    put_crop(attrs, "form/lit", name)
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 0, "box": [22, 12, 40, 60]}]})[0] == 200
+    assert (attrs / "form" / "lit" / name).is_file() and not (attrs / "_labels.jsonl").exists()
+
+
+def test_concurrent_acts_on_separate_instances_do_not_lose_decisions(tmp_path):
+    import threading
+
+    api, inbox, attrs, ds = make(tmp_path, files=("a.jpg", "b.jpg"))
+    codes = []
+
+    def go(frame, do):
+        codes.append(FramesApi(inbox, attrs, ds, CLASSES).act({"frame": frame, "do": do})[0])
+
+    # 每个请求现建一个实例，两个操作同时来
+    ts = [threading.Thread(target=go, args=(f, d)) for f, d in (("r1_a", "pass"), ("r1_b", "discard")) for _ in range(5)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    fr = ib.load_frames(inbox, "r1")
+    assert fr["r1_a"]["decision"]["what"] == "pass" and fr["r1_b"]["decision"]["what"] == "discard"
+
+
+def test_discard_and_edit_refused_on_passed_frame(tmp_path):
+    api, inbox, attrs, ds = make(tmp_path)
+    assert api.act({"frame": FRAME, "do": "pass"})[0] == 200
+    for do in ("discard", "edit"):
+        code, body = api.act({"frame": FRAME, "do": do})
+        assert code == 409 and "撤销" in body["text"]
+    assert ib.load_frames(inbox, "r1")[FRAME]["decision"]["what"] == "pass"
+    assert api.act({"frame": FRAME, "do": "undo"})[0] == 200
+    assert api.act({"frame": FRAME, "do": "pass"})[0] == 200
+
+
+def test_plain_pass_refused_with_pending_crops_or_error(tmp_path):
+    api, inbox, attrs, ds = make(tmp_path)
+    put_crop(attrs, "_unlabeled", "c1.jpg")
+    code, body = api.act({"frame": FRAME, "do": "pass"})
+    assert code == 409 and "外形页" in body["text"] and not (ds / "labels").exists()
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 6, "box": [10, 10, 20, 20]}]})[0] == 200  # 编辑保存照样可以
+    api.act({"frame": FRAME, "do": "undo"})
+    fr = ib.load_frames(inbox, "r1")
+    fr[FRAME]["error"] = "X"
+    ib.save_frames(inbox, "r1", fr)
+    code, body = api.act({"frame": FRAME, "do": "pass"})
+    assert code == 409 and "出错" in body["text"]
+
+
+def test_parse_rejects_infinity_and_state_survives_unknown_class(tmp_path):
+    api, inbox, attrs, ds = make(tmp_path, [{"cls": "mystery", "box": [1, 1, 5, 5], "auto": None, "crop": None},
+                                            {"cls": "bench", "box": [6, 6, 10, 10], "auto": None, "crop": None}])
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 6, "box": [1, 1, float("inf"), 20]}]})[0] == 400
+    assert [b["box"][0] for b in api.state()["frames"][0]["boxes"]] == [6]

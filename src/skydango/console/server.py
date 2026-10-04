@@ -904,7 +904,7 @@ class ConsoleServer:
                     "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or "")),
                     "/api/form/undo": lambda body: console.form_labels().undo(),
                     "/api/frames/act": lambda body: console.frames_api().act(body),
-                    "/api/emotes/name":lambda body: console.emote_names().name(body.get("id"), body.get("name")),
+                    "/api/emotes/name": lambda body: console.emote_names().name(body.get("id"), body.get("name")),
                     "/api/emotes/clear": lambda body: console.emote_names().clear(body.get("id")),
                     "/api/sandbox/start": console.start_sandbox,
                     "/api/sandbox/stop": lambda body: console.stop_sandbox(),

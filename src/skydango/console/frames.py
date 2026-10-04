@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 import json
-import threading
+import logging
+import shutil
 import time
 from pathlib import Path
 
@@ -27,11 +28,14 @@ from ..vision.inbox import (
     undo_frame,
 )
 from ..vision.track import iou
+from .labeling import _LOCK  # 和外形页同一把锁：frames.json、_labels.jsonl 的 读-改-写 整段串行（每个请求现建实例，锁必须在模块级）
 
+log = logging.getLogger(__name__)
 MIN_SIDE = 4  # 编辑保存时宽或高小于它的框丢掉
-SAME_BOX = 0.5  # 和原人物框 IoU 不到它（或类别变了）算新框 / 改过的框，要裁图给外形页
+SAME_BOX = 0.5  # 和原人物框 IoU 不到它算新框
 CROP_SIZE = 224
 _WRITER_KEYS = ("_unlabeled", "lit", "unlit", "spirit")
+_SIZES: dict[Path, tuple[int, int]] = {}  # 图片宽高缓存（模块级：实例每个请求现建）
 
 
 def normalize_box(box, w: int, h: int) -> Rect | None:
@@ -50,8 +54,6 @@ def normalize_box(box, w: int, h: int) -> Rect | None:
 class FramesApi:
     def __init__(self, inbox: Path, attrs_root: Path, dataset: Path, classes: list[str]) -> None:
         self.inbox, self.attrs_root, self.dataset, self.classes = Path(inbox), Path(attrs_root), Path(dataset), list(classes)
-        self._lock = threading.Lock()
-        self._sizes: dict[Path, tuple[int, int]] = {}
 
     # ---- 读 ----
 
@@ -78,30 +80,36 @@ class FramesApi:
         return crop_place(self.attrs_root, crop)
 
     def _size(self, path: Path) -> tuple[int, int]:
-        if path not in self._sizes:
+        if path not in _SIZES:
             h, w = imread(path).shape[:2]
-            self._sizes[path] = (w, h)
-        return self._sizes[path]
+            _SIZES[path] = (w, h)
+        return _SIZES[path]
+
+    def _resolve(self, b: dict) -> tuple[str | None, str, bool]:
+        """一个框现在算什么：(类别名 / None = 不要, src, dropped)。drop_low 保留类别、标 dropped；
+        人在外形页判过的按判的类（not_person / 不要 = None）。"""
+        cls = b["cls"]
+        if cls in PAIR and b.get("auto") != "agree":
+            if b.get("auto") == "drop_low":
+                return cls, "auto", True
+            where = self._place(b["crop"]) if b.get("crop") else None
+            if where == "_discard":
+                return None, "judged", False
+            if where in attrs.FORMS:
+                return FORM_CLS.get(where), "judged", False
+        return cls, "auto" if b.get("auto") == "agree" else "yolo", False
 
     def _boxes(self, entry: dict) -> list[dict]:
-        """按当前判断合成的框（`final_boxes` 之前的样子）：drop_low 标 dropped，人判成"不是人"/"不要"的不列；
-        已通过的帧也是这个合成（不去读写进数据集的标注）。src：auto = 外形头自动确认 / 自动丢，judged = 人在外形页判过，yolo = 其余。"""
+        """按当前判断合成的框（`final_boxes` 之前的样子），不列人判成"不是人"/"不要"的；已通过的帧也是这个合成。
+        src：auto = 外形头自动确认 / 自动丢，judged = 人在外形页判过，yolo = 其余。"""
         out = []
         for b in entry.get("boxes", []):
-            cls, src, dropped = b["cls"], "yolo", False
-            if cls in PAIR and b.get("auto") != "agree":
-                if b.get("auto") == "drop_low":
-                    src, dropped = "auto", True
-                else:
-                    where = self._place(b["crop"]) if b.get("crop") else None
-                    if where == "_discard":
-                        continue
-                    if where in attrs.FORMS:
-                        cls, src = FORM_CLS.get(where), "judged"
-                        if cls is None:
-                            continue
-            elif b.get("auto") == "agree":
-                src = "auto"
+            cls, src, dropped = self._resolve(b)
+            if cls is None:
+                continue
+            if cls not in self.classes:
+                log.warning("整帧页：类别 %s 不在 [perception] classes 里，跳过这个框", cls)
+                continue
             out.append({"cls": self.classes.index(cls), "box": [int(v) for v in b["box"]], "src": src, "dropped": dropped})
         return out
 
@@ -138,14 +146,18 @@ class FramesApi:
 
     def act(self, body: dict) -> tuple[int, dict]:
         frame, do = body.get("frame"), body.get("do")
-        with self._lock:
+        with _LOCK:
             hit = self._find(frame) if isinstance(frame, str) else None
             if hit is None:
                 return 404, {"ok": False, "text": "没有这一帧"}
             run, frames = hit
+            entry = frames[frame]
+            passed = (entry.get("decision") or {}).get("what") == "pass"
             try:
                 if do == "pass":
-                    return self._pass(run, frame, frames[frame], body.get("boxes"))
+                    return self._pass(run, frame, entry, body.get("boxes"))
+                if do in ("discard", "edit") and passed:
+                    return 409, {"ok": False, "text": "这一帧已经通过了，先撤销通过"}
                 if do == "discard":
                     discard_frame(self.inbox, run, frame)
                 elif do == "undo":
@@ -160,7 +172,15 @@ class FramesApi:
 
     def _pass(self, run: str, frame: str, entry: dict, boxes) -> tuple[int, dict]:
         final = None
-        if boxes is not None:
+        if boxes is None:  # 不编辑直接通过：还有裁图没判 / 整理出错的不行
+            state = frame_state(entry, self._place)
+            if state == "crops":
+                return 409, {"ok": False, "text": "还有裁图没在外形页判"}
+            if state == "error":
+                return 409, {"ok": False, "text": "这一帧整理时出错"}
+            if state == "dup":
+                return 409, {"ok": False, "text": "这是重复帧"}
+        else:
             parsed = self._parse(run, entry, boxes)
             if isinstance(parsed, str):
                 return 400, {"ok": False, "text": parsed}
@@ -192,33 +212,67 @@ class FramesApi:
                 if isinstance(cls, bool) or not isinstance(cls, int) or cls not in range(len(self.classes)) or len(box) != 4:
                     return "类别或框不对"
                 rect = normalize_box(box, w, h)
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):
                 return "类别或框不对"
             if rect is not None:
                 out.append((cls, rect))
         return out
 
     def _crop_edited(self, run: str, frame: str, entry: dict, final: list[tuple[int, Rect]]) -> None:
-        """人物类里和原框 IoU < 0.5 或类别变了的框裁一张图进外形页（form/<类>/，记 frame-edit）。"""
-        olds = [(b["cls"], Rect(*(int(v) for v in b["box"]))) for b in entry.get("boxes", []) if b["cls"] in PAIR]
-        fresh = [(c, r) for c, r in final if self.classes[c] in PAIR
-                 and not any(oc == self.classes[c] and iou(orect, r) >= SAME_BOX for oc, orect in olds)]
-        if not fresh:
+        """编辑保存后让外形页的数据跟上最终标注：
+        - 原人物框已有裁图（和最终框 IoU >= 0.5）：类别和现在展示的一样就不动；变了就把裁图挪到新类的 form/ 目录
+          （变成非人物类 -> form/not_person），`_labels.jsonl` 记 frame-edit；
+        - 其余人物类的框（新画的）裁一张进 form/<类>/，`_crops.jsonl` 记 source = inbox。"""
+        names = [(self.classes[c], r) for c, r in final]
+        claimed: set[int] = set()
+        moves: list[tuple[str, str, str]] = []  # (裁图, 现在在哪, 挪到哪个外形类)
+        for b in entry.get("boxes", []):
+            if b["cls"] not in PAIR or not b.get("crop"):
+                continue
+            here = self._place(b["crop"])
+            if here is None:
+                continue
+            orig = Rect(*(int(v) for v in b["box"]))
+            near = [i for i, (_, r) in enumerate(names) if iou(orig, r) >= SAME_BOX]
+            if not near:
+                continue
+            now = self._resolve(b)[0]
+            same = [i for i in near if names[i][0] == now]
+            if same:
+                claimed.update(same)
+                continue
+            people = [i for i in near if names[i][0] in PAIR]
+            pick = max(people, key=lambda i: iou(orig, names[i][1])) if people else None
+            claimed.update(near if pick is None else [pick])
+            to = PAIR[names[pick][0]] if pick is not None else "not_person"
+            if here != to:
+                moves.append((b["crop"], here, to))
+        fresh = [(n, r) for i, (n, r) in enumerate(names) if i not in claimed and n in PAIR]
+        if not moves and not fresh:
             return
-        img = imread(self.inbox / run / entry["file"])
-        image = (self.inbox / run / entry["file"]).resolve().as_posix()
-        writer = _Writer(self.attrs_root, CROP_SIZE, attrs.CROP_PAD, _WRITER_KEYS)
+        self.attrs_root.mkdir(parents=True, exist_ok=True)
         labels = (self.attrs_root / "_labels.jsonl").open("a", encoding="utf-8")
         try:
-            for c, r in fresh:
-                name, form = self.classes[c], PAIR[self.classes[c]]
-                crop = crop_name(frame, r)
-                is_new = crop not in writer.done
-                writer.add(img, frame, r, f"form/{form}", {"image": image, "score": 1.0, "yolo_cls": name, "source": "inbox",
-                                                           "split": entry.get("split"), "group": run, "known": False})
-                if is_new:
-                    labels.write(json.dumps({"t": time.time(), "crop": crop, "from": "_unlabeled", "to": form, "by": "frame-edit"},
-                                            ensure_ascii=False) + "\n")
+            for crop, here, to in moves:
+                src = self.attrs_root / (here if here in ("_unlabeled", "_discard") else f"form/{here}") / crop
+                dst = self.attrs_root / "form" / to / crop
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                labels.write(json.dumps({"t": time.time(), "crop": crop, "from": here, "to": to, "by": "frame-edit"}, ensure_ascii=False) + "\n")
+            if fresh:
+                img = imread(self.inbox / run / entry["file"])
+                image = (self.inbox / run / entry["file"]).resolve().as_posix()
+                writer = _Writer(self.attrs_root, CROP_SIZE, attrs.CROP_PAD, _WRITER_KEYS)
+                try:
+                    for name, r in fresh:
+                        form, crop = PAIR[name], crop_name(frame, r)
+                        is_new = crop not in writer.done
+                        writer.add(img, frame, r, f"form/{form}", {"image": image, "score": 1.0, "yolo_cls": name, "source": "inbox",
+                                                                   "split": entry.get("split"), "group": run, "known": False})
+                        if is_new:
+                            labels.write(json.dumps({"t": time.time(), "crop": crop, "from": "_unlabeled", "to": form, "by": "frame-edit"},
+                                                    ensure_ascii=False) + "\n")
+                finally:
+                    writer.close()
         finally:
             labels.close()
-            writer.close()

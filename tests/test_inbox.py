@@ -526,3 +526,19 @@ def test_process_skips_player_box_on_dango(tmp_path):
     assert seen == [[Rect(200, 300, 100, 240)]]
     boxes = _inbox.load_frames(inbox, "r1")["r1_192000_a"]["boxes"]
     assert sorted((b["cls"], tuple(b["box"])) for b in boxes) == [("player", (200, 300, 100, 240)), ("self", (1385, 458, 371, 433))]
+
+
+def test_process_keeps_decisions_made_during_run(tmp_path):
+    inbox = tmp_path / "inbox"
+    _setup_run(inbox, "r1", {"192000_a.jpg": _img(40), "192100_b.jpg": _img(200)})
+    calls = []
+
+    def detect(f):
+        calls.append(1)
+        if len(calls) == 2:  # 整理第二帧时，页面上不要了第一帧
+            _inbox.discard_frame(inbox, "r1", "r1_192000_a")
+        return []
+
+    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), detect, lambda f, d: [], lambda f, b: [], progress=lambda s: None)
+    frames = _inbox.load_frames(inbox, "r1")
+    assert frames["r1_192000_a"]["decision"]["what"] == "discard" and "r1_192100_b" in frames
