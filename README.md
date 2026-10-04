@@ -62,16 +62,13 @@ skydango shot --grid              # 截一张带 0~1 坐标网格的图，用来
 skydango detect                   # 对当前画面读一次聊天记录面板（先在游戏里按 C），输出标注图 tmp/detect.png
 skydango detect 某张截图.png       # 也可以对存下来的截图调参
 
-skydango view                     # 只看不动：浏览器里实时看画面 + 识别框（好友名字、陌生人、互动圆圈、新消息）
-skydango view --images tmp/record/某次  # 回放 record 录的图，不用连模拟器
-
 skydango say "测试一下"            # 只测发送流程：（输入框没开时）按 Enter → 输入 → 提交
 skydango chat                     # 不开游戏，在终端里和人设对话，调提示词（--echo 不调模型）
 
 skydango run                      # 启动 Agent，dry-run：只打印“将会发送”
 skydango run --live               # 真的发送
 skydango run --no-emotes          # 不做表情动作
-skydango run --view               # 跑的同时开可视化网页（http://127.0.0.1:19399/）
+skydango console                  # 管理面板：画面 + 识别框、大脑、聊天、手动控制、停止（终端起的 run 也会被接上）
 
 skydango look                     # 截一张图让眼睛（Claude Haiku）描述（要先 claude setup-token、设 SKYDANGO_CLAUDE_TOKEN）
 skydango run --brain              # 统管大脑，dry-run：只打印它想说想做的
