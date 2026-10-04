@@ -1979,8 +1979,9 @@ class PerceptionWatcher:
         else:
             area = flame_area(me, cfg, width, height)
             # 找到 LIT_WEAK：分数不够的、好友名字标签下面的只当 extra 交给 FlameWatch（不出请求，举着蜡烛时给他那团接续用）
-            for f in find_flames(frame, area, self.flame, min(LIT_WEAK, cfg.disk_min_score)):
-                if f.score < LIT_WEAK:
+            floor = min(LIT_WEAK, cfg.disk_min_score)
+            for f in find_flames(frame, area, self.flame, floor):
+                if f.score < floor:
                     continue
                 skip = self._flame_excluded((f.x, f.y), tags, bonfires, width, height, panel_visible)
                 if skip:

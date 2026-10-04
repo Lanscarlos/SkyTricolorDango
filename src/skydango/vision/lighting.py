@@ -32,7 +32,7 @@ LIT_EDGE_Y = 0.1  # 上下边只留这么多倍框高（真火焰离范围上沿
 # 10-03 晚真机复盘（docs/progress/2026-10-03-plan.md「10-03 晚真机复盘」）
 LIT_JUMP = 0.25  # 举着蜡烛时他那团火焰只配离预测位置这么多倍框高以内的（204557：人挤，0.28 倍框高外别人的火焰被当成他的）
 LIT_WEAK = 0.6  # 举着蜡烛时火焰候选放宽到这个分数（不到 disk_min_score 的只给他那团接续用：火焰淡下去时分数会掉）
-LIT_DARK_WAIT = 2.5  # 火焰原地没了、下面的人还量得黑：最多再等这么久（212739：深色衣服点亮后还有 0.58，一直等到 8 秒）
+LIT_DARK_WAIT = 2.5  # 火焰原地没了、下面的人还量得黑：最多再等这么久就放下、不鞠躬（212739 一直等到 8 秒；判点亮会对着黑影鞠躬）
 
 # 某个位置下面的人：(人物框, black() 或 None = 量不准, YOLO 是不是认成 player_unlit)；没人 = None
 PersonAt = Callable[[tuple[int, int], float], "tuple[Rect, float | None, bool] | None"]
@@ -109,7 +109,8 @@ class Lighting:
     trail: list[tuple[float, tuple[int, int]]] = field(default_factory=list)  # 火焰最近几次的位置（算速度）
     radii: list[float] = field(default_factory=list)  # 举起后最近 2 次看到的半高
     seen: bool = False  # 举起后看到过他的火焰（一次都没看到 = 举之前就没了，不能判点亮）
-    darkest: float | None = None  # 他那个位置下面的人量到过最黑的 black()（深色衣服按"降了多少"判还黑不黑）
+    darkest: float | None = None  # 他（dark_box 那个人）量到过最黑的 black()，取第二大（深色衣服按"降了多少"判还黑不黑）
+    blacks: list[float] = field(default_factory=list)  # 他（dark_box 那个人）量到过的 black()
 
 
 class FlameWatch:
@@ -176,18 +177,25 @@ class FlameWatch:
         上限收紧到 LIT_JUMP；举起后第一次还按 light_jump：出请求到真的举起常隔 1~2 秒，他可能挪了（10-02 21:54）。"""
         offsets = [(0.0, 0.0)] + ([(shift[0] / 2, shift[1] / 2), shift] if shift[0] or shift[1] else [])
         L, (px, py), limit = self.lighting, c.pos, self.cfg.light_jump * h
-        if L is not None and c.id == L.clue and L.seen:
-            dt = min(max(now - L.flame_last, 0.0), 1.0) if L.flame_last > float("-inf") else 0.0
+        if L is not None and c.id == L.clue and L.seen:  # seen 了 flame_last 一定是举起后的时间
+            dt = min(max(now - L.flame_last, 0.0), 1.0)
             px, py, limit = L.pos[0] + L.vel[0] * dt, L.pos[1] + L.vel[1] * dt, LIT_JUMP * h
         return min(float(np.hypot(d.x - px - ox, d.y - py - oy)) for ox, oy in offsets), limit
 
     def _match_target(self, c: Clue, flames: list[Disk], h: float, shift: tuple[float, float], now: float) -> Disk | None:
-        """extra 里给他那团配一个。分数不到 disk_min_score 的只在举起后还没认到过他时算（证明火焰还在）：
-        认到之后再拿它续，点亮时冒的火花会被当成他的火焰（212739）。"""
-        if self.lighting.seen:
-            flames = [d for d in flames if d.score >= self.cfg.disk_min_score]
-        best = min(((self._gap(c, d, h, shift, now), k) for k, d in enumerate(flames)), default=None)
-        return None if best is None or best[0][0] > best[0][1] else flames[best[1]]
+        """extra 里给他那团配一个。
+        认到他之前：只认分数不够的弱火焰、而且离他 LIT_JUMP 以内（证明举起后火焰还在，204557）；名字标签下面的不算——
+        他的火焰举之前就没了、旁边好友举着点火圆圈，不能拿好友的圆圈当他的（评审）。
+        认到之后：只认够分的（名字标签下面的，233045）；弱的不再续，点亮时冒的火花会被当成他的火焰（212739）。"""
+        L = self.lighting
+        if L.seen:
+            pool = [d for d in flames if d.score >= self.cfg.disk_min_score]
+        else:
+            pool = [d for d in flames if d.score < self.cfg.disk_min_score
+                    and min(float(np.hypot(d.x - L.pos[0] - ox, d.y - L.pos[1] - oy))
+                            for ox, oy in [(0.0, 0.0), (shift[0] / 2, shift[1] / 2), shift]) <= LIT_JUMP * h]
+        best = min(((self._gap(c, d, h, shift, now), k) for k, d in enumerate(pool)), default=None)
+        return None if best is None or best[0][0] > best[0][1] else pool[best[1]]
 
     def _match(self, flames: list[Disk], h: float, shift: tuple[float, float] = (0.0, 0.0),
                now: float = 0.0) -> dict[Clue, Disk]:
@@ -237,9 +245,13 @@ class FlameWatch:
         box, blk, unlit = person
         L.person, L.person_at = (box, blk), now
         if unlit or (blk is not None and blk >= cfg.lit_black - LIT_DARK_MARGIN):
+            if L.dark_box is None or iou(box, L.dark_box) < LIT_SAME_IOU:
+                L.blacks = []  # 换了一个人（人挤，量到了旁边的黑影）：之前量的不算他的
             L.dark_box = box  # 他黑着：记下这时的框，之后变亮的得是他
-        if blk is not None:
-            L.darkest = blk if L.darkest is None else max(L.darkest, blk)
+        if blk is not None and L.dark_box is not None and iou(box, L.dark_box) >= LIT_SAME_IOU:
+            L.blacks.append(blk)
+            # 他最黑的时候取第二大的：夜里 black() 会抖，一次抖高不算（214919：同一个黑影 0.70~0.92）
+            L.darkest = sorted(L.blacks)[-2] if len(L.blacks) >= 2 else L.blacks[0]
         # 还黑着：量得到、≥ lit_black，而且没比他最黑的时候降够 lit_drop（深色衣服点亮后也有 0.5~0.6）
         L.dark_now = blk is not None and blk >= cfg.lit_black and (L.darkest is None or L.darkest - blk < cfg.lit_drop)
         # blk 为 None = 被团子挡住大半量不准：人还在，但不算变亮
@@ -284,7 +296,7 @@ class FlameWatch:
             clue=clue_id, raised=now, pos=c.pos if c else (0, 0), r=c.r if c else 20.0, r0=median(c.radii) if c else 20.0,
             flame_last=c.last if c else float("-inf"), black0=c.black if c else None, dark_box=c.person if dark else None,
             away=c is None,  # 举之前线索刚断：不知道火焰在哪，没了算走开
-            darkest=c.black if c else None,
+            darkest=c.black if dark else None, blacks=[c.black] if dark and c.black is not None else [],
         )
         return self.lighting
 
@@ -295,7 +307,7 @@ class FlameWatch:
         否则原地没了 → True，除非那个位置下面的人这次量得到、还是黑的（火焰可能只是被挡 / 晃丢了）→ False 接着等。
         火焰没了一次扫描、同一个人连着 LIT_SCANS 次看到变亮 → True（加速）。举起不满 lit_min 一律 False。
         举起后一次都没看到他的火焰（举之前就没了）：不判点亮，满 lit_min + lit_vanish → None（10-03 晚三次这样误判点亮）。
-        还黑着最多等 LIT_DARK_WAIT 秒。"""
+        还黑着最多等 LIT_DARK_WAIT 秒，之后 None（放下、不鞠躬）。"""
         cfg, L = self.cfg, self.lighting
         if L is None or L.clue != clue_id:
             return False
@@ -309,7 +321,10 @@ class FlameWatch:
             return False
         if L.away:
             return None
-        return False if L.dark_now and L.scan_at - L.flame_last < LIT_DARK_WAIT else True
+        if not L.dark_now:
+            return True
+        # 还黑着：最多等 LIT_DARK_WAIT，之后放下、不鞠躬（他可能还黑着，对着黑影鞠躬最难看）
+        return False if L.scan_at - L.flame_last < LIT_DARK_WAIT else None
 
     def stop(self) -> Lighting | None:
         """这次点亮结束：他的线索也作废（之后要重新连续看满 light_after 秒）。"""

@@ -1849,6 +1849,18 @@ def test_weak_flames_go_to_extra_and_search_floor_is_lit_weak(monkeypatch):
     assert floors == [LIT_WEAK] and calls[-1] == ([strong], [weak])
 
 
+def test_low_disk_min_score_still_counts_normal_flames(monkeypatch):
+    """评审：disk_min_score 配得比 LIT_WEAK 还低时，分数在两者之间的火焰照样是正常火焰（不能被 LIT_WEAK 筛掉）。"""
+    calls, floors = spy_scans(monkeypatch), []
+    low = Disk(1045, 480, 20.0, 0.57)
+    w, det, clock = light_watcher(monkeypatch, [None])
+    w.light_cfg = SocialConfig(light_after=3.0, disk_min_score=0.55)
+    monkeypatch.setattr(perception_mod, "find_flames", lambda frame, area, flame, s: floors.append(s) or [low])
+    det.frames = [[self_det()]]
+    run(w, 0.0, clock)
+    assert floors == [0.55] and calls[-1] == ([low], [])
+
+
 def test_weak_flame_on_open_panel_is_dropped(monkeypatch):
     """聊天面板、篝火挡着的弱火焰也不要（只有名字标签下面的才进 extra）。"""
     calls = spy_scans(monkeypatch)

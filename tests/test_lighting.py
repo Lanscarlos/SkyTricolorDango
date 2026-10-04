@@ -309,9 +309,11 @@ def test_seen_once_after_raise_then_vanishes_is_lit():
 
 
 def test_target_flame_under_friend_label_keeps_waiting():
-    """(b) 233045：他站在好友身后，火焰落在好友名字标签下面被感知层排除了——举着蜡烛时他那团照样认，不当成没了。"""
+    """(b) 233045：认到他之后，他站到好友身后，火焰落进好友名字标签下面被感知层排除了——举着蜡烛时他那团照样认，不当成没了。
+    （举起后一开始就只在标签下面看到的不算认到他，见 test_friend_tag_flame_before_seen_does_not_count）"""
     watch, _ = raised()
-    res = scans(watch, 0.1, 6.0, extra=lambda t: [disk()] if t < 3.0 else [])
+    res = scans(watch, 0.1, 6.0, flames=lambda t: [disk()] if t < 0.5 else [],
+                extra=lambda t: [disk()] if 0.5 <= t < 3.0 else [])
     assert first_decision(res) == (3.7, True)  # 最后看到 2.8，3.4 只隔 0.6 秒，3.7 判出
 
 
@@ -348,13 +350,48 @@ def test_dark_clothes_dropped_enough_is_lit():
 
 
 def test_still_dark_wait_has_a_cap():
-    """(d) 火焰原地没了、下面的人一直量得黑（深色衣服又没降够 / 量的是别人）：最多等 LIT_DARK_WAIT 秒，之后照样判点亮，不举满 light_timeout。"""
+    """(d) 火焰原地没了、下面的人一直量得黑：最多等 LIT_DARK_WAIT 秒就放下，判走开（不鞠躬）——
+    他可能还黑着（火焰被挡了），对着黑影鞠躬是最差的错，所以不判点亮（评审后改）。"""
     from skydango.vision.lighting import LIT_DARK_WAIT
 
     watch, _ = raised(who=person(blk=0.9))
     res = scans(watch, 0.1, 6.0, flames=lambda t: [disk()] if t < 0.5 else [], who=person(blk=0.9))
     t, r = first_decision(res)
-    assert r is True and 0.4 + LIT_DARK_WAIT <= t < 0.4 + LIT_DARK_WAIT + 0.31
+    assert r is None and 0.4 + LIT_DARK_WAIT <= t < 0.4 + LIT_DARK_WAIT + 0.31
+
+
+def test_dark_jitter_is_not_a_drop():
+    """(d) 评审：夜里同一个黑影的 black() 在 0.70~0.92 之间抖（214919 真没点亮那次）：一次抖高不算"他最黑"，火焰丢了也不判点亮。"""
+    seq = iter([0.80, 0.96, 0.78, 0.82])  # 火焰还在时一次抖到 0.96，之后 0.69：比抖高那次降了 0.27，但他一直是 0.7~0.8
+    watch, _ = raised(who=person(blk=0.78))
+    res = scans(watch, 0.1, 2.5, flames=lambda t: [disk()] if t < 1.0 else [],
+                who_at=lambda t: person(blk=next(seq, 0.69)))
+    assert all(r is False for _, r in res)
+
+
+def test_other_darker_person_does_not_set_darkest():
+    """(d) 评审：人挤，火焰位置下面先量到旁边别人（1.0），他本人 0.75：别人的不算他最黑的时候。"""
+    other = Rect(1060, 500, 100, 240)  # 也在火焰下面，但和 DARK 的 IoU 只有 0.24（不是同一个人）
+    watch, _ = raised(who=person(blk=0.75))
+    res = scans(watch, 0.1, 2.5, flames=lambda t: [disk()] if t < 1.0 else [],
+                who_at=lambda t: person(other, blk=1.0) if t < 0.5 else person(blk=0.75))
+    assert all(r is False for _, r in res)
+
+
+def test_friend_tag_flame_before_seen_does_not_count():
+    """(b) 评审：他的火焰举起前就没了，旁边好友举着点火圆圈（名字标签下面）：认到他之前不拿标签下面的当他的，照样判走开。"""
+    watch, _ = raised()
+    near = (HOME[0] + round(0.3 * ME.h), HOME[1])
+    res = scans(watch, 0.1, 3.0, extra=lambda t: [disk(near)] if t < 2.0 else [])
+    assert first_decision(res)[1] is None
+
+
+def test_weak_flame_before_seen_must_be_close():
+    """(a) 评审：认到他之前的弱火焰只认离他 LIT_JUMP 以内的（别人淡下去的火焰不能证明他还在）。"""
+    watch, _ = raised()
+    near = (HOME[0] + round(0.4 * ME.h), HOME[1])
+    res = scans(watch, 0.1, 3.0, extra=lambda t: [disk(near, score=0.62)] if t < 0.5 else [])
+    assert first_decision(res)[1] is None
 
 
 def test_weak_flame_keeps_him_seen():
