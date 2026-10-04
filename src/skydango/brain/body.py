@@ -681,7 +681,7 @@ class Body:
                 out.append(AttnTarget(f"n:{who}", "act_on_me", found[0], who, t))
         if hasattr(env, "people"):
             for p in env.people(now):
-                if p.kind == "friend" and p.name:
+                if p.kind == "friend" and p.name and not p.unsure:  # "可能是小明"不当他（等喊一声确认）
                     out.append(AttnTarget(f"n:{p.name}", "friend_present", p.box.x + p.box.w / 2, p.name))
         return out
 
@@ -702,8 +702,8 @@ class Body:
                 return bool(n) and (n == who or similar(who, n, 0.75))
 
             for p in people:
-                if p.kind != "friend" or not same(p.name):
-                    continue
+                if p.kind != "friend" or p.unsure or not same(p.name):
+                    continue  # "可能是他"不算找到（只算一个别的人）
                 if p.sure:
                     target, where = p.box.x + p.box.w / 2, f"{p.side}·{p.distance}"
                     break
@@ -1427,7 +1427,7 @@ class Body:
         for p in people:
             if p.sid and p.sid == name:
                 return p.box, ""
-        maybe = [p for p in people if p.kind == "friend" and p.name and not p.sure]
+        maybe = [p for p in people if p.kind == "friend" and p.name and not p.sure and not p.unsure]  # "可能是"的不算
         for same in (lambda n: n == name, lambda n: similar(name, n, 0.75)):
             for p in maybe:
                 if same(p.name):
@@ -1442,7 +1442,8 @@ class Body:
         """
         if self.env is None:
             return None
-        people = [p for p in self.env.people(now) if p.kind == "friend" and p.name] if hasattr(self.env, "people") else []
+        people = ([p for p in self.env.people(now) if p.kind == "friend" and p.name and not p.unsure]  # "可能是他"不盯
+                  if hasattr(self.env, "people") else [])
         people.sort(key=lambda p: not p.sure)  # 看到名字的排前面；只有"像他"的也照样能盯
         max_age = self.cfg.track.max_age
         labels = {n: v for n, v in dict(self.env.labels).items() if now - v[4] <= max_age}  # 后台线程会改：先拍快照

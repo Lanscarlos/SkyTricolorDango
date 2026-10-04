@@ -490,6 +490,11 @@ class PerceptionWatcher:
         for track in list(self.tracker.tracks.values()):
             if "relink_at" in track.data:
                 track.data["relink_at"] += d
+            for key in ("unsure", "unsure_first"):  # "可能是"的等待也不算暂停的时间
+                if v := track.data.get(key):
+                    track.data[key] = (v[0], v[1] + d)
+            if "dango_look" in track.data:
+                track.data["dango_look"] += d
         for name, (x, y, w, h, t) in list(self.labels.items()):
             self.labels[name] = (x, y, w, h, min(t + d, now))
         for name, (kind, t) in list(self.circles.items()):
@@ -1326,7 +1331,7 @@ class PerceptionWatcher:
             if tag is not None:  # 名字标签永远说了算
                 name = tag.data.get("name")
                 maybe = d.pop("maybe", None)
-                for key in ("maybe_by", "miss", "sid", "unsure", "dango_look"):
+                for key in ("maybe_by", "miss", "sid", "unsure", "unsure_first", "dango_look"):
                     d.pop(key, None)
                 if maybe and name and maybe != name:
                     log.info("轨迹 %d 按外观认成 %s，名字标签是 %s", p.id, maybe, name)
@@ -1348,8 +1353,8 @@ class PerceptionWatcher:
                 d.pop("maybe", None)
                 d.pop("miss", None)
                 continue
-            if p.id not in fresh or d.get("unsure_miss") or d.get("samples", 0) < acfg.min_samples:
-                continue  # 这一帧没算出新样本：保持上一帧的结论；喊过 / 等过还没认出来的不再认
+            if p.id not in fresh or d.get("samples", 0) < acfg.min_samples:
+                continue  # 这一帧没算出新样本：保持上一帧的结论
             sample = fresh[p.id][0]
             if book.looks_like_dango(sample.dino):
                 if not self._dangoish(p, now):
@@ -1379,7 +1384,8 @@ class PerceptionWatcher:
             d.pop("sid", None)
             d.pop("unsure", None)
             log.info("轨迹 %d 没看到名字，按外观像 %s", tid, name)
-        rest = {tid: f for tid, f in cands.items() if tid not in assigned}
+        # 喊过 / 等过还没认出来的（unsure_miss）不再进"可能是"；像团子、像小明照样能认
+        rest = {tid: f for tid, f in cands.items() if tid not in assigned and not byid[tid].data.get("unsure_miss")}
         # 一个名字只给一条轨迹："可能是"也一样（这一帧没重新认的轨迹上挂着的也算占着）
         held = taken | set(assigned.values()) | {
             u[0] for p in players if p.id not in rest and (u := p.data.get("unsure"))
@@ -1393,7 +1399,11 @@ class PerceptionWatcher:
                     log.debug('轨迹 %d 不再"可能是" %s', tid, old[0])
                 d.pop("unsure", None)
             elif not old or old[0] != name:
-                d["unsure"] = (name, now)  # 同一个名字接着算（开始时间不变），换了名字重新算
+                # 同一个名字接着算（开始时间不变）；分数在 unsure 上下晃、掉出去又回来的也从第一次算起（不然一直拖着不判陌生人）；
+                # 换了名字重新算
+                first = d.get("unsure_first")
+                start = first[1] if first and first[0] == name else now
+                d["unsure"] = d["unsure_first"] = (name, start)
                 log.info("轨迹 %d 没看到名字，可能是 %s", tid, name)
         gone = set(assigned.values())
         for p in players:  # 名字刚被别的轨迹认走（像小明）：这条的"可能是"作废
@@ -1467,6 +1477,9 @@ class PerceptionWatcher:
             p.data["maybe"], p.data["maybe_by"], p.data["relink_at"] = name, "relink", now
             for key in ("sid", "miss", "unsure"):
                 p.data.pop(key, None)
+            for o in players:  # 名字被接回给了这条轨迹：别的轨迹上"可能是他"作废
+                if o is not p and (u := o.data.get("unsure")) and u[0] == name:
+                    o.data.pop("unsure", None)
             log.info("轨迹 %d 像是 %s（断了 %.1f 秒，按位置接回）", p.id, name, now - lost.last)
 
     def _looks_checked(self, player: Track, now: float) -> bool:
@@ -1922,7 +1935,8 @@ class PerceptionWatcher:
         for t in list(self.last_tracks):
             # 每个键只读一次：感知线程随时可能 pop 掉 maybe / sid（别的线程在读）
             who = t.data.get("name") or t.data.get("maybe") or (STRANGER if t.data.get("stranger") else None)
-            if t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and who and not self._dangoish(t, now):
+            if (t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and who
+                    and not (self.appearance is not None and self._dangoish(t, now))):
                 known.append((t.box.h, who))
         if not known:
             return None

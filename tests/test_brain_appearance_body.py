@@ -176,3 +176,37 @@ def test_target_x_prefers_sure_people(clock):
     assert b.target_x("阿花", clock()) == (850, "body")
     env.people_list = env.people_list[:1]  # 只有像阿花的：照样能盯
     assert b.target_x("阿花", clock()) == (350, "body")
+
+
+# ---- "可能是小明"（Person.unsure，身份底库 spec 2026-10-03 §5）：身体不拿它当这个好友 ----
+def unsure_person(pid=4, x=300):
+    return Person(pid, "friend", "阿花", Rect(x, 300, 100, 260), "左边", "近", sure=False, unsure=True)
+
+
+def test_target_x_and_look_by_look_skip_unsure(clock):
+    env = FakeLookEnv()
+    env.people_list = [unsure_person()]
+    b, *_ = make(clock, env=env)
+    assert b.target_x("阿花", clock()) is None  # 可能是她：不盯
+    assert b._locate_by_look("阿花", clock()) is None
+    env.people_list = [unsure_person(), Person(2, "friend", "阿花", Rect(800, 300, 100, 260), "前面", "近", sure=False)]
+    assert b.target_x("阿花", clock()) == (850, "body")  # 像她的照旧能盯
+    assert b._locate_by_look("阿花", clock())[0] == Rect(800, 300, 100, 260)
+
+
+def test_search_obs_counts_unsure_as_other(clock):
+    env = FakeLookEnv()
+    env.people_list = [unsure_person()]
+    b, *_ = make(clock, env=env)
+    obs = b.search_obs("阿花", clock())
+    assert obs.target_x is None and obs.maybe_x is None and obs.friends == () and obs.strangers == 1
+    env.people_list = [unsure_person(), Person(2, "friend", "阿花", Rect(800, 300, 100, 260), "前面", "近", sure=False)]
+    obs = b.search_obs("阿花", clock())
+    assert obs.maybe_x == 850 and obs.strangers == 2
+
+
+def test_attention_ignores_unsure_friend(clock):
+    env = FakeLookEnv()
+    env.people_list = [unsure_person(), Person(2, "friend", "懒洋洋大王", Rect(800, 300, 100, 260), "前面", "近")]
+    b, *_ = make(clock, env=env)
+    assert [(t.kind, t.who) for t in b._attention_targets(clock())] == [("friend_present", "懒洋洋大王")]

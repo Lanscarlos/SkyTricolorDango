@@ -847,3 +847,88 @@ def test_appearance_identify_off_never_sets_new_keys():
     run(w, det, [(SELF_AT, DANGO), (player(300), DANGO), (player(1500), WHITE)], 0.0, 3.0)
     for p in players(w):
         assert not {"dango_look", "unsure", "unsure_miss", "sample"} & set(p.data)
+
+
+# ---- 修正第 1 轮 ----
+def test_unsure_miss_can_still_become_maybe():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 2.5 + w.appearance_cfg.unsure_wait + w.call_window + 0.5)
+    (p,) = players(w)
+    assert p.data.get("unsure_miss") and p.data.get("stranger")
+    t = run(w, det, [(body, PINK)], t + 0.1, t + 0.5)  # 后来看清楚了：和小明一模一样
+    assert players(w)[0].id == p.id and p.data.get("maybe") == XIAOMING and not p.data.get("unsure")
+    assert not p.data.get("stranger")
+
+
+def test_unsure_hovering_in_and_out_is_bounded_from_first_entry():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    (p,) = players(w)
+    first = p.data["unsure"][1]
+    wait = w.appearance_cfg.unsure_wait + w.call_window
+    unsure_img, out_img = striped(body), striped(body, white_rows=4)  # 后者余弦约 0.69：掉出"可能是"
+    while t < first + wait + 0.5:
+        t = run_img(w, det, [body], out_img, t + 0.1, t + 0.2)
+        t = run_img(w, det, [body], unsure_img, t + 0.1, t + 0.6)
+        if t < first + wait - 0.1:
+            assert p.data["unsure"][1] == first  # 掉出去又回来：还是从第一次算起
+    assert players(w)[0].id == p.id and p.data.get("unsure_miss") and "unsure" not in p.data
+
+
+def test_pause_shifts_unsure_and_dango_look():
+    clock = Clock()
+    w, det = make_g(dino=False, clock=clock)
+    t, body = unsure_scene(w, det, 4.0)
+    (p,) = players(w)
+    start = p.data["unsure"][1]
+    clock.t = t
+    w.hold("camera")
+    clock.t = t + 10.0
+    w.release("camera")
+    assert p.data["unsure"] == (XIAOMING, start + 10.0) and p.data["unsure_first"] == (XIAOMING, start + 10.0)
+
+    clock = Clock()
+    w, det = make_g(clock=clock)
+    t = dango_elsewhere(w, det)
+    (p,) = players(w)
+    seen = p.data["dango_look"]
+    clock.t = t
+    w.hold("camera")
+    clock.t = t + 10.0
+    w.release("camera")
+    assert p.data["dango_look"] == seen + 10.0
+
+
+def test_relink_clears_unsure_of_same_name_elsewhere():
+    kw = dict(KW, max_per_frame=1)
+    w, det = make(acfg_kw=kw)
+    friend = player(1000)
+    other = player(300)
+    img = striped(other)
+    img[friend.box.y:friend.box.y2, friend.box.x:friend.box.x2] = PINK
+    t = run_img(w, det, [friend, tag(990, 110), other], img, 0.0, 1.0)
+    t = run_img(w, det, [other], striped(other), t + 0.1, t + 1.5)  # 小明的轨迹断了（track_buffer 1 秒）
+    s = next(x for x in players(w) if x.box.x == 300)
+    assert s.data.get("unsure", (None,))[0] == XIAOMING
+    back = player(1020)  # 他在原地附近冒出来（白色：只能按位置接回，不靠外观）
+    img = striped(other)
+    img[back.box.y:back.box.y2, back.box.x:back.box.x2] = WHITE
+    det.frames = [[other, back]]
+    w.process(img, round(t + 0.1, 3), panel_visible=False)
+    b = next(x for x in players(w) if x.box.x == 1020)
+    assert b.data.get("maybe") == XIAOMING and b.data.get("maybe_by") == "relink"
+    assert "unsure" not in s.data  # 这一帧它没算新样本，靠接回那里清掉
+
+
+def test_nearest_skips_dango_only_with_appearance():
+    from test_perception_dango import ME, ON_ME
+    for on in (False, True):
+        w, det = make(appearance=on)
+        me, on_me = Detection("self", ME, 0.9), Detection("player", ON_ME, 0.8)
+        run(w, det, [(me, GREEN), (on_me, GREEN)], 0.0, 0.3)
+        t = run(w, det, [(on_me, GREEN)], 0.4, 1.0)
+        (p,) = players(w)
+        assert p.data.get("dango")
+        p.data["name"] = XIAOMING  # 被认成团子之前挂过名字的轨迹
+        # 关着认装扮：nearest 逐字照旧（团子轨迹不额外跳过）；开着：团子不算"离团子最近的人"
+        assert (w.nearest(t) is None) is on
