@@ -65,7 +65,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - `config.toml` 是本机配置（gitignore），模板是 `config.example.toml`；记忆在私有仓库，新电脑先按「记忆」一节克隆到 `private/`
 - 模拟器里装了 ADBKeyboard（团子输中文用），用户自己打字用 MuMu 里的搜狗输入法。**`run` 启动时自动切到 ADBKeyboard、停下时切回来**（`device/ime.py`，`[device] switch_ime`，默认开；
   切回启动时的那个，启动时已经是 ADBKeyboard（上次被强杀没切回）就找装了的搜狗，`[device] user_ime` 可以指定）；被强杀时切不回，在管理面板「设备」页「输入法」一栏手动切，
-  或者 `python -m skydango ime off`（切回搜狗 / `user_ime`，都没有就 `ime reset`）。切换出错只记日志、团子照常跑（打不了中文）。**搜狗的输入法 id 还没在真机核对**（按 id 里有没有 `sogou` 认）
+  或者 `python -m skydango ime off`（切回搜狗 / `user_ime`，都没有就 `ime reset`）。切换出错只记日志、团子照常跑（打不了中文）。10-04 真机上搜狗 ↔ ADBKeyboard 来回切正常；「启动时已经是 ADBKeyboard、按 id 里有没有 `sogou` 去找搜狗」这条路还没在真机触发过
 - 在 Git Bash 里调 `adb shell` 带 `/dev/...` 路径时要 `export MSYS_NO_PATHCONV=1`，否则路径会被改写
 
 ## 代码结构
@@ -74,6 +74,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 |---|---|
 | `src/skydango/device/adb.py` | 截图（raw screencap）、tap/swipe、`hw_key*`（sendevent 模拟实体键盘）、ADBKeyboard 输入、`ime_shown()` |
 | `src/skydango/device/mumu.py` | MuMu 原生截图（external_renderer_ipc.dll，约 9 ms/张），`AdbDevice.screenshot()` 优先用它 |
+| `src/skydango/device/ime.py` | 输入法切换：`run` 启动时切到 ADBKeyboard、停下时切回（命令 `ime on` / `off` / `status`，见「环境」） |
 | `src/skydango/device/a11y.py` `android/a11y/` `assets/a11y/` | 读游戏的无障碍节点（聊天行、头顶名字 / 气泡的文字 + 坐标，不用 OCR；见 game-ops §3「无障碍节点」）：`A11yReader` 推 jar、`app_process` 常驻 UiAutomation 客户端、`latest()` 取快照；jar 源码在 `android/a11y/`，`python android/a11y/build.py` 编译（要 javac + `.pydeps/r8/` 的 R8）。读聊天已接上（下面两行），**认人还没接** |
 | `src/skydango/vision/a11yui.py` | 无障碍快照分类（纯计算）：`classify` → `UiView`（面板行、头顶名字标签、按列挂好说话人的气泡、输入栏、面板占位）；坐标按 1920×1080 量、按比例缩放，只认光遇包名的快照 |
 | `src/skydango/chat/a11yreader.py` | 用无障碍节点读聊天（`[vision] source = "a11y"`，见「聊天面板」）：`A11yChatReader`（接口同 `ChatReader`；面板行精确对齐、面板关着读好友头顶气泡、两边读到同一句只报一次，`Message.source` = panel / bubble；`tags_in_view` / `typing` / `want_peek` 给面板管理器）、`FallbackReader`（读不到自动重启 3 次、再不行整次 run 退回 OCR，`reads_bubbles` / `describe`） |
@@ -116,9 +117,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/lighting.py` | 点亮陌生人的纯计算（`FlameWatch`）：每处火焰一条线索、认出不动的假火焰（灯笼）、出请求的那条、举蜡烛后火焰怎么没的 → 点亮 / 走开 / 接着等（spec `2026-10-03-light-flame-vanish-design.md`；10-02 晚 6 次存图的回放在 `tests/test_light_replay.py`） |
 | `src/skydango/vision/candle.py` | 火焰：`find_flames` / `find_flame` 在调用方给的范围（团子周围）里找火焰，`black()` 量人物框有多黑（判点亮用），`white_ring` 分孤儿圆圈是举蜡烛请求（有白圈）还是圆盘；火焰圆盘**绝不点** |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
-| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `search.py` 有意识地找 / `find.py` 找人技能 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
+| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离 / Claude 总闸（`ClaudeGate`、`GatedLlm`）、`deepseek.py` 备用大脑、`llm_tools.py` 备用大脑的工具 schema（唯一来源）、`trace.py` 大脑时间线（给管理面板）、`manual.py` 手动控制、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `search.py` 有意识地找 / `find.py` 找人技能 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
-| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`），左侧栏 + 六页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
+| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`），左侧栏 + 七页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
 | `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；聊天记录 `brain/transcript.py`（沙盒和真机共用，带长轮询 `wait_since` 和事件分隔线 `event_line`）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、操作和状态 `control.py`、JSON 接口 `server.py` |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
@@ -187,7 +188,7 @@ dir = "private/sandbox"
 | `unknown_names/` | YOLO 感知层读得清楚、但不在 friends.md 里的名字（`names.jsonl` + 每个名字一张裁剪图）；`perception unknown-names` 汇总，**只列出，不自动写 friends.md** |
 | `enroll/` | 启动时转一圈登记团子取到的团子裁图（`<序号>.jpg`），事后核对登记的是不是团子各个角度 |
 | `appearance/` | 认装扮攒的训练数据：`crops/<身份>/*.jpg`（好友名，或 `t<轨迹>`）+ `appearance.jsonl`（`[appearance] save`，每条轨迹 2 秒一张、每次最多 2000 张） |
-| `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有 `--brain`）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
+| `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有大脑模式，`--no-brain` 没有）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
 
 ## 聊天面板（`[panel]`，`chat/panel.py`）
 
@@ -198,13 +199,13 @@ dir = "private/sandbox"
   读到新消息就一直开着，安静 45 秒再关；团子说话前先开面板。**老测试要常开的在辅助函数里写明 `mode = "always"`**
 - **新代码要关面板一律 `with panel.borrow("谁"):`**（点屏幕会顺带关面板的用 `close=False`），不许自己按 C；
   嵌套时最外层归还才恢复，闲着时归还不重开
-- **读聊天走无障碍节点**（`[vision] source = "a11y"`，默认；`"ocr"` = 原来截图 OCR 的读法，逐字照旧；设计 `docs/superpowers/specs/2026-10-04-a11y-chat-reader-design.md`，10-04 晚 spec §8 六步真机走通：画面里关着面板聊、画面外 15 秒内看一眼接住、抢连接退回 OCR、杀客户端自动重启、退出不留进程）：
+- **读聊天走无障碍节点**（`[vision] source = "a11y"`，默认；要 `[vision] mode = "log"`（10-04 起代码默认就是 log，之前是 bubble）；`"ocr"` = 原来截图 OCR 的读法，逐字照旧；设计 `docs/superpowers/specs/2026-10-04-a11y-chat-reader-design.md`，10-04 晚 spec §8 六步真机走通：画面里关着面板聊、画面外 15 秒内看一眼接住、抢连接退回 OCR、杀客户端自动重启、退出不留进程）：
   面板开着读面板行（精确对齐、没有错字），面板关着读好友头顶的气泡（说话人 = 名字标签，只有点点 = 在打字）；挂不上名字的原文气泡不报、叫面板看一眼（`want_peek`）。
   读不到自动重启（最多 3 次），3 次都失败或 30 秒没快照就整次 run 退回 OCR（status「读聊天：OCR（无障碍读不到：…）」）；同一时间只能有一个无障碍连接（`a11y` 命令和 `run` 同时开，后起的退回 OCR）
 - **「聊着（面板关着）」**（`talking`，只在 `auto` + 无障碍读法时有）：新消息是从头顶气泡读到的、或者说话的人都在画面里（名字标签 `TAG_RECENT` 3 秒内看到过；面板开着时读到的是面板行）→ 不开面板、开着就关掉，
   每 `chat_peek`（15 秒）看一眼面板接住画面外的人，安静 `quiet_close` 秒回闲着；说话的人不在画面里才进聊天中、开着面板；团子说话前跟谁聊的人 3 秒内都看到过就不开面板，闲着时主动开口、3 秒内看到过好友的名字标签也不开（进聊着、跟画面里的好友聊），否则照旧开；中途退回 OCR 立刻改成聊天中、开面板。`always` 模式不受影响。
   10-04 晚真机修过的坑见 game-ops §3「无障碍节点」（关面板动画 3.5 秒内看到面板不算玩家开的、看一眼至少开 1 秒、面板行按位置排、刚出现时陆续加载的行不报）
-- OCR 读法下聊天内容只从面板读；YOLO 的 `typing` 气泡只用来判断"该去看了"（这一类还没标注数据，气泡触发要等重训）。无障碍读法下身体不拿 YOLO 气泡叫面板，谁在打字直接写进 status（"在打字：小明"）
+- OCR 读法下聊天内容只从面板读；YOLO 的 `typing` 气泡只用来判断"该去看了"（v7 起能认 `typing`，09-30 晚真机触发过）。无障碍读法下身体不拿 YOLO 气泡叫面板，谁在打字直接写进 status（"在打字：小明"）
 
 ## 识别环境（`[env]`）
 
@@ -225,7 +226,7 @@ dir = "private/sandbox"
 **10-04 按 10-03 晚真机复盘补的**：举起后一次都没看到他的火焰（举之前就没了）不判点亮，满 `lit_min + lit_vanish` 放下、不鞠躬；举着时分数 `LIT_WEAK`（0.6）~ `disk_min_score` 的弱火焰和好友名字标签下面的火焰作为 `extra` 只给他那团用（认到他之前只认离他 `LIT_JUMP` 以内的弱火焰，证明举起后还看到过他；认到之后只认标签下面的，弱的不续命）；认到他之后他那团只配离预测位置 `LIT_JUMP`（0.25 倍框高）以内的火焰（举起后第一次还按 `light_jump`：请求到举起常隔 1~2 秒）；"还黑着"按比他（同一个人）量到过第二黑的时候降没降够 `lit_drop` 判，最多等 `LIT_DARK_WAIT`（2.5 秒）就放下、不鞠躬；`summary.json` 多了 `seen` / `darkest`；10-03 晚 8 次存图加进了 `tests/test_light_replay.py`（14 次全对）；
 点亮后过 `bow_delay`（0.5 秒）鞠躬（顺带放下蜡烛；不等挂着的互动请求，别的反射照旧等）；`light_timeout` 秒没结果放下；没点亮冷却 `light_cooldown`（60 秒）；
 鞠躬没做完不再举第二次、举之前先查 `reflex.min_gap`、身体替大脑开着输入框时不举；放下前先关替大脑开的框（按数字键会关掉它）；举着时接受了别的互动（点圆圈会放下蜡烛）或黑过屏（切场景、状态不明）就不再按 3 放下。接受别人点火后也鞠躬。每次存图到 `runs/<…>/light/`。
-大脑能用 `set_request_policy("stranger", "light", false)` 关掉；**未在真机验证**（spec `docs/superpowers/specs/2026-10-01-light-flame-around-self-design.md` §11；数字和录像核对见 game-ops §6）。篝火「点燃」图标也是火焰圆圈，要等 YOLO 学会 `bonfire` 才排除得掉（之前团子站篝火旁可能误举一次）
+大脑能用 `set_request_policy("stranger", "light", false)` 关掉；10-02 / 10-03 晚真机测过（10-03 晚举了 8 次：对 3、错 2、没依据 3），10-04 按复盘修了；**还没有真的"走开"样本**（spec `docs/superpowers/specs/2026-10-01-light-flame-around-self-design.md` §11；数字和录像核对见 game-ops §6）。篝火「点燃」图标也是火焰圆圈，要等 YOLO 学会 `bonfire` 才排除得掉（之前团子站篝火旁可能误举一次）
 
 ## YOLO 感知层（`[perception]`，开发中）
 
@@ -263,10 +264,10 @@ dir = "private/sandbox"
   `--only <通配>`（fnmatch 按图片文件名，带不带 `.jpg` 都行，可多次 / 逗号分隔）只处理匹配的帧，别的帧不核对、不写回、不进清单；
   烛火、光之翼等收集品不做（刷资源）。上线门槛和操作顺序见训练进度文档
 - 普通模式主人命令 `#spin [圈数]`：转一圈、截图存 `runs/<…>/spin/<时间>/`，打开感知层时回复带扫描结果；大脑模式不加
-- **本机在用 `models/sky-yolo-v10.pt`**（2026-10-04，标注页核对过的人物写回 datasets/sky 后重训，回放召回 62% → 75%；之前是 v7（09-30，能认头顶气泡 `typing`），v8 / v9 是座位试训、没上线），进度、数据、标注规则、各版对比和待办见 `docs/progress/2026-09-28-yolo-training.md`；
+- **本机在用 `models/sky-yolo-v10.pt`**（2026-10-04，标注页核对过的人物写回 datasets/sky 后重训，回放召回 62% → 75%；之前是 v7（09-30，能认头顶气泡 `typing`），v8 / v9 是座位试训、没上线；v11 黑影涨了但精确率和先祖掉了，没上线）。感知层的阈值是照 v7 定的，v10 分数整体偏高，留意陌生人 / 走近事件会不会变多，进度、数据、标注规则、各版对比和待办见 `docs/progress/2026-09-28-yolo-training.md`；
   **标气泡别只靠 Claude**：它标不出好友名字下方叠着的文字气泡，要 OCR 兜底（做法见进度文档 09-30 一节）；
   感知层已在真机 `run` 里用过多次（好友走远、标签淡掉后轨迹断开被判成陌生人，下面「追踪和接回」修的就是它）；**下面这些阈值还没在真机标定**（`[spin] seconds_per_turn` / `hfov`、`near` / `far` / `self_height`、`approach_grow`、`typing_window`）；`models/`、`datasets/` 不进 git
-- **追踪和接回**（spec `docs/superpowers/specs/2026-10-01-tracking-relink-motion-design.md`，计划 `docs/superpowers/plans/2026-10-01-tracking-relink-motion.md`；**代码已完成，还没在录像 / 真机上标定**，spec §8 真机验证四步）：
+- **追踪和接回**（spec `docs/superpowers/specs/2026-10-01-tracking-relink-motion-design.md`，计划 `docs/superpowers/plans/2026-10-01-tracking-relink-motion.md`；**代码已完成；`track-eval` 在 7 段录像上跑过（walkaway 那段接回对 2 错 0）、10-02 晚起真机上见过接回生效，阈值还没按结果调**，spec §8 真机验证四步没逐条走）：
   追踪器两段匹配（`low_conf ~ conf` 的低分框只续旧轨迹、不开新的；`track_low` 时检测器按 `low_conf` 出框）+ 速度预测 + 中心距离兜底（`track_center_gate`，永远排在 IoU 候选之后）+ 画面平移补偿（整张 1/8 灰度缩略图、面板开着时遮掉左三分之一，`cv2.phaseCorrelate`）；
   **续命**（`sticky_names`，按 Q 那期先实现了 `_keep_named`，见「按 Q 喊一声」）：挂过名字的轨迹没断就一直刷新 `last_seen`，断了才开始算 `keep`；
   **失踪好友接回**（`relink`）：挂着名字的轨迹被删 → 失踪记录，`keep` 秒内在预测位置附近冒出来的没名字的人接成 `maybe`（`maybe_by = "relink"`，"像小明"，后果同认装扮的 maybe：不判陌生人、刷新在场、不发 arrive / return），有歧义（一人对两条记录 / 两人一样近）不接，标签亮出来名字说了算，认装扮不拿外观否掉它；
@@ -279,7 +280,7 @@ dir = "private/sandbox"
   A `panel_people`（默认开）：面板开着时只丢面板区域里的名字标签 / 气泡 / 圆圈（`PANEL_DROP`），人物框留着，面板后面没挂过标签的点过火的人先不判陌生人（`_under_panel`，黑影照常判；面板关了从关的那一刻起再等 `stranger_after`），面板里的 `self` 框当普通人（开面板时团子在右边，那是误检）、面板后面的人不做远处裁图；
   B 平移估计（`_pan_step`）用整张缩略图、只在面板开着时遮左三分之一，不再遮人物框（受 `track_pan` 管）；C `panel_settle`（2.5 秒，0 = 关）：面板标志翻转 / 按 C（`PanelManager.on_press` → `camera_moved(at, "panel")`）后这段时间速度清零、不攒走近 / 运动历史。
   `panel_people = false`、`panel_settle = 0`、`track_pan = false` 逐字照旧；**只在合成画面里测过，录像回放测试和 track-eval 前后对比还没跑**（要本机的 `tmp/record/panel-toggle-1003-*`，见 5b 末尾「还没做」）
-- **感知层第二层（`[attrs]`，代码已完成，默认关；还没有训练数据和模型，没上真机）**：设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。
+- **感知层第二层（`[attrs]`，代码默认关；本机 10-04 起开着：`models/attrs-20261004d-mask.npz`，上线门槛 1~3 过了，门槛 4（真机效果）边开边验、还没定论）**：设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。
   **裁图框外填灰**（10-04，`attrs.CROP_KEEP` 0.05，写进模型的 `<头>.keep`，旧模型没有 = 不遮挡）：瘦高的框补成正方形会把旁边的人裁进来，离线对比 5 折 F1 0.76 → 0.90（`tmp/attrs-mask/report-fixed.md`）；
   存盘的裁图不遮挡（标注页要看上下文），训练提特征时按框事后遮挡；整帧回放的标准答案按标注页确认过的修正（`attrs_train.gt_fixes`，只在内存里）。
   YOLO 框出人物后按轨迹裁图，交给冻住的 DINOv2-small + 线性头（`models/attrs-<日期>.npz`，Claude 只当标注老师、不进运行时）判**外形**：不是人 / 点过火 / 黑影 / 先祖 / 共享空间玩家 / 变身。
@@ -288,7 +289,7 @@ dir = "private/sandbox"
   数据：`perception crops` → `perception attrs-label`（花额度）→ 管理面板「标注」页的「外形」标签页确认 → `crops --writeback` → `perception attrs-train` → `attrs-eval`；
   管理面板画面上画灰色虚线（被撤）/ "复核"（靠复核放行），难例多 `attrs_reject` / `attrs_disagree` 两种原因。上线门槛四条和剩下要人做的步骤见 `docs/progress/2026-09-28-yolo-training.md`「第二层」
   DINOv2-small 在 5070 Ti 上一张裁图约 5 ms、4 张约 20 ms（10-02，onnxruntime-gpu 1.23.2）；CPU 上一张约 32 ms，没 GPU 时别开，或者 `max_crops = 1`、`every = 1.0`（`[perception] device = "cuda"` 而主干只在 CPU 上跑时启动会警告）
-- **核显 / 没有 N 卡的机器**（`device = "dml"`，`vision/onnxrt.py`，**未在 Windows 核显上验证**）：在 GPU 机器上导出 `.onnx`（`.pydeps\bin\yolo.exe export model=models/sky-yolo-v7.pt format=onnx imgsz=960`）拷过去，
+- **核显 / 没有 N 卡的机器**（`device = "dml"`，`vision/onnxrt.py`，**未在 Windows 核显上验证**）：在 GPU 机器上导出 `.onnx`（`.pydeps\bin\yolo.exe export model=models/sky-yolo-v10.pt format=onnx imgsz=960`）拷过去，
   `pip uninstall onnxruntime` 再 `pip install onnxruntime-directml`（两个包都叫 `onnxruntime` 模块，只能装一个；以后 `pip install -e ".[ocr]"` 会把 onnxruntime 装回来盖掉，要重装 directml；`pip check` 报 skydango 缺 onnxruntime 是正常的）。
   先 `perception bench --model models/sky-yolo.onnx --images <录像目录>` 看后端是不是 `DmlExecutionProvider`、每帧多少 ms，再按实测把 `fps` 降下来（估计 2~3）。
   DirectML 没装就退回 CPU 并警告；`.pt` 模型不支持 dml（torch 没有 DirectML，退回 CPU）。`[places]` / `[appearance]` 的 `device` 也能填 dml，动作模型跟着 `[perception] device`
@@ -296,7 +297,7 @@ dir = "private/sandbox"
 ## 认装扮（`[appearance]`，要配合 `[perception]`）
 
 设计见 `docs/superpowers/specs/2026-10-01-appearance-design.md`（第一版）和 `docs/superpowers/specs/2026-10-03-identity-gallery-design.md`（**10-03 改成多张底库**，计划 `docs/superpowers/plans/2026-10-03-identity-gallery.md`，依据是 10-03 的离线 spike）。
-名字标签挡住 / 太远读不到时靠外观把人认回来，认得出走开又回来的陌生人，说得出谁穿的什么。**代码已完成，还没在真机 / 录像上跑过，门槛是 10-03 spike 估的**：
+名字标签挡住 / 太远读不到时靠外观把人认回来，认得出走开又回来的陌生人，说得出谁穿的什么。**代码默认关；本机 10-04 晚在 `console.toml` 打开、第一次上真机（启动转圈 31 帧里 4 帧是好样本、登记 4 张，都是正面附近的角度）；门槛还是 10-03 spike 估的**：
 先用 `perception appearance-eval <录像> --gallery` 重算 `match` / `unsure` / `dango_match`（`tmp/record/walkaway-1002-1` 等还没跑），再按 identity-gallery spec §9「真机验证」五步（转圈登记的 status 和 `enroll/` 图、好友走远标签淡掉后管理面板画面里一直是"像他"、拿不准时自动喊勤不勤、镜头转过 / 面板开关后团子不被当陌生人、用当晚录像重标门槛）。
 - **特征**：YOLO 人物框（点过火的人和团子）每 `every` 帧裁一次好样本（框高 ≥ `min_height` 0.13、不被别的框 / 聊天面板压住），一次裁图出两个特征：颜色直方图（`model = "color"`，头 / 身体各一份色相饱和度，也能换 `.onnx`）和 DINOv2-small（`[appearance] dino`，整框补成正方形，空 / 缺文件 = 只用颜色）；
   颜色平滑进轨迹 `data["feat"]`（只给装扮描述 / 判换装），这一次的 `Sample` 放 `data["sample"]`。`[attrs] backbone` 是同一个文件时共用一个推理会话（建在第二层原来的 device 上，不把第二层降到 CPU），否则用 `[appearance] device`；DINOv2 连续出错 10 次自关，只剩颜色
@@ -326,7 +327,7 @@ dir = "private/sandbox"
 ## 装扮图鉴（`[catalog]`，要配合 `[perception]`）
 
 设计见 `docs/superpowers/specs/2026-10-02-catalog-collect-design.md`（开头有五期路线图：收集 → 归类 + 部位 + 管理面板起名 → 游戏里主动问 → 用图鉴认 → 地图 / 先祖 / 物品），计划 `docs/superpowers/plans/2026-10-02-catalog-collect.md`。
-目标是让团子认出好友身上发型 / 斗篷 / 面具的**俗称**：图鉴从团子自己的经历里长出来，认法是 DINOv2 特征检索 + Claude 对图确认（新加单品不用重训）。**这一期只做收集，还没在真机上跑过，门槛是估的**。
+目标是让团子认出好友身上发型 / 斗篷 / 面具的**俗称**：图鉴从团子自己的经历里长出来，认法是 DINOv2 特征检索 + Claude 对图确认（新加单品不用重训）。**这一期只做收集；10-02 起每次真机 run 都在收，门槛是估的**。已知问题：裁图偶尔把聊天面板裁进去（面板遮挡的门槛漏了，没修）；10-03 晚"陌生人"里约七成是团子，靠 self 连续性修了，修后还没复查。
 - `run`（dry-run 和 live 都算）时感知层每帧把人物框交给 `CatalogCollector`：够大（`min_height`）、不贴边、没被别人 / 聊天面板挡（和认装扮共用 `clear_box`）、清楚（拉普拉斯方差 ≥ `sharp_min`）才收；
   好友（名字标签证实的）、团子、感知层判过陌生人（`data["stranger"]`）的点过火的人收，有名字标签但不在好友名单里的不收，黑影 / 先祖 / 共享空间 / 第二层没放行的不收；"像小明"的按陌生人存、索引记 `maybe`；陌生人框太黑（`dark_max`，YOLO 认错的黑影）不收，团子身上多出来的 player 框按团子算
 - 每个身份每次运行留最好的 `per_who` 张、两两隔 `gap` 秒；陌生人轨迹断了写出、每 `flush_every` 秒和退出时全部写出；存进 `catalog/inbox/<日期>/<运行>/<身份>/<名次>.jpg` + 同目录 `index.jsonl`（`catalog/` 不进 git，只在本机；第 2 期起完名的精选图才进私有仓库）；**`catalog/` 不会自动清理**（不像 `runs/` 只留最近 20 次），一晚几 MB，要清自己删
@@ -335,7 +336,7 @@ dir = "private/sandbox"
 
 ## 团子的接口（`[viewer]`，`run` 总是开）
 
-设计见 `docs/superpowers/specs/2026-10-04-console-attach-design.md`（**10-04 删了 viewer 网页和 `view` 命令**，计划 `docs/superpowers/plans/2026-10-04-console-attach.md`；**还没在真机上用过**，spec §5 四步）。
+设计见 `docs/superpowers/specs/2026-10-04-console-attach-design.md`（**10-04 删了 viewer 网页和 `view` 命令**，计划 `docs/superpowers/plans/2026-10-04-console-attach.md`；面板起的团子 10-04 晚起天天在用，**终端起 → 面板接管 → 再起被拒 → 关面板接着跑这 spec §5 四步还没完整走过**）。
 画面、大脑、聊天、手动控制都在管理面板「真机团子」页看，团子自己不出网页、不开浏览器。
 - `run`（大脑模式和 `--no-brain` 都算）建好运行目录之后、碰设备之前，总在 `127.0.0.1:[viewer] port`（默认 **19391**）开接口：
   `/status` `/snapshot` `/brain` `/chat` `/control` `/control/options` `/inner` `/inner/forget` `/shutdown`（本机 Host 校验、POST 要 `X-Skydango` 头 + JSON、`/shutdown` = Ctrl+C 走正常收尾）。
@@ -346,7 +347,7 @@ dir = "private/sandbox"
   日志抽屉读那次运行目录 `agent.log` 的 INFO 以上（拿不到终端输出）；**面板退出不停它**（不是面板的子进程）
 - 身体 / Agent 每圈把这一帧交给接口（限 `viewer.fps`，没人看不压 JPEG），出错只记 DEBUG 日志；大脑时间线数据在 `brain/trace.py`（只在内存里），手动控制 `brain/manual.py` **总是真执行**（大脑 dry-run 也一样）、照样过身体的护栏，做成后放 `manual` 事件告诉大脑
 - 只听本机（画面里有好友昵称和聊天）：`viewer.host`、`console.child_port` 已废弃（读到只警告），局域网 / 手机看画面的用法取消了
-- `run --view` 的 `--view` 留成隐藏参数，给了只打一行提示；`--no-browser`、`--viewer-port` 删了
+- `run --view` 的 `--view` 留成隐藏参数，给了只打一行提示；`run --no-browser` 也一样留成隐藏的空参数；`--viewer-port` 删了
 
 ## 面板识别（`[panels]`，大脑模式）
 
@@ -367,7 +368,7 @@ dir = "private/sandbox"
 ## 管理面板（`[console]`，`console`）
 
 设计见 `docs/superpowers/specs/2026-09-29-console-design.md`，计划 `docs/superpowers/plans/2026-09-29-console.md`。`python -m skydango console` → 浏览器开 `http://127.0.0.1:19390/`：
-**2026-10-01 重做**（设计 `docs/superpowers/specs/2026-10-01-console-redesign-design.md`，计划 `docs/superpowers/plans/2026-10-01-console-redesign.md`）：左侧栏（运行卡片：状态、停止、`run.error`；各页入口）+ 六页，路由 `#sandbox`（沙盒，**默认页**）、`#live`（真机团子，**2026-10-01 晚再改**，spec `docs/superpowers/specs/2026-10-01-console-live-page-design.md`：顶栏停着是启动选项、跑着是运行信息 + 「日志」抽屉；三栏 左 现在 + 身边和状态 + 手动控制（`livectl.js`）/ 中 画面（直接画在页面里，画框代码 `console/static/stage.js`）+ 大脑控制台（`brainlog.js`）/ 右 聊天记录（viewer `/chat`，身体 `on_line` + 事件队列 `tap` 记进 `brain/transcript.py`，只在内存里、最近 500 行）；停下后内容留着；**还没在真机上用过**）、`#inner`（内心，见下）、`#scripts`（剧本和报告）、`#settings`（设置，带分组目录）、`#device`（设备）；旧的 `#overview` 已改名 `#live`。**还没在真机上用过**（spec §8 真机验证 1~6）。
+**2026-10-01 重做**（设计 `docs/superpowers/specs/2026-10-01-console-redesign-design.md`，计划 `docs/superpowers/plans/2026-10-01-console-redesign.md`）：左侧栏（运行卡片：状态、停止、`run.error`；各页入口）+ 七页，路由 `#sandbox`（沙盒，**默认页**）、`#live`（真机团子，**2026-10-01 晚再改**，spec `docs/superpowers/specs/2026-10-01-console-live-page-design.md`：顶栏停着是启动选项、跑着是运行信息 + 「日志」抽屉；三栏 左 现在 + 身边和状态 + 手动控制（`livectl.js`）/ 中 画面（直接画在页面里，画框代码 `console/static/stage.js`）+ 大脑控制台（`brainlog.js`）/ 右 聊天记录（viewer `/chat`，身体 `on_line` + 事件队列 `tap` 记进 `brain/transcript.py`，只在内存里、最近 500 行）；停下后内容留着；**还没在真机上用过**）、`#inner`（内心，见下）、`#scenarios`（剧本和报告）、`#labeling`（标注）、`#settings`（设置，带分组目录）、`#device`（设备）；旧的 `#overview` 已改名 `#live`。10-02 晚起真机 run 都从这里起（spec §8 真机验证 1~6 没逐条走）。
 - **页面拆分**：`static/console.html` + `console.css`（颜色只在 `:root` 定义，别处用 `var(--…)`，有测试查）+ `common.js`（`$` `el` `post` `ask` `toast` `problemList` `Pages` `go` `refresh` 等公共接口，node 能 require）+ `markdown.js` + 每页一个 js（`sandbox.js` `live.js` `inner.js` ……），经 `/console/static/<名字>.css|js` 提供，只给 `static/` 目录列表里真有的文件（Windows 设备名 con.js / nul.js 一律 404，不碰文件系统）。页面不引外部资源、请求一律相对路径。
 - **原生 `confirm` / `prompt` / `alert` 全换成页内对话框和提示条**（`ask()` / `toast()`；Claude 桌面版内嵌浏览器里原生弹窗用不了），测试禁止再出现。
 - **预检**：大脑模式下也查 LLM Key；每个问题带 `setting` 跳转目标，「去设置 →」跳到设置页并高亮那一行（樱花底闪一下）。
@@ -392,7 +393,7 @@ dir = "private/sandbox"
 - 团子运行时不能做设备检测、不能切输入法（设备归身体线程独占）；运行中改设置照样保存，提示重启后生效
 - 设备页「输入法」一栏（`POST /api/device/ime`：`{}` 读、`{"set": id}` 切，只能切 `ime list -a -s` 里有的）：列出装了的输入法、标出当前的，点「切到这个」
 - 团子的接口有 `/status`（只有状态、不带图，带 `run` 节）和 `/shutdown`；大脑模式的状态多了「正在做」「刚说过」
-- **「内心」页**（设计见 `docs/superpowers/specs/2026-09-30-inner-viewer-design.md`；**代码已完成，还没在真机上用过**）：现在（心情 / 精力 / 别扭 / 收着点 / 心愿）、精力曲线 + 心情色带（24 小时 / 7 天，圆点 = 一次反思，点了跳到记录）、
+- **「内心」页**（设计见 `docs/superpowers/specs/2026-09-30-inner-viewer-design.md`；真机和沙盒都在用，spec 真机验证没逐条走）：现在（心情 / 精力 / 别扭 / 收着点 / 心愿）、精力曲线 + 心情色带（24 小时 / 7 天，圆点 = 一次反思，点了跳到记录）、
   反思记录（`changes` 逐行、没收下的折叠、下线那次标出）、性格档案（每条能「删」）、关系卡、最近 10 次上线和日记。
   `GET /api/inner` 读 `memory/inner/`（团子不在跑也能复盘），团子 `running` 时再取团子接口的 `/inner`（`Body.inner_snapshot`，经身体线程、3 秒超时），现在 / 性格以实时为准，取不到标"实时取不到"；
   `POST /api/inner/forget`：在跑转发 `/inner/forget`（`Body.forget`，live 才写 `persona.json`；dry-run 的团子只删内存里的，面板顺手把文件也改了），没在跑直接改 `persona.json`，启动 / 停止中拒绝；终端起的团子会先被接管、照样转发给它；`current.json` 在 3×`save_every` 内更新过（别处有团子在跑、面板探不到）也拒绝，免得它把删掉的写回去。
@@ -403,9 +404,9 @@ dir = "private/sandbox"
 设计见 `docs/superpowers/specs/2026-09-27-brain-claude-code-design.md`（身体部分见 `2026-09-27-brain-design.md`）。
 - **`run` 默认就是大脑模式**；`run --no-brain` 进旧的普通 Agent（`agent.py`），只留作调试（`--brain` 保留兼容，不用加）
 - 大脑 = 常驻的无界面 Claude Code（`claude -p` stream-json，订阅登录，`--model sonnet --effort low`）；身体的工具经本机 MCP 服务（`sky`）给它，
-  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / attention / move / check_friend / track / find / stop_task / panel_read / panel_press / panel_close
+  `--tools ""` 关掉所有内置工具，只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / attention / move / check_friend / track / find / stop_task / panel_read / panel_press / panel_close（开了 `[call]` 还有 `call`，开了 `[backstage]` 还有 `introspect`）
 - **和用户自己的 Claude Code 隔离**：单独配置目录 `.brain-claude/` + `claude setup-token` 生成的令牌（用户环境变量 `SKYDANGO_CLAUDE_TOKEN`）。
-  沿用用户登录会把用户的插件、钩子、技能一起加载进大脑（实测）。子进程里去掉 `ANTHROPIC_API_KEY`（有它时 `-p` 一定用它）
+  沿用用户登录会把用户的插件、钩子、技能一起加载进大脑（实测）。子进程里去掉所有 `ANTHROPIC_*`（`API_KEY` 在时 `-p` 一定用它；10-03 晚漏了 `ANTHROPIC_BASE_URL`，令牌被发到别的地址、连着 179 次 401）和用户自己的 OAuth 令牌
 - 眼睛 = 一次性 `claude -p --model haiku`：有人来 / 走、画面大变（隔 ≥20 秒）或 3 分钟没看时，把身体最近一帧写成文字；大脑醒来的消息里只有文字，要原图才 `look(image=true)`
 - `check_friend(x, y)`：点一下人物打开右侧好友树面板，截图交给大脑自己判断是不是好友，再按 ESC 关掉（用户确认）、恢复聊天面板（`game/friendtree.py`）。
   面板样子、好友和陌生人的面板怎么区分**未核对**，`[friend_check] enabled` 默认关；先用 `friend-check X Y` 手动核对，截图在 `runs/<…>/friend-check/`
@@ -416,7 +417,7 @@ dir = "private/sandbox"
   标出最后一轮是多久前（格式同 recall）；放系统提示词而不是第一条消息，自动压缩时不会被总结掉。dry-run 也带（只读）
 - `look_person(名字)`：按名字（容忍 OCR 错一两个字）找到这个人、裁出来给大脑看原图（"看我衣服好看吗"）；打开感知层用 YOLO 的框，
   否则按名字标签往下估一块（宽 3 倍、高 6 倍标签高，**未在真机核对**）；和 look 共用频率限制；找不到时告诉大脑现在认得出谁。
-  **被团子挡住时换角度**（`[peek]`，`brain/peek.py` 纯决策 + `Body._peek`，**未在真机验证**）：好友只有名字标签、标签压在团子框上（团子框 = YOLO 的 `self`，只信画面水平中间附近的）→
+  **被团子挡住时换角度**（`[peek]`，`brain/peek.py` 纯决策 + `Body._peek`；10-02 晚真机试过没转、裁到了团子自己（已修），修后还没触发过，要好友站到团子正后方专门测）：好友只有名字标签、标签压在团子框上（团子框 = YOLO 的 `self`，只信画面水平中间附近的）→
   在 `look_person` 里闭环：每按一下（`Camera.nudge` 左右 / `zoom_once` 拉近拉远）等画面停稳、看 YOLO 最新结果再定下一下；贴太近先拉远、转不动拉远再转、露出来太小就拉近（拉近后又挡住 / 出画面退一步）；
   **看完镜头不复位**（结果和 status 的"镜头："告诉大脑，要不要 `camera_reset` 它自己定）；status 里有"被你挡住：小明"。dry-run、黑屏、track 在跑时不转，只说被挡住了
   和团子框是同一个身体（`same_body`）的人物框不算他的身体（10-02 晚 22:26：团子身上的框挂上了他的名字，一看就"露出来了"、裁了团子自己的背影）；
@@ -460,14 +461,14 @@ dir = "private/sandbox"
   2026-09-29 真机 v4 感知层 dry-run：改之前 5 分钟醒 42 次，41 次是背景事件
 - 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火（他举蜡烛给团子点）和点亮（light：团子按 3 举蜡烛给没点火的黑影点）
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒：聊天交给 `[llm]`（DeepSeek）纯文字备用回复。
-  **额度用完**切 DeepSeek 备用大脑（`brain/deepseek.py`，spec `2026-10-03-deepseek-fallback-brain-design.md`；`[brain] fallback`，`force_fallback` 调试用、测完删掉）：同一套工具（看不到画面，看图的工具不给）、不自动切回 Claude。
+  **额度用完或认证出错**切 DeepSeek 备用大脑（`brain/deepseek.py`，spec `2026-10-03-deepseek-fallback-brain-design.md`；`[brain] fallback`，`force_fallback` 调试用、测完删掉）：同一套工具（看不到画面，看图的工具不给）、不自动切回 Claude。
   它每轮重发、不是常驻会话：带最近 `[brain] fallback_history`（8）轮的唤醒消息（每轮截 1500 字、总共 12000 字）和"你这一轮说了 / 做了什么"（10-04，10-03 晚不带时同一句话隔 8 秒说两遍）；`FALLBACK_NOTE` 里多了别重复、recall 查不到别编、说做动作就真调 emote
 - Claude 总闸（10-04，spec `2026-10-04-claude-gate-design.md`）：额度 / 认证错后这次运行里不再起 claude：大脑切 DeepSeek（认证错也切）、随手记 / 整理 / 反思改走 DeepSeek、眼睛和装扮描述停用；整理 notes 失败 10 分钟内不再试。
   一次运行一个闸（`brain/claude.py` 的 `ClaudeGate`，`cli._run_brain` 建好交给大脑循环、`GatedLlm`、`gated_describe`）；备用是 `[llm]`、`max_tokens` 取 `[brain] fallback_max_tokens`、超时至少 `[inner] reflect_timeout`；下线那次反思 Claude 和备用都压到 `_final_timeout`（管理面板 `stop_timeout` − 25 秒，备用不重试），免得被强杀丢日记；
   `force_fallback` 只换大脑、不关闸；沙盒自己的场景描述不接闸；`memory update` 等单独的一次性命令不接闸；不切回（额度恢复了要重启）。**还没在沙盒里验证**（spec §8 四步）
 - `say` 拦重复（10-04）：10 分钟内说过几乎一样的话（`similar` 0.85）拦下、告诉大脑"你刚说过「…」"，Claude 大脑也一样；手动控制不管
 - 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；Claude 额度用完 / 认证失败（总闸关上，见上）后改走 DeepSeek（`[llm]`）
-- 退出：身体先恢复轮盘、再复原镜头（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code
+- 退出：身体先恢复轮盘、再复原镜头（不等大脑）→ 输入法切回 → 开了反思（`[inner] reflect`，默认）走最终反思写日记和要点（见「内心层」第 2 期），`reflect = false` 时 live 才让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code
 - 调提示词时开管理面板「真机团子」页：大脑控制台能看到每一轮它收到了什么、调了什么工具、工具返回了什么（见「团子的接口」）；
   手动控制栏能绕过大脑直接试身体的工具（身体方法的 `live=True`），大脑会收到 `manual` 事件
 - 前提：`pip install --user mcp`；运行一次 `claude setup-token` 并 `setx SKYDANGO_CLAUDE_TOKEN "<令牌>"`
@@ -475,7 +476,7 @@ dir = "private/sandbox"
 ## 看场合主动开口（`[proactive]`，大脑模式）
 
 设计见 `docs/superpowers/specs/2026-09-29-proactive-chat-design.md`，计划 `docs/superpowers/plans/2026-09-29-proactive-chat.md`。
-远期目标是把团子做成有存在感的**游戏里的伙伴**（像 Neuro-sama，但不做主播）；这是第一步：看到了就有话说。**还没在真机上跑过，数字都是估的**（spec「真机验证」四步）。
+远期目标是把团子做成有存在感的**游戏里的伙伴**（像 Neuro-sama，但不做主播）；这是第一步：看到了就有话说。**已在真机 live 里默认开着跑过（9-30 起），spec「真机验证」清单没逐条走，数字都是估的**（spec「真机验证」四步）。
 - **眼睛挑新鲜事**：自动看时附上上一份描述（≤ `prev_max_age`），多要一项“新鲜事”（天黑了、好友换装 / 弹琴、篝火……），身体放 `notice` 事件叫醒大脑；
   认地图的地名从一个变成另一个也发（"看起来到了雨林"）。大脑自己 `look` 不发；`notice_min` 内、和上一条一样、没熟人、主动额度用完都不发（省额度）。好友在身边时眼睛 `auto_look_busy`（60 秒）看一次
 - **场合**（`brain/occasion.py`，纯计算）：热闹 / 安静 / 没熟人 + 上次主动开口有没有人接 + 还能主动说几句，写进 `status`（网页、管理面板卡片也有）。
@@ -490,7 +491,7 @@ dir = "private/sandbox"
 
 设计见 `docs/superpowers/specs/2026-09-30-body-reflex-design.md`，计划 `docs/superpowers/plans/2026-09-30-body-reflex.md`。
 "让团子活着"四个子项目的第一个（反射 → 关系账 → 情绪 → 性格语气，见 spec 开头）。大脑一轮要几秒到十几秒，常见时刻由身体按规则当场反应，大脑再补上说什么。
-**还没在真机上跑过，数字都是估的**（spec「真机验证」四步）。
+**已在真机 live 里默认开着跑过（9-30 起），spec「真机验证」清单没逐条走，数字都是估的**（spec「真机验证」四步）。
 - **判断在跟团子说话**（`brain/reflex.py` 的 `addressed()`，先从严）：好友说的，且叫了 `[proactive] self_names`、或团子说完 `followup_window`（30 秒）内、或身边只有他一个好友；陌生人、`#` 命令不算
 - **输入气泡**：身体读到这样的消息当圈就 `sender.open()`（先 `panel.before_speak()`），头顶冒"正在输入"；大脑 `say` 直接用这个框发。
   关框：大脑"开框之后才开始的那一轮"结束了没说话（`Brain.last_turn` → `body.brain_turn`）、开了 `bubble_max`（45 秒）、**任何按键 / 点屏幕之前**（`clear_view` 里统一关，`say` 除外；`panel_press` / `panel_close` 也关）、有互动请求要接（`clear_view("social")`）。
@@ -504,7 +505,7 @@ dir = "private/sandbox"
 ## 按 Q 喊一声（`[call]`，大脑模式，要配合 `[perception]`）
 
 设计见 `docs/superpowers/specs/2026-10-01-q-call-design.md`，计划 `docs/superpowers/plans/2026-10-01-q-call.md`，操作见 game-ops「呼喊找好友」「呼唤特效」。
-起因：好友稍远一点头顶的名字标签就淡掉（人还在画面里），只有按 Q 才亮出来约 5 秒；以前标签一淡就被判成陌生人、5 秒后"走开了"。**代码已完成，还没在真机上跑过，数字都是估的**（spec §6 真机验证六步）。
+起因：好友稍远一点头顶的名字标签就淡掉（人还在画面里），只有按 Q 才亮出来约 5 秒；以前标签一淡就被判成陌生人、5 秒后"走开了"。**10-02 / 10-03 晚真机跑过：手动喊通过，自动兜底不勤了（10-03 晚自动喊 4 次、`auto_again` 挡了 2 次），但只认回 1 次；数字都是估的**（spec §6 真机验证六步没逐条走）。
 - **轨迹续命**（`[perception] sticky_names`，平时就生效）：挂过名字标签的 `player` 轨迹只要这一帧还接得上就刷新"在身边"；轨迹断了（`track_buffer`）才开始算 `keep` 5 秒；只靠低分框续着的最多续 5 秒（`LOW_ONLY_MAX`，见「追踪和接回」）。按外观认的 `maybe`、黑影不续
 - **贴边标签**（`[perception] edge_band = 0.06`）：名字标签贴在屏幕最左 / 最右、又没挂上人 = 好友在画面外：**不算在身边**（不刷新 `last_seen`、不挂圆圈），
   但 `labels` 照记（盯人 track 靠它往画面外转——和 spec §1.3 不同，见计划「偏离 spec」）；`edge_band = 0` 照旧
@@ -513,7 +514,7 @@ dir = "private/sandbox"
 - **身体喊一声**（`Body.call_out(reason)`）：没开 / 没感知层 / 黑屏 / `min_gap`（20 秒，卡洛 `#` 命令窗口里大脑不受限）/ dry-run（不按，照样计间隔）→ 不按；
   `clear_view("call")` 关掉身体开的输入框，`ime_shown()` 还开着就拒绝（Q 会变成打字）；`panel.borrow("call")` 里拍基准、`hw_key(16)` 短按、连拍 `burst` 1 秒、`env.called(at)`
 - **光圈认团子**（`[call] halo`，**默认关**）：连拍里按键（命令发出前记的时间）后 0~0.8 秒头顶区域比基准亮 `halo_rise` 以上、恰好一个人、在画面中间（`halo_center`）→ 写 `env.self_box`（YOLO 已经认出一个团子就不覆盖；和 self 框重叠的 player 框算同一个人）；
-  别人也在喊 / 镜头刚动过 / 喊之前聊天面板开着（关面板时画面横移）/ 没有新鲜的人物框 / 黑屏就放弃，**不为确认再按**。认错 = 把一个好友当成团子过滤掉，所以先 `perception halo-eval tmp/record/q-call-20260930-c` 定 `halo_rise`、真机核对再开
+  别人也在喊 / 镜头刚动过 / 喊之前聊天面板开着（关面板时画面横移）/ 没有新鲜的人物框 / 黑屏就放弃，**不为确认再按**。认错 = 把一个好友当成团子过滤掉，10-03 跑了 `perception halo-eval tmp/record/q-call-20260930-c`，信号太弱定不出门槛（团子光圈只升 7~8、噪声 6.5），继续关着，要换算法
 - **自动兜底**（`[call] auto`，`Body._watch_call`）：好友 `auto_after_leave`（30 秒）内走开、还没回来、这次走开没为他喊过，画面里有没挂名字的人，`auto_window` 1 分钟最多 `auto_quota` 3 次（10-02 晚从 10 分钟改的；还受 `min_gap` 20 秒限制）；喊一声认回来的好友 `auto_again`（5 分钟）内不再为他自动喊（10-03，他多半一直站在稍远处、标签淡了而已）；
   输入框开着、技能在跑、有互动请求、在举蜡烛、别的面板开着、刚做完动作、大脑在回聊天、黑屏都不喊；dry-run 只记日志。喊完不等，窗口结束后放**背景事件** `call`（"你下意识喊了一声：认出 小明（右边·远）…"），
   认回来的好友照常 `return` 抵消那条 `leave`。
@@ -526,7 +527,7 @@ dir = "private/sandbox"
 ## 冷场时的心理活动（`[lull]`，大脑模式）
 
 设计见 `docs/superpowers/specs/2026-10-01-lull-musing-design.md`，计划 `docs/superpowers/plans/2026-10-01-lull-musing.md`。
-起因：沙盒里好友安静下来后团子一直不说话，大脑只写“不说：等卡洛回”，心里太平静。**代码已完成，还没用真 Claude / 真机跑过，数字都是估的**（spec「用真 Claude 在沙盒验证」四步）。
+起因：沙盒里好友安静下来后团子一直不说话，大脑只写“不说：等卡洛回”，心里太平静。**已在真机 live 和沙盒里默认开着跑过（日志里见过冷场叫醒），spec「用真 Claude 在沙盒验证」四步没逐条走，数字都是估的**。
 - **两种冷场**（`inner/lull.py` 的 `LullTracker`，纯计算、墙钟）：① 好友在身边不说话了：最后一句（谁说的都算）过去 `stages[0]` 秒、这句之前 `talk_window` 秒内有好友说过话、他还在身边；
   ② 聊着聊着走了：好友走开时他 `leave_spoke` 秒内说过话、或团子 `leave_said` 秒内说过话。说话人按 `similar(…, 0.75)` 模糊匹配（OCR 错字），看不出是谁的不算好友
 - **节点**：`stages`（60 / 180 / 360 秒）各放一次立刻叫醒的 `lull` 事件（不在 `BACKGROUND` 里，不受心跳退档影响）；② 走开先照旧发背景 `leave`，`leave_grace`（15 秒）还没回来才叫醒一次（名字标签闪一下不算，宽限内回来 `leave` / `return` 照旧互相抵消），之后用后两个节点；
@@ -548,7 +549,7 @@ dir = "private/sandbox"
 
 设计见 `docs/superpowers/specs/2026-09-30-inner-phase1-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase1.md`。
 "让团子活着"的内在部分，统一放在一个内心层里，分三期：**1 账本**（这一期：关系卡 + 日子，不调模型）→ 2 反思（心情、精力、心愿、日记，接上后果）→ 3 性格（口头禅、老梗、放开太乖的规则）。
-代替了反射 spec 开头列的子项目 2~4。**还没在真机上跑过，数字都是估的**（spec「真机验证」五步）。
+代替了反射 spec 开头列的子项目 2~4。**已在真机 live 里默认开着跑过（9-30 起），spec「真机验证」清单没逐条走，数字都是估的**（spec「真机验证」五步）。
 - **关系卡**（只给好友，名字 = friends.md 的 `## 标题`，OCR 错字按最像的好友归）：第一次见、上次在身边、见过几次（离上次超过 `visit_gap` 30 分钟再出现才算新的一次，名字标签闪一下不多算）、
   哪几天、一共 / 今天待了多久（单圈最多 `max_step` 秒）、说过几句 / 跟团子说的几句（反射的 `addressed()`）、他最后一句
 - **日子**：每次上线一行（开始、结束、见到谁、听到 / 说了几句、下线前大脑写的经过）；live 时每 `save_every` 秒写 `current.json`，被强杀后下次启动补一行"意外断了"；退出时身体收尾后、大脑写经过前先落一次账（`checkpoint`），写经过时被强杀也算正常下线
@@ -560,7 +561,7 @@ dir = "private/sandbox"
 - **只在 `--live` 写盘**；dry-run 内存里照记（status 是真的），回填、补意外结束都只在内存里。`memory show` 多打印关系卡和最近 10 次上线（只读）
 - `enabled = false` 完全照旧；管理面板有 `inner.enabled` 开关
 
-**第 2 期：反思**（设计见 `docs/superpowers/specs/2026-09-30-inner-phase2-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase2.md`；**还没在真机上跑过，数字都是估的**，spec「真机验证」四步）
+**第 2 期：反思**（设计见 `docs/superpowers/specs/2026-09-30-inner-phase2-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase2.md`；**已在真机 live 里默认开着跑过（9-30 起），spec「真机验证」清单没逐条走，数字都是估的**，spec「真机验证」四步）
 - **精力**（`energy.py`，身体每圈现算，不存盘）：几点（白天满、深夜低）− 连着挂了多久（离上次下线不到 `rest_gap` 算没睡、接着累）+ 最近 10 分钟有好友跟团子说话 − 最近一小时热闹太久；四档 精神 / 还行 / 有点累 / 困
 - **反思**（`reflect.py`，一次性 `claude -p`，`[inner] reflect_model` 默认 sonnet，后台线程，结果回身体线程套进 `Mind`）：有动静时每 `reflect_every`（20 分钟）、好友说够 6 句后安静 3 分钟、下线时各一次；
   材料是上次以来的聊天原话、来去、相关好友的关系卡、friends.md 里他们那一节（日记里的称呼、性别照它，`friend_sections`）和笔记、人设、精力。回 JSON：心情（开心 / 平常 / 低落 / 烦 + 一句带原因的话）、别扭、心愿增删；下线那次再加日记和要点。Claude 额度用完 / 认证失败（总闸关上，见「统管大脑」）后改走 DeepSeek（`[llm]`），失败沿用上一份
@@ -571,7 +572,7 @@ dir = "private/sandbox"
 - **下线**：`checkpoint` → 最终反思（材料是这次上线的全部聊天，最多 80 行；超时压到 `console.stop_timeout − 25` 秒）写日记（`diary.md`，每次下线一段，「日子」取最后一段、带日期）和要点（inbox.md、`days.jsonl` 的经过）→ `close`，**不再让大脑写经过**；`reflect = false` 照第 1 期
 - 只在 live 写 `mind.json` / `diary.md` / inbox；dry-run 照样反思（管理面板里看得到），不写盘；管理面板有 `inner.reflect` 开关
 
-**第 3 期：性格**（设计见 `docs/superpowers/specs/2026-09-30-inner-phase3-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase3.md`；**还没在真机上跑过，数字都是估的**，spec「真机验证」五步）
+**第 3 期：性格**（设计见 `docs/superpowers/specs/2026-09-30-inner-phase3-design.md`，计划 `docs/superpowers/plans/2026-09-30-inner-phase3.md`；**已在真机 live 里默认开着跑过（9-30 起），spec「真机验证」清单没逐条走，数字都是估的**，spec「真机验证」五步）
 - **性格档案**（`persona.py`，`memory/inner/persona.json`）：口头禅（`catchphrases_max` 5）、和某个好友的老梗（每人 `jokes_per_friend` 3、总共 `jokes_max` 20）、看法（一个话题一句，`opinions_max` 10）。
   反思（`persona` 开着时系统提示词接上 `PERSONA_SYSTEM`、材料带「你攒下的性格」）顺带给 `persona_add` / `persona_used`；**代码守的规矩**（`Persona.apply`）：提示词要 30 字（话题 10 字），超一点整句收下，超过 40 字（话题 15 字）整条不记、不截半句、带敏感词（胖瘦丑矮、长相身材脸、爸妈家里、成绩考试分数作业老师、几岁年纪年龄今年岁、学校班小学生初中高中、本名 QQ 微信、哭）/ 难过类的话（`DISTRESS`）/ 声称是真人的话（`claims_human`）的丢；口头禅和看法里**不许提好友名字**（人只进老梗）、
   老梗只挂在一起玩过 ≥ `grudge_min_days` 天的好友名下（OCR 错字按最像的好友归）、收着点的人不记新老梗、几乎一样的不重复加、同话题换立场；超上限只在旧条目里挤（这次新记的不挤）：先删 `hits` 最少的、再删最久没用的；换了立场算刚用过；`fade_days`（14 天）没用就淡出（启动时和每次套完）；启动时 `prepare` 按现在的规矩把旧条目再筛一遍、手写的 `since = 0` 当作现在记的
@@ -585,7 +586,7 @@ dir = "private/sandbox"
 ## 幕后（`[backstage]`，大脑模式）
 
 设计见 `docs/superpowers/specs/2026-10-01-backstage-design.md`，计划 `docs/superpowers/plans/2026-10-01-backstage.md`。
-像 Neuro-sama 和 Vedal：团子知道自己是 AI、卡洛（`[brain] owner_name`）做了她，能跟卡洛聊自己怎么运作。**默认关**（公开仓库），**还没用真 Claude 验证**（spec §7 五步，在沙盒里做）。
+像 Neuro-sama 和 Vedal：团子知道自己是 AI、卡洛（`[brain] owner_name`）做了她，能跟卡洛聊自己怎么运作。**代码默认关**（公开仓库）；本机 `config.toml` 开着，10-01 真机试过、10-03 晚备用大脑也调过 `introspect`（spec §7 五步没逐条走）。
 - **提示词**：「## 身份」整节换成「## 幕后」（`brain/backstage.py` 的 `section`）：事实（脑子 / 眼睛 / 反思的模型名取配置，身体、记忆文件、沙盒是什么）+ 三档：
   卡洛（名字一字不差）完全出戏、能聊深的、半开玩笑的存在主义；**知情好友**（friends.md 他那一节写「知道团子是 AI」，代码不解析、模型自己读）大方承认是 AI、开玩笑，不聊深；其他人照原来的「身份」规则。
   `owner_name` 为空时没有卡洛那一档。「底线」一节、`_CLAIMS_HUMAN` 硬过滤不变；陌生人看不到好友之间的聊天，所以不管旁人
@@ -599,11 +600,11 @@ dir = "private/sandbox"
 
 设计见 `docs/superpowers/specs/2026-09-30-brain-sandbox-design.md`，计划 `docs/superpowers/plans/2026-09-30-brain-sandbox.md`。
 不开 MuMu，让**真的大脑 + 身体 + 内心层**接一个假世界：冒充好友说话、造来去、快进时间，看团子的反应和心里；调性格和提示词用。
-**代码已完成，只用 fake_claude 在浏览器里核对过，还没用真 Claude 跑过**（spec「验证」四步，见下）。
+**已用真 Claude 跑过，但 spec「验证」四步（见下）没逐条走**。
 - **拆出世界**（`brain/world.py`）：`cli._run_brain(cfg, run, world=None, …, on_ready, trace, *, no_emotes)` 只管组装；`World` 给设备、读聊天、身边、轮盘、说话、走路……和 `clock` / `wall`。
   真机是 `cli._game_world`（原样搬的，`world=None` 时在检查完令牌之后才建），沙盒是 `sandbox/world.py` 的 `sandbox_world`。身体、事件队列、眼睛、反思器、大脑循环、账本都用 world 的钟
 - **沙盒世界**：模拟时钟 `SimClock`（只往前拨；起始时间不早于 `clock.json` / 沙盒 `days.jsonl` 最后一次下线）、中灰截图（不算黑屏）、队列读聊天、名单当身边、手写场景当眼睛（空 = 看不清，不调 Haiku）；
-  说话 / 动作 / 走路 / 气泡都写进沙盒聊天记录（`sandbox/transcript.py`）；没有镜头、好友树、面板、互动请求（工具回"沙盒里没有这个"）；`look` / `look_person` 只给文字（`World.text_only`）
+  说话 / 动作 / 走路 / 气泡都写进沙盒聊天记录（`brain/transcript.py`，和真机共用）；没有镜头、好友树、面板、互动请求（工具回"沙盒里没有这个"）；`look` / `look_person` 只给文字（`World.text_only`）
 - **总是 live，但只写 `sandbox/memory/`**（`[sandbox] dir`，整个 `sandbox/` 不进 git）：真的 `memory/` 永远不碰（端到端测试比 sha256）；
   沙盒记忆目录和 `reply.memory_dir` 重合（相同或互相包含，比如 `dir = "."`）时，重置和启动都拒绝。`--duration` 按真实时间，快进不会提前下线。随手记、反思、日记都真的调 Claude，和真机一样花额度
 - **子进程** `python -m skydango sandbox --port 19392 [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]`：只给 JSON 接口（`sandbox/server.py`：`/status` `/state` 长轮询 `/op` `/brain` `/inner` `/inner/forget` `/shutdown`，本机 Host + `post_guard`）；
@@ -622,7 +623,7 @@ dir = "private/sandbox"
   - 好友一直在身边时快进超过 `visit_gap`，关系卡会多记一次"见过"
   - 回放时的操作不录；回放完接着手动玩的从 `memory = "keep"` 起录，存不成"回放 + 手动"一整个剧本
   - 额度用完时 idle 不看事件队列（大脑醒不来，事件会一直积着）：回放照样往下走、报告里那一步标"额度用完"，这段时间团子的反应其实没测到
-- **要用真 Claude 验证**（spec「验证」，都没做）：
+- **spec「验证」四步**（用真 Claude 跑过，但没逐条对着走）：
   1. 重置记忆、启动，冒充好友聊几句：聊天记录、"现在"、大脑时间线都在动
   2. 快进到 23:30：精力变困、主动开口变少（聊天记录里 blocked 或干脆不说）；额度用完时顶上写"额度用完，约 N 分钟后再试"
   3. 回放「放鸽子」（换成本机好友名、要一起玩过 3 天以上的老朋友）：报告里有别扭、说难过后撤掉；反思改了什么进聊天记录（"── 反思：… ──"）；「内心」页切沙盒看流水账和曲线
@@ -648,7 +649,9 @@ python -m skydango camera spin [--turns N] [--seconds S]  # 转一圈、边转�
 python -m skydango friend-check X Y       # 点一下人物打开好友树、截图、再关掉（核对面板和关法），图在 tmp/friend-check/
 python -m skydango memory init|show|update # 记忆：生成人设 / 好友文件、查看、立刻整理
 python -m skydango env                    # 对当前画面识别一次环境（身边有谁、在哪）
-python -m skydango a11y [--watch 秒] [--all]  # 读游戏的无障碍节点：聊天行、头顶名字等 UI 文字 + 坐标（不发输入）
+python -m skydango a11y [--watch 秒] [--all] [--save 文件]  # 读游戏的无障碍节点：聊天行、头顶名字等 UI 文字 + 坐标（不发输入）；--save 存原始快照给回放测试（配 --watch）
+python -m skydango ime on|off|status      # 输入法：切到 ADBKeyboard / 切回搜狗（或 [device] user_ime）/ 看当前
+python -m skydango record [--seconds 60] [--fps 5] [-o 目录]  # 连续截图存 tmp/record/<时间>，观察界面变化、录训练素材
 python -m skydango perception bench [--model yolo11n.pt] [--images 目录]  # YOLO 测速（没训练前用官方模型看硬件）
 python -m skydango perception detect [图片]  # 跑一遍 YOLO 感知，标注图 tmp/perception.png
 python -m skydango perception label <录像目录> [--preview] [--model 模型]  # 弱标注（+ 模型预标注）→ datasets/sky（YOLO 格式）
