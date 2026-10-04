@@ -1811,6 +1811,54 @@ def test_flame_under_friend_tag_is_ignored(monkeypatch):
     assert LIGHT_KEY not in w.requests
 
 
+def spy_scans(monkeypatch):
+    """记下每次交给 FlameWatch.scan 的 (flames, extra)。"""
+    from skydango.vision import lighting
+
+    calls, orig = [], lighting.FlameWatch.scan
+
+    def spy(self, now, me, area, flames, person_at, shift=(0.0, 0.0), extra=()):
+        calls.append((list(flames), list(extra)))
+        return orig(self, now, me, area, flames, person_at, shift=shift, extra=extra)
+
+    monkeypatch.setattr(lighting.FlameWatch, "scan", spy)
+    return calls
+
+
+def test_flame_under_friend_tag_goes_to_extra(monkeypatch):
+    """10-03 233045：名字标签下面的火焰不出请求，但交给 FlameWatch 当 extra（举着蜡烛时他站在好友身后照样认）。"""
+    calls = spy_scans(monkeypatch)
+    under = Disk(1045, 400, 20.0, 0.95)
+    w, det, clock = light_watcher(monkeypatch, [under])
+    w.ocr = FakeOcr({110: "懒洋洋大王"})
+    det.frames = [[self_det(), tag(990, 110, y=300)]]
+    run(w, 0.0, clock)
+    assert calls[-1] == ([], [under])
+
+
+def test_weak_flames_go_to_extra_and_search_floor_is_lit_weak(monkeypatch):
+    """分数在 LIT_WEAK ~ disk_min_score 之间的火焰交成 extra（只给举着蜡烛时他那团接续）；找火焰的门槛放到 LIT_WEAK；更低的不要。"""
+    from skydango.vision.lighting import LIT_WEAK
+
+    calls, floors = spy_scans(monkeypatch), []
+    strong, weak, faint = Disk(1045, 480, 20.0, 0.9), Disk(1100, 480, 20.0, 0.62), Disk(1150, 480, 20.0, 0.5)
+    w, det, clock = light_watcher(monkeypatch, [None])
+    monkeypatch.setattr(perception_mod, "find_flames", lambda frame, area, flame, s: floors.append(s) or [strong, weak, faint])
+    det.frames = [[self_det()]]
+    run(w, 0.0, clock)
+    assert floors == [LIT_WEAK] and calls[-1] == ([strong], [weak])
+
+
+def test_weak_flame_on_open_panel_is_dropped(monkeypatch):
+    """聊天面板、篝火挡着的弱火焰也不要（只有名字标签下面的才进 extra）。"""
+    calls = spy_scans(monkeypatch)
+    w, det, clock = light_watcher(monkeypatch, [Disk(600, 480, 20.0, 0.62)])  # 面板右边到 x = 643
+    det.frames = [[self_det(Rect(700, 500, 100, 250))]]
+    clock.t = 0.0
+    w.process(frame(), 0.0, panel_visible=True)
+    assert calls[-1] == ([], [])
+
+
 def test_unread_tag_does_not_exclude(monkeypatch):
     w, det, clock = light_watcher(monkeypatch, [Disk(1045, 400, 20.0, 0.95)])
     det.frames = [[self_det(), tag(990, 110, y=300)]]  # 名字没认出来（FakeOcr 空表）
@@ -1918,8 +1966,10 @@ def test_scene_watcher_loads_flame_only_for_brain(monkeypatch, tmp_path):
     assert cli._scene_watcher(cfg, run=run).light_dir is None
 
 
-def lit_setup(monkeypatch, flames, black_seq=(0.9,)):
-    """团子身边火焰够久、出请求，身体举蜡烛（mark_tried）；black() 依次返回 black_seq（用完了一直返回最后一个）。"""
+def lit_setup(monkeypatch, flames, black_seq=(0.9,), seen_after=True):
+    """团子身边火焰够久、出请求，身体举蜡烛（mark_tried）；black() 依次返回 black_seq（用完了一直返回最后一个）。
+    seen_after：举起后看到过一次他的火焰（真跑时举起后火焰总会再亮一会儿；这组测试看的是火焰没了以后怎么判，
+    举起后一次都没看到的见 test_lit_none_when_flame_never_seen_after_raise）。"""
     w, det, clock = light_watcher(monkeypatch, flames)
     seq = list(black_seq)
     monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: seq.pop(0) if len(seq) > 1 else seq[0])
@@ -1927,7 +1977,17 @@ def lit_setup(monkeypatch, flames, black_seq=(0.9,)):
     run_frames(w, clock, 0.0, 3.1)
     cid = w.requests[LIGHT_KEY].track
     w.mark_tried(cid)
+    w.flames.lighting.seen = seen_after
     return w, det, clock, cid
+
+
+def test_lit_none_when_flame_never_seen_after_raise(monkeypatch):
+    """10-03 晚 232605 / 233058：火焰举起前就没了、举起后一次都没看到：不判点亮，满 lit_min + lit_vanish 判走开（放下、不鞠躬）。"""
+    w, det, clock, cid = lit_setup(monkeypatch, [FLAME], seen_after=False)
+    no_flames(monkeypatch)
+    det.frames = [[self_det()]]
+    run_frames(w, clock, 3.2, 5.5)
+    assert w.lit(cid, 3.1) is None
 
 
 def test_mark_tried_removes_request_and_blocks_new_ones(monkeypatch):
@@ -2018,6 +2078,7 @@ def test_lit_without_dark_sighting_does_not_speed_up(monkeypatch):
     run_frames(w, clock, 0.0, 3.1)
     cid = w.requests[LIGHT_KEY].track
     w.mark_tried(cid)
+    w.flames.lighting.seen = True  # 举起后看到过一次他的火焰（同 lit_setup）
     assert w.flames.lighting.black0 is None and w.flames.lighting.dark_box is None
     no_flames(monkeypatch)
     monkeypatch.setattr(perception_mod, "black", lambda f, box, v, exclude=None: 0.05)
@@ -2205,6 +2266,7 @@ def test_diag_images_and_summary(monkeypatch, tmp_path):
     w.light_done("timeout")
     s = json.loads((d / "summary.json").read_text(encoding="utf-8"))
     assert s["clue"] == cid and s["result"] == "timeout" and s["black_raised"] is not None
+    assert s["seen"] is True and s["darkest"] is not None  # 火焰一直在：举起后看到过；下面的黑影量得到
     run_frames(w, clock, 5.3, 6.0)
     assert len(sorted(d.glob("raised-*.jpg"))) == len(raised)  # 结束后不再存
 

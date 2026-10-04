@@ -32,7 +32,7 @@ CASES = {  # 存图目录 → 实际结果（看存图判的，见 spec §0；10
     "20261002-220018-live-brain/light/221839": "lit",
     # 10-03 晚：举起后只存了一两张图、看不出亮没亮的记 timeout（存图到头还没判 lit 就对：没依据别判点亮）
     "20261003-204518-live-brain/light/204557": "lit",  # +2.0 亮了；人挤，旧判定配对跳到别人的火焰、判成走开
-    "20261003-204518-live-brain/light/204706": "lit",
+    "20261003-204518-live-brain/light/204706": "timeout",  # 1.7 秒判 lit 是对的，但存图只到 +0.8：回放里只要求别判错
     "20261003-210211-live-brain/light/210350": "timeout",  # 举起前约 1 秒火焰就没了，之后没存到他
     "20261003-210211-live-brain/light/212739": "lit",  # 约 +4 秒亮了；深色衣服 black 0.58，旧判定当成还黑着多等
     "20261003-210211-live-brain/light/212754": "lit",
@@ -98,7 +98,11 @@ def main() -> None:
                 "people": people,  # [x, y, w, h, 是不是 player_unlit, 分数, black()]
             })
         frames.sort(key=lambda f: f["t"])
-        out[d.split("/")[-1]] = {"expect": expect, "frames": frames}
+        sp = repo / "runs" / d / "summary.json"  # 10-02 早的几次还没有
+        summary = json.loads(sp.read_text(encoding="utf-8")) if sp.is_file() else {}
+        # 运行时那条线索最后看到火焰的时间（相对举起）和位置：存图稀，举起前的火焰可能一张都没存下来
+        out[d.split("/")[-1]] = {"expect": expect, "frames": frames,
+                                 "flame_last": summary.get("flame_last"), "flame_pos": summary.get("flame_pos")}
         print(d, expect, len(frames))
     path = Path(__file__).parent / "data" / "light_replay.json"
     path.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -37,11 +37,12 @@ def raised(watch=None, at=HOME, who=nobody):
     return watch, clue.id
 
 
-def scans(watch, start, end, flames=lambda t: [], who=nobody, who_at=None):
-    """从 start 到 end 每 0.3 秒扫一次，返回每次扫完的判定 [(t, 结果)]。who_at(t)：随时间变的"下面那个人"。"""
+def scans(watch, start, end, flames=lambda t: [], who=nobody, who_at=None, extra=lambda t: []):
+    """从 start 到 end 每 0.3 秒扫一次，返回每次扫完的判定 [(t, 结果)]。who_at(t)：随时间变的"下面那个人"。
+    extra(t)：这一帧平时不算的火焰候选（落在好友名字标签下面的、分数不到 disk_min_score 的）。"""
     out, t = [], start
     while t <= end + 1e-9:
-        watch.scan(t, ME, AREA, flames(t), who_at(t) if who_at else who)
+        watch.scan(t, ME, AREA, flames(t), who_at(t) if who_at else who, extra=extra(t))
         out.append((round(t, 2), watch.verdict(watch.lighting.clue, 0.0, t, stale=0.8)))
         t += 0.3
     return out
@@ -287,3 +288,93 @@ def test_pan_keeps_lantern_static():
         watch.scan(0.3 * k, ME, AREA, [disk((LANTERN[0] - 400 + dx, LANTERN[1]), 0.72)], nobody, shift=(200, 0) if k == 10 else (0, 0))
     (c,) = watch.clues
     assert c.static and c.moved < 1
+
+
+# ---- 10-03 晚真机复盘（docs/progress/2026-10-03-plan.md「10-03 晚真机复盘」）----
+def test_flame_never_seen_after_raise_is_not_lit():
+    """(a) 举起之前火焰就没了、举起后一次都没看到（232605 / 233058 / 210350 都是举起前约 0.5~1 秒就没了）：
+    不知道是被别人点了还是走了，不能判点亮；lit_min + lit_vanish 之后放下、不鞠躬。"""
+    for who in (nobody, person(blk=0.9), person(blk=None)):
+        watch, _ = raised(who=who)
+        res = scans(watch, 0.1, 3.0, who=who)
+        t, r = first_decision(res)
+        assert r is None and t >= CFG.lit_min + CFG.lit_vanish - 1e-9
+
+
+def test_seen_once_after_raise_then_vanishes_is_lit():
+    """(a) 举起后看到过一次他的火焰、之后原地没了：照旧判点亮。"""
+    watch, _ = raised()
+    res = scans(watch, 0.1, 3.0, flames=lambda t: [disk()] if t < 0.2 else [])
+    assert first_decision(res) == (1.0, True)
+
+
+def test_target_flame_under_friend_label_keeps_waiting():
+    """(b) 233045：他站在好友身后，火焰落在好友名字标签下面被感知层排除了——举着蜡烛时他那团照样认，不当成没了。"""
+    watch, _ = raised()
+    res = scans(watch, 0.1, 6.0, extra=lambda t: [disk()] if t < 3.0 else [])
+    assert first_decision(res) == (3.7, True)  # 最后看到 2.8，3.4 只隔 0.6 秒，3.7 判出
+
+
+def test_extra_flames_never_make_clues():
+    """(b) 名字标签下面的火焰（好友举蜡烛给团子点火的圆圈）、分数不够的平时照旧不算：不出线索、不出请求。"""
+    watch = FlameWatch(CFG)
+    for k in range(20):
+        watch.scan(0.3 * k, ME, AREA, [], nobody, extra=[disk()])
+    assert watch.clues == [] and watch.ready(5.7) is None
+
+
+def test_other_flame_close_by_is_not_his():
+    """(c) 204557：人挤，他原地亮了，旁边另一个黑影的火焰离他 0.35 倍框高——不能把那团当成他的（会一直等、或者跟着它走判成走开）。"""
+    watch, _ = raised()
+    other = (HOME[0] - round(0.35 * ME.h), HOME[1])
+    res = scans(watch, 0.1, 3.0, flames=lambda t: [disk()] if t < 0.5 else [disk(other)])
+    assert first_decision(res) == (1.3, True)
+
+
+def test_walking_target_still_followed():
+    """(c) 收紧配对后，他边走边等（每 0.3 秒挪 0.15 倍框高）照样跟得上：火焰一直在 = 接着等。"""
+    watch, _ = raised()
+    step = 0.15 * ME.h / 0.3
+    res = scans(watch, 0.1, 2.5, flames=lambda t: [disk((round(HOME[0] - step * t), HOME[1]))])
+    assert first_decision(res) is None and watch.lighting.misses == 0
+
+
+def test_dark_clothes_dropped_enough_is_lit():
+    """(d) 212739：深色衣服，点亮后 black() 还有 0.58（≥ lit_black），但比他黑着时（0.85）降了 lit_drop 以上：算点亮。"""
+    watch, _ = raised(who=person(blk=0.85))
+    res = scans(watch, 0.1, 4.0, flames=lambda t: [disk()] if t < 0.5 else [],
+                who_at=lambda t: person(blk=0.85 if t < 0.5 else 0.58, unlit=False))
+    assert first_decision(res) == (1.3, True)
+
+
+def test_still_dark_wait_has_a_cap():
+    """(d) 火焰原地没了、下面的人一直量得黑（深色衣服又没降够 / 量的是别人）：最多等 LIT_DARK_WAIT 秒，之后照样判点亮，不举满 light_timeout。"""
+    from skydango.vision.lighting import LIT_DARK_WAIT
+
+    watch, _ = raised(who=person(blk=0.9))
+    res = scans(watch, 0.1, 6.0, flames=lambda t: [disk()] if t < 0.5 else [], who=person(blk=0.9))
+    t, r = first_decision(res)
+    assert r is True and 0.4 + LIT_DARK_WAIT <= t < 0.4 + LIT_DARK_WAIT + 0.31
+
+
+def test_weak_flame_keeps_him_seen():
+    """(a) 举起后他的火焰在淡、分数掉到 disk_min_score 以下（204557 举起那一刻 0.63~0.71）：作为 extra 照样算看到他，原地没了判点亮。"""
+    watch, _ = raised()
+    res = scans(watch, 0.1, 3.0, extra=lambda t: [disk(score=0.62)] if t < 0.5 else [])
+    assert first_decision(res) == (1.0, True)  # 0.1 那次证明了火焰还在；0.4 的弱火焰不再续（见下一个测试），从 0.1 算
+
+
+def test_first_sighting_after_raise_uses_loose_gate():
+    """(c) 出请求到真的举起有 1~2 秒（身体忙），他挪了 0.3 倍框高：举起后第一次还按 light_jump 认他，认到之后才收紧到 LIT_JUMP（10-02 21:54）。"""
+    watch, _ = raised()
+    moved = (HOME[0] + round(0.3 * ME.h), HOME[1])
+    res = scans(watch, 0.1, 3.0, flames=lambda t: [disk(moved)] if t < 0.5 else [])
+    assert first_decision(res) == (1.3, True) and watch.lighting.pos == moved
+
+
+def test_weak_flame_after_seen_does_not_keep_waiting():
+    """(a) 弱火焰只用来证明举起后他的火焰还在：认到他之后，旁边点亮时冒的火花（分数不够）不能续着当他的火焰（212739 一直等到超时）。"""
+    watch, _ = raised()
+    res = scans(watch, 0.1, 3.0, flames=lambda t: [disk()] if t < 0.5 else [],
+                extra=lambda t: [] if t < 0.5 else [disk((HOME[0] + 20, HOME[1]), score=0.62)])
+    assert first_decision(res) == (1.3, True)
