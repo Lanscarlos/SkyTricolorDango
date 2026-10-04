@@ -1,7 +1,8 @@
 import random
 from pathlib import Path
 
-from skydango.brain.reflex import Reflexes, addressed
+from skydango.brain.addressee import legacy_addressed as addressed
+from skydango.brain.reflex import Reflexes
 from skydango.config import Config, ReflexConfig, load_config
 
 ROOT = Path(__file__).resolve().parent.parent

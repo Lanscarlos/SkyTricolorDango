@@ -321,3 +321,16 @@ def test_viewer_port_is_19391_and_old_port_keys_are_skipped(tmp_path, caplog):  
         cfg = load_config(p)
     assert not hasattr(cfg.viewer, "host") and not hasattr(cfg.console, "child_port") and cfg.viewer.fps == 5.0
     assert "viewer.host" in caplog.text and "console.child_port" in caplog.text
+
+
+def test_reflex_followup_window_moved(tmp_path, caplog):
+    from skydango.config import followup_window
+
+    p = tmp_path / "config.toml"
+    p.write_text("[reflex]\nfollowup_window = 12\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(p)
+    assert "挪到了" in caplog.text
+    assert followup_window(cfg) == 12
+    p.write_text("[reflex]\nfollowup_window = 12\n[addressee]\nfollowup_window = 40\n", encoding="utf-8")
+    assert followup_window(load_config(p)) == 40

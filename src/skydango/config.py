@@ -756,7 +756,7 @@ class ReflexConfig:
 
     enabled: bool = True  # false = 完全照旧（不开框、不做反射动作、gesture 照旧交给大脑）
     bubble: bool = True  # 有人跟团子说话时身体马上打开输入框（头顶“正在输入”），大脑想好了用这个框发
-    followup_window: float = 30.0  # 团子说完多少秒内好友接话，算“在跟团子说”
+    followup_window: float = 30.0  # 已挪到 [addressee]；没写 [addressee] followup_window 时用它（见 followup_window()）
     bubble_max: float = 45.0  # 替大脑开的框最长开多久（秒）
     addressed: list[str] = field(default_factory=list)  # 被叫到时开框前偶尔做的小动作（轮盘上的动作名）
     addressed_chance: float = 0.3
@@ -768,6 +768,20 @@ class ReflexConfig:
     quota_window: float = 600.0  # 反射动作额度的时间窗口（秒）
     quota: int = 4  # 窗口内反射最多做几个动作
     min_gap: float = 4.0  # 任何两个动作（反射或大脑）之间至少隔几秒，给动画留时间
+
+
+@dataclass
+class AddresseeConfig:
+    """分清好友在跟谁说话（spec 2026-10-05-addressee-design）：给每句好友聊天标 跟你说 / 跟别人说 / 说给大家 / 拿不准。数字都是估的"""
+
+    enabled: bool = True  # false = 逐字照旧：不判、事件不带标注、没有 aside、提示词不变、反射用原来的 addressed() 规则
+    followup_window: float | None = None  # 团子说完多少秒内好友接话算“在跟团子说”；None = 用 [reflex] followup_window
+    followup_lines: int = 2  # 接话窗口里最多算头几句
+    thread_window: float = 20.0  # 两个好友之间“还在聊”的窗口（秒）
+    group_words: list[str] = field(default_factory=lambda: ["大家", "你们", "各位"])
+    greet_words: list[str] = field(  # 身边两个以上好友时，开头是这些算说给大家
+        default_factory=lambda: ["晚上好", "早上好", "中午好", "来了", "我来啦", "拜拜", "晚安", "走了"]
+    )
 
 
 @dataclass
@@ -871,6 +885,7 @@ class Config:
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     lull: LullConfig = field(default_factory=LullConfig)
     reflex: ReflexConfig = field(default_factory=ReflexConfig)
+    addressee: AddresseeConfig = field(default_factory=AddresseeConfig)
     attention: AttentionConfig = field(default_factory=AttentionConfig)
     inner: InnerConfig = field(default_factory=InnerConfig)
     backstage: BackstageConfig = field(default_factory=BackstageConfig)
@@ -885,9 +900,21 @@ DEPRECATED = frozenset({
 })
 
 
+# 挪了位置的配置项：旧位置照样生效（还是原来的字段），只警告
+MOVED = {"reflex.followup_window": "addressee.followup_window"}
+
+
+def followup_window(cfg: "Config") -> float:
+    """团子说完多少秒内好友接话算在跟团子说：[addressee] 优先，没写用 [reflex] 的旧位置。"""
+    value = cfg.addressee.followup_window
+    return cfg.reflex.followup_window if value is None else value
+
+
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:
     known = {f.name: f for f in dataclasses.fields(obj)}
     for key, value in data.items():
+        if f"{path}{key}" in MOVED:
+            log.warning("配置项 %s%s 挪到了 %s，旧位置照样生效", path, key, MOVED[f"{path}{key}"])
         if key not in known:
             if f"{path}{key}" in DEPRECATED:
                 log.warning("配置项 %s%s 已经不用了，可以删掉", path, key)

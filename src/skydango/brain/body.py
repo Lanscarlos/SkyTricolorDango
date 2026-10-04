@@ -45,7 +45,8 @@ from .find import FindSkill
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
-from .reflex import Reflexes, addressed
+from .addressee import legacy_addressed
+from .reflex import Reflexes
 from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
 from ..inner.energy import Energy, awake_minutes, energy as inner_energy, energy_parts, format_parts
 from ..inner.ledger import card_line, match_friend
@@ -523,7 +524,7 @@ class Body:
         """这句是不是在跟团子说（叫名字 / 团子刚说完 / 身边只有他一个好友）。"""
         nearby = self.env.nearby(now) if self.env is not None else []
         since = now - self._said_at if self._said_at > float("-inf") else None
-        return addressed(
+        return legacy_addressed(
             m.speaker, m.text, is_friend=is_friend_fn(self.friend_names()), self_names=self.cfg.proactive.self_names,
             nearby=nearby, since_said=since, followup_window=self.cfg.reflex.followup_window, owner=self.cfg.brain.owner_name,
         )
