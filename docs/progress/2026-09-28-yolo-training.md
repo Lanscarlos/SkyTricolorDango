@@ -285,6 +285,10 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 - 门槛 3（`bench --attrs`，obj-bench-teatable-1、200 帧、每帧满 4 张裁图）：只检测 11.1 ms → 加外形头 20.1 ms；整个感知约 19 ms/帧，[perception] fps 15 的预算 66.7 ms，加上也不到 30 ms，同一轨迹 0.5 秒才裁一次——按 15 fps 节奏应不掉帧，真机确认
 - 剩门槛 4（真机三步）：`config.toml` 加 `[attrs] enabled = true`、`model = "models/attrs-20261004d-mask.npz"` 后 `view --images` / `run --dry-run` 开关各 10 分钟比事件和难例 / 点亮陌生人链路
 
+**写回 datasets/sky**（10-04 下午，`crops --writeback` 补上了改类别 / 删框）：129 帧——补 110 个漏标的人、改 38 个框的点没点火（多数 lit → 黑影）、删 13 个确认不是人的框；
+「不要」和没确认的不动；增强图（`_blur` / `_dark`）现在数据集里没有，以后 augment 过的一起改。备份 `datasets/sky/_backup/labels-20261004-152027`（改之前）；`labels-20261004-152037` 是修"重跑也备份"之前多出来的一份、和现在一模一样，可以删。
+**下一步可以重训 YOLO**（v8）：数据集的人物标注第一次被人核对过一批，YOLO 自己的点没点火也该变好；导入未确认还剩 1366 张，照"模型先筛、只看不一致的"再过一批收益更大
+
 ## 没做完 / 待办（按建议顺序）
 
 1. **用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，
