@@ -1050,3 +1050,74 @@ def test_a11y_before_speak_from_idle_without_friend_in_view_opens_panel():
     tick(8.5)
     m.before_speak(8.6)  # 3.6 秒没见过他了：照旧开面板
     assert m.state == "chatting" and presses(dev) == 1 and state.open is True
+
+
+# ---- 先别动（hold_still）：点亮陌生人时不开关面板（10-04 19:51:45：举蜡烛时「看一眼」开了面板，画面横移，火焰接不上、误判走开） ----
+def test_hold_still_defers_peek_until_released():
+    m, dev, _ = auto()
+    m.hold_still("点亮陌生人")
+    m.trigger("approach", 5.0)
+    m.tick(5.0, [], visible=False)
+    m.tick(31.0, [], visible=False)  # 定时看一眼也到点了
+    assert presses(dev) == 0 and m.state == "idle" and m.pending == "approach"
+    m.hold_still(None)
+    m.tick(31.2, [], visible=False)
+    assert presses(dev) == 1 and m.state == "peek"
+
+
+def test_hold_still_keeps_open_peek_open():
+    m, dev, _ = auto()
+    m.tick(30.0, [], visible=False)  # 看一眼已经按开了
+    m.hold_still("点亮陌生人")
+    m.tick(30.2, [], visible=True)
+    m.tick(30.4, [], visible=True)
+    m.tick(31.5, [], visible=True)
+    assert presses(dev) == 1 and m.state == "peek"  # 不关：一关画面又要横移
+    m.hold_still(None)
+    m.tick(31.7, [], visible=True)
+    assert presses(dev) == 2 and m.state == "idle"
+
+
+def test_hold_still_keeps_chatting_panel_open_past_quiet_close():
+    m, dev, state = auto()
+    chatting(m, state, 100.0)
+    m.hold_still("点亮陌生人")
+    m.tick(145.0, [], visible=True)
+    assert m.state == "chatting" and presses(dev) == 0
+    m.hold_still(None)
+    m.tick(146.0, [], visible=True)
+    assert m.state == "idle" and presses(dev) == 1
+
+
+def test_hold_still_no_reopen_in_chatting():
+    m, dev, state = auto()
+    chatting(m, state, 100.0)
+    state.open = False
+    m.hold_still("点亮陌生人")
+    for t in (101.0, 107.0, 113.0):  # 关了早过 log_reopen_after
+        m.tick(t, [], visible=False)
+    assert presses(dev) == 0
+
+
+def test_hold_still_no_reopen_in_always_mode():
+    m, device = manager([False])
+    m.reader.panel_closed_since = 0.0
+    m.hold_still("点亮陌生人")
+    m.tick(60.0, [], visible=False)
+    assert device.calls == []
+    m.hold_still(None)
+    m.tick(61.0, [], visible=False)
+    assert device.calls == [("hw_key", 46)]
+
+
+def test_hold_still_does_not_block_before_speak():
+    m, dev, state = auto()
+    m.hold_still("点亮陌生人")
+    m.before_speak(5.0)  # 团子要说话：照常开面板（说话本来就要按键）
+    assert m.state == "chatting" and presses(dev) == 1 and state.open is True
+
+
+def test_hold_still_shows_in_describe():
+    m, dev, _ = auto()
+    m.hold_still("点亮陌生人")
+    assert "先别动：点亮陌生人" in m.describe(1.0)

@@ -52,7 +52,7 @@ from .catalog import Who, stranger_key
 from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
-from .lighting import DISK_EVERY, DISK_GAP, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
+from .lighting import DISK_EVERY, DISK_GAP, GONE_RETRY, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, OTHERS, WHO, CallSeen, Person, Seen, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
@@ -379,6 +379,8 @@ class PerceptionWatcher:
         self._flame_log = float("-inf")  # DEBUG 日志每秒最多一行
         self._frame_at = float("-inf")  # 最近一帧跑过 tracker.update 的时间（trackeval 用它认出被挡住提前返回的帧）
         self._cooldown_until = float("-inf")  # 没点亮之后这之前不出请求
+        self._gone_retry = False  # 上次判走开（不是重试那次）：冷却中火焰连着够 GONE_RETRY 秒可以再举一次
+        self._retrying = False  # 这次点亮是冷却中的重试
         self._scan: dict | None = None  # 最近一次找火焰：area / me / flames（存图用）
         self._people_boxes: list[tuple[Rect, bool]] = []  # 这一帧的人物框（含 LIT_LOW 以上的低分框）和是不是 player_unlit
         self._gestures: deque[tuple[str, str]] = deque(maxlen=50)  # (好友名, 动作)，身体取走；没人取（普通 Agent）时只留最近的
@@ -1385,24 +1387,27 @@ class PerceptionWatcher:
 
         学：团子（self 框、_mark_dango 打了标记的 player 框）进团子底库；这一帧挂着名字标签的好友进他的底库；
         像小明 / 可能是小明 / 接回的 / 看着像团子的都不学（陌生人编号在 _appearance_stranger 里学）。
-        认（只拿这一帧新算的样本比，这一帧没算出样本的轨迹保持上一帧的结论）：先看像不像团子（DINOv2，dango_look），
-        再看像哪个好友：过 match 是"像小明"（maybe），落在 [unsure, match) 是"可能是小明"（unsure，先不判陌生人、等喊一声）。"""
+        认（只拿这一帧新算的样本比，这一帧没算出样本的轨迹保持上一帧的结论）：先看像不像团子（DINOv2，dango_look；
+        团子只有一个，见 _one_dango），再看像哪个好友：过 match 是"像小明"（maybe），落在 [unsure, match) 是"可能是小明"
+        （unsure，先不判陌生人、等喊一声）。"""
         book, acfg = self.appearance, self.appearance_cfg
         for me in selfs + dangos:
             if me.id in fresh:
                 self._learn("me", "", fresh[me.id], frame, now)
+        dango_here = bool(selfs or dangos)  # 这一帧已经认出团子了
         cands: dict[int, np.ndarray] = {}
+        looks: dict[int, float] = {}  # 这一帧判像团子的：轨迹 id → 团子底库最高分
         for p in players:
             d = p.data
             if self._unlit(p):  # 变成黑影了：没有外观可比
-                for key in ("maybe", "maybe_by", "miss", "unsure", "dango_look"):
+                for key in ("maybe", "maybe_by", "miss", "unsure", "dango_look", "dango_score"):
                     d.pop(key, None)
                 continue
             tag = tagged.get(p.id)
             if tag is not None:  # 名字标签永远说了算
                 name = tag.data.get("name")
                 maybe = d.pop("maybe", None)
-                for key in ("maybe_by", "miss", "sid", "unsure", "unsure_first", "dango_look"):
+                for key in ("maybe_by", "miss", "sid", "unsure", "unsure_first", "dango_look", "dango_score"):
                     d.pop(key, None)
                 if maybe and name and maybe != name:
                     log.info("轨迹 %d 按外观认成 %s，名字标签是 %s", p.id, maybe, name)
@@ -1427,12 +1432,9 @@ class PerceptionWatcher:
             if p.id not in fresh or d.get("samples", 0) < acfg.min_samples:
                 continue  # 这一帧没算出新样本：保持上一帧的结论
             sample = fresh[p.id][0]
-            if book.looks_like_dango(sample.dino):
-                if not self._dangoish(p, now):
-                    log.info("轨迹 %d 没看到名字，看着像团子", p.id)
-                d["dango_look"] = now
-                for key in ("maybe", "miss", "unsure"):
-                    d.pop(key, None)
+            score = None if dango_here else book.dango_score(sample.dino)
+            if score is not None:
+                looks[p.id] = score  # 挑完最像的那个再记（_one_dango）
                 continue
             if self._dangoish(p, now):
                 continue  # 刚才还像团子（DANGO_LOOK_HOLD 内）：不改认成好友
@@ -1444,6 +1446,7 @@ class PerceptionWatcher:
                     d.pop("miss", None)
                 continue
             cands[p.id] = sample.color
+        self._one_dango(players, looks, dango_here, now)
         if not cands:
             return
         byid = {p.id: p for p in players}
@@ -1481,6 +1484,26 @@ class PerceptionWatcher:
             u = p.data.get("unsure")
             if u and p.id not in assigned and u[0] in gone:
                 p.data.pop("unsure", None)
+
+    def _one_dango(self, players: list[Track], looks: dict[int, float], dango_here: bool, now: float) -> None:
+        """团子只有一个：这一帧已经认出团子（self 框 / 团子标记）时别人都不算"看着像团子"；没认出时最多留一个——
+        这一帧判像的（looks）和还在 DANGO_LOOK_HOLD 里的比团子底库最高分，一样像留原来那个。
+        10-04 晚旁边的人被判"像团子"：DINOv2 补成正方形的裁图把旁边的团子也裁了进去。"""
+        holding = {p.id for p in players if now - p.data.get("dango_look", float("-inf")) <= DANGO_LOOK_HOLD}
+        held = {i: p.data.get("dango_score", 0.0) for p in players if (i := p.id) in holding and i not in looks}
+        best = None if dango_here else max({**held, **looks}.items(), key=lambda kv: kv[1], default=(None, 0.0))[0]
+        for p in players:
+            d = p.data
+            if p.id == best and p.id in looks:
+                if p.id not in holding:
+                    log.info("轨迹 %d 没看到名字，看着像团子", p.id)
+                d["dango_look"], d["dango_score"] = now, looks[p.id]
+                for key in ("maybe", "miss", "unsure"):
+                    d.pop(key, None)
+            elif p.id != best and p.id in holding:
+                log.info("轨迹 %d 不算像团子了：%s", p.id, "团子在画面上" if dango_here else "另一个人更像团子")
+                d.pop("dango_look", None)
+                d.pop("dango_score", None)
 
     # ---- 失踪好友接回（spec §4） ----
     def _note_lost(self, now: float) -> None:
@@ -2251,7 +2274,10 @@ class PerceptionWatcher:
                 watch.scan(now, me, area, flames, self._person_at(frame, me), shift=shift, extra=extra)
                 self._flame_pan = self._pan
             lighting = watch.lighting
-            clue = None if cooling else watch.ready(now)
+            clue = watch.ready(now)
+            retry = cooling and clue is not None and self._may_retry(clue, now)
+            if cooling and not retry:
+                clue = None
             first = clue is not None and not clue.announced
             if clue is not None:
                 clue.announced = True
@@ -2273,7 +2299,8 @@ class PerceptionWatcher:
         if lighting is not None and self._diag is not None and self._scan is not None and now >= self._diag["next"]:
             self._save_light(frame, now, "raised")
         if first:
-            log.info("身边有没点火的陌生人：火焰出现了 %.0f 秒（线索 %d）", now - clue.first, clue.id)
+            log.info("身边有没点火的陌生人：火焰出现了 %.0f 秒（线索 %d）%s", now - clue.first, clue.id,
+                     "（上次判他走开了，火焰又一直在：不等冷却，再试一次）" if retry else "")
             self._on_request(frame, now)
 
     def _on_request(self, frame: np.ndarray, now: float) -> None:
@@ -2329,10 +2356,31 @@ class PerceptionWatcher:
         except Exception:
             log.debug("存点亮图出错", exc_info=True)
 
+    def _may_retry(self, clue, now: float) -> bool:
+        """冷却中这条线索能不能出请求：上次判走开（不是重试）、火焰连着看到 ≥ GONE_RETRY 秒（且不短于 light_after）。"""
+        return self._gone_retry and now - clue.first >= max(GONE_RETRY, self.light_cfg.light_after)
+
+    def _light_wait(self, now: float) -> float | None:
+        """火焰冒出来多久内可能出请求（FlameWatch.pending 用）；冷却中又不能重试 = None。"""
+        if now >= self._cooldown_until:
+            return self.light_cfg.light_after
+        return max(GONE_RETRY, self.light_cfg.light_after) if self._gone_retry else None
+
+    def light_busy(self, now: float) -> bool:
+        """点亮陌生人这件事在进行：举着蜡烛，或者团子身边一团火焰刚冒出来、可能马上出请求。
+        身体用它让聊天面板先别动：开关面板画面横移，火焰会接不上（10-04 19:51:45）。"""
+        if self.flames is None or self.light_cfg is None:
+            return False
+        with self._lock:
+            return self.flames.pending(now, self._light_wait(now))
+
     def mark_tried(self, clue_id: int) -> None:
         """身体举起蜡烛了：开始"点亮中"（期间不出新请求），认准这条线索的火焰。"""
         now = self.clock()
         with self._lock:
+            self._retrying = now < self._cooldown_until  # 冷却中能举只能是重试
+            if self._retrying:
+                self._gone_retry = False
             if self.flames is not None:
                 self.flames.start(clue_id, now)
             if self._diag is not None:
@@ -2352,15 +2400,20 @@ class PerceptionWatcher:
 
     def light_done(self, result: str) -> None:
         """身体这次点亮结束了（lit / gone / timeout / interrupted / dry-run / exit / failed）：结束"点亮中"；
-        没点亮就冷却 light_cooldown 秒（认不出是谁，只能按时间）。重复调用无害。"""
+        没点亮就冷却 light_cooldown 秒（认不出是谁，只能按时间），判走开的冷却里留一次重试（_may_retry）；点亮了冷却作废。重复调用无害。"""
         cfg = self.light_cfg
         with self._lock:
             L = self.flames.stop() if self.flames is not None else None
             self.requests.pop(LIGHT_KEY, None)
             if L is None:
                 return
-            if result != "lit" and cfg is not None:
+            if result == "lit":  # 点亮了（可能是冷却中的重试）：之前那次多半是误判，冷却作废
+                self._cooldown_until = float("-inf")
+            elif cfg is not None:
                 self._cooldown_until = self.clock() + cfg.light_cooldown
+            # 判走开可能是误判（画面一晃火焰接不上）：他要是原地接着举，冷却里给一次重试；重试那次又判走开就照常冷却
+            self._gone_retry = result == "gone" and not self._retrying
+            self._retrying = False
         log.info("点亮陌生人结束：%s（线索 %d）", result, L.clue)
         self._light_finished(L, result)
 

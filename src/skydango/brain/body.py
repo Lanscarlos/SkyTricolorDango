@@ -29,7 +29,7 @@ from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
 from ..chat.tracker import similar
 from ..config import Config
-from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, PASSIVE
+from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, PASSIVE, Request
 from ..imageio import imwrite
 from ..device.base import LINUX_KEY_Q
 from ..vision.bubbles import Rect, roi_rect
@@ -66,6 +66,7 @@ REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "light", "*")
 REPEAT_WINDOW = 600.0  # say：这么久内说过几乎一样的话就拦下（10-03 晚 DeepSeek 备用大脑重复说）
 REPEAT_SIMILAR = 0.85  # ……"几乎一样"：chat.tracker.similar 的门槛
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
+LIGHT_HOLD_MAX = 6.0  # light 请求挂着、身体还没举（刚做完动作 min_gap 4 秒、鞠躬排着、输入框开着……）：最多为它让面板先别动这么久
 SCENE_EVENT_COOLDOWN = 10.0
 SHUTDOWN_REFINE = 8.0  # 退出时镜头闭环复位的细调最多花几秒（粗转照做）；控制台 stop_timeout 60 秒
 BUTTON_NOTES = {"retreat": "可以按", "allow": "可以按", "other": "要主人放行", "never": "不能按"}
@@ -240,6 +241,7 @@ class Body:
         self.stopped = False  # shutdown 之后不再接大脑的命令
         self.skills = SkillRunner(events, clock, panel=self.panel)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
         self._raised: tuple[int, tuple[int, int], float] | None = None  # 举着蜡烛等他亮起来：(轨迹 id, 圆盘位置, 举起时间)
+        self._light_req: tuple[int, float] | None = None  # 挂着的 light 请求：(线索 id, 身体第一次看到它)，_light_busy 给它的面板拦截设上限
         self._bow: tuple[float, float, float | None] | None = None  # 点火后要鞠躬：(到点, 放弃, 兜底放下的蜡烛几时举的)
         self._dark_at = float("-inf")  # 最近一次黑屏是几时开始的：举蜡烛之后黑过屏（切场景），蜡烛还举没举着说不准
         self._lit_at = float("-inf")
@@ -329,6 +331,9 @@ class Body:
         if self.mind is not None:
             info["心情"] = self.mind.mood.text or self.mind.mood.level
             info["精力"] = self._energy.note if self._energy is not None else "算不出来"
+        if self.enroll_note:
+            me = self.env.my_look() if hasattr(self.env, "my_look") else ""
+            info["认装扮"] = self.enroll_note + (f"；你自己：{me}" if me else "")
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
             self.viewer.update(
@@ -340,6 +345,7 @@ class Body:
 
     def _sense(self, frame, now: float, fresh: list[Message]) -> None:
         if self.cfg.vision.mode == "log":
+            self.panel.hold_still("点亮陌生人" if self._light_busy(now) else None)
             self.panel.tick(now, fresh, visible=self.reader.panel_closed_since is None, blackout=self.blackout)
             self._watch_panel(now)
         self._watch_screen(frame, now)
@@ -1281,6 +1287,35 @@ class Body:
         self._raised = (req.track, req.pos, now)
         log.info("举起蜡烛给身边没点火的陌生人点火")
 
+    def _light_busy(self, now: float) -> bool:
+        """点亮陌生人在进行：聊天面板先别动——开关面板画面横移 300~400 px，他的火焰会接不上、被误判走开（10-04 19:51:45）。
+        举着蜡烛；light 请求挂着、身体还没举（刚做完动作等 min_gap、鞠躬排着……，最多 LIGHT_HOLD_MAX 秒）；
+        或者感知层说身边火焰刚冒出来、可能马上出请求。身体不会举（大脑关了点亮、没有轮盘）就不拦。"""
+        if self._raised is not None:
+            return True
+        if self.env is None or self.social is None or self.emotes is None:
+            return False
+        req = dict(self.env.requests).get(LIGHT_KEY)
+        probe = req if req is not None else Request("陌生人", LIGHT, (0, 0), now)
+        if not self.social.allowed(probe):
+            self._light_req = None
+            return False
+        if req is not None and req.track is not None:
+            if self._light_req is None or self._light_req[0] != req.track:
+                self._light_req = (req.track, now)
+            if now - self._light_req[1] <= LIGHT_HOLD_MAX:
+                return True
+        else:
+            self._light_req = None
+        busy = getattr(self.env, "light_busy", None)
+        if busy is None:
+            return False
+        try:
+            return bool(busy(now))
+        except Exception:
+            log.debug("light_busy 出错", exc_info=True)
+            return False
+
     def _light_done(self, result: str) -> None:
         """这次点亮结束了，告诉感知层（结束"点亮中"、写存图 summary、没点亮就冷却）。"""
         try:
@@ -1926,9 +1961,10 @@ class Body:
         if self.panel.auto and self.panel.state in ("idle", "talking"):
             self._peek_now()
         rows = list(self.chat)[-max(1, min(n, 50)) :]
+        note = f"（在{self.panel.still}，聊天面板先没开，画面外的人说的稍后才读得到）\n" if self.panel.still and self.panel.auto else ""
         if not rows:
-            return "还没有聊天"
-        return "\n".join(
+            return note + "还没有聊天"
+        return note + "\n".join(
             f"{time.strftime('%H:%M:%S', time.localtime(t))} {who or '（看不出是谁）'}：{text}" for t, who, text in rows
         )
 

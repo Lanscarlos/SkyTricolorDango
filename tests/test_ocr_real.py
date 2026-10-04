@@ -44,6 +44,7 @@ def test_bubble_ocr_end_to_end():
     frame = np.array(img)[:, :, ::-1].copy()
 
     cfg = Config()
+    cfg.vision.mode = "bubble"  # 合成画面是头顶气泡（默认 10-04 改成了 log）
     reader = ChatReader(RapidOcrEngine(), cfg.vision, cfg.ocr, cfg.chat, SelfFilter(60, 0.8))
     texts = [m.text for m in reader.read(frame, 0.0)]
     assert texts == ["你好呀，一起去霞谷吗", "我在等先祖"]

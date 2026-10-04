@@ -87,7 +87,8 @@ def test_attach_log_writes_debug_to_file_only(tmp_path):
 
 
 def test_agent_records_frames_rows_and_replies(tmp_path, clock):
-    cfg = make_cfg(tmp_path)  # 默认 dry-run、bubble 模式
+    cfg = make_cfg(tmp_path)  # 默认 dry-run
+    cfg.vision.mode = "bubble"  # 合成画面是头顶气泡（默认 10-04 改成了 log）
     run = RunDir.create(cfg, "dry")
     device = FakeDevice([scene([(400, 200, 300, 50)])])
     self_filter = SelfFilter(cfg.chat.self_window, cfg.chat.similarity, cfg.reply.disclosure_prefix)

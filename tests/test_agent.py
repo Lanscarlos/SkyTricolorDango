@@ -45,6 +45,7 @@ def msg(text: str, speaker: str = "") -> Message:
 
 def live_config() -> Config:
     cfg = Config()
+    cfg.vision.mode = "bubble"  # 这里的合成画面是头顶气泡（默认 10-04 改成了 log）
     cfg.reply.dry_run = False
     cfg.sender.open_chat = [0.05, 0.1]
     return cfg
@@ -81,6 +82,7 @@ def test_ignores_own_bubble_after_sending(clock):
 
 def test_dry_run_does_not_touch_device(clock):
     cfg = Config()  # 默认 dry_run
+    cfg.vision.mode = "bubble"  # 合成画面是头顶气泡（默认 10-04 改成了 log）
     agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你好"] * 5, clock)
     agent.step()
     clock.advance(2)
@@ -311,6 +313,7 @@ def test_emote_only_turn_does_not_use_send_quota(clock):
 
 def test_dry_run_pretends_emote(clock):
     cfg = Config()  # 默认 dry_run
+    cfg.vision.mode = "bubble"  # 合成画面是头顶气泡（默认 10-04 改成了 log）
     emotes = FakeEmotes()
     agent, device = build(cfg, [scene([(400, 200, 300, 50)])], ["你真可爱"] * 5, clock, FixedLlm("[害羞]哪有啦"), emotes)
     assert run_one_turn(agent, clock) == "【AI】哪有啦"

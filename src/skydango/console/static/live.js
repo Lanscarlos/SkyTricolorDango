@@ -9,7 +9,7 @@ if (typeof document === "undefined") return;
 const L = {launchLoaded: false, startProblems: false, on: false, gen: 0, shown: false, kind: "", state: "",
   seq: 0, snap: null, img: null, paused: false, boxes: true, mark: null, hover: null, pick: null, times: [],
   chatV: 0, brain: true, trace: null, info: null, innerOk: false, logNext: 0, follow: true, drain: false, timers: []};
-const FACTS = ["身边的好友", "陌生人", "互动请求", "开着的面板", "牵着手", "正在做", "刚说过", "场合", "聊天面板", "心情", "精力"];
+const FACTS = ["身边的好友", "陌生人", "互动请求", "开着的面板", "牵着手", "正在做", "刚说过", "场合", "聊天面板", "认装扮", "心情", "精力"];
 const WITH_INNER = ["心情", "精力"];  // 「现在」里已经有了，内心层开着时不重复
 const CHIP = {idle: "没在跑", starting: "正在启动", running: "运行中", stopping: "在收尾", crashed: "出错停下了", exited: "没在跑"};
 

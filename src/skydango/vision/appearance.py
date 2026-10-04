@@ -341,21 +341,25 @@ class AppearanceBook:
         return name, float(score)
 
     def looks_like_dango(self, dino: np.ndarray | None) -> bool:
-        """DINOv2 特征像不像团子自己：团子底库最高分 ≥ dango_match，且严格高于每个好友底库的最高分（没有分的好友不算）。"""
+        return self.dango_score(dino) is not None
+
+    def dango_score(self, dino: np.ndarray | None) -> float | None:
+        """DINOv2 特征像不像团子自己：团子底库最高分 ≥ dango_match，且严格高于每个好友底库的最高分（没有分的好友不算）。
+        像就返回团子底库最高分（几个人都像时留最像的），不像返回 None。"""
         if dino is None:
-            return False
+            return None
         with self._lock:
             if self.me is None:
-                return False
+                return None
             dino = unit(dino)
             mine = self.me.gallery.best(dino, "dino")
             if mine is None or mine < self.cfg.dango_match:
-                return False
+                return None
             for p in self.friends.values():
                 other = p.gallery.best(dino, "dino")
                 if other is not None and other >= mine:
-                    return False
-            return True
+                    return None
+            return mine
 
     def stranger_id(self, feat, now: float, exclude: frozenset[str] | set[str] = frozenset()) -> tuple[str, bool]:
         """陌生人编号：认回已有的（第二项 = 离开超过 keep 秒又回来了），否则新编号。

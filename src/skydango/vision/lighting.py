@@ -33,6 +33,9 @@ LIT_EDGE_Y = 0.1  # 上下边只留这么多倍框高（真火焰离范围上沿
 LIT_JUMP = 0.25  # 举着蜡烛时他那团火焰只配离预测位置这么多倍框高以内的（204557：人挤，0.28 倍框高外别人的火焰被当成他的）
 LIT_WEAK = 0.6  # 举着蜡烛时火焰候选放宽到这个分数（不到 disk_min_score 的只给他那团接续用：火焰淡下去时分数会掉）
 LIT_DARK_WAIT = 2.5  # 火焰原地没了、下面的人还量得黑：最多再等这么久就放下、不鞠躬（212739 一直等到 8 秒；判点亮会对着黑影鞠躬）
+# 10-04 19:51:45 真机：举蜡烛时聊天面板「看一眼」开了，画面横移、火焰接不上，误判走开，冷却 60 秒里他原地接着举了 20 多秒
+GONE_RETRY = 3.0  # 判走开后冷却中：一团火焰连着看到这么久（且不短于 light_after）就不等冷却、再举一次（只一次）
+PENDING_GRACE = 2.0  # 火焰冒出来后最多拦着聊天面板这么久（够出请求的时间再加这么多；不出请求的火焰别一直拦着）
 
 # 某个位置下面的人：(人物框, black() 或 None = 量不准, YOLO 是不是认成 player_unlit)；没人 = None
 PersonAt = Callable[[tuple[int, int], float], "tuple[Rect, float | None, bool] | None"]
@@ -283,6 +286,14 @@ class FlameWatch:
         """现在最像真火焰的那条（状态 / 日志用）：够格的优先，再按最好分数。"""
         live = [c for c in self.clues if now - c.last <= DISK_GAP and not c.static]
         return self.ready(now) or (max(live, key=lambda c: c.best) if live else None)
+
+    def pending(self, now: float, wait: float | None) -> bool:
+        """点亮这件事在进行：举着蜡烛，或者有一团火焰（不是灯笼）连着看到还不到 wait + PENDING_GRACE 秒（可能马上出请求）。
+        wait = None：只看举没举着（冷却中、不会出请求）。"""
+        if self.lighting is not None:
+            return True
+        return wait is not None and any(
+            not c.static and now - c.last <= DISK_GAP and now - c.first <= wait + PENDING_GRACE for c in self.clues)
 
     def get(self, clue_id: int) -> Clue | None:
         return next((c for c in self.clues if c.id == clue_id), None)

@@ -8,6 +8,8 @@
 在本机 RTX 5070 Ti Laptop 上装好 GPU 环境，录了 4 段、标了 311 帧（3 张地图），训到第四版模型 `models/sky-yolo-v4.pt`，
 认人 / 团子 / 黑影 / 共享空间玩家 / 先祖已经比较靠谱；**还没在 `run` 里打开感知层**。
 
+> 现状（10-04）：09-29 起 `run` 里一直开着感知层；本机现在用 `models/sky-yolo-v10.pt` + 第二层（`models/attrs-20261004d-mask.npz`）。
+
 ## 环境（本机）
 
 - torch 2.11.0+cu128、ultralytics 8.4.164（`pip install --user torch torchvision --index-url https://download.pytorch.org/whl/cu128`，再 `pip install --user -e ".[yolo]"`）
@@ -52,7 +54,7 @@
 
 和整图 OCR 对比（v1，166 帧）：认好友同帧结果一致，每帧 49 ms vs 每次扫描 875 ms。
 
-看效果：`python -m skydango view --model models/sky-yolo-v4.pt`（只看不动）。
+看效果：`python -m skydango view --model models/sky-yolo-v4.pt`（只看不动）。（`view` 命令 10-04 已删（45873c8）：实时看框用管理面板「真机团子」页，离线单张用 `perception detect --model … <图片>`）
 
 **`.pt` 还是 `.onnx`**（10-01 实测，RTX 5070 Ti、120 帧录像）：本机继续用 `.pt`。v7 `.pt`（ultralytics CUDA）整帧检测 9.5 ms；
 导出的 `sky-yolo-v7.onnx`（960×960）用 onnxruntime-gpu 1.22 跑 20.8 ms（模型本身 7.5 ms，慢在 CPU 上的预处理 / NMS，
@@ -94,7 +96,7 @@ onnxruntime-gpu 1.30 要 CUDA 13（驱动 572.84 最高 12.8），1.22 / 1.23 �
 4. 看 `datasets/sky/_assist/objects.md`（先看"人物框改成了先祖"），用 X-AnyLabeling 修正
 5. 训练 v5（10 类）
 6. **上线门槛**：同一批录像 v4、v5 各跑一次 `perception compare`，好友认出率、远处认出率不低于 v4（花地图上陌生人误报应减少）；
-   训练输出里每类物品验证集 mAP50 ≥ 0.6；`view --model models/sky-yolo-v5.pt` 真机看一圈没有明显误认。都满足再把 `[perception] model` 换成 v5
+   训练输出里每类物品验证集 mAP50 ≥ 0.6；`view --model models/sky-yolo-v5.pt` 真机看一圈没有明显误认（`view` 命令 10-04 已删（45873c8）：实时看框用管理面板「真机团子」页，离线单张用 `perception detect --model … <图片>`）。都满足再把 `[perception] model` 换成 v5
 
 ## 2026-09-30：v6 / v7（头顶气泡 typing）
 
@@ -122,7 +124,7 @@ onnxruntime-gpu 1.30 要 CUDA 13（驱动 572.84 最高 12.8），1.22 / 1.23 �
 
 打字录像里没抽进数据集的 240 帧（和训练帧同一段录像，偏乐观）：按邻近标注帧估，有气泡的帧 v6 认出 61%、v7 认出 98%，
 没气泡的帧都没误报；别的录像 419 帧里 v7 只报了 1 处，核对是真气泡（漏标，已补）。
-**还没做**：换别的地图 / 别的好友打字验证气泡；`perception compare` 看好友认出率不低于 v4；真机 `view --model models/sky-yolo-v7.pt`。
+**还没做**：换别的地图 / 别的好友打字验证气泡；`perception compare` 看好友认出率不低于 v4；真机 `view --model models/sky-yolo-v7.pt`（`view` 命令 10-04 已删（45873c8）：实时看框用管理面板「真机团子」页，离线单张用 `perception detect --model … <图片>`）。
 
 ## 2026-10-01 晚：录物品和动作素材（清单）
 
@@ -217,7 +219,8 @@ v9（`tmp/yolo/sky-v9/weights/best.pt`，同 v8 的设置，120 epoch、约 20 �
 
 ## 第二层（10-02）：裁图复核 + 外形头
 
-设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。**代码都写完了（`[attrs] enabled` 默认关），Claude 初分做完了，等人工确认；还没有模型，没上真机。**
+设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。~~代码都写完了（`[attrs] enabled` 默认关），Claude 初分做完了，等人工确认；还没有模型，没上真机。~~
+**现状（10-04）：代码里 `[attrs] enabled` 仍默认关；本机 10-04 18:35 起已开（`models/attrs-20261004d-mask.npz`，门槛 1~3 过了，见下），门槛 4 在真机上边开边验、还没定论。**
 
 **测速**（10-02，`models/dinov2-small.onnx`，输入 224×224，随机图，预热后取中位数）：
 
@@ -239,7 +242,7 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 1. 整帧回放：人物精确率不低于只用 YOLO；召回明显上去（目标漏检 31% → 20% 以下，估的，第一份报告出来后按实际改）
 2. 点没点火认反的数比只用 YOLO 少
 3. 5070 Ti 上 `perception bench --attrs`：感知层帧率降不超过 10%
-4. 真机三步：`view --images <录像>` 看灰框 / 复核框（茶座、开花的树、篝火那几段）→ `run --dry-run` 10 分钟 `[attrs]` 开 / 关各一次比 `stranger` / `approach` 事件数和 `hard/` 里的 `attrs_*` → 有黑影来时点亮陌生人链路照常
+4. 真机三步：`view --images <录像>` 看灰框 / 复核框（`view` 10-04 已删，改成真机 live 时在管理面板「真机团子」页看灰色虚线 / “复核”）（茶座、开花的树、篝火那几段）→ `run --dry-run` 10 分钟 `[attrs]` 开 / 关各一次比 `stranger` / `approach` 事件数和 `hard/` 里的 `attrs_*` → 有黑影来时点亮陌生人链路照常
 
 **Claude 初分**（10-02，sonnet，约 19 万输入 / 26 万输出 token）：2067 张里 2064 张有结果——lit 852、unlit 681、not_person 243、unsure 157、spirit 55、morph 41、shared 35。
 抽查（各 24 张拼图）：**not_person 约八成对**（篝火、大锅、灯柱、绣球、树、红椅子、茶壶对；白斗篷玩家、站着的黑影被判成不是人）；
@@ -251,7 +254,7 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 3. 管理面板「标注」页的「外形」标签页逐张确认
 4. `perception crops datasets/sky --writeback`（确认是人的框写回 `datasets/sky`，先自动备份）
 5. `perception attrs-train`，看 `report.md` 对门槛 1~3；`perception attrs-eval` 复评
-6. 晚上真机三步（门槛 4），都过了再开 `[attrs] enabled`
+6. 晚上真机三步（门槛 4），都过了再开 `[attrs] enabled`（本机 10-04 18:35 起已经开着边跑边验，见下）
 
 **第一次粗训练**（10-04，只标了一部分：已确认 2673 张、`_unlabeled` 还剩 953 张；没做 writeback）：`perception attrs-train datasets/attrs --device cuda` → `models/attrs-20261004.npz`，报告 `tmp/attrs-train/20261004-103614/report.md`。
 - 数据：lit 1622 / unlit 953 / not_person 64 / spirit 15（并进 not_person）/ shared 17、morph 2（并进 lit）
@@ -283,14 +286,15 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 - 验证集 F1 0.882：not_person 67% / 79%、lit 95% / 92%、unlit 94% / 93%、spirit 90% / 96%
 - 回放：纯 YOLO 88% / 71%、**认反 22 / 189**；加外形头 0.2 → 87% / 78%、**认反 4 / 207**；0.25 → 88% / 76%、认反 4 / 201 —— **门槛 1、2 达到**
 - 门槛 3（`bench --attrs`，obj-bench-teatable-1、200 帧、每帧满 4 张裁图）：只检测 11.1 ms → 加外形头 20.1 ms；整个感知约 19 ms/帧，[perception] fps 15 的预算 66.7 ms，加上也不到 30 ms，同一轨迹 0.5 秒才裁一次——按 15 fps 节奏应不掉帧，真机确认
-- 剩门槛 4（真机三步）：`config.toml` 加 `[attrs] enabled = true`、`model = "models/attrs-20261004d-mask.npz"` 后 `view --images` / `run --dry-run` 开关各 10 分钟比事件和难例 / 点亮陌生人链路
+- 剩门槛 4（真机三步）：`config.toml` 加 `[attrs] enabled = true`、`model = "models/attrs-20261004d-mask.npz"` 后 `view --images` / `run --dry-run` 开关各 10 分钟比事件和难例 / 点亮陌生人链路。
+  `view` 10-04 已删，第一步改成真机 live 时在管理面板「真机团子」页看灰色虚线 / “复核”；本机 `config.toml` 10-04 18:35 起已开 `[attrs]`（d-mask），当晚跑了 5 次 live（见 [2026-10-04-tonight.md](2026-10-04-tonight.md)），开 / 关对比和结论待补
 
 **写回 datasets/sky**（10-04 下午，`crops --writeback` 补上了改类别 / 删框）：129 帧——补 110 个漏标的人、改 38 个框的点没点火（多数 lit → 黑影）、删 13 个确认不是人的框；
 「不要」和没确认的不动；增强图（`_blur` / `_dark`）现在数据集里没有，以后 augment 过的一起改。备份 `datasets/sky/_backup/labels-20261004-152027`（改之前）；`labels-20261004-152037` 是修"重跑也备份"之前多出来的一份、和现在一模一样，可以删。
 **下一步可以重训 YOLO**（v8）：数据集的人物标注第一次被人核对过一批，YOLO 自己的点没点火也该变好；导入未确认还剩 1366 张，照"模型先筛、只看不一致的"再过一批收益更大
 
 **v10**（10-04 下午，`tmp/yolo/sky-v10/weights/best.pt`，写回后的数据集、同 v9 设置 yolo11n / 960 / 120 epoch；`train_v10.py`；
-先把旧的 `labels/*.cache` 挪到 `tmp/yolo/stale-cache-1004/`——ultralytics 只按文件大小判缓存过期，0 改成 4 大小不变会用旧标签）。**没上线，本机继续用 v7**：
+先把旧的 `labels/*.cache` 挪到 `tmp/yolo/stale-cache-1004/`——ultralytics 只按文件大小判缓存过期，0 改成 4 大小不变会用旧标签）。**没上线，本机继续用 v7**（后来补全答案后上线，见下）：
 - mAP50（`compare_v7_v9_v10.py`，验证集标注已写回修正）旧 val 90 帧 v7 / v9 / v10：player 0.739 / 0.690 / 0.701、player_unlit 0.667 / 0.639 / 0.671、self 0.812 / 0.831 / 0.851、spirit 0 / 0 / 0.426；
   茶座 49 帧：player 0.549 / 0.588 / 0.494、player_unlit 0.706 / 0.488 / 0.511、social_ring 0.545 / 0.786 / 0.662。比 v9（只差写回）旧 val 都涨、茶座有涨有跌；player 比 v7 低是 v9 起就有的（茶座数据带来的）
 - 整帧回放纯 YOLO（`sweep_v7_v10.py`）：同精确率下 v10 召回更低（84% 时 v7 76% / v10 70%），认反 v7 22 / v10 29
@@ -309,19 +313,19 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 
 ## 没做完 / 待办（按建议顺序）
 
-1. **用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，
-   先 dry-run 跑 5 分钟，看 arrive / leave / stranger 事件准不准（v1 时模拟出 leave 误报两次）；所有阈值都还没在真机标定
-2. 用户边玩边用 `view --model models/sky-yolo-v4.pt` 找认错的场景，再录对应地图补数据（新地图认不准时就是缺数据）
+1. ~~**用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，
+   先 dry-run 跑 5 分钟，看 arrive / leave / stranger 事件准不准（v1 时模拟出 leave 误报两次）；所有阈值都还没在真机标定~~（做完：09-29 起 `run` 里一直开着感知层，现在是 v10）
+2. 用户边玩边用 `view --model models/sky-yolo-v4.pt`（`view` 10-04 已删，改看管理面板「真机团子」页）找认错的场景，再录对应地图补数据（新地图认不准时就是缺数据）
 3. **呼唤 + 小脑**（讨论结论，还没设计）：不训练小脑模型，继续"大脑（LLM）定方针、身体（规则）照方针立刻执行"。
-   缺：Q 键呼唤（先真机实测按 Q 会发生什么）、"看不见好友"事件、心情 / 请求方针写进记忆（重启不丢）。要走 brainstorming
-4. **聊天气泡**（待办）：`typing` 类还没有标注（物品模式已经能标，见上面「物品识别」）；设想平时关聊天栏，看到好友气泡或每 20~30 秒打开一次。前提要真机确认关面板时消息是否仍记录
+   缺：~~Q 键呼唤（先真机实测按 Q 会发生什么）~~（做完：`[call]`，10-02、10-03 晚真机跑过）、"看不见好友"事件、心情 / 请求方针写进记忆（重启不丢）。要走 brainstorming
+4. ~~**聊天气泡**（待办）：`typing` 类还没有标注（物品模式已经能标，见上面「物品识别」）；设想平时关聊天栏，看到好友气泡或每 20~30 秒打开一次。前提要真机确认关面板时消息是否仍记录~~（做完：v7 起认得出 `typing`；面板默认 `auto`，09-30 晚真机验收；10-04 起面板关着直接用无障碍节点读头顶气泡）
 5. 单独的任务（已开任务卡片）：大脑 / 眼睛的 `claude -p` 很可能也读到项目 CLAUDE.md（同辅助标注的问题）；`test_viewer.py::test_port_in_use_raises` 在 Windows 上偶发失败
 6. ~~辅助标注审查留下的小问题~~（09-30 已修，标人和物品模式都改了）：`boxes` 回成列表按顺序当编号、看不懂的当没核对不写缓存；
    坐标 NaN / inf 丢掉并列进清单；额度用完后排队的批次不再起进程；帧名带 `.jpg` / "帧 " 前缀照样认；
    辅助标注的 `claude -p` 加了 `--no-session-persistence`（不再往 `.brain-claude/projects/` 堆会话记录；**以前堆下的**
    `…-skydango-assist-claude`、`…-tmp-assist-claude` 两个目录没删，要的话手动删）；提示词按实际帧尺寸写（1920×1080 一字不变，缓存照旧有效）；
    删了 `_perception_label` 里没用的 `roi_rect`（`Rect` 在类型注解里用着，留下）。眼睛 / 记忆整理的一次性 `claude -p` 也会留会话记录，没动
-7. 未跟踪、没动的文件：`emotes/`（用户的图标库，没提交也没 gitignore，要问用户）、`.claude/launch.json`、`docs/superpowers/plans/2026-09-27-brain-move-owner.md`
+7. 未跟踪、没动的文件：`emotes/`（用户的图标库，没提交也没 gitignore，要问用户）、`.claude/launch.json`、~~`docs/superpowers/plans/2026-09-27-brain-move-owner.md`~~（已提交跟踪）
 
 ## 装扮图鉴收集试跑（10-02）
 
