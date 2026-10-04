@@ -34,6 +34,7 @@ from .jobs import JOBS, JobRunner
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
 from .emotenames import EmoteNames
 from .frames import FramesApi
+from .retrain_view import RetrainView
 from .labeling import FormLabels, GestureLabels
 from .preflight import preflight, problem
 from .reports import list_reports, read_report
@@ -450,6 +451,9 @@ class ConsoleServer:
         cfg = self.store._fallback()
         return FramesApi(Path(cfg.inbox.dir), Path(ATTRS_ROOT), Path("datasets/sky"), cfg.perception.classes)
 
+    def retrain_view(self) -> RetrainView:
+        return RetrainView(Path("tmp/retrain"), self.store)
+
     def emote_names(self) -> EmoteNames:
         cfg = self.store._fallback()
         return EmoteNames(Path(cfg.wheel.library_dir), cfg)
@@ -843,6 +847,8 @@ class ConsoleServer:
                         self._json(404, {"ok": False, "text": "没有这张图"})
                     else:
                         self._send(200, "image/jpeg", data)
+                elif url.path == "/api/retrain/latest":
+                    self._json(200, console.retrain_view().latest())
                 elif url.path == "/api/frames/state":
                     self._json(200, console.frames_api().state())
                 elif url.path == "/api/frames/image":
@@ -904,6 +910,8 @@ class ConsoleServer:
                     "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or "")),
                     "/api/form/undo": lambda body: console.form_labels().undo(),
                     "/api/frames/act": lambda body: console.frames_api().act(body),
+                    "/api/retrain/adopt": lambda body: console.retrain_view().adopt(str(body.get("what") or ""), console._busy()),
+                    "/api/retrain/rollback": lambda body: console.retrain_view().rollback(str(body.get("what") or ""), console._busy()),
                     "/api/emotes/name": lambda body: console.emote_names().name(body.get("id"), body.get("name")),
                     "/api/emotes/clear": lambda body: console.emote_names().clear(body.get("id")),
                     "/api/sandbox/start": console.start_sandbox,

@@ -280,3 +280,100 @@ def test_parse_rejects_infinity_and_state_survives_unknown_class(tmp_path):
                                             {"cls": "bench", "box": [6, 6, 10, 10], "auto": None, "crop": None}])
     assert api.act({"frame": FRAME, "do": "pass", "boxes": [{"cls": 6, "box": [1, 1, float("inf"), 20]}]})[0] == 400
     assert [b["box"][0] for b in api.state()["frames"][0]["boxes"]] == [6]
+
+
+# ---------- 重训：最近一次报告、换上 / 回退 ----------
+
+import hashlib  # noqa: E402
+
+from skydango.console.retrain_view import RetrainView  # noqa: E402
+from skydango.console.settings import SettingsStore  # noqa: E402
+
+
+def make_retrain(tmp_path, console_toml="", config_toml="", stamps=("20261005-010000",), result=True):
+    (tmp_path / "config.toml").write_text(config_toml, encoding="utf-8")
+    if console_toml:
+        (tmp_path / "console.toml").write_text(console_toml, encoding="utf-8")
+    root = tmp_path / "retrain"
+    for s in stamps:
+        d = root / s
+        d.mkdir(parents=True)
+        (d / "report.md").write_text(f"# 报告 {s}", encoding="utf-8")
+    new_yolo, new_attrs = tmp_path / "new.pt", tmp_path / "new.npz"
+    new_yolo.write_bytes(b"y")
+    new_attrs.write_bytes(b"a")
+    if result:
+        (root / stamps[-1] / "result.json").write_text(
+            json.dumps({"ok": True, "yolo": str(new_yolo), "attrs": str(new_attrs)}), encoding="utf-8")
+    store = SettingsStore(tmp_path / "config.toml", environ={})
+    return RetrainView(root, store), store, root / stamps[-1], new_yolo, new_attrs
+
+
+def test_latest_reads_newest_dir(tmp_path):
+    view, _, d, _, _ = make_retrain(tmp_path, stamps=("20261004-230000", "20261005-010000"))
+    (tmp_path / "retrain" / "stray.txt").write_text("x")
+    r = view.latest()
+    assert r["ok"] and r["dir"] == "20261005-010000" and "报告 20261005" in r["report"]
+    assert r["result"]["ok"] is True and r["adopted"] is None
+
+
+def test_latest_empty(tmp_path):
+    view = RetrainView(tmp_path / "none", SettingsStore(tmp_path / "config.toml", environ={}))
+    r = view.latest()
+    assert r == {"ok": True, "dir": None, "report": "", "result": None, "adopted": None}
+
+
+def test_adopt_then_rollback_with_override(tmp_path):
+    view, store, d, new_yolo, _ = make_retrain(
+        tmp_path, console_toml='[perception]\nmodel = "models/old-console.pt"\n', config_toml='[perception]\nmodel = "models/cfg.pt"\n')
+    cfg_hash = hashlib.sha256((tmp_path / "config.toml").read_bytes()).hexdigest()
+    st, r = view.adopt("yolo", running=True)
+    assert st == 200 and r["ok"] and r["note"] == "下次叫醒生效"
+    assert store.effective().perception.model == str(new_yolo)
+    rec = json.loads((d / "adopt.json").read_text(encoding="utf-8"))["yolo"]
+    assert rec["old"] == "models/old-console.pt" and rec["new"] == str(new_yolo) and rec["had_override"] is True and rec["t"]
+    assert view.latest()["adopted"]["yolo"]["old"] == "models/old-console.pt"
+    st, r = view.rollback("yolo", running=False)
+    assert st == 200 and "note" not in r
+    assert store.effective().perception.model == "models/old-console.pt"
+    assert not (d / "adopt.json").exists() or "yolo" not in json.loads((d / "adopt.json").read_text(encoding="utf-8"))
+    assert hashlib.sha256((tmp_path / "config.toml").read_bytes()).hexdigest() == cfg_hash
+
+
+def test_rollback_without_override_reverts(tmp_path):
+    view, store, d, new_yolo, new_attrs = make_retrain(tmp_path, config_toml='[attrs]\nmodel = "models/cfg.npz"\n')
+    assert view.adopt("attrs", running=False)[0] == 200
+    assert store.effective().attrs.model == str(new_attrs)
+    assert view.rollback("attrs", running=False)[0] == 200
+    assert store.effective().attrs.model == "models/cfg.npz"
+    assert "model" not in (tmp_path / "console.toml").read_text(encoding="utf-8")  # 没有钉进 console.toml
+
+
+def test_adopt_refusals(tmp_path):
+    view, store, d, new_yolo, _ = make_retrain(tmp_path, result=False)
+    assert view.adopt("yolo", running=False)[0] == 409
+    view, store, d, new_yolo, _ = make_retrain(tmp_path / "b" if (tmp_path / "b").mkdir() is None else tmp_path)
+    new_yolo.unlink()
+    st, r = view.adopt("yolo", running=False)
+    assert st == 409 and "不存在" in r["text"]
+    assert view.adopt("zzz", running=False)[0] == 400
+    assert view.rollback("yolo", running=False)[0] == 409  # 没换过
+
+
+def test_retrain_http(tmp_path, upstream, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
+    d = tmp_path / "tmp" / "retrain" / "20261005-010000"
+    d.mkdir(parents=True)
+    (d / "report.md").write_text("# hi", encoding="utf-8")
+    s = make_server(tmp_path, upstream)
+    try:
+        u = s.url
+        st, r = request(u + "api/retrain/latest")
+        assert st == 200 and r["dir"] == "20261005-010000"
+        assert request(u + "api/retrain/latest", headers={"Host": f"evil.com:{s.port}"})[0] == 403
+        body = json.dumps({"what": "yolo"}).encode()
+        assert request(u + "api/retrain/adopt", body, {"Content-Type": "application/json"})[0] == 403
+        assert request(u + "api/retrain/adopt", body, GOOD)[0] == 409  # 没 result.json
+    finally:
+        s.stop()

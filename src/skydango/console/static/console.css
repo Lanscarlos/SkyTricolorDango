@@ -670,6 +670,12 @@ kbd.k{display:inline-block;min-width:1.7em;padding:0 5px;border:1px solid var(--
 .en-refs code{font-size:12px}
 .en-help .note{margin:0 0 8px;font-size:12px}
 /* 整帧页（难例收件箱）：左帧列表、中间画布占满（深底，截图本身多半偏暗）、右栏操作；编辑中画布描一圈琥珀色 */
+.fr-train{flex:none;margin-bottom:8px}
+.fr-train[hidden]{display:none}
+.fr-train-bar{display:flex;align-items:center;gap:10px;padding:6px 14px;flex-wrap:wrap}
+.fr-train-report{padding:0 14px 10px;max-height:40vh;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--ash) transparent}
+.fr-train-row{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap}
+.fr-train-row .path{overflow-wrap:anywhere;font-size:12.5px}
 .fr-cols{flex:1;grid-template-columns:minmax(220px,.8fr) minmax(0,3fr) minmax(240px,.9fr)}
 .fr-cols[hidden]{display:none}
 .fr-cols>.pane{display:flex;flex-direction:column;min-height:0;overflow:hidden}

@@ -310,6 +310,19 @@
         </div>
       </section>
     </div>
+    <section class="pane fr-train" id="fr-train" aria-label="重训" hidden>
+      <div class="fr-train-bar">
+        <span id="fr-train-count"></span>
+        <button class="btn sm" id="fr-train-go" type="button">重训</button>
+        <span class="note" id="fr-train-prog"></span>
+        <span class="grow"></span>
+        <button class="btn sm" id="fr-train-toggle" type="button">展开最近一次报告</button>
+      </div>
+      <div class="fr-train-report" id="fr-train-report" hidden>
+        <div class="md" id="fr-train-md"></div>
+        <div id="fr-train-adopt"></div>
+      </div>
+    </section>
     <div class="banner warn" id="fr-empty" hidden></div>
     <div class="cols fr-cols" id="fr-cols" hidden>
       <section class="pane lb-listpane" aria-label="帧列表">
@@ -381,6 +394,7 @@
 <script src="console/static/live.js"></script>
 <script src="console/static/scenarios.js"></script>
 <script src="console/static/emotenames.js"></script>
+<script src="console/static/retrain.js"></script>
 <script src="console/static/frames.js"></script>
 <script src="console/static/labeling.js"></script>
 <script src="console/static/settings.js"></script>

@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "live.js", "scenarios.js", "emotenames.js", "frames.js", "labeling.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "labeling.js", "settings.js", "device.js"]
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做

@@ -501,6 +501,7 @@ function setTab(tab) {
   const en = window.EmoteNamesTab, has = !!(en && en.hasData());
   $("en-cols").hidden = !names || !has; $("en-empty").hidden = !names || has;
   const fr = window.FramesTab, frTab = LB.tab === "frames", fhas = !!(fr && fr.hasData());
+  $("fr-train").hidden = !frTab; if (frTab && window.RetrainBox) window.RetrainBox.load();
   $("fr-cols").hidden = !frTab || !fhas; $("fr-empty").hidden = !frTab || fhas;
   startTimer();  // 动作页之外不放动图
   reload();
