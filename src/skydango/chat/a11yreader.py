@@ -34,6 +34,7 @@ HOLD = 3.0  # 他头上某句的个数变少了，这么久之内还按见过的
 # 下面几句会晚一帧、那一帧挂不上名字（10-04 真机录像，差 74 px），掉下去再回来不能当成新冒出来的话
 FRIENDS_TTL = 2.0  # 好友名单（friends.md）最多隔这么久重读一次：每圈要分类好几次
 PEEK_KEEP = 60.0  # 为挂不上名字的气泡去看一眼面板：这么久之内面板建基准时，同一句照样报出来
+APPEAR_FILL = 0.8  # 面板刚出现这么久之内，列表只在底部往下长的算还在加载（重新登录后第一次开面板，行是从上往下陆续填进来的）
 
 
 def _rect(box: tuple[int, int, int, int]) -> Rect:
@@ -86,6 +87,8 @@ class A11yChatReader:
         self.panel_closed_since: float | None = None
         self.trace_path: Path | None = None
         self._prev: list[tuple] = []  # 上一次看到面板时的全部行（含滚出可视范围的历史）
+        self._appeared_at: float | None = None  # 面板这一次出现的时刻（关着时不清）
+        self._prev_at: float | None = None  # 基准是什么时候记下的
         self._view: UiView = _EMPTY
         self._traced: list[tuple] | None = None
         # 头顶气泡（§3.2）
@@ -270,12 +273,15 @@ class A11yChatReader:
         report = report and self._bubbles_ready
         self._bubbles_ready = True
 
+        # 文字正好是好友名字的不算一句话：游戏偶尔多出一个名字节点，挂在他的标签下面（10-04 晚真机）
+        names = set(self._friend_names())
+        bubbles = [b for b in view.bubbles if b.text.strip() not in names]
         groups: dict[str, list[Bubble]] = {t.name: [] for t in _in_view(view)}
-        for b in view.bubbles:
+        for b in bubbles:
             if b.speaker is not None:
                 groups.setdefault(b.speaker, []).append(b)
         # 陌生人 / 挂不上名字的点点不管
-        self._note_loose([b for b in view.bubbles if b.speaker is None and not b.typing_only], now, report)
+        self._note_loose([b for b in bubbles if b.speaker is None and not b.typing_only], now, report)
         self._forget_stale(set(groups), now)
         for (who, key), (n, _) in list(self._held.items()):
             if who not in groups:  # 看不见他的标签：没有"变少了"的证据，保持时间不走（BUBBLE_KEEP 管多久忘掉）
@@ -320,6 +326,21 @@ class A11yChatReader:
         cur = [r.key() for r in rows]
         if not cur:
             return []  # 开着但一行都没有（刚登录、历史清空）：基准留着，等第一句进来对得上
+        prev = self._prev
+        if prev and len(cur) < len(prev) and cur == prev[: len(cur)]:
+            return []  # 只看到上半截（没加载全）：不动基准
+        # 刚出现、基准是这一次打开时才记下的、之后只在底部往下长：还在加载，并进基准、不报。
+        # 关着时进来的新消息，重新打开的第一份里就已经在了（基准是上次开着时的），照常报
+        filling = (
+            self._appeared_at is not None
+            and now - self._appeared_at < APPEAR_FILL
+            and self._prev_at is not None
+            and self._prev_at >= self._appeared_at
+        )
+        if filling and prev and len(cur) > len(prev) and cur[: len(prev)] == prev:
+            self._prev, self._prev_at = cur, now
+            self.settling = True
+            return []
         added_idx: list[int] = []
         j = align(self._prev, cur) if self._prev else None
         self._peek_keys = {k: t for k, t in self._peek_keys.items() if now - t <= PEEK_KEEP}
@@ -340,7 +361,7 @@ class A11yChatReader:
             added_idx = list(range(j + 1, len(cur)))
         for i in added_idx:
             self._peek_keys.pop(bubble_key(rows[i].text), None)
-        self._prev = cur
+        self._prev, self._prev_at = cur, now
         if self.trace_path:
             visible = [r for r in view.rows if r.visible]
             vkeys = [r.key() for r in visible]
@@ -375,9 +396,11 @@ class A11yChatReader:
                 self.panel_closed_since = now
                 log.info("聊天记录面板关着，改读好友头顶的气泡")
             return self._bubble_messages(view, now, report=True)
-        if self.panel_closed_since is not None:
-            log.info("聊天记录面板又出现了，读面板行")
+        if self.panel_closed_since is not None or self._appeared_at is None:
+            if self.panel_closed_since is not None:
+                log.info("聊天记录面板又出现了，读面板行")
             self.panel_closed_since = None
+            self._appeared_at = now
         fresh = self._panel_messages(view, now)
         self._bubble_messages(view, now, report=False)  # 在面板行之后：同一份里的气泡能抵掉刚报的面板行
         return fresh

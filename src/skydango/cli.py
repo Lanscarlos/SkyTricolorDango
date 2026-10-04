@@ -85,9 +85,10 @@ def _build_reader(cfg: Config):
     return ChatReader(make_ocr(cfg.ocr.engine, cfg.ocr.threads), cfg.vision, cfg.ocr, cfg.chat, self_filter), self_filter
 
 
-def _chat_reader(cfg: Config, dev):
+def _chat_reader(cfg: Config, dev, save: Path | None = None):
     """run 读聊天用的：`[vision] source = "a11y"`（log 模式、有设备）时先读无障碍节点、读不到自动退回 OCR，
-    否则就是 OCR 的 `_build_reader`。用完要 `_stop_reader`（清掉设备上的客户端进程）。"""
+    否则就是 OCR 的 `_build_reader`。用完要 `_stop_reader`（清掉设备上的客户端进程）。
+    save：把原始快照逐行存进这个文件（运行目录的 a11y.jsonl），出了问题拿它回放。"""
     if cfg.vision.source not in ("a11y", "ocr"):
         raise ValueError(f"vision.source 只能是 a11y / ocr，现在是 {cfg.vision.source!r}")
     ocr, self_filter = _build_reader(cfg)
@@ -96,9 +97,16 @@ def _chat_reader(cfg: Config, dev):
     from .chat.a11yreader import MAX_AGE, A11yChatReader, FallbackReader
     from .device.a11y import A11yReader
 
-    client = A11yReader(cfg.device.adb_path, cfg.device.serial)
+    raw = save.open("ab") if save is not None else None
+
+    def on_line(line: bytes) -> None:
+        raw.write(line + b"\n")
+        raw.flush()
+
+    client = A11yReader(cfg.device.adb_path, cfg.device.serial, on_line=on_line if raw is not None else None)
     a11y = A11yChatReader(lambda: client.latest(max_age=MAX_AGE), _friend_names(cfg), cfg.chat, cfg.ocr, self_filter)
     reader = FallbackReader(client, a11y, ocr)
+    reader.raw_file = raw  # _stop_reader 关它
     reader.start()
     log.info("读聊天：%s", reader.describe())
     return reader, self_filter
@@ -113,6 +121,12 @@ def _stop_reader(reader) -> None:
         stop()
     except Exception:
         log.exception("停读聊天出错")
+    raw = getattr(reader, "raw_file", None)
+    if raw is not None:
+        try:
+            raw.close()
+        except Exception:
+            log.debug("关原始快照文件出错", exc_info=True)
 
 
 # ---- 命令 ----
@@ -2251,7 +2265,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     from .vision.envdiff import snapshot
 
     dev = _device(cfg)
-    reader, self_filter = _chat_reader(cfg, dev)
+    reader, self_filter = _chat_reader(cfg, dev, run.path / "a11y.jsonl")
     try:
         reader.trace_path = run.rows_log
         panel = _panel(cfg, dev, reader)
@@ -2423,7 +2437,7 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
     from .chat.sender import ChatSender
 
     dev = _device(cfg)
-    reader, self_filter = _chat_reader(cfg, dev)
+    reader, self_filter = _chat_reader(cfg, dev, run.path / "a11y.jsonl")
     try:
         reader.trace_path = run.rows_log
         panel = _panel(cfg, dev, reader)

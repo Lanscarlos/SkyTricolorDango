@@ -954,3 +954,36 @@ def test_baseline_without_pending_peek_still_reports_nothing():
     r, h, _ = make()
     h[0] = panel(A, B, ("团子", "小明"))
     assert r.read(None, 1.0) == []
+
+
+def test_rows_filling_in_right_after_panel_appears_are_not_new():
+    """重新登录后第一次开面板，列表从上往下陆续填进来（10-04 晚真机：只填了上面几行的那份当了基准，下面 8 句旧话被当成新的）。
+    面板刚出现 0.8 秒内只在底部往下长的，算还在加载。"""
+    r, h, _ = make()
+    h[0] = closed()
+    r.read(None, 1.0)
+    h[0] = panel(A, B)
+    assert r.read(None, 10.0) == []
+    h[0] = panel(A, B, C, D)
+    assert r.read(None, 10.3) == []
+    h[0] = panel(A, B, C, D, ("真的新消息", "小明"))
+    assert [m.text for m in r.read(None, 12.0)] == ["真的新消息"]
+
+
+def test_top_part_only_snapshot_keeps_baseline():
+    r, h, _ = make()
+    h[0] = panel(A, B, C, D)
+    r.read(None, 1.0)
+    h[0] = panel(A, B)  # 只看到上半截（没加载全）
+    assert r.read(None, 2.0) == []
+    h[0] = panel(A, B, C, D, ("在吗", "小明"))
+    assert [m.text for m in r.read(None, 3.0)] == ["在吗"]
+
+
+def test_bubble_that_is_just_a_friend_name_is_not_a_message():
+    """游戏偶尔多出一个名字节点，挂在他的标签下面像一句话（10-04 晚真机：「懒洋洋大王：懒洋洋大王」，他没打过自己名字）。"""
+    r, h, _ = make()
+    h[0] = closed(*head())
+    r.read(None, 1.0)
+    h[0] = closed(*head("小明", "在吗"))
+    assert [m.text for m in r.read(None, 2.0)] == ["在吗"]

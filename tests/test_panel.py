@@ -773,6 +773,7 @@ def test_before_speak_keeps_panel_closed_when_partner_in_view():
     m.cfg.chat_peek = 100.0  # 不看一眼，只看安静计时
     talking(m, 5.0)
     m.reader.tags = ["小明", "小红"]
+    m.tick(9.9, [], visible=False)  # 每圈 tick 时记下看到的名字标签
     m.before_speak(10.0)
     assert dev.calls == [] and m.state == "talking"
     m.tick(54.9, [], visible=False)  # 说话刷新了活动时间
@@ -984,3 +985,39 @@ def test_ocr_reader_keeps_short_close_window():
     assert m.state == "idle"
     tick(32.0, visible=True)
     assert m.state == "chatting"
+
+
+def test_a11y_panel_message_from_friend_in_view_closes_panel_and_talks():
+    """面板开着时画面里的好友说话，读到的是面板行；他在画面里就关面板、进「聊着」（10-04 晚：用户嫌聊天时面板一直开着）。"""
+    m, dev, state = a11y(open_=True)
+    tick = _ticker(m)
+    m.reader.tags = ["小明"]
+    tick(5.0, visible=True)  # 面板开着（不是自己开的）→ 聊天中
+    assert m.state == "chatting"
+    tick(6.0, [said("在吗", source="panel")], visible=True)
+    assert m.state == "talking" and state.open is False
+
+
+def test_a11y_panel_message_from_friend_out_of_view_keeps_chatting():
+    m, dev, state = a11y(open_=True)
+    tick = _ticker(m)
+    m.reader.tags = []
+    tick(5.0, visible=True)
+    tick(6.0, [said("在吗", source="panel")], visible=True)
+    assert m.state == "chatting" and state.open is True
+
+
+def test_a11y_before_speak_uses_recently_seen_tags():
+    """名字标签闪一下（这一帧没看到）不该让团子开面板：看最近 3 秒内见没见过他（10-04 晚 18:36:49）。"""
+    m, dev, state = a11y()
+    tick = _ticker(m)
+    m.reader.tags = ["小明"]
+    tick(5.0, [said()])
+    assert m.state == "talking"
+    m.reader.tags = []  # 这一帧标签闪没了
+    tick(6.5)
+    m.before_speak(7.0)
+    assert m.state == "talking" and presses(dev) == 0
+    tick(10.5)  # 5 秒没见过他了
+    m.before_speak(10.6)
+    assert m.state == "chatting" and presses(dev) == 1

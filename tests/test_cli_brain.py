@@ -27,7 +27,7 @@ def fake_brain_run(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_brain_env", lambda cfg: (FAKE, env))
     monkeypatch.setattr(cli, "_device", lambda cfg: FakeDevice([scene()]))
     monkeypatch.setattr(cli, "_build_reader", lambda cfg: (FakeReader(), SelfFilter(60, 0.8, "")))
-    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (FakeReader(), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev, save=None: (FakeReader(), SelfFilter(60, 0.8, "")))
     monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda engine, threads=8: FakeOcr())
     cfg = Config()
     cfg.panels.cards_dir = str(Path(__file__).resolve().parents[1] / "assets" / "panels")
@@ -970,7 +970,7 @@ def test_game_world_close_stops_reader(tmp_path, monkeypatch):
         def stop(self):
             stopped.append(True)
 
-    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev, save=None: (StoppingReader(), SelfFilter(60, 0.8, "")))
     world = cli._game_world(cfg, run, True)
     world.close()
     assert stopped == [True]
@@ -995,7 +995,7 @@ def _raise(exc):
 def test_game_world_build_interrupted_stops_reader(tmp_path, monkeypatch):  # Ctrl+C / 面板点停止时还在建
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     stopped = []
-    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev, save=None: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
     monkeypatch.setattr(cli, "_camera", _raise(KeyboardInterrupt()))
     with pytest.raises(KeyboardInterrupt):
         cli._game_world(cfg, run, True)
@@ -1005,7 +1005,7 @@ def test_game_world_build_interrupted_stops_reader(tmp_path, monkeypatch):  # Ct
 def test_game_world_close_stops_reader_even_if_panels_fail(tmp_path, monkeypatch):
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     stopped = []
-    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev, save=None: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
     monkeypatch.setattr(cli, "_stop_scene", _raise(RuntimeError("env 停不下来")))
     world = cli._game_world(cfg, run, True)
     with pytest.raises(RuntimeError):
@@ -1016,7 +1016,7 @@ def test_game_world_close_stops_reader_even_if_panels_fail(tmp_path, monkeypatch
 def test_run_agent_build_failure_stops_reader(tmp_path, monkeypatch):
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     stopped = []
-    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
+    monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev, save=None: (StoppingReader(stopped), SelfFilter(60, 0.8, "")))
     monkeypatch.setattr(cli, "_camera", _raise(RuntimeError("镜头建不起来")))
     with pytest.raises(RuntimeError, match="镜头"):
         cli._run_agent(cfg, run, no_emotes=True)
@@ -1029,3 +1029,23 @@ def test_old_view_command_line_still_runs(tmp_path, monkeypatch, capsys):  # 终
     monkeypatch.chdir(tmp_path)
     cli.main(["run", "--view", "--no-browser"])
     assert seen == [1] and "--view 已经不用了" in capsys.readouterr().out
+
+
+def test_chat_reader_saves_raw_snapshots(monkeypatch, tmp_path):
+    """跑团子时把原始快照存进运行目录（a11y.jsonl）：出了问题能拿真机录像回放查（10-04 晚）。"""
+    cfg = chat_cfg(monkeypatch)
+    FakeA11yClient.kwargs = None
+    orig_init = FakeA11yClient.__init__
+
+    def init(self, adb_path, serial, **kwargs):
+        orig_init(self, adb_path, serial, **kwargs)
+        FakeA11yClient.kwargs = kwargs
+
+    monkeypatch.setattr(FakeA11yClient, "__init__", init)
+    out = tmp_path / "a11y.jsonl"
+    reader, _ = cli._chat_reader(cfg, FakeDevice([scene()]), out)
+    on_line = FakeA11yClient.kwargs["on_line"]
+    on_line(b'{"t":1}')
+    on_line(b'{"t":2}')
+    cli._stop_reader(reader)
+    assert out.read_bytes() == b'{"t":1}\n{"t":2}\n'

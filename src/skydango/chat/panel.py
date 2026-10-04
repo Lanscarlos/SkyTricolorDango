@@ -28,6 +28,7 @@ POLL = 0.1  # 等面板出现时多久截一张图看
 # 自己关的这么久之内看到面板不算别人打开的；快照每 0.15 秒一份，看一眼至少开这么久，等面板行加载完再关
 A11Y_CLOSE_SETTLE = 3.5
 A11Y_PEEK_MIN = 1.0
+TAG_RECENT = 3.0  # 好友的名字标签这么久之内看到过就算"在画面里"：标签会闪，只看这一帧会让团子一说话就开面板（10-04 晚）
 
 
 class PanelManager:
@@ -68,7 +69,8 @@ class PanelManager:
         self._last_bubble = 0.0  # 等气泡：上次看到气泡
         self._hold_until: float | None = None  # 空闲注意力"先看一眼"：闲着时推迟到这个时间再开面板
         self._held_once = False  # 这个 _pending 已经推迟过一次
-        self._talk_with: set[str] = set()  # 聊着：跟谁聊（从头顶气泡读到过的说话人）
+        self._talk_with: set[str] = set()  # 聊着：跟谁聊（在画面里说过话的人）
+        self._tag_seen: dict[str, float] = {}  # 好友名 → 最后一次看到他的名字标签（无障碍读法）
         self._talk_since = 0.0  # 聊着：什么时候开始的（看一眼的计时从这儿和上次读到面板里晚的那个算）
         self._peek_from = "idle"  # 看一眼 / 等气泡从哪个状态发起：没读到新消息时回到它（聊着 / 闲着）
 
@@ -167,11 +169,9 @@ class PanelManager:
         聊着、跟谁聊的名字标签都还看得见：不开面板（他的回复从头顶气泡读），只刷新活动时间。"""
         if not self.auto:
             return
-        if self.state == "talking" and self._talk_with and self._reads_bubbles():
-            tags = getattr(self.reader, "tags_in_view", None)
-            if self._talk_with <= set(tags() if callable(tags) else ()):
-                self._last_activity = max(self._last_activity, now)
-                return
+        if self.state == "talking" and self._talk_with and self._reads_bubbles() and self._in_view(self._talk_with, now):
+            self._last_activity = max(self._last_activity, now)
+            return
         self._last_activity = max(self._last_activity, now)
         self._missing_since = None
         if self.state != "chatting":
@@ -237,12 +237,15 @@ class PanelManager:
             self._maybe_reopen(now)
             return
         if self._reads_bubbles():
+            tags = getattr(self.reader, "tags_in_view", None)
+            for name in tags() if callable(tags) else ():
+                self._tag_seen[name] = now
             want = getattr(self.reader, "want_peek", None)
             reason = want() if callable(want) else None
             if reason:
                 self.trigger(reason, now)
-        if fresh and self._reads_bubbles() and all(getattr(m, "source", "") == "bubble" for m in fresh):
-            self._heard_bubbles(now, fresh)
+        if fresh and self._reads_bubbles() and self._all_in_view(fresh, now):
+            self._heard_in_view(now, fresh, visible)
             return
         if fresh:
             self._last_read = self._last_activity = now
@@ -270,17 +273,37 @@ class PanelManager:
             self._talk_with = set()
         self.state = state
 
-    def _heard_bubbles(self, now: float, fresh: list) -> None:
-        """这一圈的新消息全是从头顶气泡读到的（无障碍读法）：不开面板，进聊着 / 刷新活动时间。"""
+    def _in_view(self, names, now: float) -> bool:
+        """这些好友最近 `TAG_RECENT` 秒内都看到过名字标签。"""
+        return all(now - self._tag_seen.get(n, float("-inf")) <= TAG_RECENT for n in names)
+
+    def _all_in_view(self, fresh: list, now: float) -> bool:
+        """这一圈的新消息全是从头顶气泡读到的，或者说话的人都在画面里（面板开着时读到的是面板行）。"""
+        if all(getattr(m, "source", "") == "bubble" for m in fresh):
+            return True
+        speakers = {getattr(m, "speaker", "") for m in fresh}
+        return "" not in speakers and self._in_view(speakers, now)
+
+    def _heard_in_view(self, now: float, fresh: list, visible: bool) -> None:
+        """说话的人都在画面里（无障碍读法）：不用开面板，进聊着 / 刷新活动时间；面板开着就关上。"""
         self._last_activity = now
-        if self.state == "chatting":
-            return
-        self._talk_with |= {m.speaker for m in fresh if getattr(m, "speaker", "")}
+        if visible:
+            self._last_read = now
+        speakers = {m.speaker for m in fresh if getattr(m, "speaker", "")}
         if self.state in ("peek", "bubble"):  # 面板正在开：看完回聊着
+            self._talk_with |= speakers
             self._peek_from = "talking"
-        elif self.state != "talking":
-            self._talk_since = now
-            self._set("talking", "从头顶气泡读到消息")
+            return
+        if self.state == "talking":
+            self._talk_with |= speakers
+            return
+        self._talk_since = now
+        if self.state == "chatting" and visible:
+            self._close(now, "说话的人在画面里，关面板接着聊", "talking")  # 输入框开着时 _close 会留在聊天中
+        else:
+            self._set("talking", "说话的人在画面里")
+        if self.state == "talking":
+            self._talk_with = speakers
 
     def _until_chat_peek(self, now: float) -> float:
         return self.cfg.chat_peek - (now - max(self._last_read, self._talk_since))
