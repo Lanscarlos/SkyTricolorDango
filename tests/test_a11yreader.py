@@ -918,3 +918,39 @@ def test_hold_does_not_expire_while_tag_is_out_of_view():
     assert r.read(None, 9.2) == []
     h[0] = closed(tag("小明", 653, 0), bubble("你怎么不理我", 653, 0), bubble("呜呜呜", 653, 49))
     assert r.read(None, 9.4) == []
+
+
+def test_out_of_order_snapshot_does_not_rereport_old_rows():
+    """10-04 真机：一份乱序快照被当成基准后，下一份正常快照把后面几行全当成新行又报了一遍。"""
+    from a11ysnap import row as prow
+
+    r, h, _ = make()
+    rows = [("团子", 553), ("昨天说什么了", 692), ("哎呀", 832), ("在干啥呢", 886)]
+    h[0] = snap(placeholder(), *[prow(t, "小明", y) for t, y in rows])
+    r.read(None, 1.0)
+    shuffled = [("昨天说什么了", 692), ("哎呀", 832), ("在干啥呢", 886), ("怎么不说话", 940), ("团子", 553)]
+    h[0] = snap(placeholder(), *[prow(t, "小明", y) for t, y in shuffled])
+    assert [m.text for m in r.read(None, 2.0)] == ["怎么不说话"]
+    h[0] = snap(placeholder(), *[prow(t, "小明", y) for t, y in sorted(shuffled, key=lambda x: x[1])])
+    assert r.read(None, 3.0) == []
+
+
+def test_peek_for_unattached_bubble_reports_it_even_on_first_baseline():
+    """10-04 真机：团子刚上线，好友的标签淡了、说了句「团子」挂不上名字 → 看一眼面板；
+    这是上线后第一次开面板，只建基准的话这句就被当成历史吞了。"""
+    r, h, _ = make()
+    h[0] = closed()
+    r.read(None, 1.0)
+    h[0] = closed(bubble("团子", 900, 400))  # 没有名字标签
+    assert r.read(None, 2.0) == []
+    assert r.want_peek() == "bubble_text"
+    h[0] = panel(A, B, ("团子", "小明"))  # 第一次开面板
+    assert [(m.speaker, m.text, m.source) for m in r.read(None, 3.0)] == [("小明", "团子", "panel")]
+    h[0] = panel(A, B, ("团子", "小明"))
+    assert r.read(None, 4.0) == []
+
+
+def test_baseline_without_pending_peek_still_reports_nothing():
+    r, h, _ = make()
+    h[0] = panel(A, B, ("团子", "小明"))
+    assert r.read(None, 1.0) == []

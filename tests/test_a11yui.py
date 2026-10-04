@@ -137,3 +137,20 @@ def test_friend_tag_clipped_at_top_edge():
     # 被切掉的不是好友名字（气泡被切了一截）：不当标签
     v = classify(snap(node("在吗", (440, 0, 518, 30))), 1920, 1080, FRIENDS)
     assert v.tags == ()
+
+
+def test_panel_rows_sorted_by_position_not_tree_order():
+    """面板刚打开时游戏在复用 TextView，树里的顺序暂时不是从上到下（10-04 真机：y=553 那行排在了最后）。
+    行按框的底边排：滚出去的行框被裁成顶 0、底是负数，越往上越负，照样排得对。"""
+    from a11ysnap import node
+
+    nodes = [
+        placeholder(),
+        node("很早以前 - 小明", (21, 0, 188, -954), visible=False),
+        row("在干啥呢", "小明", 886),
+        row("怎么不说话", "小明", 940),
+        row("团子", "小明", 553),
+        self_row("我在呀", 623),
+    ]
+    v = classify(snap(*nodes), 1920, 1080, FRIENDS)
+    assert [r.text for r in v.rows] == ["很早以前", "团子", "我在呀", "在干啥呢", "怎么不说话"]

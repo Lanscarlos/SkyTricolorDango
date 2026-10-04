@@ -33,6 +33,7 @@ PANEL_KEEP = 30.0  # 面板行报过的话留多久，等他头上同一句气�
 HOLD = 3.0  # 他头上某句的个数变少了，这么久之内还按见过的最多个数算：转镜头时节点位置不是一起更新的，
 # 下面几句会晚一帧、那一帧挂不上名字（10-04 真机录像，差 74 px），掉下去再回来不能当成新冒出来的话
 FRIENDS_TTL = 2.0  # 好友名单（friends.md）最多隔这么久重读一次：每圈要分类好几次
+PEEK_KEEP = 60.0  # 为挂不上名字的气泡去看一眼面板：这么久之内面板建基准时，同一句照样报出来
 
 
 def _rect(box: tuple[int, int, int, int]) -> Rect:
@@ -95,6 +96,7 @@ class A11yChatReader:
         self._held: dict[tuple[str, str], tuple[int, float]] = {}  # (说话人, 比较键) → (最近见过的最多个数, 最后一次见到这么多)
         self._loose: set[str] = set()  # 挂不上名字的原文气泡（比较键）：同一句只记一次“想看一眼”
         self._peek: str | None = None
+        self._peek_keys: dict[str, float] = {}  # 为它去看一眼面板的那些气泡（比较键 → 时间）
         self._typing: list[str] = []
         self._reported: deque[tuple[str, str, float]] = deque()  # 气泡报过的 (说话人, 原文, 时间)（§3.3）
         self._panel_reported: deque[tuple[str, str, float]] = deque()  # 面板行报过的，等气泡来抵（§3.3）
@@ -207,6 +209,8 @@ class A11yChatReader:
                 continue  # 同一句只记一次；标签闪一下 / 人走远了，这句已经知道是谁的
             if not self.self_filter.is_self(b.text.strip(), now):
                 new = True  # 好友离远了、标签淡了：等面板行带着说话人报
+                if report:
+                    self._peek_keys[key] = now
         self._loose = loose
         if new and report:
             self._peek = "bubble_text"
@@ -318,14 +322,24 @@ class A11yChatReader:
             return []  # 开着但一行都没有（刚登录、历史清空）：基准留着，等第一句进来对得上
         added_idx: list[int] = []
         j = align(self._prev, cur) if self._prev else None
+        self._peek_keys = {k: t for k, t in self._peek_keys.items() if now - t <= PEEK_KEEP}
         if j is None:
             if self._prev:
                 log.info("面板历史对不上，当新基准")
             for r in rows:  # 基准里有的、气泡报过的那几句算对上了：划掉（一条抵一条），免得之后他又说一遍被吃掉
                 if not r.masked:
                     self._take_reported(r.speaker, r.text, now)
+            # 正是为挂不上名字的那句来看一眼的（上线后第一次开面板 / 历史对不上）：只建基准就吞了，按最后出现的那行报
+            for key in list(self._peek_keys):
+                hit = next((i for i in range(len(rows) - 1, -1, -1)
+                            if not rows[i].masked and bubble_key(rows[i].text) == key), None)
+                if hit is not None:
+                    added_idx.append(hit)
+            added_idx.sort()
         else:
             added_idx = list(range(j + 1, len(cur)))
+        for i in added_idx:
+            self._peek_keys.pop(bubble_key(rows[i].text), None)
         self._prev = cur
         if self.trace_path:
             visible = [r for r in view.rows if r.visible]

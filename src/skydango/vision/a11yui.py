@@ -134,8 +134,13 @@ def classify(snap: Snapshot | None, width: int, height: int, friends: Collection
             self_rows[id(n)] = PanelRow("", n.text, True, False, n.box, n.visible)
         elif n.visible:
             candidates.append(n)
+    # 按框的底边排，不信树里的顺序：面板刚打开时游戏在复用 TextView，顺序暂时乱（10-04 真机，乱序快照当了基准、旧话又报一遍）。
+    # 滚出去的行框被裁成顶 0、底是负数，越往上越负；sorted 是稳定的，底边一样时保持树里的顺序
     rows = tuple(
-        row_nodes.get(id(n)) or self_rows[id(n)] for n in snap.nodes if id(n) in row_nodes or id(n) in self_rows
+        sorted(
+            (row_nodes.get(id(n)) or self_rows[id(n)] for n in snap.nodes if id(n) in row_nodes or id(n) in self_rows),
+            key=lambda r: r.box[3],
+        )
     )
 
     # 3D 画面里的候选：按列分组（x 中心挨着、竖着一个挨一个），一列里最上面的标签样子的节点是名字标签
