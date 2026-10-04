@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 from ..chat.memory import format_date
 from ..config import BrainConfig, ChatConfig
-from .claude import ClaudeError
+from .claude import ClaudeError, ClaudeGate, claude_down
 from .events import Event, EventQueue
 from .prompt import SUMMARY_REQUEST
 
@@ -48,11 +48,13 @@ class Brain:
         trace=None,  # brain.trace.BrainTrace：可视化网页的大脑时间线（run --brain --view）
         slow: Callable[[], bool] | None = None,  # 困了：没事时醒得慢一档（内心层第 2 期）
         fallback_session=None,  # brain.deepseek.DeepSeekBrain：Claude 额度用完切过去（spec 2026-10-03-deepseek-fallback-brain）
+        gate: ClaudeGate | None = None,  # Claude 总闸：别处（记忆、反思、眼睛）撞墙关了，下一轮就直接切备用大脑（spec 2026-10-04-claude-gate §2）
     ) -> None:
         self.cfg = cfg
         self.chat = chat
         self.session = session
         self.fallback_session = fallback_session
+        self.gate = gate
         self.on_fallback = False  # 已经在用备用大脑（切过去就不切回）
         self.toolbox = toolbox
         self.events = events
@@ -142,6 +144,8 @@ class Brain:
 
     def _wake(self, now: float, reason: str) -> None:
         self.last_wake = now
+        if self.gate is not None and not self.gate.ok() and self.fallback_session is not None and not self.on_fallback:
+            self._switch_to_fallback(f"Claude 总闸已关（{self.gate.reason}），切到 DeepSeek 备用大脑")
         began = self.clock()  # 取事件之前：之后身体才读到的消息不在这一轮里（last_turn 用）
         events = self.events.drain()
         text = self.message(now, events)
@@ -201,12 +205,13 @@ class Brain:
         """栏头的总体状态。"""
         now = self.clock()
         return {
-            "model": self.cfg.model,
+            "model": getattr(self.session, "model", self.cfg.model) if self.on_fallback else self.cfg.model,
             "effort": self.cfg.effort,
             "failures": self.failures,
             "retry_in": self.backoff_until - now if self.backoff_until > now else None,
             "offline": self.offline(now),
             "on_fallback": self.on_fallback,
+            "claude_gate": self.gate.reason if self.gate is not None else None,
         }
 
     def _trace(self, name: str, *args) -> None:
@@ -222,22 +227,29 @@ class Brain:
         self.failures += 1
         if self.failing_since is None:
             self.failing_since = now
-        limit = bool(getattr(exc, "limit", False))
-        if limit and self.fallback_session is not None and not self.on_fallback:
-            # 订阅额度用完：永久切到 DeepSeek 备用大脑，不等 limit_retry（spec 2026-10-03-deepseek-fallback-brain §3）
-            self.session = self.fallback_session
-            self.on_fallback = True
-            self.failures = 0
-            self.failing_since = None
-            self.backoff_until = float("-inf")
-            self.limited = False
-            log.warning("Claude 额度用完，切到 DeepSeek 备用大脑")
+        kind = claude_down(exc) if exc is not None else None
+        if kind is not None and self.gate is not None:
+            self.gate.trip(kind, str(exc))
+        if kind is not None and self.fallback_session is not None and not self.on_fallback:
+            # 订阅额度用完 / 认证失败：永久切到 DeepSeek 备用大脑，不等 limit_retry（spec 2026-10-03-deepseek-fallback-brain §3）
+            self._switch_to_fallback("Claude 认证失败，切到 DeepSeek 备用大脑" if kind == "auth"
+                                     else "Claude 额度用完，切到 DeepSeek 备用大脑")
             return
+        limit = kind is not None  # 没有备用：额度和认证失败都按 limit_retry 退避
         self.limited = limit
         delay = self.cfg.limit_retry if limit else BACKOFF[min(self.failures, len(BACKOFF)) - 1]
         self.backoff_until = now + delay
-        what = "订阅额度用完了" if limit else "大脑这一轮失败"
+        what = {"limit": "订阅额度用完了", "auth": "Claude 认证失败"}.get(kind, "大脑这一轮失败")
         log.warning("%s（第 %d 次），%.0f 秒后再试：%s", what, self.failures, delay, exc)
+
+    def _switch_to_fallback(self, why: str) -> None:
+        self.session = self.fallback_session
+        self.on_fallback = True
+        self.failures = 0
+        self.failing_since = None
+        self.backoff_until = float("-inf")
+        self.limited = False
+        log.warning(why)
 
     def _ok(self) -> None:
         self.failures = 0
