@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+import cv2
+import numpy as np
 
 from . import attrs
 from .bubbles import Rect
@@ -263,3 +267,231 @@ def set_editing(inbox: Path, run: str, frame: str, on: bool) -> None:
     frames = load_frames(inbox, run)
     frames[frame]["editing"] = bool(on)
     save_frames(inbox, run, frames)
+
+
+# ---- 整理流水线（spec §4）----
+
+STATS = "_stats.json"
+GUESS_MODEL = "attrs-screen"
+_YOLO_CN = {"player": "点亮的人", "player_unlit": "黑影", "spirit": "先祖"}
+_FORM_CN = {"not_person": "不是人", "lit": "点亮的人", "unlit": "黑影", "spirit": "先祖", "shared": "共享空间", "morph": "变身"}
+_CROP_SIZE = 224
+_WRITER_KEYS = ("_unlabeled", "lit", "unlit", "spirit")
+_TIME = re.compile(r"^(\d{2})(\d{2})(\d{2})")
+
+
+def similar(a: np.ndarray, b: np.ndarray, diff: float) -> bool:
+    """两张图各缩成 1/8 灰度，平均绝对差 < diff 算差不多。"""
+
+    def small(img: np.ndarray) -> np.ndarray:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        return cv2.resize(gray, (max(1, gray.shape[1] // 8), max(1, gray.shape[0] // 8)), interpolation=cv2.INTER_AREA)
+
+    x, y = small(a), small(b)
+    if x.shape != y.shape:
+        return False
+    return float(np.abs(x.astype(np.int16) - y.astype(np.int16)).mean()) < diff
+
+
+def frame_time(file: str) -> float | None:
+    """文件名开头的 HHMMSS → 当天第几秒；没有就是 None。"""
+    m = _TIME.match(Path(file).name)
+    if not m:
+        return None
+    h, mi, s = (int(v) for v in m.groups())
+    return float(h * 3600 + mi * 60 + s)
+
+
+def _hard_reasons(inbox: Path, run: str) -> dict[str, str | None]:
+    path = Path(inbox) / run / "hard.jsonl"
+    out: dict[str, str | None] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("file"):
+            out[str(row["file"])] = row.get("reason")
+    return out
+
+
+def _json_dict(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _other_boxes(dets: list, weak: list[tuple[str, Rect]], conf: float) -> list[dict]:
+    """非人物框：OCR 的弱标注框（名字标签、圆圈）+ 分数够的检测框；同类 IoU > 0.5 留弱标注的框、分数用检测的。"""
+    from .track import iou
+
+    out: list[dict] = []
+    for cls, box in weak:
+        if cls in PAIR:
+            continue
+        match = max((d.score for d in dets if d.cls == cls and iou(box, d.box) > 0.5), default=None)
+        out.append({"cls": cls, "box": [box.x, box.y, box.w, box.h], "score": float(match if match is not None else 1.0),
+                    "src": "ocr", "crop": None, "auto": None})
+    for d in dets:
+        if d.cls in PAIR or d.score < conf or any(c == d.cls and iou(b, d.box) > 0.5 for c, b in weak):
+            continue
+        out.append({"cls": d.cls, "box": [d.box.x, d.box.y, d.box.w, d.box.h], "score": float(d.score),
+                    "src": "yolo", "crop": None, "auto": None})
+    return out
+
+
+def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) -> tuple[list[dict], int, int]:
+    """一帧：检测 + 弱标注 → 人物框裁图、外形头判、分流。返回 (boxes, 自动一致几个, 给人判几个)。"""
+    from .attrs_data import crop_name
+    from .perception import merge_people
+
+    cfg, writer = ctx["cfg"], ctx["writer"]
+    dets = [d for d in ctx["detect"](img) if d.score >= cfg.perception.low_conf]
+    boxes = _other_boxes(dets, ctx["weak"](img), cfg.perception.conf)
+    people = merge_people([d for d in dets if d.cls in PAIR])[0]
+    crops = [attrs.crop(img, d.box, attrs.CROP_PAD, _CROP_SIZE) for d in people]
+    probs = ctx["judge"](crops) if crops else []
+    auto = human = 0
+    for d, p in zip(people, probs):
+        r = route(d.cls, d.score, p, cfg.perception.conf, cfg.inbox.agree)
+        entry = {"cls": d.cls, "box": [d.box.x, d.box.y, d.box.w, d.box.h], "score": float(d.score), "src": "yolo",
+                 "crop": None, "auto": r.auto}
+        boxes.append(entry)
+        if r.auto == "drop_low":
+            continue
+        entry["crop"] = crop = crop_name(name, d.box)
+        fresh = crop not in writer.done
+        row = {"image": image, "score": float(d.score), "yolo_cls": d.cls, "source": "inbox", "split": split, "group": run, "known": False}
+        writer.add(img, name, d.box, f"form/{r.form}" if r.auto == "agree" else "_unlabeled", row)
+        if r.auto == "agree":
+            auto += 1
+            if fresh:
+                ctx["labels_fh"].write(json.dumps({"t": time.time(), "crop": crop, "from": "_unlabeled", "to": r.form,
+                                                   "by": "auto-agree", "p": round(r.p, 3)}, ensure_ascii=False) + "\n")
+        else:
+            human += 1
+            ctx["guesses"][crop] = {
+                "label": r.form, "confidence": round(r.p, 3), "model": GUESS_MODEL,
+                "reason": f"YOLO 判{_YOLO_CN.get(d.cls, d.cls)} {d.score:.2f}，外形头判{_FORM_CN.get(r.form, r.form)} {r.p:.2f}"}
+    return boxes, auto, human
+
+
+def _state_counts(frames: dict, attrs_root: Path) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for entry in frames.values():
+        s = frame_state(entry, lambda c: crop_place(attrs_root, c))
+        out[s] = out.get(s, 0) + 1
+    return out
+
+
+def process(
+    inbox: Path,
+    attrs_root: Path,
+    runs: Path,
+    cfg,
+    detect: Callable,
+    weak: Callable,
+    judge: Callable,
+    progress: Callable[[str], None] = print,
+) -> dict:
+    """整理收件箱（spec §4）：先收（强杀后补收），再对没整理完的运行逐帧去重、检测、外形头分流，每帧落一次盘（可续跑）。
+    _stats.json 的 sec_per_frame = 最近一次整理里每张非重复帧的平均耗时（秒）。"""
+    from ..imageio import imread
+    from .attrs_data import _Writer
+
+    inbox, attrs_root = Path(inbox), Path(attrs_root)
+    collect_all(runs, inbox)
+    total = {"runs": 0, "frames": 0, "dups": 0, "auto": 0, "to_judge": 0, "glance": 0}
+    guess_path = attrs_root / "_unlabeled" / "claude.json"
+    writer = _Writer(attrs_root, _CROP_SIZE, attrs.CROP_PAD, _WRITER_KEYS)
+    labels_fh = (attrs_root / "_labels.jsonl").open("a", encoding="utf-8")
+    try:
+        for run in sorted(pending_runs(inbox)):
+            frames = load_frames(inbox, run)
+            reasons = _hard_reasons(inbox, run)
+            files = sorted(p.name for p in (inbox / run / "raw").glob("*.jpg"))
+            prev: tuple[str, np.ndarray, float | None] | None = None
+            for name, e in frames.items():  # 续跑：上一张保留帧
+                if not e.get("dup_of") and not e.get("error") and (inbox / run / e["file"]).is_file():
+                    prev = (name, None, frame_time(e["file"]))
+            seconds, done = 0.0, 0
+            for i, file in enumerate(files, 1):
+                name = frame_name(run, file)
+                if name in frames:
+                    continue
+                started = time.time()
+                split = split_of(run, cfg.inbox.val_every)
+                base = {"file": f"raw/{file}", "reason": reasons.get(file), "split": split, "dup_of": None, "boxes": [],
+                        "editing": False, "error": None, "decision": None}
+                try:
+                    img = imread(inbox / run / "raw" / file)
+                    t = frame_time(file)
+                    if prev is not None and prev[1] is None:  # 续跑后第一次要比较：现读上一张
+                        prev = (prev[0], imread(inbox / run / frames[prev[0]]["file"]), prev[2])
+                    if (prev is not None and similar(prev[1], img, cfg.inbox.dup_diff)
+                            and (t is None or prev[2] is None or abs(t - prev[2]) <= cfg.inbox.dup_gap)):
+                        frames[name] = {**base, "dup_of": prev[0]}
+                        total["dups"] += 1
+                    else:
+                        ctx = {"cfg": cfg, "writer": writer, "detect": detect, "weak": weak, "judge": judge,
+                               "labels_fh": labels_fh, "guesses": _json_dict(guess_path)}
+                        image = (inbox / run / "raw" / file).resolve().as_posix()
+                        boxes, auto, human = _process_frame(img, image, name, run, split, ctx)
+                        frames[name] = {**base, "boxes": boxes}
+                        labels_fh.flush()
+                        if human:
+                            _write_json(guess_path, {**_json_dict(guess_path), **ctx["guesses"]})
+                        prev = (name, img, t)
+                        total["frames"] += 1
+                        total["auto"] += auto
+                        total["to_judge"] += human
+                        seconds += time.time() - started
+                        done += 1
+                except Exception as exc:  # 单帧出错记下来跳过，其余照常
+                    frames[name] = {**base, "error": f"{type(exc).__name__}: {exc}"}
+                save_frames(inbox, run, frames)
+                progress(f"PROGRESS {i}/{len(files)} {run}")
+            counts = _state_counts(frames, attrs_root)
+            total["runs"] += 1
+            total["glance"] += counts.get("glance", 0)
+            with (inbox / INDEX).open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"run": run, "processed_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "counts": counts},
+                                   ensure_ascii=False) + "\n")
+            if done:
+                _write_json(inbox / STATS, {**_json_dict(inbox / STATS), "sec_per_frame": round(seconds / done, 3)})
+    finally:
+        labels_fh.close()
+        writer.close()
+    return total
+
+
+def status(inbox: Path, attrs_root: Path) -> dict:
+    """各次运行各状态的帧数、来自整理但还在 _unlabeled 的裁图数、上次训练以来通过的帧数。"""
+    from .attrs_data import _read_rows
+
+    inbox, attrs_root = Path(inbox), Path(attrs_root)
+    trained = float(_json_dict(inbox / STATS).get("trained_at") or 0)
+    runs: dict[str, dict[str, int]] = {}
+    passed = 0
+    for d in sorted(p for p in inbox.iterdir() if p.is_dir()) if inbox.is_dir() else []:
+        frames = load_frames(inbox, d.name)
+        if not frames:
+            continue
+        runs[d.name] = _state_counts(frames, attrs_root)
+        passed += sum(1 for e in frames.values()
+                      if (e.get("decision") or {}).get("what") == "pass" and float(e["decision"].get("t") or 0) > trained)
+    left = sum(1 for r in _read_rows(attrs_root) if r.get("source") == "inbox" and crop_place(attrs_root, r["crop"]) == "_unlabeled")
+    return {"runs": runs, "judge_left": left, "passed_since_train": passed}

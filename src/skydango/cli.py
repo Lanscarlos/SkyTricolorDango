@@ -1393,6 +1393,62 @@ def _perception_inbox(cfg: Config, args) -> None:
         runs = hardcase_inbox.collect_all(Path(args.runs), inbox)
         frames = sum(len(list((inbox / r / "raw").glob("*.jpg"))) for r in runs)
         print(f"收了 {len(runs)} 次运行 / 共 {frames} 张 → {cfg.inbox.dir}")
+    elif args.inbox_action == "process":
+        _inbox_process(cfg, args)
+    elif args.inbox_action == "status":
+        st = hardcase_inbox.status(Path(cfg.inbox.dir), Path(args.attrs_data))
+        for run, counts in st["runs"].items():
+            print(f"{run}：" + "、".join(f"{k} {v}" for k, v in sorted(counts.items())))
+        print(f"裁图待判 {st['judge_left']} 张；上次训练以来通过 {st['passed_since_train']} 帧")
+
+
+def _inbox_process(cfg: Config, args) -> None:
+    """perception inbox process：模型都在才开工（缺了打印原因、退出码 1、不碰收件箱）。"""
+    from types import SimpleNamespace
+
+    from .vision import attrs
+    from .vision import inbox as hardcase_inbox
+    from .vision.detect import make_detector
+    from .vision.embed import OnnxEmbedder
+    from .vision.ocr import make_ocr
+
+    for ok, why in (
+        (Path(cfg.perception.model).is_file(), f"找不到 YOLO 模型 {cfg.perception.model}"),
+        (Path(cfg.attrs.model).is_file(), f"找不到外形头模型 {cfg.attrs.model}：先 perception attrs-train"),
+        (Path(cfg.attrs.backbone).is_file(), f"找不到外形头的 DINOv2 主干 {cfg.attrs.backbone}"),
+    ):
+        if not ok:
+            print(f"整理不了：{why}")
+            raise SystemExit(1)
+    device = _attrs_device(cfg)
+    embedder = OnnxEmbedder(cfg.attrs.backbone, norm="imagenet", device=device, what="attrs.backbone")
+    model = attrs.load_model(cfg.attrs, device, embedder)
+    if model is None or "form" not in model.heads:
+        print(f"整理不了：外形头模型 {cfg.attrs.model} 打不开或和主干对不上（详见上面的警告）")
+        raise SystemExit(1)
+    p = cfg.perception
+    detector = make_detector(p.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
+    ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
+    icons = _icon_classifier(cfg)
+    names = _friend_names(cfg)()
+    weak_args = SimpleNamespace(all_text=False, min_score=0.9)  # 同 perception label --min-score 的默认
+    labels, keep = model.labels("form"), model.keep("form")
+
+    def judge(crops):
+        items = []
+        for img in crops:
+            if keep is not None:
+                h, w = img.shape[:2]
+                img = attrs.mask_crop(img, w, h, attrs.CROP_PAD, keep)
+            items.append(("player", img))
+        return [dict(zip(labels, (float(v) for v in out["form"]))) for out in model.predict(items)]
+
+    res = hardcase_inbox.process(
+        Path(cfg.inbox.dir), Path(args.attrs_data), Path(args.runs), cfg, detector.detect,
+        lambda frame: _weak_boxes(cfg, weak_args, frame, ocr, icons, names), judge,
+    )
+    print(f"整理完了：{res['runs']} 次运行 / {res['frames']} 帧（重复 {res['dups']}），"
+          f"外形头自动确认 {res['auto']} 个、{res['to_judge']} 个裁图等你在标注页判，{res['glance']} 帧可以直接过目")
 
 
 def _perception_unknown_names(cfg: Config, args) -> None:
@@ -3215,6 +3271,11 @@ def main(argv: list[str] | None = None) -> None:
     isub = q.add_subparsers(dest="inbox_action", required=True)
     qi = isub.add_parser("collect", help="把各次运行 runs/*/hard 里的难例收进收件箱（已收的跳过）")
     qi.add_argument("runs", nargs="?", default="runs", help="运行目录的上级（默认 runs/）")
+    qi = isub.add_parser("process", help="整理收件箱：去重、YOLO 预标注、外形头分流（可续跑）")
+    qi.add_argument("runs", nargs="?", default="runs", help="运行目录的上级（默认 runs/；整理前先补收）")
+    qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
+    qi = isub.add_parser("status", help="收件箱各次运行各状态的帧数")
+    qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
     q = psub.add_parser("clips", help="动作识别的数据：录像按人物轨迹切成 16 帧的片段（人工再分到 <动作>/ 目录）")
     q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
     q.add_argument("-o", "--output", help="输出目录（默认 <[gesture] dataset>/_unlabeled）")
