@@ -932,3 +932,119 @@ def test_nearest_skips_dango_only_with_appearance():
         p.data["name"] = XIAOMING  # 被认成团子之前挂过名字的轨迹
         # 关着认装扮：nearest 逐字照旧（团子轨迹不额外跳过）；开着：团子不算"离团子最近的人"
         assert (w.nearest(t) is None) is on
+
+
+# ---- "可能是小明"交给呼喊窗口确认（身份底库 spec 2026-10-03 §5） ----
+def test_unsure_listed_after_wait():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    (p,) = players(w)
+    name, t0 = p.data["unsure"]
+    wait = w.appearance_cfg.unsure_wait
+    t = run_img(w, det, [body], striped(body), t + 0.1, t0 + wait - 0.5)
+    assert w.unsure(t) == []  # 还没挂满 unsure_wait
+    t = run_img(w, det, [body], striped(body), t + 0.1, t0 + wait + 0.1)
+    assert w.unsure(t) == [(p.id, XIAOMING, t0)]
+    assert w.unsure(t + 2.0) == []  # 最近一帧太旧（被挡住 / 没跑检测）：不报
+
+
+def test_unsure_not_listed_when_friend_named_elsewhere():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    (p,) = players(w)
+    t0 = p.data["unsure"][1]
+    t = run_img(w, det, [body], striped(body), t + 0.1, t0 + w.appearance_cfg.unsure_wait + 0.1)
+    assert [x[1] for x in w.unsure(t)] == [XIAOMING]
+    real = player(1500)  # 小明的名字挂在了另一条轨迹上
+    img = striped(body)
+    img[real.box.y:real.box.y2, real.box.x:real.box.x2] = PINK
+    t = run_img(w, det, [body, real, tag(1490, 110)], img, t + 0.1, t + 0.3)
+    assert w.unsure(t) == []
+
+
+def test_unsure_not_listed_when_called_or_tag_fresh():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    (p,) = players(w)
+    t = run_img(w, det, [body], striped(body), t + 0.1, p.data["unsure"][1] + w.appearance_cfg.unsure_wait + 0.1)
+    assert w.unsure(t)
+    w.mark_unsure_called([p.id], t)
+    assert p.data["unsure_called"] == t and w.unsure(t) == []  # 已经为他喊过：不再列
+    w.mark_unsure_called([999], t)  # 不认识的轨迹 id：忽略
+
+
+def start_call(w, det, body, t):
+    """unsure 挂满 unsure_wait 后为这条轨迹喊一声（窗口从 t 开始）。"""
+    (p,) = players(w)
+    t = run_img(w, det, [body], striped(body), t + 0.1, p.data["unsure"][1] + w.appearance_cfg.unsure_wait + 0.1)
+    assert w.unsure(t) == [(p.id, XIAOMING, p.data["unsure"][1])]
+    w.mark_unsure_called([p.id], t)
+    w.called(t)
+    return p, t
+
+
+def test_call_outcome_tag_on_track_confirms():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    p, at = start_call(w, det, body, t)
+    n = w.appearance.friends[XIAOMING].n
+    t = run_img(w, det, [body], striped(body), at + 0.1, at + 1.0)
+    t = run_img(w, det, [body, tag(290, 110)], striped(body), t + 0.1, t + 0.3)  # 窗口里他头上亮出了名字
+    t = run_img(w, det, [body, tag(290, 110)], striped(body), t + 0.1, at + w.call_window + 0.5)
+    assert p.data.get("name") == XIAOMING and not p.data.get("unsure_miss") and "unsure" not in p.data
+    assert w.appearance.friends[XIAOMING].n > n  # 标签在的这几帧学进了他的底库
+    assert w.call_result(at).friends.keys() == {XIAOMING}
+
+
+def test_call_outcome_no_tag_is_miss():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    p, at = start_call(w, det, body, t)
+    t = run_img(w, det, [body], striped(body), at + 0.1, at + w.call_window - 0.3)
+    assert p.data.get("unsure") and not p.data.get("unsure_miss")  # 窗口没结束：还在等
+    t = run_img(w, det, [body], striped(body), t + 0.1, at + w.call_window + 0.5)
+    assert p.data.get("unsure_miss") is True and "unsure" not in p.data
+    assert w.unsure(t) == []
+    t = run_img(w, det, [body], striped(body), t + 0.1, t + 3.0)
+    assert p.data.get("stranger") is True  # 窗口里没亮名字：照常判陌生人
+
+
+def test_call_outcome_tag_on_other_track_is_miss():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    p, at = start_call(w, det, body, t)
+    real = player(1500)  # 窗口里小明的标签挂到了旁边另一个人头上
+    img = striped(body)
+    img[real.box.y:real.box.y2, real.box.x:real.box.x2] = PINK
+    t = run_img(w, det, [body, real, tag(1490, 110)], img, at + 0.1, at + w.call_window + 0.5)
+    other = [x for x in players(w) if x.id != p.id][0]
+    assert other.data.get("name") == XIAOMING
+    assert p.data.get("unsure_miss") is True and not p.data.get("name") and "unsure" not in p.data
+    assert w.unsure(t) == []
+
+
+def test_unsure_not_expired_while_call_in_flight():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    (p,) = players(w)
+    start = p.data["unsure"][1]
+    normal = w.appearance_cfg.unsure_wait + w.call_window  # 没喊时 unsure 到这个时间就作废
+    at = start + normal - 3.0  # 晚点才喊：窗口要开到正常作废时间之后
+    t = run_img(w, det, [body], striped(body), t + 0.1, at - 0.1)
+    w.mark_unsure_called([p.id], at)
+    w.called(at)
+    t = run_img(w, det, [body], striped(body), t + 0.1, start + normal + 1.0)
+    assert t > start + normal and t < at + w.call_window
+    assert p.data.get("unsure") and not p.data.get("unsure_miss") and not p.data.get("stranger")  # 窗口没结束：不作废、不判陌生人
+    t = run_img(w, det, [body], striped(body), t + 0.1, at + w.call_window + 0.5)
+    assert p.data.get("unsure_miss") is True and "unsure" not in p.data  # 窗口结束没亮名字：作废
+
+
+def test_unsure_marked_but_never_called_expires_normally():
+    w, det = make_g(dino=False)
+    t, body = unsure_scene(w, det, 3.0)
+    (p,) = players(w)
+    start = p.data["unsure"][1]
+    w.mark_unsure_called([p.id], t)  # 标了但身体没真喊（dry-run / 被拦）：没有窗口，只按正常时间作废
+    run_img(w, det, [body], striped(body), t + 0.1, start + w.appearance_cfg.unsure_wait + w.call_window + 0.5)
+    assert p.data.get("unsure_miss") is True and "unsure" not in p.data

@@ -1031,6 +1031,34 @@ class PerceptionWatcher:
             if t.cls in ("player", UNLIT) and self._admitted(t) and not self._other_form(t) and not t.data.get("dango")
         ], now)
 
+    def unsure(self, now: float) -> list[tuple[int, str, float]]:
+        """最近一帧里"可能是小明"已经挂满 unsure_wait、还没为它喊过的轨迹：(轨迹 id, 名字, 开始时间)，给身体决定要不要喊一声。
+        他的名字此刻挂在别的轨迹上、或者他的名字标签 PEOPLE_STALE 秒内刚亮过的不列（那是名字在说话，不用喊）。"""
+        if self.appearance is None:
+            return []
+        wait = self.appearance_cfg.unsure_wait
+        with self._lock:
+            tracks = [t for t in list(self.last_tracks) if now - t.last <= PEOPLE_STALE and t.cls in ("player", UNLIT)]
+            named = {n for t in tracks if (n := t.data.get("name"))}
+            labels = dict(self.labels)
+        out = []
+        for t in tracks:
+            u = t.data.get("unsure")
+            if not u or t.data.get("unsure_called") is not None or now - u[1] < wait or u[0] in named:
+                continue
+            seen = labels.get(u[0])
+            if seen is not None and now - seen[4] <= PEOPLE_STALE:
+                continue
+            out.append((t.id, u[0], u[1]))
+        return out
+
+    def mark_unsure_called(self, ids: list[int], at: float) -> None:
+        """身体为这几条"可能是"的轨迹喊了一声（窗口从 at 开始）：打上标记，不再列出；窗口结束时按有没有亮名字收尾。"""
+        with self._lock:
+            for t in self.last_tracks:
+                if t.id in ids:
+                    t.data["unsure_called"] = at
+
     def _count_unnamed(self, players: list[Track], now: float) -> int:
         """没挂名字的点过火的人：按外观认的好友（像小明 / 可能是小明）、看着像团子的不算。"""
         return sum(
@@ -1073,6 +1101,11 @@ class PerceptionWatcher:
                 c.unnamed = self._count_unnamed(players, now)
                 c.ended = True
             log.debug("呼喊窗口结束：%s；没挂名字 %d 个", "、".join(c.friends) or "没看到名字", c.unnamed)
+            for p in players:  # 为"可能是"喊的这一声：窗口里头上没亮名字（标签挂到别人头上也一样）就是认错了
+                if p.data.get("unsure_called") == c.at and not p.data.get("name"):
+                    log.info("喊了一声，轨迹 %d 头上没亮名字", p.id)
+                    p.data.pop("unsure", None)
+                    p.data["unsure_miss"] = True
             return
         for tag in tags:  # 只看到名字、下面没框到人（贴边的在上面已经记过）
             name = tag.data.get("name")
@@ -1497,6 +1530,9 @@ class PerceptionWatcher:
         """"可能是小明"挂满 unsure_wait + 喊一声的窗口还没被名字标签证实：摘掉，记 unsure_miss（以后不再进"可能是"），照常判陌生人。"""
         u = player.data.get("unsure")
         if u and now - u[1] >= self.appearance_cfg.unsure_wait + self.call_window:
+            called, c = player.data.get("unsure_called"), self._call
+            if called is not None and c is not None and c.at == called and not c.ended:
+                return  # 为他喊的这一声还没结束：别在窗口中间作废，窗口结束时（_call_tick）再定
             log.info("轨迹 %d 可能是 %s，等了 %.0f 秒没看到名字，不等了", player.id, u[0], now - u[1])
             player.data.pop("unsure", None)
             player.data["unsure_miss"] = True
