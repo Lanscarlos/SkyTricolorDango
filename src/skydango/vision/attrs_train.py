@@ -328,10 +328,12 @@ def _gt_boxes(path: Path, w: int, h: int, spirit: bool = True,
     return [(b, c) for b, c in out if spirit or c != 9]
 
 
-def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | None = None) -> list[dict]:
+def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | None = None,
+            spirit: bool | None = None) -> list[dict]:
     """每帧跑一次检测（只留分 ≥ conf_low 的人物框）和外形头：[{gt: [(框, 类别号)], dets: [{cls, box, score, p}]}]。
     p = {外形: 概率}，外形头对这个类别没有头时是 None。没有 labels/ 对应文件的帧跳过。
-    model 是 None：只跑 YOLO（p 都是 None，simulate 的第二层就是纯 YOLO），先祖照常算要保留的人。"""
+    model 是 None：只跑 YOLO（p 都是 None，simulate 的第二层就是纯 YOLO），先祖照常算要保留的人。
+    spirit：答案里留不留先祖；None = 按外形头（有 spirit 类才留，没外形头留）。几组对比要用同一份答案时显式给。"""
     records = []
     labels = model.labels("form") if model is not None else []
     for f in frames:
@@ -345,7 +347,8 @@ def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | 
         dets = merge_people([d for d in detector.detect(img) if d.cls in PERSON_DETS and d.score >= conf_low])[0]
         probs = model.predict([(d.cls, attrs.crop(img, d.box, model.pad("form"), model.size, model.keep("form")))
                                for d in dets]) if dets and model is not None else [{} for _ in dets]
-        records.append({"gt": _gt_boxes(lf, w, h, spirit=model is None or "spirit" in labels, fixes=fixes), "dets": [
+        keep_spirit = (model is None or "spirit" in labels) if spirit is None else spirit
+        records.append({"gt": _gt_boxes(lf, w, h, spirit=keep_spirit, fixes=fixes), "dets": [
             {"cls": d.cls, "box": d.box, "score": d.score,
              "p": ({lb: float(v) for lb, v in zip(labels, r["form"])} if "form" in r else None)}
             for d, r in zip(dets, probs)]})

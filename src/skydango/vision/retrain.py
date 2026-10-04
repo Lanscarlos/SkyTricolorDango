@@ -153,6 +153,11 @@ def compare(old_yolo: str | Path | None, new_yolo: str | Path, old_attrs, new_at
     parts: dict[str, dict | None] = {"all": {"rows": {}}, "inbox": {"rows": {}} if mine else None}
     if not mine:
         notes.append("验证集里没有来自收件箱的帧（收件箱通过的帧都分到了训练集），没单独算")
+    # 四行用同一份答案：新旧外形头都有先祖类才留先祖（没有旧头按新头）；不然没先祖类的那边会把先祖撤掉、全算漏检
+    heads = [h for h in (old_attrs, new_attrs) if h is not None]
+    spirit = all("spirit" in h.labels("form") for h in heads) if heads else True
+    if not spirit:
+        notes.append("答案里去掉了先祖（外形头没有单独的先祖类，会把先祖框撤掉），四行都不算先祖")
     have_old = old_yolo is not None and Path(old_yolo).is_file()
     if not have_old:
         notes.append(f"没有旧 YOLO（{old_yolo} 不存在），旧的两行空着")
@@ -164,8 +169,8 @@ def compare(old_yolo: str | Path | None, new_yolo: str | Path, old_attrs, new_at
             continue
         step(f"回放对比（{'旧' if side == 'old' else '新'}模型）")
         detector = at.replay_detector(p, yolo, det_conf)
-        rec_mine = at.collect(mine, detector, head, p.low_conf, fixes)
-        rec_other = at.collect(other, detector, head, p.low_conf, fixes)
+        rec_mine = at.collect(mine, detector, head, p.low_conf, fixes, spirit=spirit)
+        rec_other = at.collect(other, detector, head, p.low_conf, fixes, spirit=spirit)
         for key, recs in (("all", rec_mine + rec_other), ("inbox", rec_mine)):
             part = parts[key]
             if part is None:
@@ -173,7 +178,8 @@ def compare(old_yolo: str | Path | None, new_yolo: str | Path, old_attrs, new_at
             r = at.replay_row(recs, p.low_conf, p.conf, a)
             part["rows"][side] = r["baseline"]
             part["rows"][f"{side}_head"] = r["second"] if head is not None else None
-            part["frames"], part["gt"] = r["frames"], r["gt"]
+            part.setdefault("frames", r["frames"])  # 答案是同一份，两边的帧数 / 人数一样
+            part.setdefault("gt", r["gt"])
     for key, part in parts.items():
         if part is None:
             continue
@@ -198,16 +204,15 @@ def compare(old_yolo: str | Path | None, new_yolo: str | Path, old_attrs, new_at
 # ---------- 报告 ----------
 
 def _cell(v: float | None, old: float | None) -> str:
-    """百分数；有旧值时带上差几个点，差 ≤ WOBBLE 标「（可能是波动）」（一模一样的只写 ±0）。"""
+    """百分数；有旧值时带上差几个点，显示的差 ≤ WOBBLE（3 个点，含 ±0）再标「（可能是波动）」。"""
     if v is None:
         return "—"
     s = f"{v:.0%}"
     if old is None:
         return s
-    if v == old:
-        return s + "（±0）"
     d = round((v - old) * 100)
-    return s + f"（{d:+d}）" + ("（可能是波动）" if abs(v - old) <= WOBBLE + 1e-9 else "")
+    s += f"（{d:+d}）" if d else "（±0）"
+    return s + ("（可能是波动）" if abs(d) <= round(WOBBLE * 100) else "")
 
 
 def _part_md(title: str, part: dict | None, params: dict) -> list[str]:
@@ -360,8 +365,9 @@ def _run(cfg, dataset, inbox, out, progress, step, train, val, attrs_train_fn, e
         "notes": notes, "numbers": numbers, "report": str(out / "report.md"),
     }
     (out / "report.md").write_text(report_md(result), encoding="utf-8")
-    (out / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
 
     step("记下训练时间")
     ib.mark_trained(inbox, len(passed), at=started)
+    # result.json 最后写：有它 = 整个重训做完了（面板按它判断，spec §9）
+    (out / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     return result

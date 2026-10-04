@@ -159,9 +159,10 @@ def test_run_retrain_end_to_end(tmp_path, monkeypatch):
     out = tmp_path / "out"
     lines = []
     before = time.time()
-    res = retrain.run_retrain(cfg, ds, inbox, out, lines.append, **kw)
+    now = dt.datetime(2026, 10, 5, 23, 59, 59)
+    res = retrain.run_retrain(cfg, ds, inbox, out, lines.append, now=now, **kw)
     assert (models / "sky-yolo-v12.pt").read_bytes() == b"new"
-    new_attrs = models / f"attrs-{dt.datetime.now():%Y%m%d}a.npz"
+    new_attrs = models / "attrs-20261005a.npz"
     assert new_attrs.is_file() and calls["attrs"][0][1] == new_attrs
     assert calls["train"][0] == (cfg.retrain.epochs, ds / "data.yaml")
     assert not (ds / "labels" / "val.cache").exists() and (out / "caches" / "val.cache").is_file()
@@ -190,6 +191,7 @@ def test_run_retrain_end_to_end(tmp_path, monkeypatch):
     assert "新旧用的是同一份答案" in md and "可能是波动" in md
     assert "82%（+2）（可能是波动）" in md  # player mAP50 0.80 → 0.82
     assert "90%（+20）" in md and "90%（+20）（可能是波动）" not in md
+    assert "| 新 YOLO | 3 | 0 | 0 | 100%（±0）（可能是波动） | 100%（+33） |" in md  # 精确率一样也标
     # 训练帧数：开始之前通过的 2 帧（t2 是训练开始后才通过的，不算）
     st = ib.read_stats(inbox)
     assert st["trained_frames"] == 2 and before <= st["trained_at"] <= time.time()
@@ -217,6 +219,79 @@ def test_run_retrain_failure_writes_no_result(tmp_path, monkeypatch):
     assert e.value.step == "训练 YOLO" and "显卡炸了" in str(e.value)
     assert not (out / "result.json").exists() and not (models / "sky-yolo-v12.pt").exists()
     assert "trained_at" not in ib.read_stats(inbox)
+
+
+def test_run_retrain_mark_trained_failure_writes_no_result(tmp_path, monkeypatch):
+    # result.json 最后写：记训练时间失败也算没做完（spec §9）
+    cfg, ds, inbox, models, calls, kw = _world(tmp_path, monkeypatch)
+
+    def boom(*a, **k):
+        raise OSError("盘满了")
+
+    monkeypatch.setattr(ib, "mark_trained", boom)
+    out = tmp_path / "out"
+    with pytest.raises(retrain.RetrainFailed) as e:
+        retrain.run_retrain(cfg, ds, inbox, out, lambda s: None, **kw)
+    assert e.value.step == "记下训练时间"
+    assert not (out / "result.json").exists() and (out / "report.md").is_file()
+
+
+def _load_head(path, head, cfg):
+    import dataclasses
+
+    attrs.save_model(path, {"form": head}, "b.onnx", "8:imagenet", "20261005")
+    return attrs.load_model(dataclasses.replace(cfg.attrs, model=str(path)), "cpu", BucketEmbedder())
+
+
+def _spirit_head() -> dict:
+    W = np.zeros((3, 4), np.float32)
+    W[0, 1] = 8.0
+    return {"W": W, "b": np.zeros(4, np.float32), "labels": ["not_person", "lit", "unlit", "spirit"],
+            "applies_to": ["player", "player_unlit"], "pad": 0.15, "keep": None}
+
+
+@pytest.mark.parametrize("old_spirit,want_gt", [(False, 3), (True, 4)])
+def test_compare_shares_one_answer_for_spirit(tmp_path, monkeypatch, old_spirit, want_gt):
+    """旧头没有先祖类、新头有：四行都按同一份答案（去掉先祖），两边的人数一样；都有先祖类才留先祖。"""
+    cfg, ds, inbox, models, calls, kw = _world(tmp_path, monkeypatch)
+    img = np.full((100, 200, 3), 50, np.uint8)
+    img[0, 0, 0] = 4
+    imwrite(ds / "images/val/f4.png", img)
+    (ds / "labels/val/f4.txt").write_text("9 0.5 0.5 0.2 0.6\n", encoding="utf-8")  # 一个先祖，两边都没检出
+    old = _load_head(tmp_path / "old.npz", _spirit_head() if old_spirit else _head(1), cfg)
+    new = _load_head(tmp_path / "new.npz", _spirit_head(), cfg)
+    n = retrain.compare(cfg.perception.model, models / "sky-yolo-v12.pt", old, new, ds, cfg, {"f1"}, attrs_root=None)
+    rows = n["all"]["rows"]
+    assert n["all"]["gt"] == want_gt and n["all"]["frames"] == 4
+    for key in ("old", "old_head", "new", "new_head"):
+        assert rows[key]["tp"] + rows[key]["fn"] == want_gt  # 每行的答案人数一样
+    assert any("去掉了先祖" in x for x in n["notes"]) == (not old_spirit)
+    md = retrain.report_md({"yolo": "y", "attrs": "a", "numbers": n})
+    assert ("去掉了先祖" in md) == (not old_spirit)
+
+
+def test_compare_without_old_yolo(tmp_path, monkeypatch):
+    cfg, ds, inbox, models, calls, kw = _world(tmp_path, monkeypatch)
+    new = _load_head(tmp_path / "new.npz", _head(1), cfg)
+    n = retrain.compare(tmp_path / "nope.pt", models / "sky-yolo-v12.pt", None, new, ds, cfg, {"f1"},
+                        attrs_root=None, val=kw["val"], work=tmp_path / "work")
+    for key in ("all", "inbox"):
+        rows = n[key]["rows"]
+        assert rows["old"] is None and rows["old_head"] is None and rows["new"] is not None and rows["new_head"] is not None
+        assert n[key]["map50"]["old"] is None and n[key]["map50"]["new"]["player"] == 0.82
+    assert any("没有旧 YOLO" in x for x in n["notes"])
+    assert all("v12" in str(w) for w, _ in calls["val"]) and len(calls["val"]) == 2
+    md = retrain.report_md({"yolo": "y", "attrs": "a", "old_yolo": str(tmp_path / "nope.pt"), "numbers": n})
+    assert md.count("| 旧 YOLO | 没有旧 YOLO |") == 2 and md.count("| 旧 YOLO + 旧外形头 | 没有旧 YOLO |") == 2
+    assert "| player | — | 82% |" in md  # 没有旧值：不比
+
+
+def test_cell_marks_on_displayed_difference():
+    assert retrain._cell(0.70, 0.70) == "70%（±0）（可能是波动）"
+    assert retrain._cell(0.80, 0.766) == "80%（+3）（可能是波动）"  # 实差 3.4 点，显示 +3：按显示的算
+    assert retrain._cell(0.7351, 0.70) == "74%（+4）"
+    assert retrain._cell(0.66, 0.70) == "66%（-4）"
+    assert retrain._cell(None, 0.7) == "—" and retrain._cell(0.5, None) == "50%"
 
 
 def test_report_md_marks_small_differences():
