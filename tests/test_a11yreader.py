@@ -874,3 +874,47 @@ def test_ocr_mode_has_no_bubbles():
     assert fb.want_peek() is None and fb.tags_in_view() == [] and fb.typing() == []
     ocr.settling = True
     assert fb.settling is True
+
+
+def test_bubbles_lagging_behind_tag_while_panning_not_rereported():
+    """转镜头时节点位置不是一起更新的：标签和第一句先动、下面几句晚一帧，那一帧挂不上名字。
+    不能把计数掉下去再回来当成新冒出来的话（10-04 真机录像 132.09 秒）。"""
+    r, h, _ = make()
+    h[0] = closed(tag("小明", 1672, 194))
+    r.read(None, 1.0)
+    h[0] = closed(tag("小明", 1672, 194), bubble("团子", 1672, 256), bubble("你怎么不理我", 1671, 318))
+    assert [m.text for m in r.read(None, 2.0)] == ["团子", "你怎么不理我"]
+    h[0] = closed(tag("小明", 1330, 116), bubble("团子", 1330, 178), bubble("你怎么不理我", 1256, 239))
+    assert r.read(None, 2.2) == []
+    assert r.want_peek() is None  # 这句刚才还挂在小明名下：不用为它看一眼面板
+    h[0] = closed(tag("小明", 996, 138), bubble("团子", 996, 200), bubble("你怎么不理我", 996, 262))
+    assert r.read(None, 2.4) == []
+
+
+def test_same_sentence_again_after_old_bubble_faded_still_reported():
+    r, h, _ = make()
+    h[0] = closed(*head())
+    r.read(None, 1.0)
+    h[0] = closed(*head("哈哈"))
+    assert [m.text for m in r.read(None, 2.0)] == ["哈哈"]
+    h[0] = closed(*head())  # 气泡淡掉了
+    assert r.read(None, 25.0) == []
+    h[0] = closed(*head("哈哈"))  # 过了一阵又说了一遍
+    assert [m.text for m in r.read(None, 40.0)] == ["哈哈"]
+
+
+def test_hold_does_not_expire_while_tag_is_out_of_view():
+    """他走到屏幕最上面、名字标签整个看不见了好几秒；回来第一份里有一句被切掉、偏了没挂上，
+    下一份才挂上：不能当成新冒出来的话（10-04 真机录像 141 秒）。"""
+    r, h, _ = make()
+    h[0] = closed(tag("小明", 607, 300))
+    r.read(None, 1.0)
+    h[0] = closed(tag("小明", 607, 300), bubble("你怎么不理我", 607, 362), bubble("呜呜呜", 607, 424))
+    assert [m.text for m in r.read(None, 2.0)] == ["你怎么不理我", "呜呜呜"]
+    h[0] = closed(bubble("你怎么不理我", 607, 0), bubble("呜呜呜", 607, 50))  # 标签出了屏幕上沿
+    assert r.read(None, 5.0) == []
+    assert r.read(None, 9.0) == []
+    h[0] = closed(tag("小明", 612, 0), bubble("你怎么不理我", 673, 0), bubble("呜呜呜", 612, 61))
+    assert r.read(None, 9.2) == []
+    h[0] = closed(tag("小明", 653, 0), bubble("你怎么不理我", 653, 0), bubble("呜呜呜", 653, 49))
+    assert r.read(None, 9.4) == []

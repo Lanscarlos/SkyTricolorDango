@@ -123,3 +123,17 @@ def test_bubble_key_and_dots():
     assert bubble_key("一起去" + chr(10) + "雨林 吗 ..") == "一起去雨林吗"  # 折行 / 空白都不算
     assert is_dots(" ..") and is_dots("…。")
     assert not is_dots("好吧...") and not is_dots("")
+
+
+def test_friend_tag_clipped_at_top_edge():
+    """好友站得靠画面顶上，名字标签被屏幕上沿切掉一截（框顶 0、高 38 / 28，10-04 真机录像）：照样是他的标签。"""
+    from a11ysnap import node
+
+    v = classify(snap(node("小明", (401, 0, 557, 38)), bubble("团子", 479, 57)), 1920, 1080, FRIENDS)
+    assert [t.name for t in v.tags] == ["小明"]
+    assert [b.speaker for b in v.bubbles] == ["小明"]
+    v = classify(snap(node("小明", (529, 0, 685, 28)), bubble("呜呜呜", 607, 48)), 1920, 1080, FRIENDS)
+    assert [b.speaker for b in v.bubbles] == ["小明"]
+    # 被切掉的不是好友名字（气泡被切了一截）：不当标签
+    v = classify(snap(node("在吗", (440, 0, 518, 30))), 1920, 1080, FRIENDS)
+    assert v.tags == ()

@@ -30,6 +30,8 @@ _EMPTY = UiView(False, False, (), (), (), None)
 REPORTED_KEEP = 180.0  # 气泡报过的话留多久，等面板行来抵（§3.3）
 BUBBLE_KEEP = 30.0  # 名字标签看不见（闪一下 / 走出画面）时，他头上的气泡计数还记多久（气泡 20 多秒淡掉）
 PANEL_KEEP = 30.0  # 面板行报过的话留多久，等他头上同一句气泡来抵（约一条气泡的寿命）
+HOLD = 3.0  # 他头上某句的个数变少了，这么久之内还按见过的最多个数算：转镜头时节点位置不是一起更新的，
+# 下面几句会晚一帧、那一帧挂不上名字（10-04 真机录像，差 74 px），掉下去再回来不能当成新冒出来的话
 FRIENDS_TTL = 2.0  # 好友名单（friends.md）最多隔这么久重读一次：每圈要分类好几次
 
 
@@ -90,6 +92,7 @@ class A11yChatReader:
         self._counts: dict[str, Counter[str]] = {}  # 说话人 → 他头上每句（比较键）现在几个
         self._tag_seen: dict[str, float] = {}  # 说话人 → 最后一次看到他的名字标签
         self._orig: dict[tuple[str, str], str] = {}  # (说话人, 比较键) → 这句第一次出现时的原文
+        self._held: dict[tuple[str, str], tuple[int, float]] = {}  # (说话人, 比较键) → (最近见过的最多个数, 最后一次见到这么多)
         self._loose: set[str] = set()  # 挂不上名字的原文气泡（比较键）：同一句只记一次“想看一眼”
         self._peek: str | None = None
         self._typing: list[str] = []
@@ -216,6 +219,8 @@ class A11yChatReader:
                 del self._counts[name]
                 for k in [k for k in self._orig if k[0] == name]:
                     del self._orig[k]
+                for k in [k for k in self._held if k[0] == name]:
+                    del self._held[k]
 
     def _count(self, name: str, bubbles: list[Bubble]) -> tuple[Counter[str], dict[str, tuple], bool]:
         """他头上每句（比较键）几个、每句的框、是不是在打字；顺带记 / 清每句第一次出现时的原文。"""
@@ -241,6 +246,21 @@ class A11yChatReader:
             del self._orig[k]
         return cur, boxes, typing
 
+    def _hold(self, name: str, cur: Counter[str], now: float) -> Counter[str]:
+        """这一份之前他每句"算作有几个"：`HOLD` 秒内见过的最多个数（只掉了一两帧的不算少了），并记下这一份。"""
+        base: Counter[str] = Counter()
+        for (who, key), (n, at) in list(self._held.items()):
+            if who != name:
+                continue
+            if now - at <= HOLD:
+                base[key] = n
+            if cur[key] >= n or now - at > HOLD:
+                del self._held[(who, key)]  # 追上了或者过期了：下面按这一份重记
+        for key, n in cur.items():
+            if (name, key) not in self._held:
+                self._held[(name, key)] = (n, now)
+        return base
+
     def _bubble_messages(self, view: UiView, now: float, report: bool) -> list[Message]:
         """更新每个好友头上的气泡计数；`report` 为假（面板开着）或第一份快照时只记成见过、不报。"""
         report = report and self._bubbles_ready
@@ -253,6 +273,9 @@ class A11yChatReader:
         # 陌生人 / 挂不上名字的点点不管
         self._note_loose([b for b in view.bubbles if b.speaker is None and not b.typing_only], now, report)
         self._forget_stale(set(groups), now)
+        for (who, key), (n, _) in list(self._held.items()):
+            if who not in groups:  # 看不见他的标签：没有"变少了"的证据，保持时间不走（BUBBLE_KEEP 管多久忘掉）
+                self._held[(who, key)] = (n, now)
 
         fresh: list[Message] = []
         self._typing = []
@@ -260,11 +283,12 @@ class A11yChatReader:
             self._tag_seen[name] = now
             prev = self._counts.get(name, Counter())
             cur, boxes, typing = self._count(name, bubbles)
+            held = self._hold(name, cur, now)
             self._counts[name] = cur
             if typing:
                 self._typing.append(name)
             for key, n in cur.items():
-                for _ in range(n - prev[key]):
+                for _ in range(n - max(prev[key], held[key])):
                     if not report:
                         self._take_panel_reported(name, key, now)  # 面板开着时看到了：面板那条抵掉
                         continue

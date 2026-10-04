@@ -144,6 +144,8 @@ def classify(snap: Snapshot | None, width: int, height: int, friends: Collection
 
     def tag_like(n: Node) -> bool:
         h = n.box[3] - n.box[1]
+        if n.box[1] <= 1 and h <= 46 * v and n.text in friends:
+            return True  # 被屏幕上沿切掉一截（框顶 0，实测高 38 / 28）：只认好友名单里的名字，免得被切的气泡冒充
         return 40 * v <= h <= 46 * v and not is_dots(n.text)
 
     columns: list[list[Node]] = []
