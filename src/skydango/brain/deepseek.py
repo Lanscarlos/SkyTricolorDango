@@ -15,7 +15,32 @@ from ..config import LlmConfig
 from .claude import ClaudeError
 
 FALLBACK_NOTE = """你现在是备用大脑（DeepSeek）：Claude 额度不足，眼睛（看图的）也不可用，看不到画面。
-判断只靠消息里的状态、聊天记录、身边人名地名（身体 OCR / YOLO 认的）和旧场景描述；工具里没有看图 / 点人的，别硬调。"""
+判断只靠消息里的状态、聊天记录、身边人名地名（身体 OCR / YOLO 认的）和旧场景描述；工具里没有看图 / 点人的，别硬调。
+- 前面几条消息是你最近几轮收到的和做了的：别重复你刚说过的话（意思一样也不行），接着上一句聊
+- recall 查不到就说记不清，别顺着别人的话编
+- 嘴上说要做动作（点头、鞠躬……）就真的调 emote，没调就别这么说
+- 单字、语气词（嗯、哦、哈）不用每句都接"""
+
+HISTORY_TEXT = 1500  # 历史里每轮的唤醒消息最多留这么多字（状态之类长的截掉）
+HISTORY_CHARS = 12000  # 历史总共最多这么多字，超了从最老的丢
+
+
+def _summary(done: list[tuple[str, dict | None, str, bool]], final: str) -> str:
+    """这一轮做了什么，压成一句话放进历史（只给它自己看：说了什么、做了什么动作、调了什么、结果）。"""
+    parts = []
+    for name, args, out, is_error in done:
+        args = args or {}
+        if name == "say":
+            text = str(args.get("text", ""))
+            parts.append(f"想说「{text}」被拦下：{out[:60]}" if is_error else f"说了「{text}」")
+        elif name == "emote":
+            parts.append(f"做了动作 {args.get('name', '')}" + (f"（没做成：{out[:40]}）" if is_error else ""))
+        else:
+            brief = json.dumps(args, ensure_ascii=False)[:60]
+            parts.append(f"调了 {name}({brief}) → {out[:60]}")
+    if final.strip():
+        parts.append(f"心里：{final.strip()[:200]}")
+    return "你这一轮：" + ("；".join(parts) if parts else "什么都没做")
 
 
 def build_client(llm: LlmConfig, api_key: str | None = None):
@@ -45,6 +70,7 @@ class DeepSeekBrain:
         turn_timeout: float = 120.0,
         clock: Callable[[], float] = time.monotonic,
         on_message: Callable[[dict], None] | None = None,
+        history: int = 0,
     ) -> None:
         self.client = client
         self.system = system
@@ -58,9 +84,29 @@ class DeepSeekBrain:
         self.clock = clock
         self.on_message = on_message  # 把工具调用喂回大脑时间线（同 BrainSession.on_message，spec 2026-10-03-deepseek-fallback-brain）
         self._names = {t["function"]["name"] for t in tools}
+        # 短期记忆：最近 history 轮（唤醒消息, 这一轮做了什么）。Claude 大脑是常驻会话；这里每轮重发，
+        # 不带的话它不记得刚说过什么（10-03 晚：同一句话隔 8 秒说两遍、连说三句晚安）。只在内存里
+        self.history = history
+        self._past: list[tuple[str, str]] = []
+
+    def _history_messages(self) -> list[dict]:
+        out: list[dict] = []
+        total = 0
+        for user, assistant in reversed(self._past):
+            user = user if len(user) <= HISTORY_TEXT else user[:HISTORY_TEXT] + "……（后面截掉了）"
+            size = len(user) + len(assistant)
+            if out and total + size > HISTORY_CHARS:
+                break
+            if not out and size > HISTORY_CHARS:
+                continue
+            out[:0] = [{"role": "user", "content": user}, {"role": "assistant", "content": assistant}]
+            total += size
+        return out
 
     def send(self, text: str) -> dict:
-        messages: list[dict] = [{"role": "system", "content": self.system}, {"role": "user", "content": text}]
+        messages: list[dict] = [{"role": "system", "content": self.system}, *self._history_messages(),
+                                {"role": "user", "content": text}]
+        done: list[tuple[str, dict | None, str, bool]] = []
         deadline = self.clock() + self.turn_timeout
         final = ""
         rounds = 0
@@ -113,4 +159,7 @@ class DeepSeekBrain:
                         {"type": "tool_result", "tool_use_id": tc.id, "content": out, "is_error": is_error}
                     ]}})
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+                done.append((name, args, out, is_error))
+        if self.history > 0:
+            self._past = (self._past + [(text, _summary(done, final))])[-self.history:]
         return {"result": final, "subtype": "success"}

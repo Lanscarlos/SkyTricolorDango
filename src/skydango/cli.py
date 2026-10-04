@@ -2412,6 +2412,7 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
         client, prompt + "\n\n" + FALLBACK_NOTE, toolbox, openai_tools(toolbox, blind=True),
         model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=cfg.brain.fallback_max_tokens,
         max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout, on_message=on_message,
+        history=cfg.brain.fallback_history,
     )
 
 

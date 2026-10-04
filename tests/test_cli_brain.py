@@ -665,6 +665,7 @@ def test_fallback_brain_built(tmp_path, monkeypatch):
     brain = cli._fallback_brain(cfg, _fake_tb(), "prompt")
     assert isinstance(brain, ds.DeepSeekBrain) and brain.system == "prompt\n\n" + ds.FALLBACK_NOTE
     assert brain.model == cfg.llm.model and brain.max_tokens == cfg.brain.fallback_max_tokens
+    assert brain.history == cfg.brain.fallback_history == 8  # 10-04：带最近 8 轮短期记忆
 
 
 def test_run_brain_passes_fallback_session(tmp_path, monkeypatch):

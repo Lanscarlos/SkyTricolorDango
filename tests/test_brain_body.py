@@ -428,6 +428,27 @@ def test_say_filters_rate_limits_and_records(clock):
     assert b.heard == []
 
 
+def test_say_refuses_what_it_just_said(clock):
+    """10-03 晚 DeepSeek 备用大脑：同一句话隔 8 秒说两遍、连说三句晚安。10 分钟内几乎一样的话身体拦下（Claude 大脑也一样）。"""
+    b, device, _, _ = body(clock, live=True, wall=clock)  # 拦重复按墙钟算（spoken 记的是墙钟）
+    assert b.say("卡洛回来啦，头发吹干没").startswith("已发送")
+    clock.advance(8)
+    with pytest.raises(ToolError, match="刚说过"):
+        b.say("卡洛回来啦头发吹干没")
+    assert b.said == ["卡洛回来啦，头发吹干没"]  # 被拦的不记
+    clock.advance(5)
+    assert b.say("你头发吹干了吗").startswith("已发送")  # 换个说法照发
+    clock.advance(600)
+    assert b.say("卡洛回来啦，头发吹干没").startswith("已发送")  # 过了 10 分钟可以再说
+
+
+def test_manual_say_is_not_checked_for_repeats(clock):
+    b, device, _, _ = body(clock, live=True, wall=clock)
+    b.say("晚安")
+    clock.advance(5)
+    assert b.say("晚安", live=True).startswith("已发送")  # 主人在手动控制里让她说的照发
+
+
 def test_say_in_dry_run_does_not_touch_device(clock):
     b, device, _, _ = body(clock)
     assert b.say("在呢").startswith("dry-run")

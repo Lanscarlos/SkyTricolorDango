@@ -672,6 +672,7 @@ class BrainConfig:
     fallback: bool = True  # 额度用完切 DeepSeek 备用大脑；[llm] 没 Key 时退回纯文字备用回复
     fallback_max_tokens: int = 4096  # 备用大脑回复长度（[llm] max_tokens=200 对大脑太短）
     force_fallback: bool = False  # 调试：从启动就用 DeepSeek 大脑，不等额度真用完
+    fallback_history: int = 8  # 备用大脑带最近几轮（它每轮重发、不是常驻会话；不带就不记得刚说过什么，10-03 晚重复说）；0 = 不带
 
 
 @dataclass

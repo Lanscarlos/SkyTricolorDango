@@ -63,6 +63,8 @@ from .track import TrackSkill
 log = logging.getLogger(__name__)
 
 REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "light", "*")
+REPEAT_WINDOW = 600.0  # say：这么久内说过几乎一样的话就拦下（10-03 晚 DeepSeek 备用大脑重复说）
+REPEAT_SIMILAR = 0.85  # ……"几乎一样"：chat.tracker.similar 的门槛
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
 SCENE_EVENT_COOLDOWN = 10.0
 SHUTDOWN_REFINE = 8.0  # 退出时镜头闭环复位的细调最多花几秒（粗转照做）；控制台 stop_timeout 60 秒
@@ -1951,6 +1953,14 @@ class Body:
         if body is None:
             self._blocked(text, "过滤掉了（空的、<skip>，或者说了自己是真人）")
             raise ToolError("这句没发：是空的、<skip>，或者说了自己是真人（不能这么说）。换个说法")
+        if not live:
+            # 10 分钟内说过几乎一样的话：拦下（10-03 晚 DeepSeek 备用大脑同一句隔 8 秒说两遍、连说三句晚安）；手动控制不管
+            prefix = self.cfg.reply.disclosure_prefix
+            same = next((s.text for s in reversed(self.spoken) if self.wall() - s.t <= REPEAT_WINDOW
+                         and similar(body, s.text.removeprefix(prefix), REPEAT_SIMILAR)), None)
+            if same is not None:
+                self._blocked(text, f"刚说过「{same}」")
+                raise ToolError(f"你刚说过「{same}」，换个说法或者不说")
         if not self.limiter.allow(now):
             self._blocked(text, "说得太快了")
             raise ToolError("说得太快了，等几秒再说")

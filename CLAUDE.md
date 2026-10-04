@@ -449,7 +449,10 @@ dir = "private/sandbox"
   同一个人攒着的"走开"和"回来"互相抵消，陌生人事件只留最新的。好友走开后 `brain.rejoin`（60 秒）内又出现发 `return`，不再打招呼。
   2026-09-29 真机 v4 感知层 dry-run：改之前 5 分钟醒 42 次，41 次是背景事件
 - 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火（他举蜡烛给团子点）和点亮（light：团子按 3 举蜡烛给没点火的黑影点）
-- 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒或额度用完：聊天交给 `[llm]`（DeepSeek）备用回复，额度用完 10 分钟后再试
+- 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒：聊天交给 `[llm]`（DeepSeek）纯文字备用回复。
+  **额度用完**切 DeepSeek 备用大脑（`brain/deepseek.py`，spec `2026-10-03-deepseek-fallback-brain-design.md`；`[brain] fallback`，`force_fallback` 调试用、测完删掉）：同一套工具（看不到画面，看图的工具不给）、不自动切回 Claude。
+  它每轮重发、不是常驻会话：带最近 `[brain] fallback_history`（8）轮的唤醒消息（每轮截 1500 字、总共 12000 字）和"你这一轮说了 / 做了什么"（10-04，10-03 晚不带时同一句话隔 8 秒说两遍）；`FALLBACK_NOTE` 里多了别重复、recall 查不到别编、说做动作就真调 emote
+- `say` 拦重复（10-04）：10 分钟内说过几乎一样的话（`similar` 0.85）拦下、告诉大脑"你刚说过「…」"，Claude 大脑也一样；手动控制不管
 - 记忆整理（随手记 inbox.md、整理 notes.md）也走 Claude：`[brain] memory_model`（默认 sonnet），每次起一个一次性 `claude -p`（工作目录 `runs/<…>/brain/memory/`）；额度用完时这一笔跳过，notes 下次再整理
 - 退出：身体先恢复轮盘、再复原镜头（不等大脑）→ live 时让大脑写一份经过记进 `inbox.md` → 按进程树结束 Claude Code
 - 调提示词时加 `--view`：网页上的大脑时间线能看到每一轮它收到了什么、调了什么工具、工具返回了什么（见「识别可视化」）；
