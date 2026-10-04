@@ -313,22 +313,46 @@ def _env_watcher(cfg: Config, background: bool = True, icons=None):
     )
 
 
-def _appearance_parts(cfg: Config, run: RunDir | None = None) -> dict:
+def _dino_embedder(cfg: Config):
+    """认装扮的第二个特征（DINOv2，身份底库 spec 2026-10-03 §2.3）：[appearance] 开着且 dino 非空才建，device 跟 [appearance] device。
+    文件不存在 / 加载失败：警告一次、返回 None（只用颜色）。第二层开着且主干是同一个文件时，调用方把它共用给 attrs.load_model。"""
+    a = cfg.appearance
+    if not a.enabled or not a.dino:
+        return None
+    from .vision.embed import OnnxEmbedder
+
+    try:
+        return OnnxEmbedder(a.dino, a.size, "imagenet", a.device, what="appearance.dino")
+    except Exception as exc:
+        log.warning("认装扮：DINOv2 加载失败（%s），只用颜色", exc)
+        return None
+
+
+_UNSET = object()
+
+
+def _appearance_parts(cfg: Config, run: RunDir | None = None, dino_embedder=_UNSET) -> dict:
     """认装扮（spec 2026-10-01-appearance）：给 PerceptionWatcher 的关键字参数（记忆簿、特征模型、配置、存训练数据）。
-    [appearance] 没开时是空的；没有运行目录（view、perception detect）或 save = false 时不存训练数据。描述器由 _run_brain 挂。"""
+    [appearance] 没开时是空的；没有运行目录（view、perception detect）或 save = false 时不存训练数据。描述器由 _run_brain 挂。
+    dino_embedder：调用方已经建好的 DINOv2（和第二层共用同一个会话）；不给就自己建。"""
     a = cfg.appearance
     if not a.enabled:
         return {}
-    from .vision.appearance import AppearanceBook, CropSaver, make_embedder
+    from .vision.appearance import AppearanceBook, CropSaver, DinoGuard, make_embedder
 
     embedder = make_embedder(a)
     saver = CropSaver(run.path / "appearance", a.save_every, a.save_max) if run is not None and a.save else None
-    log.info("认装扮：特征 %s%s", embedder.key, f"，训练数据存进 {saver.folder}" if saver is not None else "")
-    return {
+    dino = _dino_embedder(cfg) if dino_embedder is _UNSET else dino_embedder
+    log.info("认装扮：特征 %s%s%s", embedder.key, "+DINOv2" if dino is not None else "",
+             f"，训练数据存进 {saver.folder}" if saver is not None else "")
+    parts = {
         "appearance": AppearanceBook(a, embedder.key, keep=cfg.perception.keep),
         "embedder": embedder, "appearance_cfg": a, "saver": saver,
         "enroll_dir": run.path / "enroll" if run is not None else None,  # 启动登记团子的裁图，事后核对
     }
+    if dino is not None:
+        parts["dino"] = DinoGuard(dino)
+    return parts
 
 
 def _catalog_collector(cfg: Config, run: RunDir | None):
@@ -361,7 +385,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
 
     p = cfg.perception
     want_light = light and cfg.social.enabled and "light" in cfg.social.accept_strangers
-    attrs = _person_attrs(cfg)
+    dino = _dino_embedder(cfg)
+    attrs = _person_attrs(cfg, dino)
     detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, want_light, attrs=attrs is not None), p.iou, p.device)
     log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
@@ -389,20 +414,24 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         places=places, place_interval=cfg.places.place_interval,
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
         social_cfg=cfg.social, flame=flame,
-        light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run),
+        light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run, dino),
         call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
         catalog=_catalog_collector(cfg, run),
     )
 
 
-def _person_attrs(cfg: Config):
+def _person_attrs(cfg: Config, dino_embedder=None):
     """感知层第二层（spec 2026-10-02-perception-attrs）：[attrs] 开着、模型读得进来才建 PersonAttrs；
-    模型不存在 / 打不开 / 主干对不上时 load_model 已经警告过，返回 None（等于没开）。"""
+    模型不存在 / 打不开 / 主干对不上时 load_model 已经警告过，返回 None（等于没开）。
+    dino_embedder：认装扮建好的 DINOv2；主干是同一个文件时共用它（一个推理会话，身份底库 spec §2.3），device 跟着认装扮的。"""
     if not cfg.attrs.enabled:
         return None
     from .vision.attrs import PersonAttrs, load_model
 
-    model = load_model(cfg.attrs, _attrs_device(cfg))
+    shared = None
+    if dino_embedder is not None and Path(cfg.attrs.backbone).resolve() == Path(cfg.appearance.dino).resolve():
+        shared = dino_embedder
+    model = load_model(cfg.attrs, _attrs_device(cfg), shared)
     if model is None:
         return None
     log.info("感知层第二层：%s（主干 %s）", cfg.attrs.model, cfg.attrs.backbone)
@@ -766,13 +795,14 @@ def _perception(cfg: Config, args, dev=None):
             setattr(p, key, getattr(args, key))
     if getattr(args, "far_crops", None) is not None:
         p.far_crops = args.far_crops
-    attrs = _person_attrs(cfg)
+    dino = _dino_embedder(cfg)
+    attrs = _person_attrs(cfg, dino)
     detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, attrs=attrs is not None), p.iou, p.device)
     icons = _icon_classifier(cfg)
     watcher = PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=False, capture=dev.screenshot if dev is not None else None,
-        **_appearance_parts(cfg),  # 只挂记忆簿：不存训练数据、不描述
+        **_appearance_parts(cfg, None, dino),  # 只挂记忆簿：不存训练数据、不描述
         attrs=attrs,
     )
     return detector, watcher
@@ -1393,7 +1423,7 @@ def _perception_appearance_eval(cfg: Config, args) -> None:
     import dataclasses
     import json
 
-    from .vision.appearance_eval import Harvester, pair_scores, replay, report_md, suggest, untagged
+    from .vision.appearance_eval import Harvester, gallery_eval, pair_scores, replay, report_md, suggest, untagged
     from .vision.compare import timed_files
 
     try:
@@ -1402,6 +1432,7 @@ def _perception_appearance_eval(cfg: Config, args) -> None:
         raise SystemExit(str(exc)) from None
     if skipped:
         print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    gallery = bool(getattr(args, "gallery", False))
     a = cfg.appearance
     a.enabled = True
     if args.embed:
@@ -1414,7 +1445,7 @@ def _perception_appearance_eval(cfg: Config, args) -> None:
     for n, (t, path) in enumerate(timed, 1):
         frame = imread(path)
         watcher.process(frame, t, _panel_open(cfg, frame))
-        harvest.add(watcher.tracker.tracks.values(), t)
+        harvest.add(watcher.tracker.tracks.values(), t, gallery=gallery)
         if n % 50 == 0:
             print(f"  {n}/{len(timed)}")
     ids = harvest.by_identity()
@@ -1424,9 +1455,13 @@ def _perception_appearance_eval(cfg: Config, args) -> None:
     summary = {
         "source": str(args.source), "frames": len(timed), "embed": watcher.embedder.key,
         "identities": {k: len(v) for k, v in ids.items()}, "suggest": s,
-        "current": {"match": a.match, "changed": a.changed, "margin": a.margin},
+        "current": {"match": a.match, "changed": a.changed, "margin": a.margin, "unsure": a.unsure, "dango_match": a.dango_match},
         "replay": replay(seq, a),
     }
+    if gallery:
+        if getattr(watcher, "dino", None) is None:
+            print(f"提示：DINOv2 没加载（{a.dino}），底库模式的 dango_match 给不出")
+        summary["gallery"] = g = gallery_eval(harvest.gallery_sequence(), harvest.dango_samples())
     if s["match"] is not None and s["changed"] is not None:
         summary["replay_suggested"] = replay(seq, dataclasses.replace(a, match=s["match"], changed=s["changed"], margin=s["margin"]))
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1437,6 +1472,9 @@ def _perception_appearance_eval(cfg: Config, args) -> None:
     print(f"建议：match {fmt(s['match'])}（现在 {a.match:g}）、changed {fmt(s['changed'])}（现在 {a.changed:g}）、margin {s['margin']:g}")
     r = summary["replay"]
     print(f"藏标签重放（现在的配置）：对 {r['right']}、错 {r['wrong']}、漏 {r['missed']}；报告：{out / 'report.md'}")
+    if gallery:
+        print(f"底库模式：match {fmt(g['match'])}（现在 {a.match:g}）、unsure {fmt(g['unsure'])}（现在 {a.unsure:g}）、"
+              f"dango_match {fmt(g['dango_match'])}（现在 {a.dango_match:g}）；查询 {g['queries']} 个")
 
 
 def _perception_halo_eval(cfg: Config, args) -> None:
@@ -3033,6 +3071,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
     q.add_argument("--device", choices=["cuda", "dml", "cpu"])
     q.add_argument("--embed", help="外观特征：color 或 .onnx 路径（默认 appearance.model）")
+    q.add_argument("--gallery", action="store_true", help="底库模式：再收每帧的颜色 + DINOv2 样本，报告多一节建议 match / unsure / dango_match（要 [appearance] dino）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/appearance-eval/<时间>）")
     q = psub.add_parser("halo-eval", help="呼唤光圈标定：录像上画每个人头顶的亮度变化曲线，给建议的 [call] halo_rise")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/q-call-20260930-c）")

@@ -183,3 +183,78 @@ def test_run_brain_bad_cards_only_logged(tmp_path, monkeypatch, caplog):
     with caplog.at_level("ERROR"):
         cli._run_brain(cfg, run, world, 1.0)
     assert "关系卡里的装扮载入出错" in caplog.text and world.env.wardrobe is not None
+
+
+# ---- DINOv2 特征模型（身份底库 spec 2026-10-03 §2.3） ----
+class FakeEmbedder:
+    built: list = []
+
+    def __init__(self, path, size=224, norm="imagenet", device="cpu", what=""):
+        self.path, self.device, self.what = path, device, what
+        self.size, self.key = 224, f"{path}:224:{norm}"
+        FakeEmbedder.built.append(self)
+
+    def embed(self, img):
+        import numpy as np
+
+        return np.ones(4, np.float32) / 2
+
+
+def _attrs_npz(path, backbone):
+    import numpy as np
+
+    from skydango.vision import attrs
+
+    labels = ["lit", "unlit"]
+    attrs.save_model(path, {"form": {"W": np.zeros((4, 2), np.float32), "b": np.zeros(2, np.float32), "labels": labels,
+                                     "applies_to": ["player"], "pad": 0.1}}, backbone.name, "224:imagenet", "20261003")
+
+
+def test_dino_embedder_shared_with_attrs(monkeypatch, tmp_path):
+    fake_models(monkeypatch)
+    FakeEmbedder.built = []
+    monkeypatch.setattr("skydango.vision.embed.OnnxEmbedder", FakeEmbedder)
+    onnx = tmp_path / "dinov2-small.onnx"
+    onnx.write_bytes(b"x")
+    npz = tmp_path / "attrs.npz"
+    _attrs_npz(npz, onnx)
+    cfg = Config()
+    cfg.perception.enabled = True
+    cfg.appearance.enabled = True
+    cfg.appearance.dino = str(onnx)
+    cfg.attrs.enabled = True
+    cfg.attrs.backbone = str(tmp_path / "." / "dinov2-small.onnx")  # 写法不同、同一个文件
+    cfg.attrs.model = str(npz)
+    w = cli._scene_watcher(cfg)
+    assert w.attrs is not None and w.dino is not None
+    assert len(FakeEmbedder.built) == 1 and w.attrs.model.embedder is FakeEmbedder.built[0]
+    # 路径不同：各建各的
+    other = tmp_path / "other.onnx"
+    other.write_bytes(b"x")
+    cfg.attrs.backbone = str(other)
+    _attrs_npz(npz, other)
+    FakeEmbedder.built = []
+    cli._scene_watcher(cfg)
+    assert len(FakeEmbedder.built) == 2
+
+
+def test_dino_embedder_missing_file_warns(monkeypatch, caplog):
+    fake_models(monkeypatch)
+    cfg = Config()
+    cfg.perception.enabled = True
+    cfg.appearance.enabled = True
+    cfg.appearance.dino = "models/没有.onnx"
+    with caplog.at_level("WARNING"):
+        assert cli._dino_embedder(cfg) is None
+        w = cli._scene_watcher(cfg)
+    assert "认装扮：DINOv2 加载失败" in caplog.text and "只用颜色" in caplog.text
+    assert w.dino is None and w.appearance is not None  # 颜色照旧
+
+
+def test_dino_embedder_off_when_disabled_or_empty():
+    cfg = Config()
+    cfg.appearance.dino = "models/没有.onnx"
+    assert cli._dino_embedder(cfg) is None  # [appearance] 没开
+    cfg.appearance.enabled = True
+    cfg.appearance.dino = ""
+    assert cli._dino_embedder(cfg) is None  # 空 = 不用

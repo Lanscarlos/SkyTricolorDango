@@ -77,7 +77,7 @@ def test_cli_catalog_collect_on_recording(tmp_path, monkeypatch):
     monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda *a, **k: FakeOcr())
     monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: None)
     monkeypatch.setattr(cli, "_friend_names", lambda cfg: (lambda: []))
-    monkeypatch.setattr(cli, "_person_attrs", lambda cfg: None)
+    monkeypatch.setattr(cli, "_person_attrs", lambda cfg, *a: None)
     out = tmp_path / "out"
     (tmp_path / "config.toml").write_text("", encoding="utf-8")
     cli.main(["-c", str(tmp_path / "config.toml"), "catalog", "collect", str(src), "--fps", "2", "-o", str(out)])
