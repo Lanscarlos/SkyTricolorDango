@@ -466,11 +466,11 @@ class InboxConfig:
 
     enabled: bool = True
     dir: str = "datasets/inbox"  # 收件箱目录（gitignore）
-    ask: bool = True  # 外形头和 YOLO 不一致时是否让 Claude 再核对
+    ask: bool = True  # 管理面板停团子时问不问要不要整理（这次存了难例 / 还有没整理的运行时）
     agree: float = 0.9  # 外形头与 YOLO 一致的概率门槛
     dup_diff: float = 6.0  # 去重：缩略图平均像素差低于这个算重复
-    dup_gap: float = 5.0  # 去重：同类难例至少隔这么久（秒）
-    val_every: int = 5  # 每隔几张分一张进验证集
+    dup_gap: float = 5.0  # 去重：和上一张保留帧相隔不超过这么久（秒，按文件名的时间）才可能算重复
+    val_every: int = 5  # 按运行目录名 crc32 % val_every == 0 整次运行进验证集（约每 val_every 次运行一次）
     retrain_min: int = 50  # 攒够这么多张核对过的才提示重训
 
 
