@@ -897,6 +897,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_crops(cfg, args)
     elif args.action == "attrs-train":
         _perception_attrs_train(cfg, args)
+    elif args.action == "retrain":
+        _perception_retrain(cfg, args)
     elif args.action == "attrs-eval":
         _perception_attrs_eval(cfg, args)
     elif args.action == "appearance-eval":
@@ -999,28 +1001,23 @@ def _attrs_replays(cfg: Config, frames: list, model, notes: list[str], attrs_roo
     """在验证帧上回放 0.2 和 [perception] low_conf 两档：([回放结果], 建议阈值)。检测器建不起来 / 没有带标注的帧就返回空。
     attrs_root：外形裁图目录，标准答案按标注页确认过的结果修正（`attrs_train.gt_fixes`，只在内存里）。"""
     from .vision import attrs_train as at
-    from .vision.detect import make_detector
 
     p, a = cfg.perception, cfg.attrs
     if not frames:
         notes.append("没有可回放的验证帧（数据集的 images/val 里没有图），没做整帧回放")
         return [], None
     try:
-        detector = make_detector(p.model, p.classes, p.imgsz, 0.2, p.iou, p.device)
+        detector = at.replay_detector(p)
     except Exception as exc:
         notes.append(f"YOLO 检测器加载失败（{exc}），没做整帧回放")
         return [], None
-    fixes = at.gt_fixes(attrs_root) if attrs_root is not None and Path(attrs_root).is_dir() else {}
-    if fixes:
-        notes.append(f"回放的标准答案用 {attrs_root} 里标注页确认过的结果修正了 {sum(len(v) for v in fixes.values())} 处"
-                     "（改点没点火、删不是人、补漏标的人；只在内存里，datasets/sky 的 labels/ 没动）")
+    fixes = at.load_fixes(attrs_root, notes)
     replays, suggest = [], None
     for low in sorted({0.2, p.low_conf}):
         records = at.collect(frames, detector, model, low, fixes)
         if suggest is None or low == p.low_conf:
             suggest = at.sweep_thresholds(records, p.conf)
-        replays.append({**at.simulate(records, p.conf, a.accept, a.reject, a.yolo_w), "conf_low": low, "conf": p.conf,
-                        "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n, "yolo_w": a.yolo_w})
+        replays.append(at.replay_row(records, low, p.conf, a))
     return replays, suggest
 
 
@@ -1078,6 +1075,28 @@ def _perception_attrs_train(cfg: Config, args) -> None:
     (folder / "report.md").write_text(at.report_md(data=data, model=out, when=now, result=res, replays=replays,
                                                     suggest=suggest, notes=notes), encoding="utf-8")
     print(f"报告 → {folder / 'report.md'}" + (f"；建议 accept = {suggest[0]:g}、reject = {suggest[1]:g}" if suggest else ""))
+
+
+def _perception_retrain(cfg: Config, args) -> None:
+    """一键重训 YOLO + 外形头、回放对比出报告（vision/retrain.py）→ tmp/retrain/<时间>/。失败打印是哪一步、退出码 1。"""
+    import datetime as dt
+    import traceback
+
+    from .vision import retrain
+
+    if args.epochs:
+        cfg.retrain.epochs = args.epochs
+    out = Path("tmp") / "retrain" / f"{dt.datetime.now():%Y%m%d-%H%M%S}"
+    print(f"重训：输出在 {out}", flush=True)
+    try:
+        res = retrain.run_retrain(cfg, retrain.DATASET, Path(cfg.inbox.dir), out, lambda s: print(s, flush=True))
+    except retrain.RetrainFailed as exc:
+        traceback.print_exception(exc.cause)
+        sys.stderr.flush()
+        print(f"重训失败（{exc.step}）：{type(exc.cause).__name__}: {exc.cause}", flush=True)
+        raise SystemExit(1) from None
+    print(f"重训完了：新 YOLO → {res['yolo']}，新外形头 → {res['attrs']}；报告 → {out / 'report.md'}"
+          "（换不换在管理面板「标注」页定）", flush=True)
 
 
 def _perception_attrs_eval(cfg: Config, args) -> None:
@@ -3312,6 +3331,8 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("attrs-label", help="第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json")
     q.add_argument("source", nargs="?", help="数据目录（默认 datasets/attrs）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的裁图也重新初分")
+    q = psub.add_parser("retrain", help="一键重训：datasets/sky 训 YOLO（[retrain]）+ 外形头，旧 / 新模型回放对比，报告在 tmp/retrain/<时间>/（不换配置）")
+    q.add_argument("--epochs", type=int, help="YOLO 训几轮（默认 [retrain] epochs）")
     q = psub.add_parser("attrs-train", help="训练外形头：form/ 里确认过的裁图 -> DINOv2 特征 + numpy 线性头 -> models/attrs-<日期>.npz，整帧回放评估、写报告")
     q.add_argument("data", nargs="?", help="数据目录（默认 datasets/attrs）")
     q.add_argument("--out", help="模型输出路径（默认 models/attrs-<日期>.npz；是 [attrs] model 时要加 --force）")

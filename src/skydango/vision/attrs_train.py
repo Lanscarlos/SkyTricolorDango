@@ -17,7 +17,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from ..config import AttrsConfig
+from ..config import AttrsConfig, PerceptionConfig
 from ..imageio import imread
 from . import attrs
 from .attrs import FORMS, PERSON_FORMS
@@ -330,9 +330,10 @@ def _gt_boxes(path: Path, w: int, h: int, spirit: bool = True,
 
 def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | None = None) -> list[dict]:
     """每帧跑一次检测（只留分 ≥ conf_low 的人物框）和外形头：[{gt: [(框, 类别号)], dets: [{cls, box, score, p}]}]。
-    p = {外形: 概率}，外形头对这个类别没有头时是 None。没有 labels/ 对应文件的帧跳过。"""
+    p = {外形: 概率}，外形头对这个类别没有头时是 None。没有 labels/ 对应文件的帧跳过。
+    model 是 None：只跑 YOLO（p 都是 None，simulate 的第二层就是纯 YOLO），先祖照常算要保留的人。"""
     records = []
-    labels = model.labels("form")
+    labels = model.labels("form") if model is not None else []
     for f in frames:
         lf = _label_file(Path(f))
         if not lf.is_file():
@@ -343,12 +344,34 @@ def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | 
 
         dets = merge_people([d for d in detector.detect(img) if d.cls in PERSON_DETS and d.score >= conf_low])[0]
         probs = model.predict([(d.cls, attrs.crop(img, d.box, model.pad("form"), model.size, model.keep("form")))
-                               for d in dets]) if dets else []
-        records.append({"gt": _gt_boxes(lf, w, h, spirit="spirit" in labels, fixes=fixes), "dets": [
+                               for d in dets]) if dets and model is not None else [{} for _ in dets]
+        records.append({"gt": _gt_boxes(lf, w, h, spirit=model is None or "spirit" in labels, fixes=fixes), "dets": [
             {"cls": d.cls, "box": d.box, "score": d.score,
              "p": ({lb: float(v) for lb, v in zip(labels, r["form"])} if "form" in r else None)}
             for d, r in zip(dets, probs)]})
     return records
+
+
+def replay_detector(p: PerceptionConfig, model: str | Path | None = None, conf: float = 0.2):
+    """回放用的 YOLO：出框门槛 conf（collect 再按 conf_low 过滤），其余照 [perception]；model 默认 [perception] model。建不起来就抛出。"""
+    from .detect import make_detector
+
+    return make_detector(model or p.model, p.classes, p.imgsz, conf, p.iou, p.device)
+
+
+def load_fixes(attrs_root: Path | None, notes: list[str]) -> dict:
+    """回放答案的修正（`gt_fixes`；目录没有就是空），有修正就往 notes 里记一句。"""
+    fixes = gt_fixes(attrs_root) if attrs_root is not None and Path(attrs_root).is_dir() else {}
+    if fixes:
+        notes.append(f"回放的标准答案用 {attrs_root} 里标注页确认过的结果修正了 {sum(len(v) for v in fixes.values())} 处"
+                     "（改点没点火、删不是人、补漏标的人；只在内存里，datasets/sky 的 labels/ 没动）")
+    return fixes
+
+
+def replay_row(records: list[dict], conf_low: float, conf: float, a: AttrsConfig) -> dict:
+    """`simulate` 按 [attrs] 的 accept / reject / yolo_w 算，再带上这些门槛（`replay_md` 要用）。"""
+    return {**simulate(records, conf, a.accept, a.reject, a.yolo_w), "conf_low": conf_low, "conf": conf,
+            "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n, "yolo_w": a.yolo_w}
 
 
 def _ratio(a: int, b: int) -> float:

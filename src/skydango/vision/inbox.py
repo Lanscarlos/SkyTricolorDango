@@ -513,3 +513,25 @@ def status(inbox: Path, attrs_root: Path) -> dict:
                       if (e.get("decision") or {}).get("what") == "pass" and float(e["decision"].get("t") or 0) > trained)
     left = sum(1 for r in _read_rows(attrs_root) if r.get("source") == "inbox" and crop_place(attrs_root, r["crop"]) == "_unlabeled")
     return {"runs": runs, "judge_left": left, "passed_since_train": passed}
+
+
+# ---- 重训（spec §7）----
+
+def passed_frames(inbox: Path, before: float | None = None) -> list[dict]:
+    """整帧通过、现在还算数的帧（撤销过的不算）：[{run, frame, dataset: "<split>/<帧>", t}]，按运行目录名、帧的顺序。
+    before：只要这个时间（epoch 秒）及以前通过的。"""
+    inbox = Path(inbox)
+    out: list[dict] = []
+    for d in sorted(p for p in inbox.iterdir() if p.is_dir()) if inbox.is_dir() else []:
+        for frame, e in load_frames(inbox, d.name).items():
+            dec = e.get("decision") or {}
+            t = float(dec.get("t") or 0)
+            if dec.get("what") == "pass" and dec.get("dataset") and (before is None or t <= before):
+                out.append({"run": d.name, "frame": frame, "dataset": dec["dataset"], "t": t})
+    return out
+
+
+def mark_trained(inbox: Path, frames: int, at: float | None = None) -> None:
+    """`_stats.json` 记这次训练：trained_at = 训练用的数据集定下来的时间（"上次训练以来通过"从这里算）、trained_frames = 用到的收件箱帧数。"""
+    path = Path(inbox) / STATS
+    _write_json(path, {**_json_dict(path), "trained_at": time.time() if at is None else float(at), "trained_frames": int(frames)})
