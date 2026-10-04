@@ -120,6 +120,19 @@ class FakeProc:
         return 0
 
 
+def test_on_line_gets_raw_snapshot_lines(tmp_path):
+    jar, md5 = make_jar(tmp_path)
+    proc = FakeProc([LINE.encode("utf-8") + b"\n", b"garbage\n"])
+    got = []
+    reader = A11yReader("adb", "emulator-5554", jar=jar, run=FakeRun(remote_md5=md5),
+                        popen=lambda cmd, stdout, stderr: proc, on_line=got.append)
+    reader.start()
+    assert proc.done.wait(2)
+    reader._thread.join(2)
+    assert got == [LINE.encode("utf-8")]  # 只有解析成功的快照，原样、去掉行尾换行
+    reader.stop()
+
+
 def test_watch_keeps_latest_and_stops(tmp_path):
     jar, md5 = make_jar(tmp_path)
     run = FakeRun(remote_md5=md5)

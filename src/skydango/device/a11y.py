@@ -96,6 +96,7 @@ class A11yReader:
         run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
         popen: Callable[..., subprocess.Popen] = subprocess.Popen,
         clock: Callable[[], float] = time.monotonic,
+        on_line: Callable[[bytes], None] | None = None,
     ) -> None:
         self.adb = [adb_path, "-s", serial] if serial else [adb_path]
         self.jar = Path(jar)
@@ -103,6 +104,7 @@ class A11yReader:
         self._run = run
         self._popen = popen
         self._clock = clock
+        self._on_line = on_line  # 每份解析成功的快照的原始行（去掉行尾换行），录回放素材用；出错只记 DEBUG
         self._proc = None
         self._thread: threading.Thread | None = None
         self._latest: Snapshot | None = None
@@ -172,6 +174,11 @@ class A11yReader:
                 elif proc is self._proc:  # 停掉之后别再往里写
                     self._latest = snap
                     self.count += 1
+                    if self._on_line is not None:
+                        try:
+                            self._on_line(line.rstrip(b"\r\n"))
+                        except Exception:
+                            log.debug("on_line 回调出错", exc_info=True)
             if proc.stderr:
                 other.append(proc.stderr.read().decode("utf-8", "replace").strip())
         except Exception as exc:
