@@ -4,6 +4,8 @@
  * 动作页没有「同意 Claude」（10-03 去掉：Claude 初分认不出动作，直接人工标）；有旧的猜测照样显示、按钮上标出来。
  * 页顶「动作 / 外形 / 动作名」三个标签：外形页标人物裁图（api/form/*，Enter / 1~6 = 外形类别 / 0 不要 / Z 撤销，只在外形页开着时有效）；
  * 动作名页给动作图标起名（emotenames.js，这里只管切过去和刷新，开着时这里的按键都不生效）。
+ * 整帧页过目 / 编辑收件箱里整理好的帧（frames.js，这里只管切过去、刷新，开着时按键转给 FramesTab.key）。
+ * 外形页的「来自整理」筛选（难例收件箱，后端 inbox）：整理时外形头拿不准、交给人判的裁图都在这里。
  * 外形页的「导入未确认」筛选（10-04）：datasets/sky 直接导进 form/ 的裁图没人看过（后端 confirmed = false）；在原类别上按一下 = 原地确认。
  * 其中「回放用」（后端 replay）是数据集验证集帧里的框 = attrs-train 整帧回放的标准答案，先过它们回放才算得准。
  * 模型写的理由一律 textContent。 */
@@ -48,6 +50,7 @@ function matches(c, f) {
   if (f.startsWith("done:")) return c.where === f.slice(5);
   if (f === "unconfirmed") return unconfirmed(c);
   if (f === "replay") return unconfirmed(c) && c.replay === true;
+  if (f === "inbox") return c.inbox === true;
   if (f.startsWith("unconfirmed:")) return unconfirmed(c) && c.where === f.slice(12);
   return false;
 }
@@ -57,6 +60,7 @@ function pItems(P) { return (P.s.data && P.s.data[P.itemsKey]) || []; }
 function pBy(P, name) { return name == null ? null : pItems(P).find(c => c[P.key] === name) || null; }
 function pBuild(P) {
   const f = P.s.filter, k = P.key, list = pItems(P).filter(c => matches(c, f));
+  if (f === "inbox") list.sort((a, b) => (a.where === UNL ? 0 : 1) - (b.where === UNL ? 0 : 1) || rank(a) - rank(b) || (a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0));  // 没判的在前
   if (f === "todo" || f.startsWith("guess:"))
     list.sort((a, b) => rank(a) - rank(b) || (a.guess ? a.guess.confidence : 0) - (b.guess ? b.guess.confidence : 0) || (a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0));
   P.s.list = list;
@@ -71,7 +75,7 @@ function pValid(P, f) {
   if (f === "todo" || f === "discard") return true;
   if (f.startsWith("done:")) return labels.includes(f.slice(5));
   if (f.startsWith("guess:")) return [...labels, "unsure", "-"].includes(f.slice(6));
-  if (P.confirmable && (f === "unconfirmed" || f === "replay")) return true;
+  if (P.confirmable && (f === "unconfirmed" || f === "replay" || f === "inbox")) return true;
   if (P.confirmable && f.startsWith("unconfirmed:")) return labels.includes(f.slice(12));
   return false;
 }
@@ -95,6 +99,8 @@ function pRenderFilter(P) {
     g3.append(opt("replay", `回放用的（${un.filter(c => c.replay === true).length}）`));
     for (const l of P.labels()) if (un1[l] || P.s.filter === "unconfirmed:" + l) g3.append(opt("unconfirmed:" + l, `${P.name(l)}（${un1[l] || 0}）`));
     sel.append(g3);
+    const ib = pItems(P).filter(c => c.inbox === true);
+    if (ib.length || P.s.filter === "inbox") sel.append(opt("inbox", `来自整理（${ib.filter(c => c.where === UNL).length} 待判 / ${ib.length}）`));
   }
   const g2 = el("optgroup"); g2.label = "已确认";
   for (const l of P.labels()) g2.append(opt("done:" + l, `${P.name(l)}（${n[l] || 0}）`));
@@ -118,6 +124,8 @@ function pRenderCounts(P) {
     n.unconfirmed = un.length; n.replay = un.filter(c => c.replay === true).length;
     item("unconfirmed", "导入未确认", "unconfirmed");
     if (n.replay || P.s.filter === "replay") item("replay", "其中回放用", "replay");
+    n.inbox = pItems(P).filter(c => c.inbox === true).length;
+    if (n.inbox || P.s.filter === "inbox") item("inbox", "来自整理", "inbox");
   }
   for (const l of P.labels()) item("done:" + l, P.name(l), l);
   item("discard", "丢弃", DIS);
@@ -133,7 +141,8 @@ function pRenderList(P) {
   box.textContent = "";
   if (!P.s.list.length) {
     box.append(el("p", "none lb-empty", P.s.filter === "todo" ? (pItems(P).length ? "都标完了。" : `还没有${P.noun}。`)
-      : P.s.filter.startsWith("unconfirmed") || P.s.filter === "replay" ? "导入的都确认过了。" : `这里没有${P.noun}。`));
+      : P.s.filter.startsWith("unconfirmed") || P.s.filter === "replay" ? "导入的都确认过了。"
+      : P.s.filter === "inbox" ? "还没有来自整理的裁图（先跑整理）。" : `这里没有${P.noun}。`));
     return;
   }
   const frag = document.createDocumentFragment();
@@ -415,6 +424,7 @@ function fmRenderSide() {
     const row = (k, v) => { meta.append(el("dt", "", k)); const dd = el("dd"); dd.append(v); meta.append(dd); };
     row("现在", unconfirmed(c) ? el("span", "tag warn", fmRowWhere(c)) : el("span", "tag " + (c.where === UNL ? "" : c.where === DIS ? "bad" : "ok"), fmWhereText(c.where)));
     row("裁图", el("code", "", c.crop));
+    if (c.inbox) row("来源", "难例收件箱（整理时外形头拿不准）");
     if (c.image) row("原图", el("code", "", c.image));
   }
   const acts = $("fm-actions"); acts.textContent = "";
@@ -478,9 +488,10 @@ const NOTES = {
   gesture: "确认的片段挪进 datasets/gesture/<动作>/，不要的进 _discard/，每一步记在 _labels.jsonl",
   form: "确认的裁图挪进 datasets/attrs/form/<类别>/，不要的进 _discard/，每一步记在 _labels.jsonl",
   names: "只起名，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动才生效",
+  frames: "通过 = 原图和标注复制进 datasets/sky/images|labels/<分边>/；不要的留在收件箱；决定记在收件箱各次运行的 frames.json",
 };
 function setTab(tab) {
-  LB.tab = tab === "form" || tab === "names" ? tab : "gesture";
+  LB.tab = tab === "form" || tab === "names" || tab === "frames" ? tab : "gesture";
   window.LabelingTab = LB.tab;
   for (const b of $("lb-tabs").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.tab === LB.tab));
   const form = LB.tab === "form", names = LB.tab === "names", gesture = LB.tab === "gesture";
@@ -489,12 +500,15 @@ function setTab(tab) {
   $("fm-cols").hidden = !form || !FM.data; $("fm-empty").hidden = !form || !!FM.data;
   const en = window.EmoteNamesTab, has = !!(en && en.hasData());
   $("en-cols").hidden = !names || !has; $("en-empty").hidden = !names || has;
+  const fr = window.FramesTab, frTab = LB.tab === "frames", fhas = !!(fr && fr.hasData());
+  $("fr-cols").hidden = !frTab || !fhas; $("fr-empty").hidden = !frTab || fhas;
   startTimer();  // 动作页之外不放动图
   reload();
 }
 function reload() {
   if (LB.tab === "form") fmLoad();
   else if (LB.tab === "names") { if (window.EmoteNamesTab) window.EmoteNamesTab.load(); }
+  else if (LB.tab === "frames") { if (window.FramesTab) window.FramesTab.load(); }
   else load();
 }
 
@@ -508,6 +522,7 @@ function onKey(e) {
   if ((k === "Enter" || k === " ") && t && t.closest && t.closest("button,a,summary")) return;  // 键盘移到按钮上时回车 / 空格交给按钮
   let act = null;
   if (LB.tab === "names") return;  // 动作名页：输入框里回车就是保存，别的键不管
+  if (LB.tab === "frames") { if (window.FramesTab) window.FramesTab.key(e); return; }  // 整帧页自己管按键（过目 / 编辑两套）
   if (LB.tab === "form") {
     if (k === "Enter") act = fmAgree;
     else if (k === "z" || k === "Z") act = fmUndo;
@@ -554,6 +569,7 @@ Pages.labeling = {
   hide() {
     LB.active = false;
     stopTimer();
+    if (window.FramesTab) window.FramesTab.hide();  // 松开空格、丢掉拖到一半的框
     if (LB.keyBound) { document.removeEventListener("keydown", onKey); LB.keyBound = false; }
   },
 };

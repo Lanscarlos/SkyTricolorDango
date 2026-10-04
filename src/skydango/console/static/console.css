@@ -17,6 +17,8 @@
   /* 沙盒页的大脑控制台：底色和左右两栏一样，靠等宽字和终端排版区分 */
   --term-bg:var(--card);--term-head:var(--card);--term-line:var(--line);--term-fg:#2f2822;--term-dim:#6e6352;
   --term-sakura:#a13c66;--term-matcha:#3b6738;--term-amber:#875812;--term-red:#9c3420;--term-indigo:#32547f;
+  /* 整帧页：画布底色（截图外的空白）、编辑中的标记 */
+  --fr-stage:#2b2621;--fr-edit:var(--amber);
   --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
   --mono:"Cascadia Mono",Consolas,monospace;
 }
@@ -664,6 +666,28 @@ kbd.k{display:inline-block;min-width:1.7em;padding:0 5px;border:1px solid var(--
 .en-refs{display:block;margin:6px 14px 0;line-height:1.7}
 .en-refs code{font-size:12px}
 .en-help .note{margin:0 0 8px;font-size:12px}
+/* 整帧页（难例收件箱）：左帧列表、中间画布占满（深底，截图本身多半偏暗）、右栏操作；编辑中画布描一圈琥珀色 */
+.fr-cols{flex:1;grid-template-columns:minmax(220px,.8fr) minmax(0,3fr) minmax(240px,.9fr)}
+.fr-cols[hidden]{display:none}
+.fr-cols>.pane{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.fr-cols>.lb-side{overflow:auto;scrollbar-width:thin;scrollbar-color:var(--ash) transparent}
+#fr-run,#fr-filter{font-size:12.5px;padding:1px 6px;letter-spacing:0;font-weight:400;max-width:42%;color:var(--ink)}
+.fr-mode{flex:none;padding:0 9px;border-radius:6px;background:var(--matcha-bg);color:var(--matcha-ink);font-size:12.5px;letter-spacing:.08em}
+.fr-mode[data-mode=edit]{background:var(--fr-edit);color:var(--white);font-weight:600}
+.fr-reason{flex:none;margin:0;padding:0 14px 8px;font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
+.fr-stage{position:relative;flex:1;min-height:260px;margin:0 10px 10px;border-radius:10px;overflow:hidden;background:var(--fr-stage);box-shadow:0 0 0 1px var(--line)}
+.fr-stage.edit{box-shadow:0 0 0 2px var(--fr-edit)}
+#fr-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+.fr-stage.edit #fr-canvas{cursor:crosshair}
+.fr-stage .lb-stage-note{color:var(--ash)}
+.fr-classes{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.fr-cls{display:flex;align-items:center;gap:6px;text-align:left;padding:3px 8px;font-size:13px}
+.fr-cls i{width:10px;height:10px;border-radius:2px;flex:none;box-shadow:0 0 0 1px var(--line)}
+.fr-cls .t{overflow:hidden;text-overflow:ellipsis}
+.fr-cls.on{background:var(--sakura-bg);border-color:var(--sakura);color:var(--sakura-ink)}
+.fr-keys{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px;margin:0;font-size:12.5px;align-items:baseline}
+.fr-keys dt{white-space:nowrap}
+.fr-keys dd{margin:0;color:var(--muted)}
 
 @media (max-width:999px){  /* 窄屏：恢复整页滚，播放器放最上面，列表给个高度 */
   #page-labeling{height:auto}
@@ -672,4 +696,6 @@ kbd.k{display:inline-block;min-width:1.7em;padding:0 5px;border:1px solid var(--
   .en-cols{grid-template-columns:1fr}
   .en-cols>.en-side{order:-1}
   .en-cols>.en-gridpane{height:60vh}
+  .fr-cols>.fr-main{order:-1;height:75vh}
+  .fr-cols>.lb-listpane{height:50vh}
 }
