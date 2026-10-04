@@ -265,6 +265,28 @@ def test_run_training_end_to_end(tmp_path):
     assert "混淆矩阵" in md and "not_person" in md
 
 
+def test_confirmed_only_skips_unreviewed_imports(tmp_path):
+    # 10-04：datasets/sky 导进 form/ 的裁图没人看过、标签混了不少错的 → 训练默认只用标注页确认过的
+    root = tmp_path / "attrs"
+    log = []
+    for form, level in (("not_person", 20), ("lit", 120), ("unlit", 220)):
+        for i in range(8):
+            imwrite(root / "form" / form / f"{form}{i}.jpg", np.full((16, 16, 3), level + i, np.uint8))
+            log.append({"crop": f"{form}{i}.jpg", "from": "_unlabeled", "to": form})
+    imwrite(root / "form" / "lit" / "imp.jpg", np.full((16, 16, 3), 220, np.uint8))  # 导入的、其实是黑影
+    imwrite(root / "form" / "lit" / "undone.jpg", np.full((16, 16, 3), 120, np.uint8))
+    log += [{"crop": "undone.jpg", "from": "_unlabeled", "to": "lit"}, {"crop": "undone.jpg", "from": "lit", "to": "_unlabeled", "undo": True},
+            {"crop": "moved.jpg", "from": "_unlabeled", "to": "lit"}, {"crop": "moved.jpg", "from": "lit", "to": "unlit"}]
+    (root / "_labels.jsonl").write_text("\n".join(json.dumps(e) for e in log) + "\n", encoding="utf-8")
+    names = {p.name for p, _ in at.list_samples(root, confirmed_only=True)}
+    assert "imp.jpg" not in names and "undone.jpg" not in names and "lit0.jpg" in names and len(names) == 24
+    assert len(at.list_samples(root)) == 26
+    sp = at.split_crops(root, seed=0, confirmed_only=True)
+    assert "lit/imp.jpg" not in sp["train"] + sp["val"]
+    res = at.run_training(root, BucketEmbedder(), tmp_path / "cache", min_per_class=3, confirmed_only=True)
+    assert res["counts"]["lit"] == 8 and any("没确认的 2 张" in n for n in res["notes"])
+
+
 def test_default_out_and_final_path_guard(tmp_path, monkeypatch):
     import datetime as dt
     now = dt.datetime(2026, 10, 2, 9, 8, 7)

@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from ..vision.attrs import FORMS
+from ..vision.attrs_data import hand_labels
 from ..vision.gesture import recording_of
 from ..vision.gesture_label import BLIND_FILE, load_guess
 
@@ -136,9 +137,10 @@ class _Moves:
         places = self._places()
         if src not in places or dst not in places or self._find(name) != src:
             return 409, {"ok": False, "text": "已经不在原来的位置（可能被手动挪过），撤销不了"}, ""
-        code, text = self._move(name, src, dst)
-        if code != 200:
-            return code, {"ok": False, "text": text}, ""
+        if src != dst:  # src == dst 是外形页的原地确认：只记一条撤销，不挪
+            code, text = self._move(name, src, dst)
+            if code != 200:
+                return code, {"ok": False, "text": text}, ""
         if not self._logged({"t": time.time(), self._key: name, "from": src, "to": dst, "undo": True}, name, src, dst):
             return 500, {"ok": False, "text": "记录写不进去，已挪回原处"}, ""
         return 200, {"where": dst}, name
@@ -201,7 +203,9 @@ class GestureLabels(_Moves):
 
 class FormLabels(_Moves):
     """外形页：`root/_unlabeled/*.jpg` 待确认、`root/form/<类别>/*.jpg` 已确认、`root/_discard/*.jpg` 丢弃；
-    `_crops.jsonl` 每行记着裁图的来源（原图路径、框），`_unlabeled/claude.json` 是 Claude 的初分。"""
+    `_crops.jsonl` 每行记着裁图的来源（原图路径、框），`_unlabeled/claude.json` 是 Claude 的初分。
+    `confirmed`：人在标注页标过、现在还在那（`attrs_data.hand_labels`）；datasets/sky 导进 form/ 的没有记录 = 没确认，
+    在原类别上再标一次 = 原地确认（记一条 from == to，不挪文件；撤销同样只记一条）。"""
 
     _key = "crop"
 
@@ -249,20 +253,24 @@ class FormLabels(_Moves):
             conf = 0.0
         return {"label": g["label"], "confidence": conf, "reason": str(g.get("reason") or "")}
 
-    def _item(self, crop: str, where: str, rows: dict, guesses: dict) -> dict:
+    def _item(self, crop: str, where: str, rows: dict, guesses: dict, hand: dict) -> dict:
         r = rows.get(crop) or {}
-        return {"crop": crop, "where": where, "guess": self._guess(guesses.get(crop)), "image": r.get("image"), "box": r.get("box")}
+        return {"crop": crop, "where": where, "guess": self._guess(guesses.get(crop)), "image": r.get("image"), "box": r.get("box"),
+                "confirmed": where in FORMS and hand.get(crop) == where}
+
+    def _fresh(self, crop: str, where: str) -> dict:
+        return self._item(crop, where, self._rows(), self._guesses(), hand_labels(self.root))
 
     def state(self) -> dict:
         if not self.root.is_dir():
             return {"ok": False, "text": "还没有裁图：先跑 perception crops"}
-        rows, guesses = self._rows(), self._guesses()
+        rows, guesses, hand = self._rows(), self._guesses(), hand_labels(self.root)
         counts: dict[str, int] = {}
         items: list[dict] = []
         for d in self._places():
             names = self._names(d)
             counts[d] = len(names)
-            items.extend(self._item(n, d, rows, guesses) for n in names)
+            items.extend(self._item(n, d, rows, guesses, hand) for n in names)
         return {"ok": True, "forms": list(FORMS), "buttons": list(FORM_BUTTONS), "counts": counts, "items": items}
 
     def crop(self, name: str) -> bytes | None:
@@ -301,10 +309,20 @@ class FormLabels(_Moves):
         if dst is None:
             return 400, {"ok": False, "text": f"不认识的类别：{to}"}
         with _LOCK:
-            code, body = self._relabel(name, dst)
-        return (200, {"ok": True, **self._item(name, dst, self._rows(), self._guesses())}) if code == 200 else (code, body)
+            code, body = self._confirm(name, dst) if dst in FORMS and self._find(name) == dst else self._relabel(name, dst)
+        return (200, {"ok": True, **self._fresh(name, dst)}) if code == 200 else (code, body)
+
+    def _confirm(self, name: str, form: str) -> tuple[int, dict]:
+        """原地确认（持锁调用）：已经在这一类、还没人确认过 → 只记账。"""
+        if hand_labels(self.root).get(name) == form:
+            return 409, {"ok": False, "text": "已经确认过是这一类了"}
+        try:
+            self._log({"t": time.time(), self._key: name, "from": form, "to": form})
+        except OSError:
+            return 500, {"ok": False, "text": "记录写不进去，没确认上"}
+        return 200, {}
 
     def undo(self) -> tuple[int, dict]:
         with _LOCK:
             code, body, name = self._revert()
-        return (200, {"ok": True, **self._item(name, body["where"], self._rows(), self._guesses())}) if code == 200 else (code, body)
+        return (200, {"ok": True, **self._fresh(name, body["where"])}) if code == 200 else (code, body)

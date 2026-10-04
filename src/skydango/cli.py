@@ -1052,7 +1052,7 @@ def _perception_attrs_train(cfg: Config, args) -> None:
     except Exception as exc:
         raise SystemExit(f"主干 {a.backbone} 加载失败：{exc}") from None
     try:
-        res = at.run_training(data, embedder, data / "_features")
+        res = at.run_training(data, embedder, data / "_features", confirmed_only=not getattr(args, "all", False))
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
     ev = res["eval"]
@@ -3171,6 +3171,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--out", help="模型输出路径（默认 models/attrs-<日期>.npz；是 [attrs] model 时要加 --force）")
     q.add_argument("--force", action="store_true", help="允许 --out 直接覆盖 [attrs] model 正在用的模型")
     q.add_argument("--device", choices=["cuda", "dml", "cpu"], help="主干提特征用的后端（默认 [attrs] device，空 = 跟 [perception]）")
+    q.add_argument("--all", action="store_true", help="form/ 里的图全用（默认只用标注页确认过的；datasets/sky 导进来、没确认的标签不可靠）")
     q = psub.add_parser("attrs-eval", help="外形头只做整帧回放：数据集 images/val 上比较纯 YOLO 和加外形头复核，写报告")
     q.add_argument("dataset", help="YOLO 数据集目录（含 images/val 和 labels/val）")
     q.add_argument("--model", required=True, help="外形头 .npz")

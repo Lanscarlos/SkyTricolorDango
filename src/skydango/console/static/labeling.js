@@ -4,6 +4,7 @@
  * 动作页没有「同意 Claude」（10-03 去掉：Claude 初分认不出动作，直接人工标）；有旧的猜测照样显示、按钮上标出来。
  * 页顶「动作 / 外形 / 动作名」三个标签：外形页标人物裁图（api/form/*，Enter / 1~6 = 外形类别 / 0 不要 / Z 撤销，只在外形页开着时有效）；
  * 动作名页给动作图标起名（emotenames.js，这里只管切过去和刷新，开着时这里的按键都不生效）。
+ * 外形页的「导入未确认」筛选（10-04）：datasets/sky 直接导进 form/ 的裁图没人看过（后端 confirmed = false）；在原类别上按一下 = 原地确认。
  * 模型写的理由一律 textContent。 */
 (function () {
 "use strict";
@@ -37,15 +38,18 @@ function pct(c) { return Math.round((Number(c) || 0) * 100) + "%"; }
 /* ---- 列表 / 标注 / 撤销 / 读数据：动作页和外形页共用一份，差别都写在页面描述 P 里 ----
  * P = {s 状态对象, tab, itemsKey 数据里条目数组的字段, key 条目名字段, post 标注请求里名字的字段, api 接口前缀, ids 元素 id 前缀, noun,
  *      labels() 类别（按键顺序）, name(l), whereText(w), short(name), agreeable(guess), select(name), renderSide(), row(c) 列表行的内容,
- *      rowClass, onCounts(n), onError()} */
+ *      rowClass, onCounts(n), onError(), confirmable 条目有 confirmed（外形页：多「导入未确认」筛选、原类别上再标 = 原地确认）} */
 function guessKey(c) { return c.guess ? c.guess.label : "-"; }
 function matches(c, f) {
   if (f === "todo") return c.where === UNL;
   if (f === "discard") return c.where === DIS;
   if (f.startsWith("guess:")) return c.where === UNL && guessKey(c) === f.slice(6);
   if (f.startsWith("done:")) return c.where === f.slice(5);
+  if (f === "unconfirmed") return unconfirmed(c);
+  if (f.startsWith("unconfirmed:")) return unconfirmed(c) && c.where === f.slice(12);
   return false;
 }
+function unconfirmed(c) { return c.confirmed === false && c.where !== UNL && c.where !== DIS; }
 function rank(c) { return !c.guess ? 1 : c.guess.label === "unsure" ? 0 : 2; }  // 看不清最前，没猜的其次，其余按把握从低到高
 function pItems(P) { return (P.s.data && P.s.data[P.itemsKey]) || []; }
 function pBy(P, name) { return name == null ? null : pItems(P).find(c => c[P.key] === name) || null; }
@@ -65,6 +69,8 @@ function pValid(P, f) {
   if (f === "todo" || f === "discard") return true;
   if (f.startsWith("done:")) return labels.includes(f.slice(5));
   if (f.startsWith("guess:")) return [...labels, "unsure", "-"].includes(f.slice(6));
+  if (P.confirmable && f === "unconfirmed") return true;
+  if (P.confirmable && f.startsWith("unconfirmed:")) return labels.includes(f.slice(12));
   return false;
 }
 function pRenderFilter(P) {
@@ -79,6 +85,14 @@ function pRenderFilter(P) {
     if ((gn[g] || 0) || P.s.filter === v) g1.append(opt(v, `${g === "-" ? "还没猜" : "猜" + P.name(g)}（${gn[g] || 0}）`));
   }
   if (g1.children.length) sel.append(g1);
+  if (P.confirmable) {
+    const un = pItems(P).filter(unconfirmed), un1 = {};
+    for (const c of un) un1[c.where] = (un1[c.where] || 0) + 1;
+    const g3 = el("optgroup"); g3.label = "导入未确认（没人看过）";
+    g3.append(opt("unconfirmed", `全部（${un.length}）`));
+    for (const l of P.labels()) if (un1[l] || P.s.filter === "unconfirmed:" + l) g3.append(opt("unconfirmed:" + l, `${P.name(l)}（${un1[l] || 0}）`));
+    sel.append(g3);
+  }
   const g2 = el("optgroup"); g2.label = "已确认";
   for (const l of P.labels()) g2.append(opt("done:" + l, `${P.name(l)}（${n[l] || 0}）`));
   sel.append(g2);
@@ -96,6 +110,7 @@ function pRenderCounts(P) {
     box.append(b);
   };
   item("todo", "待确认", UNL);
+  if (P.confirmable) { n.unconfirmed = pItems(P).filter(unconfirmed).length; item("unconfirmed", "导入未确认", "unconfirmed"); }
   for (const l of P.labels()) item("done:" + l, P.name(l), l);
   item("discard", "丢弃", DIS);
   P.onCounts(n);
@@ -109,7 +124,8 @@ function pRenderList(P) {
   const box = $(P.ids + "-list");
   box.textContent = "";
   if (!P.s.list.length) {
-    box.append(el("p", "none lb-empty", P.s.filter === "todo" ? (pItems(P).length ? "都标完了。" : `还没有${P.noun}。`) : `这里没有${P.noun}。`));
+    box.append(el("p", "none lb-empty", P.s.filter === "todo" ? (pItems(P).length ? "都标完了。" : `还没有${P.noun}。`)
+      : P.s.filter.startsWith("unconfirmed") ? "导入的都确认过了。" : `这里没有${P.noun}。`));
     return;
   }
   const frag = document.createDocumentFragment();
@@ -157,7 +173,8 @@ async function pLabel(P, to) {
   const c = pBy(P, P.s.cur);
   if (!c || P.s.busy) return;
   const old = P.s.list.slice(), idx = old.findIndex(x => x[P.key] === c[P.key]);
-  if (c.where === (to === "discard" ? DIS : to)) { pAdvance(P, old, idx); return; }  // 已经是这一类：当作确认过，跳下一条
+  // 已经是这一类：当作确认过，跳下一条；外形页导入未确认的要发给后端记一笔原地确认
+  if (c.where === (to === "discard" ? DIS : to) && !(P.confirmable && unconfirmed(c))) { pAdvance(P, old, idx); return; }
   P.s.busy = true; P.renderSide();
   let r;
   try { r = await post(P.api + "/label", {[P.post]: c[P.key], to}); }
@@ -185,7 +202,7 @@ async function pUndo(P) {
   if (!r.data.ok) { toast(r.data.text || "没撤销成", r.status === 409 ? "warn" : "bad"); P.renderSide(); return; }
   pApply(P, r.data);
   pRerender(P); P.select(r.data[P.key]);
-  toast(`撤销了：${P.short(r.data[P.key])} 回到「${P.whereText(r.data.where)}」`, "ok");
+  toast(`撤销了：${P.short(r.data[P.key])} 回到「${P.itemWhere ? P.itemWhere(r.data) : P.whereText(r.data.where)}」`, "ok");
 }
 async function pLoad(P) {
   const s = P.s;
@@ -351,6 +368,7 @@ function renderSide() {
 
 function fmName(l) { return l === "discard" || l === DIS ? "不要" : l === UNL ? "待确认" : l === "unsure" ? "看不清" : FORM_NAMES[l] || l; }
 function fmWhereText(w) { return w === UNL ? "待确认" : w === DIS ? "丢弃了" : `已确认：${fmName(w)}`; }
+function fmRowWhere(c) { return unconfirmed(c) ? `导入未确认：${fmName(c.where)}` : fmWhereText(c.where); }
 
 function cropUrl(name) { return `api/form/crop?name=${encodeURIComponent(name)}`; }
 function fmShowImages() {
@@ -387,7 +405,7 @@ function fmRenderSide() {
   const meta = $("fm-meta"); meta.textContent = "";
   if (c) {
     const row = (k, v) => { meta.append(el("dt", "", k)); const dd = el("dd"); dd.append(v); meta.append(dd); };
-    row("现在", el("span", "tag " + (c.where === UNL ? "" : c.where === DIS ? "bad" : "ok"), fmWhereText(c.where)));
+    row("现在", unconfirmed(c) ? el("span", "tag warn", fmRowWhere(c)) : el("span", "tag " + (c.where === UNL ? "" : c.where === DIS ? "bad" : "ok"), fmWhereText(c.where)));
     row("裁图", el("code", "", c.crop));
     if (c.image) row("原图", el("code", "", c.image));
   }
@@ -399,7 +417,7 @@ function fmRenderSide() {
   const grid = el("div", "lb-grid");
   fmForms().forEach((l, k) => {
     const b = kbdBtn("btn lb-act", fmName(l), String(k + 1), () => fmLabel(l));
-    if (c && c.where === l) { b.classList.add("on"); b.title = "现在就在这一类"; }
+    if (c && c.where === l) { b.classList.add("on"); b.title = unconfirmed(c) ? "导入时就在这一类：按一下 = 确认" : "现在就在这一类"; }
     if (g && g.label === l) b.classList.add("guess");
     b.disabled = off; grid.append(b);
   });
@@ -424,13 +442,13 @@ const G = {
 };
 const F = {
   s: FM, tab: "form", itemsKey: "items", key: "crop", post: "name", api: "api/form", ids: "fm", noun: "裁图",
-  rowClass: "lb-item fm-item",
+  rowClass: "lb-item fm-item", confirmable: true, itemWhere: c => fmRowWhere(c),
   labels: () => (FM.data && FM.data.forms) || [], name: fmName, whereText: fmWhereText, short: n => n,
   agreeable: g => fmForms().includes(g.label),
   select: name => fmSelect(name), renderSide: () => fmRenderSide(),
   row: c => {
     const im = el("img"); im.loading = "lazy"; im.decoding = "async"; im.alt = ""; im.src = cropUrl(c.crop);
-    return [im, el("span", "n", c.crop), guessTag(F, c), el("span", "r", fmWhereText(c.where))];
+    return [im, el("span", "n", c.crop), guessTag(F, c), el("span", "r", fmRowWhere(c))];
   },
   onCounts: n => { const t = document.querySelector('#lb-tabs [data-tab="form"]'); if (t) t.textContent = n[UNL] ? `外形（${n[UNL]}）` : "外形"; },
 };

@@ -39,8 +39,33 @@ DETECT_CLASSES = ("player", "player_unlit")
 UNLABELED_IOU = 0.4  # 检测框和任何人物标注的 IoU 低于这个才算"没标过"
 DEDUP_IOU = 0.5  # 同一张图里重叠这么多的只留分高的；写回时同帧已有人物框重叠这么多就不写
 
+LABEL_LOG = "_labels.jsonl"  # 标注页的记账（console/labeling.py 写）
+
 log = logging.getLogger(__name__)
 _FRAME = re.compile(r"^(.*)_\d+_[\d.]+s$")
+
+
+def hand_labels(root: Path) -> dict[str, str]:
+    """标注页记账里每张裁图最后一次有效操作的去处（撤销抵消它前面最近一条没被抵消的操作，同 labeling 的撤销）。
+    裁图现在就在这个位置 = 人确认过（含原地确认 from == to）；datasets/sky 导进 form/ 的裁图没有记录 = 没人看过。"""
+    try:
+        lines = (Path(root) / LABEL_LOG).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    stack: list[dict] = []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(e, dict):
+            continue
+        if e.get("undo"):
+            if stack:
+                stack.pop()
+        elif isinstance(e.get("crop"), str) and isinstance(e.get("to"), str):
+            stack.append(e)
+    return {e["crop"]: e["to"] for e in stack}
 
 
 def crop_name(frame_stem: str, box: Rect) -> str:

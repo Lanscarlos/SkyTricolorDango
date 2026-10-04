@@ -20,6 +20,7 @@ from ..config import AttrsConfig
 from ..imageio import imread
 from . import attrs
 from .attrs import FORMS, PERSON_FORMS
+from .attrs_data import hand_labels
 from .augment import IMAGE_EXTS
 from .bubbles import Rect
 from .gesture_train import macro_f1
@@ -37,13 +38,16 @@ PERSON_DETS = ("player", "player_unlit")
 
 # ---------- 数据 ----------
 
-def list_samples(root: Path) -> list[tuple[Path, str]]:
-    """form/<外形>/ 里的所有图 → [(路径, 外形)]。"""
+def list_samples(root: Path, confirmed_only: bool = False) -> list[tuple[Path, str]]:
+    """form/<外形>/ 里的所有图 → [(路径, 外形)]。confirmed_only：只要标注页确认过、现在还在那一类的
+    （`attrs_data.hand_labels`；datasets/sky 直接导进 form/ 的没人看过，标签混了不少错的，10-04）。"""
+    hand = hand_labels(root) if confirmed_only else {}
     out: list[tuple[Path, str]] = []
     for form in FORMS:
         d = Path(root) / "form" / form
         if d.is_dir():
-            out += [(p, form) for p in sorted(d.iterdir()) if p.suffix.lower() in IMAGE_EXTS]
+            out += [(p, form) for p in sorted(d.iterdir())
+                    if p.suffix.lower() in IMAGE_EXTS and (not confirmed_only or hand.get(p.name) == form)]
     return out
 
 
@@ -55,7 +59,7 @@ def crop_rows(root: Path) -> dict[str, dict]:
     return {r["crop"]: r for r in rows}
 
 
-def split_crops(root: Path, seed: int = 0, val_ratio: float = 0.2) -> dict:
+def split_crops(root: Path, seed: int = 0, val_ratio: float = 0.2, confirmed_only: bool = False) -> dict:
     """切训练 / 验证集（只看 form/ 里的图，名字写成 "<外形>/<文件名>"）：
     来自数据集且有 split 的按数据集原来的切分；其余按 group 整组随机分到约 val_ratio（没有 _crops.jsonl 行的图用文件名当 group）。
     结果写 root/_split.json，同 seed 同数据结果相同。"""
@@ -67,7 +71,7 @@ def split_crops(root: Path, seed: int = 0, val_ratio: float = 0.2) -> dict:
     for r in rows.values():
         if r.get("source") == "dataset" and r.get("split") in ("train", "val") and r.get("group"):
             ds_splits.setdefault(str(r["group"]), set()).add(r["split"])
-    for p, form in list_samples(root):
+    for p, form in list_samples(root, confirmed_only):
         name = f"{form}/{p.name}"
         r = rows.get(p.name)
         if r and r.get("source") == "dataset" and r.get("split") in ("train", "val"):
@@ -216,14 +220,18 @@ def evaluate(truth: list[int], pred: list[int], labels: list[str]) -> dict:
             "n": len(truth)}
 
 
-def run_training(root: Path, embedder, cache: Path, min_per_class: int = MIN_PER_CLASS, seed: int = 0) -> dict:
+def run_training(root: Path, embedder, cache: Path, min_per_class: int = MIN_PER_CLASS, seed: int = 0,
+                 confirmed_only: bool = False) -> dict:
     """切分 → 合并类别 → 特征（训练集加左右镜像）→ 挑 l2 训练 → 验证集评估。
     返回 {head（给 attrs.save_model）, labels, split, counts, notes, l2, eval, on_train}；类别不够抛 ValueError。"""
     root = Path(root)
-    samples = list_samples(root)
+    samples = list_samples(root, confirmed_only)
     counts = {f: sum(1 for _, ff in samples if ff == f) for f in FORMS}
     mapping, notes = merge_labels(counts, min_per_class)
-    sp = split_crops(root, seed)
+    if confirmed_only:
+        skipped = len(list_samples(root)) - len(samples)
+        notes.append(f"只用标注页确认过的 {len(samples)} 张，没确认的 {skipped} 张（多是 datasets/sky 导入的）没用；要全用加 --all")
+    sp = split_crops(root, seed, confirmed_only=confirmed_only)
     labels = [f for f in FORMS if f in set(mapping.values())]
     index = {lb: i for i, lb in enumerate(labels)}
     by_name = {f"{form}/{p.name}": (p, mapping[form]) for p, form in samples}

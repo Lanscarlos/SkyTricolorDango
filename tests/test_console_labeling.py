@@ -308,6 +308,52 @@ def test_form_log_failure_moves_back(tmp_path, monkeypatch):
     assert (tmp_path / "_unlabeled" / CROP).is_file() and not (tmp_path / "form" / "lit" / CROP).exists()
 
 
+def test_form_confirm_in_place_and_confirmed_flag(tmp_path):
+    # 10-04：datasets/sky 导进来的裁图直接在 form/<类别>/ 里、没人看过（标签混了不少错的）。
+    # 标注页"导入未确认"筛选靠 confirmed 区分；在原类别上再标一次 = 原地确认（记一条 from == to），不挪文件
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/lit", "imp.jpg")
+    make_crop(tmp_path)
+    f = FormLabels(tmp_path)
+    items = {i["crop"]: i for i in f.state()["items"]}
+    assert items["imp.jpg"]["confirmed"] is False and items[CROP]["confirmed"] is False
+    code, item = f.label("imp.jpg", "lit")
+    assert code == 200 and item["where"] == "lit" and item["confirmed"] is True
+    assert (tmp_path / "form" / "lit" / "imp.jpg").is_file()
+    e = log_lines(tmp_path)[-1]
+    assert (e["crop"], e["from"], e["to"]) == ("imp.jpg", "lit", "lit")
+    assert f.label("imp.jpg", "lit")[0] == 409  # 已经确认过了
+    assert f.label(CROP, "unlit")[1]["confirmed"] is True  # 从待确认挪过去的也算确认
+    items = {i["crop"]: i for i in f.state()["items"]}
+    assert items["imp.jpg"]["confirmed"] and items[CROP]["confirmed"]
+    assert f.undo()[1]["where"] == "_unlabeled"
+    code, body = f.undo()  # 撤销原地确认：不挪文件，回到没确认
+    assert code == 200 and body["where"] == "lit" and body["confirmed"] is False
+    assert (tmp_path / "form" / "lit" / "imp.jpg").is_file()
+    assert f.label("imp.jpg", "lit")[0] == 200
+    assert f.label("imp.jpg", "unlit")[1]["confirmed"] is True  # 确认后又改类别
+    code, body = f.undo()  # 撤销改类别：回到原地确认过的 lit
+    assert body["where"] == "lit" and body["confirmed"] is True
+
+
+def test_form_discard_in_place_is_still_conflict(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "_discard")
+    assert FormLabels(tmp_path).label(CROP, "discard")[0] == 409
+
+
+def test_form_confirm_in_place_log_failure(tmp_path, monkeypatch):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/lit")
+    f = FormLabels(tmp_path)
+    monkeypatch.setattr(f, "_log", lambda e: (_ for _ in ()).throw(OSError("disk")))
+    assert f.label(CROP, "lit")[0] == 500
+    assert (tmp_path / "form" / "lit" / CROP).is_file()
+
+
 def test_form_api_routes(tmp_path, upstream, monkeypatch):  # noqa: F811
     import urllib.request
 
