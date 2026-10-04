@@ -328,11 +328,13 @@ def test_gt_fixes_apply_hand_labels(tmp_path):
         {"crop": "c.jpg", "source": "dataset", "split": "val", "image": "/d/images/val/f1.jpg", "box": [100, 10, 20, 40], "known": False},
         {"crop": "d.jpg", "source": "dataset", "split": "val", "image": "/d/images/val/f1.jpg", "box": [140, 10, 20, 40], "known": True},
         {"crop": "e.jpg", "source": "images", "image": "/x.jpg", "box": [0, 0, 5, 5]},
+        {"crop": "f.jpg", "source": "dataset", "split": "val", "image": "/d/images/val/f1.jpg", "box": [140, 10, 20, 40], "known": True},
     ]
     root.mkdir()
     (root / "_crops.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
     log = [{"crop": "a.jpg", "from": "lit", "to": "unlit"}, {"crop": "b.jpg", "from": "lit", "to": "not_person"},
-           {"crop": "c.jpg", "from": "_unlabeled", "to": "lit"}, {"crop": "e.jpg", "from": "_unlabeled", "to": "lit"}]
+           {"crop": "c.jpg", "from": "_unlabeled", "to": "lit"}, {"crop": "e.jpg", "from": "_unlabeled", "to": "lit"},
+           {"crop": "f.jpg", "from": "lit", "to": "_discard"}]  # 「不要」= 看不清，不等于不是人：不删框
     (root / "_labels.jsonl").write_text("\n".join(json.dumps(e) for e in log), encoding="utf-8")
     fixes = at.gt_fixes(root)
     assert set(fixes) == {("val", "f1")} and len(fixes[("val", "f1")]) == 3  # d 没人看过、e 不是数据集来的

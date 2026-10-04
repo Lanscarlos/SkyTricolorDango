@@ -88,7 +88,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/people.py` | `Person`（track_id、好友 / 陌生人 / 黑影、框、左 / 前 / 右、近 / 中 / 远）：感知层的 `people()` 给身体、技能、大脑用 |
 | `src/skydango/vision/detect.py` `track.py` `perception.py` `weaklabel.py` | YOLO 感知层（开发中，默认关）：检测器（ONNX / ultralytics）、追踪（IoU + 低分框续命 + 速度预测 + 画面平移 `estimate_shift`）、`PerceptionWatcher`（接口同 env，多认陌生人；画面被挡时暂停计时；续命、失踪好友接回、运动方向）、弱标注，见下 |
 | `src/skydango/vision/attrs.py` | 感知层第二层运行时（见「感知层第二层」）：`AttrModel`（冻住的 DINOv2 + `.npz` 线性头）、`PersonAttrs`（按轨迹裁图、投票、放行 / 撤下、点没点火）、`load_model`、`crop` |
-| `src/skydango/vision/attrs_data.py` | 第二层的数据：`perception crops`（数据集 / 难例 / 图片目录 → `datasets/attrs/`）、`--writeback`（确认是人的框写回 `datasets/sky`）、`perception attrs-label`（Claude 初分，复用 `assist.Reviewer`） |
+| `src/skydango/vision/attrs_data.py` | 第二层的数据：`perception crops`（数据集 / 难例 / 图片目录 → `datasets/attrs/`）、`--writeback`（标注页确认过的写回 `datasets/sky`：补漏标的人、改点没点火、删不是人，增强图一起改）、`perception attrs-label`（Claude 初分，复用 `assist.Reviewer`） |
 | `src/skydango/vision/attrs_train.py` | 第二层的训练和评估：`perception attrs-train`（提特征 + 线性头 → `models/attrs-<日期>.npz` + 报告）、`attrs-eval`、`bench --attrs` |
 | `src/skydango/vision/trackeval.py` | 追踪和接回的离线评估（`perception track-eval`）：基线（升级开关全关）vs 当前配置，断开原因、假走开、确认冤枉、接回对错、运动方向 |
 | `src/skydango/vision/hardcases.py` `compare.py` `augment.py` | 感知层一期工具：运行时收集难例、离线对比 YOLO 和整图 OCR（`perception compare`）、训练集增强（`perception augment`） |
@@ -652,7 +652,7 @@ python -m skydango perception compare <录像目录> [--model 模型] [--far-cro
 python -m skydango perception halo-eval <录像目录> [--model 模型]  # 呼唤光圈标定：每个人头顶的亮度曲线、建议的 [call] halo_rise → tmp/halo-eval/<时间>/report.md + curves.png
 python -m skydango perception track-eval <录像目录> [--model 模型] [--fps 6.5]  # 追踪升级前后对比：断开和原因、假走开、确认冤枉、接回对错、运动方向 → tmp/track-eval/<时间>/report.md
 python -m skydango perception crops <来源...> [--model 模型] [--conf 0.2] [--out datasets/attrs]  # 第二层的数据：数据集 / 难例目录（支持 runs/*/hard）/ 图片目录 → 人物裁图，已标注的按类别放，对不上的进 _unlabeled/
-python -m skydango perception crops datasets/sky --writeback  # 把标注页确认是人的框写回 datasets/sky 的 labels/（先备份到 <数据集>/_backup/）
+python -m skydango perception crops datasets/sky --writeback  # 标注页确认过的写回 datasets/sky 的 labels/：补漏标的人、改点没点火、删确认不是人的框（「不要」和没确认的不动），增强图的标注副本一起改；先备份到 <数据集>/_backup/
 python -m skydango perception attrs-label [datasets/attrs] [--recheck]  # Claude 初分 _unlabeled 裁图（花额度），再去管理面板「标注」页「外形」确认
 python -m skydango perception attrs-train [datasets/attrs] [--out 路径] [--force] [--device cuda|dml|cpu] [--all] [--no-mask]  # 训练外形头 → models/attrs-<日期>.npz + 报告（是 [attrs] model 时要加 --force）；默认只用标注页确认过的，--all 连 datasets/sky 导进来没确认的也用；--no-mask 按旧裁法（不遮挡框外）
 python -m skydango perception attrs-eval datasets/sky --model models/attrs-<日期>.npz [--attrs-data datasets/attrs]  # 外形头在 YOLO 数据集验证集上的评估（答案按标注页确认过的修正）

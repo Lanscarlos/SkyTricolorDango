@@ -115,14 +115,14 @@ def test_writeback(tmp_path):
     new = next(r for r in rows if r["source"] == "dataset" and not r["known"])
     hard_row = next(r for r in rows if r["source"] == "images")
     # 还在 _unlabeled：不写，也不备份
-    assert ad.writeback(root, out, datetime(2026, 10, 2, 11, 0, 0)) == {"frames": 0, "boxes": 0}
+    assert ad.writeback(root, out, datetime(2026, 10, 2, 11, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
     assert not (root / "_backup").exists()
     # 数据集来源的挪进 form/morph 才算确认；难例挪进去也不写
     _move(out, new, "morph")
     _move(out, hard_row, "shared")
     label = root / "labels/train/rec1_0001_1.00s.txt"
     before = label.read_text(encoding="utf-8")
-    assert ad.writeback(root, out, datetime(2026, 10, 2, 12, 0, 0)) == {"frames": 1, "boxes": 1}
+    assert ad.writeback(root, out, datetime(2026, 10, 2, 12, 0, 0)) == {"frames": 1, "boxes": 1, "relabeled": 0, "removed": 0}
     backup = root / "_backup" / "labels-20261002-120000" / "train" / "rec1_0001_1.00s.txt"
     assert backup.read_text(encoding="utf-8") == before
     lines = label.read_text(encoding="utf-8").splitlines()
@@ -130,7 +130,7 @@ def test_writeback(tmp_path):
     cx, cy, w, h = map(float, lines[-1].split()[1:])
     assert (round(cx * 200), round(cy * 100), round(w * 200), round(h * 100)) == (160, 25, 20, 40)
     # 再写一次：同帧已有 IoU ≥ 0.5 的框，不重复
-    assert ad.writeback(root, out, datetime(2026, 10, 2, 12, 5, 0)) == {"frames": 0, "boxes": 0}
+    assert ad.writeback(root, out, datetime(2026, 10, 2, 12, 5, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
     assert len(label.read_text(encoding="utf-8").splitlines()) == 4
 
 
@@ -143,9 +143,75 @@ def test_writeback_class_map(tmp_path):
     assert len(rows) == 3
     for r, form in zip(rows, ("unlit", "spirit", "lit")):
         _move(out, r, form)
-    assert ad.writeback(root, out, datetime(2026, 10, 2, 1, 2, 3)) == {"frames": 1, "boxes": 3}
+    assert ad.writeback(root, out, datetime(2026, 10, 2, 1, 2, 3)) == {"frames": 1, "boxes": 3, "relabeled": 0, "removed": 0}
     got = [ln.split()[0] for ln in (root / "labels/val/0002_2.00s.txt").read_text(encoding="utf-8").splitlines()]
     assert got == ["4", "4", "9", "0"]
+
+
+def _confirm(out, row, to, src=None):
+    """照标注页：从 src（默认 form/<原外形>）挪到 to（同一类 = 原地确认），记进 _labels.jsonl。"""
+    src = src or {"player": "lit", "player_unlit": "unlit", "spirit": "spirit"}[row["yolo_cls"]]
+    sdir = out / "form" / src
+    ddir = out / ("_discard" if to == "_discard" else f"form/{to}")
+    if src != to:
+        ddir.mkdir(parents=True, exist_ok=True)
+        (sdir / row["crop"]).rename(ddir / row["crop"])
+    with (out / "_labels.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"crop": row["crop"], "from": src, "to": to}) + "\n")
+
+
+def test_writeback_relabels_and_removes_confirmed_known_boxes(tmp_path):
+    # 10-04：datasets/sky 的人物标注点没点火标反、把椅子标成人的都有；标注页确认过的改回去，增强图的标注副本一起改
+    root = _dataset(tmp_path)
+    out = tmp_path / "attrs"
+    (root / "labels/train/rec1_0001_1.00s_dark.txt").write_text(
+        "0 0.25 0.5 0.1 0.4\n3 0.5 0.5 0.1 0.4\n9 0.75 0.5 0.1 0.4\n", encoding="utf-8")
+    (root / "labels/train/rec1_0001_1.00s_blur.txt").write_text(
+        "0 0.25 0.5 0.1 0.4\n3 0.5 0.5 0.1 0.4\n9 0.75 0.5 0.1 0.4\n", encoding="utf-8")
+    ad.crops_from_dataset(root, FakeDetector({}), out, conf=0.2)
+    known = {r["yolo_cls"]: r for r in _rows(out) if r["known"] and r["split"] == "train"}
+    val = next(r for r in _rows(out) if r["known"] and r["split"] == "val")
+    assert set(known) == {"player", "spirit"}
+    # 没人确认的不动
+    assert ad.writeback(root, out, datetime(2026, 10, 4, 1, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
+    _confirm(out, known["player"], "unlit")  # lit → 黑影
+    _confirm(out, known["spirit"], "not_person")  # 先祖 → 不是人：删掉
+    _confirm(out, val, "unlit")  # 原地确认、类别没变：不动
+    res = ad.writeback(root, out, datetime(2026, 10, 4, 2, 0, 0))
+    assert res == {"frames": 1, "boxes": 0, "relabeled": 1, "removed": 1}
+    for stem in ("rec1_0001_1.00s", "rec1_0001_1.00s_dark", "rec1_0001_1.00s_blur"):
+        got = (root / f"labels/train/{stem}.txt").read_text(encoding="utf-8").splitlines()
+        assert [ln.split()[0] for ln in got] == ["4", "3"], stem  # self 行不碰
+    assert (root / "labels/val/0002_2.00s.txt").read_text(encoding="utf-8") == "4 0.5 0.5 0.1 0.4\n"
+    assert (root / "_backup" / "labels-20261004-020000" / "train" / "rec1_0001_1.00s_dark.txt").is_file()
+    # 再写一次：已经改过了，什么都不做
+    assert ad.writeback(root, out, datetime(2026, 10, 4, 3, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
+
+
+def test_writeback_discard_and_undone_keep_box(tmp_path):
+    # 「不要」= 这张图看不清，不等于不是人：框留着；撤销掉的确认不算
+    root = _dataset(tmp_path)
+    out = tmp_path / "attrs"
+    ad.crops_from_dataset(root, FakeDetector({}), out, conf=0.2)
+    known = {r["yolo_cls"]: r for r in _rows(out) if r["known"] and r["split"] == "train"}
+    _confirm(out, known["player"], "_discard")
+    _confirm(out, known["spirit"], "unlit")
+    with (out / "_labels.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"crop": known["spirit"]["crop"], "from": "unlit", "to": "spirit", "undo": True}) + "\n")
+    (out / "form/unlit" / known["spirit"]["crop"]).rename(out / "form/spirit" / known["spirit"]["crop"])
+    assert ad.writeback(root, out, datetime(2026, 10, 4, 4, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
+
+
+def test_writeback_adds_to_augmented_copies(tmp_path):
+    # 补漏标的人：增强图（同一帧的模糊 / 压暗副本）的标注一起补
+    root = _dataset(tmp_path)
+    out = tmp_path / "attrs"
+    ad.crops_from_dataset(root, FakeDetector({1: [_det("player", 150, 5, 20, 40)]}), out, conf=0.2)
+    _move(out, next(r for r in _rows(out) if not r["known"]), "lit")
+    res = ad.writeback(root, out, datetime(2026, 10, 4, 5, 0, 0))
+    assert res["boxes"] == 1 and res["frames"] == 1
+    blur = (root / "labels/train/rec1_0001_1.00s_blur.txt").read_text(encoding="utf-8").splitlines()
+    assert len(blur) == 2 and blur[-1].split()[0] == "0"
 
 
 def test_rows_absolute_paths_and_other_dataset_not_written(tmp_path):
@@ -161,12 +227,12 @@ def test_rows_absolute_paths_and_other_dataset_not_written(tmp_path):
     other = tmp_path / "other"
     (other / "labels" / "train").mkdir(parents=True)
     (other / "images" / "train").mkdir(parents=True)
-    assert ad.writeback(other, out, datetime(2026, 10, 2, 9, 0, 0)) == {"frames": 0, "boxes": 0}
+    assert ad.writeback(other, out, datetime(2026, 10, 2, 9, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
     assert not (other / "_backup").exists() and not list((other / "labels" / "train").iterdir())
     # 旧记录（没有 dataset）跳过
     (out / "_crops.jsonl").write_text(
         "".join(json.dumps({k: v for k, v in r.items() if k != "dataset"}) + "\n" for r in rows), encoding="utf-8")
-    assert ad.writeback(root, out, datetime(2026, 10, 2, 9, 0, 0)) == {"frames": 0, "boxes": 0}
+    assert ad.writeback(root, out, datetime(2026, 10, 2, 9, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
 
 
 # ---- Claude 初分 ----

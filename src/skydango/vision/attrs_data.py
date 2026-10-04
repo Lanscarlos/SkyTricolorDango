@@ -192,58 +192,108 @@ def crops_from_images(folder: Path, detector, out: Path, conf: float, size: int 
     return counts
 
 
+def _line(cls: int, box: Rect, w: int, h: int) -> str:
+    return f"{cls} {(box.x + box.w / 2) / w:.6f} {(box.y + box.h / 2) / h:.6f} {box.w / w:.6f} {box.h / h:.6f}"
+
+
+def _edit_label(path: Path, w: int, h: int, fixes: list[tuple[Rect, int | None]], adds: list[tuple[int, Rect]]) -> tuple[int, int, int]:
+    """改一个标注文件：fixes = 已有人物框（0 / 4 / 9）里和它 IoU ≥ DEDUP_IOU 最高的那行改类别（None 删掉）；
+    adds = 和已有人物框都不重叠（< DEDUP_IOU）才追加。别的行原样不动。返回 (改类别几行, 删了几行, 加了几行)。"""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    parsed = []  # [(原行, 类别, 框 | None)]
+    for ln in lines:
+        parts = ln.split()
+        box = None
+        cls = -1
+        if len(parts) >= 5:
+            cls = int(float(parts[0]))
+            cx, cy, bw, bh = (float(v) for v in parts[1:5])
+            box = Rect(round((cx - bw / 2) * w), round((cy - bh / 2) * h), round(bw * w), round(bh * h))
+        parsed.append([ln, cls, box])
+    relabeled = removed = added = 0
+    for fbox, cid in fixes:
+        cands = [i for i, (_, c, b) in enumerate(parsed) if b is not None and c in KNOWN]
+        hit = max(cands, key=lambda i: iou(fbox, parsed[i][2]), default=None)
+        if hit is None or iou(fbox, parsed[hit][2]) < DEDUP_IOU:
+            continue
+        if cid is None:
+            parsed.pop(hit)
+            removed += 1
+        elif parsed[hit][1] != cid:
+            parts = parsed[hit][0].split()
+            parsed[hit] = [" ".join([str(cid), *parts[1:]]), cid, parsed[hit][2]]
+            relabeled += 1
+    existing = [b for _, c, b in parsed if b is not None and c in PERSON_IDS]
+    for cls, box in adds:
+        if any(iou(box, b) >= DEDUP_IOU for b in existing):
+            continue
+        existing.append(box)
+        parsed.append([_line(cls, box, w, h), cls, box])
+        added += 1
+    if relabeled or removed or added:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(ln + "\n" for ln, _, _ in parsed), encoding="utf-8")
+    return relabeled, removed, added
+
+
 def writeback(dataset: Path, out: Path, now: datetime) -> dict:
-    """把标注页确认过的人物写回 labels/：来自数据集（source == dataset）、本来没标（known == false）、
-    现在躺在 out/form/<人形类>/ 里的裁图。写之前整个复制 labels/ 到 _backup/labels-<时间>。"""
+    """把标注页确认过的结果写回 labels/（来自这个数据集的裁图）：
+    - 本来没标（known == false）、现在躺在 out/form/<人形类>/ 里 → 补一个框；
+    - 本来标了（known == true）、标注页确认过（`hand_labels`，现在还在那）且类别变了 → 改那一行的类别，确认是不是人 → 删掉那一行；
+      没人确认的（导入的）、「不要」（看不清，不等于不是人）、撤销掉的都不动。
+    增强图（<帧>_blur / _dark，标注是原图的副本）一起改。写之前整个复制 labels/ 到 _backup/labels-<时间>。
+    返回 {frames 改了几帧（只数原图）, boxes 加了几个框, relabeled 改了几个类别, removed 删了几个框}。"""
     dataset, out = Path(dataset), Path(out)
-    todo: dict[tuple[str, str], list[tuple[int, Rect, list[int] | None]]] = {}
+    hand = hand_labels(out)
+    todo: dict[tuple[str, str], dict] = {}
     here = dataset.resolve().as_posix()
     old_rows = 0
     for r in _read_rows(out):
-        if r.get("source") != "dataset" or r.get("known"):
+        if r.get("source") != "dataset":
             continue
         if "dataset" not in r:
             old_rows += 1
             continue
         if Path(r["dataset"]).resolve().as_posix() != here:  # 别的数据集的裁图，共用同一个 out
             continue
-        form = next((f for f in attrs.PERSON_FORMS if (out / "form" / f / r["crop"]).is_file()), None)
-        if form is None:
-            continue
         x, y, bw, bh = r["box"]
-        todo.setdefault((r["split"], Path(r["image"]).stem), []).append((WRITEBACK_ID[form], Rect(x, y, bw, bh), r.get("size")))
+        key = (r["split"], Path(r["image"]).stem)
+        if not r.get("known"):
+            form = next((f for f in attrs.PERSON_FORMS if (out / "form" / f / r["crop"]).is_file()), None)
+            if form is not None:
+                todo.setdefault(key, {"fixes": [], "adds": [], "size": r.get("size")})["adds"].append((WRITEBACK_ID[form], Rect(x, y, bw, bh)))
+            continue
+        to = hand.get(r["crop"])
+        if to not in attrs.FORMS or not (out / "form" / to / r["crop"]).is_file():
+            continue
+        cid = WRITEBACK_ID.get(to)  # not_person → None：删掉
+        if cid is not None and ID_NAMES.get(cid) == r.get("yolo_cls"):
+            continue
+        todo.setdefault(key, {"fixes": [], "adds": [], "size": r.get("size")})["fixes"].append((Rect(x, y, bw, bh), cid))
     if old_rows:
         log.warning("%d 条旧的 _crops.jsonl 记录没有 dataset 字段，写回时跳过", old_rows)
+    res = {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
     if not todo:
-        return {"frames": 0, "boxes": 0}
+        return res
     labels = dataset / "labels"
     backup = dataset / "_backup" / f"labels-{now.strftime('%Y%m%d-%H%M%S')}"
     shutil.copytree(labels, backup)
-    frames = boxes = 0
-    for (split, stem), items in sorted(todo.items()):
-        path = labels / split / f"{stem}.txt"
-        size = items[0][2]
-        if size is None:
+    for (split, stem), job in sorted(todo.items()):
+        if job["size"] is None:
             h, w = imread(dataset / "images" / split / f"{stem}.jpg").shape[:2]
         else:
-            w, h = size
-        existing = [b for c, b in _label_boxes(path, w, h) if c in PERSON_IDS]
-        lines = []
-        for cls, box, _ in items:
-            if any(iou(box, b) >= DEDUP_IOU for b in existing):
-                continue
-            existing.append(box)
-            lines.append(f"{cls} {(box.x + box.w / 2) / w:.6f} {(box.y + box.h / 2) / h:.6f} {box.w / w:.6f} {box.h / h:.6f}")
-        if not lines:
-            continue
-        old = path.read_text(encoding="utf-8") if path.is_file() else ""
-        if old and not old.endswith("\n"):
-            old += "\n"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(old + "\n".join(lines) + "\n", encoding="utf-8")
-        frames += 1
-        boxes += len(lines)
-    return {"frames": frames, "boxes": boxes}
+            w, h = job["size"]
+        rl, rm, ad_ = _edit_label(labels / split / f"{stem}.txt", w, h, job["fixes"], job["adds"])
+        for suffix in SUFFIXES:  # 增强图的标注副本
+            aug = labels / split / f"{stem}{suffix}.txt"
+            if aug.is_file():
+                _edit_label(aug, w, h, job["fixes"], job["adds"])
+        if rl or rm or ad_:
+            res["frames"] += 1
+            res["boxes"] += ad_
+            res["relabeled"] += rl
+            res["removed"] += rm
+    return res
 
 
 # ---- Claude 初分（`perception attrs-label`）：≤16 张裁图拼 4×4，Claude 按裁图名逐张判外形 ----

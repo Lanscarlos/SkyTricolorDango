@@ -292,12 +292,13 @@ def _label_file(frame: Path) -> Path:
 
 def gt_fixes(root: Path) -> dict[tuple[str, str], list[tuple[Rect, int | None]]]:
     """回放答案的修正（10-04）：datasets/sky 的人物标注没人核对过（点没点火标反、漏标的人都有）。
-    数据集来的裁图人在标注页确认过的 → {(split, 帧名): [(框, 类别号；不是人 / 丢弃 = None)]}；只在内存里用，不动 labels/。"""
+    数据集来的裁图人在标注页确认过的 → {(split, 帧名): [(框, 类别号；不是人 = None)]}；只在内存里用，不动 labels/。"""
     hand = hand_labels(root)
     out: dict[tuple[str, str], list[tuple[Rect, int | None]]] = {}
     for r in crop_rows(root).values():
         to = hand.get(r.get("crop"))
-        if r.get("source") != "dataset" or to is None or to == "_unlabeled" or not r.get("image") or not r.get("split"):
+        # 待确认、「不要」（看不清，不等于不是人）不算
+        if r.get("source") != "dataset" or to not in attrs.FORMS or not r.get("image") or not r.get("split"):
             continue
         x, y, w, h = r["box"]
         out.setdefault((r["split"], Path(r["image"]).stem), []).append((Rect(x, y, w, h), WRITEBACK_ID.get(to)))

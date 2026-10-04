@@ -987,7 +987,9 @@ def _perception_crops(cfg: Config, args) -> None:
             raise SystemExit("--writeback 要给数据集目录（含 images/ 和 labels/）")
         for d in datasets:
             res = ad.writeback(d, out, datetime.now())
-            print(f"{d}: 写回 {res['boxes']} 个框（{res['frames']} 帧）" + ("，原 labels/ 备份在 _backup/" if res["boxes"] else ""))
+            changed = res["boxes"] or res["relabeled"] or res["removed"]
+            print(f"{d}: 改了 {res['frames']} 帧：补 {res['boxes']} 个漏标的人、改 {res['relabeled']} 个框的类别、删 {res['removed']} 个不是人的框"
+                  "（增强图的标注副本一起改）" + ("，原 labels/ 备份在 _backup/" if changed else ""))
         return
     from .vision.detect import make_detector
 
@@ -3169,7 +3171,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--conf", type=float, default=0.2, help="检测置信度下限")
     q.add_argument("--out", default="datasets/attrs", help="输出目录")
     q.add_argument("--writeback", action="store_true",
-                   help="不裁图：把 form/<人形类>/ 里确认过的数据集人物框写回 labels/（先备份到 <数据集>/_backup/）")
+                   help="不裁图：标注页确认过的写回 labels/——补漏标的人、改点没点火、删不是人的框，增强图一起改（先备份到 <数据集>/_backup/）")
     q = psub.add_parser("attrs-label", help="第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json")
     q.add_argument("source", nargs="?", help="数据目录（默认 datasets/attrs）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的裁图也重新初分")
