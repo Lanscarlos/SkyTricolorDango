@@ -329,6 +329,9 @@ class Body:
         if self.mind is not None:
             info["心情"] = self.mind.mood.text or self.mind.mood.level
             info["精力"] = self._energy.note if self._energy is not None else "算不出来"
+        if self.enroll_note:
+            me = self.env.my_look() if hasattr(self.env, "my_look") else ""
+            info["认装扮"] = self.enroll_note + (f"；你自己：{me}" if me else "")
         info["最近事件"] = [e.line() for e in self.events.recent(6)][::-1] or "还没有"
         try:
             self.viewer.update(

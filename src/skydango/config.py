@@ -61,7 +61,7 @@ class VisionConfig:
     # 截屏间隔（秒）。MuMu 原生截图约 9 ms，面板没变时不跑 OCR，所以可以看得很勤；用 adb 截图时一轮约 0.8 s
     poll_interval: float = 0.15
     # "log"：读聊天记录面板（光遇按 C 打开，推荐）；"bubble"：找头顶气泡再 OCR；"roi"：直接对整块区域 OCR
-    mode: str = "bubble"
+    mode: str = "log"  # 10-04 从 bubble 改：无障碍读法（source）、聊天面板开关、主人命令都只在 log 下生效
     # log 模式下读聊天的方式（spec 2026-10-04-a11y-chat-reader）："a11y" = 读游戏的无障碍节点（准、面板关着也能读好友头顶气泡），
     # 读不到自动退回 OCR；"ocr" = 截图识别（原来的做法）
     source: str = "a11y"

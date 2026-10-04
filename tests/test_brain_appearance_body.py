@@ -257,6 +257,25 @@ def test_enroll_self_spins_once_and_reports(clock):
     assert env.holds == [("hold", "camera"), ("release", "camera")]
 
 
+def test_enroll_note_in_viewer_info(clock):
+    # 管理面板真机团子页也要看得到登记结果（大脑的 status 文字之外）
+    import numpy as np
+
+    class Viewer:
+        info = None
+
+        def update(self, frame, now, **kw):
+            Viewer.info = kw["info"]
+
+    b, env, cam = enroll_body(clock)
+    b.viewer = Viewer()
+    b._show(np.full((1080, 1920, 3), 90, np.uint8), clock(), [])
+    assert "认装扮" not in Viewer.info
+    b.enroll_self()
+    b._show(np.full((1080, 1920, 3), 90, np.uint8), clock(), [])
+    assert Viewer.info["认装扮"] == "团子登记：5 张"
+
+
 def test_enroll_self_skipped_in_dry_run(clock, caplog):
     b, env, cam = enroll_body(clock, live=False)
     with caplog.at_level("WARNING"):
