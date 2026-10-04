@@ -122,9 +122,12 @@ class _Moves:
         return out
 
     def _revert(self) -> tuple[int, dict, str]:
-        """撤销最近一条没被抵消的操作。返回 (状态码, body, 条目名)：成功时 body = {"where": 回到的位置}，失败时是错误 body。"""
+        """撤销最近一条没被抵消的操作。返回 (状态码, body, 条目名)：成功时 body = {"where": 回到的位置}，失败时是错误 body。
+        带 `by` 的是程序追加的（整理的 auto-agree、整帧编辑的 frame-edit），不进撤销栈：按 Z 只撤人在页面上标的。"""
         stack: list[dict] = []  # 撤销记录抵消它前面最近一条没被抵消的操作
         for e in self._entries():
+            if e.get("by"):
+                continue
             if e.get("undo"):
                 if stack:
                     stack.pop()

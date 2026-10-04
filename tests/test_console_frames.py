@@ -74,6 +74,23 @@ def test_crop_move_changes_state(tmp_path):
     assert api.state()["frames"][0]["state"] == "glance"
 
 
+
+def test_state_follows_reclassified_auto_agree_crop(tmp_path):
+    # 终审 3：auto-agree 的裁图在外形页被改判 / 判不要，state() 显示的框跟着变（不再固定用 YOLO 类别）
+    api, inbox, attrs, _ = make(tmp_path)
+    put_crop(attrs, "form/lit", "c1.jpg")
+    f = api.state()["frames"][0]
+    assert [(b["cls"], b["src"]) for b in f["boxes"]] == [(0, "auto"), (6, "yolo")]
+    (attrs / "form" / "unlit").mkdir(parents=True)
+    (attrs / "form" / "lit" / "c1.jpg").replace(attrs / "form" / "unlit" / "c1.jpg")
+    f = api.state()["frames"][0]
+    assert [(b["cls"], b["src"]) for b in f["boxes"]] == [(4, "judged"), (6, "yolo")]
+    (attrs / "_discard").mkdir(parents=True)
+    (attrs / "form" / "unlit" / "c1.jpg").replace(attrs / "_discard" / "c1.jpg")
+    f = api.state()["frames"][0]
+    assert f["state"] == "edit" and [b["cls"] for b in f["boxes"]] == [6]
+
+
 @pytest.mark.parametrize("name", ["r1_zzz", "../x", "C:/x.jpg", "/etc/passwd", ""])
 def test_image_only_registered(tmp_path, name):
     api, *_ = make(tmp_path)

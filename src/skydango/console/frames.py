@@ -87,16 +87,17 @@ class FramesApi:
 
     def _resolve(self, b: dict) -> tuple[str | None, str, bool]:
         """一个框现在算什么：(类别名 / None = 不要, src, dropped)。drop_low 保留类别、标 dropped；
-        人在外形页判过的按判的类（not_person / 不要 = None）。"""
+        有裁图的人物框按裁图现在在哪（not_person / 不要 = None）：自动确认、还在原类的算 auto，人改判过的算 judged。"""
         cls = b["cls"]
-        if cls in PAIR and b.get("auto") != "agree":
+        if cls in PAIR:
             if b.get("auto") == "drop_low":
                 return cls, "auto", True
             where = self._place(b["crop"]) if b.get("crop") else None
             if where == "_discard":
                 return None, "judged", False
             if where in attrs.FORMS:
-                return FORM_CLS.get(where), "judged", False
+                now = FORM_CLS.get(where)
+                return now, "auto" if b.get("auto") == "agree" and now == cls else "judged", False
         return cls, "auto" if b.get("auto") == "agree" else "yolo", False
 
     def _boxes(self, entry: dict) -> list[dict]:

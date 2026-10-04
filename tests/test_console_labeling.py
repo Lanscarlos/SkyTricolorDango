@@ -406,3 +406,24 @@ def test_form_items_flag_inbox_crops(tmp_path):
         f.write(json.dumps({"crop": "c0002.jpg", "source": "inbox"}) + "\n")
     items = {i["crop"]: i for i in FormLabels(tmp_path).state()["items"]}
     assert items[CROP]["inbox"] is False and items["c0002.jpg"]["inbox"] is True
+
+
+def test_form_undo_skips_automatic_records(tmp_path):
+    # 终审 2：整理（auto-agree）和整帧编辑（frame-edit）追加的记录不进撤销栈；人按 Z 撤的是人自己那条。
+    # hand_labels 照样把 auto-agree 算成确认过的
+    from skydango.console.labeling import FormLabels
+    from skydango.vision.attrs_data import hand_labels
+
+    make_crop(tmp_path)
+    f = FormLabels(tmp_path)
+    assert f.label(CROP, "lit")[0] == 200
+    make_crop(tmp_path, "form/unlit", "auto.jpg")
+    make_crop(tmp_path, "form/lit", "edit.jpg")
+    with (tmp_path / "_labels.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"t": 1, "crop": "auto.jpg", "from": "_unlabeled", "to": "unlit", "by": "auto-agree"}) + "\n")
+        fh.write(json.dumps({"t": 2, "crop": "edit.jpg", "from": "_unlabeled", "to": "lit", "by": "frame-edit"}) + "\n")
+    code, item = f.undo()
+    assert code == 200 and item["crop"] == CROP and item["where"] == "_unlabeled"
+    assert (tmp_path / "form" / "unlit" / "auto.jpg").is_file() and (tmp_path / "form" / "lit" / "edit.jpg").is_file()
+    assert f.undo()[0] == 409  # 只剩自动记录：没有可撤销的
+    assert hand_labels(tmp_path).get("auto.jpg") == "unlit"

@@ -170,7 +170,18 @@ def test_final_boxes():
     assert final_boxes(e, where.get, classes) == [(0, Rect(10, 20, 30, 40)), (4, Rect(50, 60, 30, 40)), (1, Rect(5, 6, 7, 8))]
     # 还没人判（_unlabeled）保持 YOLO 类别；挪进 _discard 的去掉
     assert final_boxes(e, lambda c: "_unlabeled", classes)[1] == (0, Rect(50, 60, 30, 40))
-    assert len(final_boxes(e, lambda c: "_discard", classes)) == 2
+    assert final_boxes(e, lambda c: "_discard", classes) == [(1, Rect(5, 6, 7, 8))]  # 自动确认的裁图被判不要也去掉（终审 3）
+
+
+
+def test_final_boxes_follow_reclassified_auto_agree_crop():
+    # 终审 3：自动确认的框也按裁图现在在哪算：人在外形页改判 / 判不要后，最终标注跟着变
+    classes = ["player", "name_tag", "social_ring", "self", "player_unlit", "typing", "bench", "bonfire", "instrument", "spirit"]
+    e = {"boxes": [{"cls": "player", "box": [10, 20, 30, 40], "score": 0.8, "src": "yolo", "crop": "a.jpg", "auto": "agree"}]}
+    assert final_boxes(e, lambda c: "lit", classes) == [(0, Rect(10, 20, 30, 40))]  # 没人改过：和以前一样
+    assert final_boxes(e, lambda c: "unlit", classes) == [(4, Rect(10, 20, 30, 40))]
+    assert final_boxes(e, lambda c: "not_person", classes) == []
+    assert final_boxes(e, lambda c: "_discard", classes) == []
 
 
 # ---- 通过 / 不要 / 撤销 ----

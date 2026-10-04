@@ -175,12 +175,13 @@ def frame_state(entry: dict, place: Callable[[str], str | None]) -> str:
 
 
 def final_boxes(entry: dict, place: Callable[[str], str | None], classes: list[str]) -> list[tuple[int, Rect]]:
-    """这一帧通过时写进标注的框（类别编号, 框），顺序同 boxes：自动一致的用 YOLO 的框和类别；
-    drop_low 去掉；有裁图的人物框按人判的类（not_person / 不要 = 去掉）；还没人判的保持 YOLO 类别；非人物框原样。"""
+    """这一帧通过时写进标注的框（类别编号, 框），顺序同 boxes：drop_low 去掉；有裁图的人物框按裁图现在在哪
+    （not_person / 不要 = 去掉；自动确认的也一样，没人改过时它就在 form/<YOLO 类对应的外形类>，结果是 YOLO 类别）；
+    还没人判的保持 YOLO 类别；非人物框原样。"""
     out: list[tuple[int, Rect]] = []
     for b in entry.get("boxes", []):
         cls = b["cls"]
-        if cls in PAIR and b.get("auto") != "agree":
+        if cls in PAIR:
             if b.get("auto") == "drop_low":
                 continue
             where = place(b["crop"]) if b.get("crop") else None
