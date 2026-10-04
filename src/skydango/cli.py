@@ -313,16 +313,24 @@ def _env_watcher(cfg: Config, background: bool = True, icons=None):
     )
 
 
+def _attrs_shares_dino(cfg: Config) -> bool:
+    """第二层开着且主干和认装扮的 DINOv2 是同一个文件：两边共用一个推理会话。"""
+    return bool(cfg.attrs.enabled and cfg.appearance.dino
+                and Path(cfg.attrs.backbone).resolve() == Path(cfg.appearance.dino).resolve())
+
+
 def _dino_embedder(cfg: Config):
     """认装扮的第二个特征（DINOv2，身份底库 spec 2026-10-03 §2.3）：[appearance] 开着且 dino 非空才建，device 跟 [appearance] device。
-    文件不存在 / 加载失败：警告一次、返回 None（只用颜色）。第二层开着且主干是同一个文件时，调用方把它共用给 attrs.load_model。"""
+    文件不存在 / 加载失败：警告一次、返回 None（只用颜色）。第二层开着且主干是同一个文件时，调用方把它共用给 attrs.load_model；
+    共用时会话建在第二层的 device 上（_attrs_device），免得第二层原来跑 cuda、共用后掉到 [appearance] device（默认 cpu）。"""
     a = cfg.appearance
     if not a.enabled or not a.dino:
         return None
     from .vision.embed import OnnxEmbedder
 
     try:
-        return OnnxEmbedder(a.dino, a.size, "imagenet", a.device, what="appearance.dino")
+        device = _attrs_device(cfg) if _attrs_shares_dino(cfg) else a.device  # 共用时跟第二层的 device，第二层不降级
+        return OnnxEmbedder(a.dino, a.size, "imagenet", device, what="appearance.dino")
     except Exception as exc:
         log.warning("认装扮：DINOv2 加载失败（%s），只用颜色", exc)
         return None
@@ -423,14 +431,12 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
 def _person_attrs(cfg: Config, dino_embedder=None):
     """感知层第二层（spec 2026-10-02-perception-attrs）：[attrs] 开着、模型读得进来才建 PersonAttrs；
     模型不存在 / 打不开 / 主干对不上时 load_model 已经警告过，返回 None（等于没开）。
-    dino_embedder：认装扮建好的 DINOv2；主干是同一个文件时共用它（一个推理会话，身份底库 spec §2.3），device 跟着认装扮的。"""
+    dino_embedder：认装扮建好的 DINOv2；主干是同一个文件时共用它（一个推理会话，身份底库 spec §2.3；建会话时已按第二层的 device）。"""
     if not cfg.attrs.enabled:
         return None
     from .vision.attrs import PersonAttrs, load_model
 
-    shared = None
-    if dino_embedder is not None and Path(cfg.attrs.backbone).resolve() == Path(cfg.appearance.dino).resolve():
-        shared = dino_embedder
+    shared = dino_embedder if dino_embedder is not None and _attrs_shares_dino(cfg) else None
     model = load_model(cfg.attrs, _attrs_device(cfg), shared)
     if model is None:
         return None

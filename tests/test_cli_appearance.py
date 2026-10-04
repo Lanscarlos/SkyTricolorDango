@@ -238,6 +238,40 @@ def test_dino_embedder_shared_with_attrs(monkeypatch, tmp_path):
     assert len(FakeEmbedder.built) == 2
 
 
+def test_shared_dino_uses_attrs_device(monkeypatch, tmp_path):
+    fake_models(monkeypatch)
+    FakeEmbedder.built = []
+    monkeypatch.setattr("skydango.vision.embed.OnnxEmbedder", FakeEmbedder)
+    onnx = tmp_path / "dinov2-small.onnx"
+    onnx.write_bytes(b"x")
+    npz = tmp_path / "attrs.npz"
+    _attrs_npz(npz, onnx)
+    cfg = Config()
+    cfg.perception.enabled = True
+    cfg.perception.device = "cuda"
+    cfg.appearance.enabled = True
+    cfg.appearance.dino = str(onnx)  # appearance.device 保持默认 cpu
+    cfg.attrs.enabled = True
+    cfg.attrs.backbone = str(onnx)
+    cfg.attrs.model = str(npz)
+    cli._scene_watcher(cfg)
+    assert [e.device for e in FakeEmbedder.built] == ["cuda"]  # 共用：只建一个，跟第二层的 device
+    # 不共用（第二层关着）：照 [appearance] device
+    FakeEmbedder.built = []
+    cfg.attrs.enabled = False
+    cli._scene_watcher(cfg)
+    assert [e.device for e in FakeEmbedder.built] == ["cpu"]
+    # 第二层开着但主干是另一个文件：各用各的 device
+    other = tmp_path / "other.onnx"
+    other.write_bytes(b"x")
+    _attrs_npz(npz, other)
+    cfg.attrs.enabled = True
+    cfg.attrs.backbone = str(other)
+    FakeEmbedder.built = []
+    cli._scene_watcher(cfg)
+    assert sorted((e.path, e.device) for e in FakeEmbedder.built) == sorted([(str(onnx), "cpu"), (str(other), "cuda")])
+
+
 def test_dino_embedder_missing_file_warns(monkeypatch, caplog):
     fake_models(monkeypatch)
     cfg = Config()
