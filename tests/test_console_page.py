@@ -378,5 +378,35 @@ def test_frames_tab_badge():  # 评审：「整帧（N）」打开标注页就�
     fr = [{"state": s} for s in ("glance", "edit", "crops", "done", "glance")]
     assert _frames_js(f"[F.badgeText({json.dumps(fr)}),F.badgeText([{{state:'done'}}]),F.badgeText([])]") == ["整帧（3）", "整帧", "整帧"]
     lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
-    show = lab.split("  show() {", 1)[1].split("\n  },", 1)[0]
+    show = lab.split("  show(", 1)[1].split("\n  },", 1)[0]
     assert "FramesTab.peek()" in show
+
+
+def _common_js(expr: str):  # 在 node 里载入 common.js（没有 document），算 expr
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = f"const C=require({json.dumps(str(STATIC / 'common.js'))});console.log(JSON.stringify({expr}))"
+    return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+
+
+def test_stop_question():  # 停团子时问要不要整理：没有素材 / 不用问 → null
+    q = "C.stopQuestion({hard:85,pending:2,eta_min:4,ask:true})"
+    assert _common_js(q) == "这次存了 85 张难例（还有 2 次运行没整理），现在整理吗？约 4 分钟"
+    assert _common_js("C.stopQuestion({hard:0,pending:0,eta_min:0,ask:true})") is None
+    assert _common_js("C.stopQuestion({hard:85,pending:2,eta_min:4,ask:false})") is None
+    assert _common_js("C.stopQuestion(null)") is None
+
+
+def test_inbox_line():  # 侧栏整理提示：任务进度 > 失败 > 待看 > 待整理
+    ib = "{pending:0,judge_left:0,glance:0,edit:0}"
+    run = _common_js("C.inboxLine({job:{state:'running',job:'inbox',progress:'外形头 3/9',tail:[]},inbox:%s})" % ib)
+    assert run == {"text": "整理素材：外形头 3/9", "action": None}
+    re = _common_js("C.inboxLine({job:{state:'running',job:'retrain',progress:'第 5 轮',tail:[]},inbox:%s})" % ib)
+    assert re["text"] == "重训中：第 5 轮"
+    bad = _common_js("C.inboxLine({job:{state:'failed',job:'inbox',progress:'',tail:['a','没显卡']},inbox:%s})" % ib)
+    assert bad["text"] == "整理失败：没显卡"
+    wait = _common_js("C.inboxLine({job:{state:'idle'},inbox:{pending:1,judge_left:12,glance:3,edit:0}})")
+    assert wait == {"text": "12 张裁图、3 帧等你看 →", "action": "open-labeling"}
+    pend = _common_js("C.inboxLine({job:{state:'idle'},inbox:{pending:3,judge_left:0,glance:0,edit:0}})")
+    assert pend == {"text": "3 次运行的素材没整理", "action": "start-inbox"}
+    assert _common_js("C.inboxLine({job:{state:'idle'},inbox:%s})" % ib) is None
+    assert _common_js("C.inboxLine({job:null,inbox:null})") is None

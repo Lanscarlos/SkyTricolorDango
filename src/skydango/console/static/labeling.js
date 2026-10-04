@@ -560,8 +560,9 @@ Pages.labeling = {
     $("page-labeling").addEventListener("mousedown", e => { if (e.target.closest && e.target.closest("button")) e.preventDefault(); });
     setPlaying(true); setSpeed(1); draw();
   },
-  show() {  // 可能被重复调用（点当前导航项）：只重读，键盘不重复绑
+  show(arg) {  // 可能被重复调用（点当前导航项）：只重读，键盘不重复绑；arg = "frames" 直接切到整帧页（侧栏提示点过来）
     LB.active = true;
+    if (arg === "frames" && LB.tab !== "frames") setTab("frames");
     if (!LB.keyBound) { document.addEventListener("keydown", onKey); LB.keyBound = true; }
     startTimer();
     reload();

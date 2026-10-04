@@ -72,6 +72,9 @@ body[data-state=crashed] .dango i{background:var(--brick);opacity:.85}
 .runcard[data-state=crashed] .rc-k{color:var(--brick-ink)}
 .runcard[data-state=crashed] .rc-m{color:var(--brick-ink)}
 @keyframes breathe{0%,100%{box-shadow:0 0 0 2px var(--matcha-bg)}50%{box-shadow:0 0 0 5px var(--matcha-bg)}}
+.rc-inbox{all:unset;box-sizing:border-box;margin-top:6px;font-size:12.5px;color:var(--muted);overflow-wrap:anywhere;cursor:default}
+.rc-inbox.act{color:var(--matcha-ink,var(--ink));cursor:pointer;text-decoration:underline dotted}
+.rc-inbox[hidden]{display:none}
 .rc-log{margin-top:4px}
 .rc-log summary{cursor:pointer;color:var(--brick-ink);font-size:12.5px}
 .rc-log pre{margin:6px 0 0;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;font:11.5px/1.5 var(--mono);

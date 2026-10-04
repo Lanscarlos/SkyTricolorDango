@@ -189,7 +189,8 @@ async function start(e) {
   const body = {brain: document.querySelector("input[name=mode]:checked").value === "brain", live: $("opt-live").checked,
     emotes: $("opt-emotes").checked, duration: d === "" ? 0 : Number(d)};
   $("start").disabled = true;
-  const r = await post("api/run/start", body);
+  const r = await startGuarded("api/run/start", body);
+  if (r.data.cancelled) { $("start").disabled = false; return; }
   if (!r.data.ok) { L.startProblems = true; problemList($("problems"), r.data.problems || [r.data.text || r.data.error || "启动失败"]); }
   else { L.startProblems = false; L.logNext = 0; $("log").textContent = ""; }
   $("start").disabled = false;

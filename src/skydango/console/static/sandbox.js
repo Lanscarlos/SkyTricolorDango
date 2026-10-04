@@ -208,8 +208,9 @@ function bind() {
     const start = when === "custom" ? $("sb-when-at").value.trim() : when;
     if (!start) { toast("自定义时间写 HH:MM 或 YYYY-MM-DD HH:MM", "warn"); $("sb-when-at").focus(); return; }
     SB.starting = true; renderStartButton();
-    const r = await post("api/sandbox/start", {start});
+    const r = await startGuarded("api/sandbox/start", {start});
     SB.starting = false;
+    if (r.data.cancelled) { renderStartButton(); return; }
     if (!r.data.ok) {
       if (r.data.problems) renderProblems(r.data.problems, !!r.data.orphan);
       else toast(r.data.text || "没启动成", "bad");
