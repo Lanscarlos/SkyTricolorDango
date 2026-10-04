@@ -95,6 +95,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/attrs_train.py` | 第二层的训练和评估：`perception attrs-train`（提特征 + 线性头 → `models/attrs-<日期>.npz` + 报告）、`attrs-eval`、`bench --attrs` |
 | `src/skydango/vision/trackeval.py` | 追踪和接回的离线评估（`perception track-eval`）：基线（升级开关全关）vs 当前配置，断开原因、假走开、确认冤枉、接回对错、运动方向 |
 | `src/skydango/vision/hardcases.py` `compare.py` `augment.py` | 感知层一期工具：运行时收集难例、离线对比 YOLO 和整图 OCR（`perception compare`）、训练集增强（`perception augment`） |
+| `src/skydango/vision/inbox.py` | 难例收件箱（见「难例收件箱」）：`collect`（`runs/<…>/hard` → `datasets/inbox/<运行>/raw`，记 `_index.jsonl`）、`process`（YOLO + 外形头先筛，一致的整帧进待过目、拿不准的裁图交外形页，可选让 Claude 再核对）、`status`、去重、整次运行分验证 / 训练、通过的帧写进 `datasets/sky` |
+| `src/skydango/vision/retrain.py` | 一键重训和对比（`perception retrain`）：训 YOLO + 外形头 → 新旧模型在验证集上回放 + ultralytics val → `tmp/retrain/<时间>/report.md` + `result.json`，失败抛 `RetrainFailed`、不改配置 |
 | `src/skydango/vision/assist.py` | Claude 辅助标注（`perception label --assist`）：挑帧、人物候选框、`claude -p` 核对（分批并发、缓存、额度用完可续跑）、合并成标注 + 预览 + 待核对清单；`Protocol` 让物品模式复用 |
 | `src/skydango/vision/objlabel.py` | 物品模式（`perception label <数据集> --objects`）：提示词、解析、写回（人物行不动、物品行整体替换、人改先祖）、预览、清单 |
 | `src/skydango/vision/sweep.py` | 感知层二期：环绕扫描的纯计算（方位角、8 方位、多帧合并、转圈认团子、远近分档） |
@@ -119,7 +121,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`claude.py` 起进程 / 隔离 / Claude 总闸（`ClaudeGate`、`GatedLlm`）、`deepseek.py` 备用大脑、`llm_tools.py` 备用大脑的工具 schema（唯一来源）、`trace.py` 大脑时间线（给管理面板）、`manual.py` 手动控制、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `search.py` 有意识地找 / `find.py` 找人技能 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
-| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`），左侧栏 + 七页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
+| `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、整理 / 重训的任务槽（`jobs.py`）、整帧页后端（`frames.py`）、重训报告和换上 / 回退（`retrain_view.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`、标注页的整帧页 `frames.js`、重训区 `retrain.js`），左侧栏 + 七页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
 | `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；聊天记录 `brain/transcript.py`（沙盒和真机共用，带长轮询 `wait_since` 和事件分隔线 `event_line`）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、操作和状态 `control.py`、JSON 接口 `server.py` |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
@@ -181,7 +183,7 @@ dir = "private/sandbox"
 | `replies.jsonl` | 每轮：收到的消息、回复（`null` = 不回复或被过滤）、是否真的发出 |
 | `frames/*.jpg` | 读到新消息时截的聊天面板（红框标新消息），`run.save_frames = false` 关掉 |
 | `config.json` | 本次实际生效的配置（含 `--live` / `--echo` 覆盖） |
-| `hard/*.jpg`、`hard.jsonl` | YOLO 感知层可能认错的画面（难例）和原因、检测框（`[perception] hardcases`，每次最多 200 张）；要用的及时 `perception label runs --from-runs` 收进数据集 |
+| `hard/*.jpg`、`hard.jsonl` | YOLO 感知层可能认错的画面（难例）和原因、检测框（`[perception] hardcases`，每次最多 200 张）；下线时自动收进 `datasets/inbox`（`[inbox]`，runs/ 轮换不再丢；也能手动 `perception inbox collect`）；旧办法 `perception label runs --from-runs` 仍可用 |
 | `look_person/` | `look_person` 裁给大脑的图（`<时间>-<名字>-crop.jpg`）和画了裁剪范围的整帧（`-frame.jpg`），事后核对它看到的是谁 |
 | `spin/<时间>/` | 主人 `#spin` 转一圈的截图：转前 / 转完 / 每帧（文件名带按住后第几秒）和 `summary.json` |
 | `light/<时间>/` | 每次点亮陌生人（`[social]` light）：出请求那一刻 + 举起后每 0.5 秒的截图（每次最多 30 张、每次 run 最多 50 次；所有火焰候选画青圈，他那团画粗）和 `summary.json`（线索、结局、举起时和最后的 `black()`、火焰最后看到的时间和位置、最后在不在边上 `away`） |
@@ -289,6 +291,7 @@ dir = "private/sandbox"
   数据：`perception crops` → `perception attrs-label`（花额度）→ 管理面板「标注」页的「外形」标签页确认 → `crops --writeback` → `perception attrs-train` → `attrs-eval`；
   管理面板画面上画灰色虚线（被撤）/ "复核"（靠复核放行），难例多 `attrs_reject` / `attrs_disagree` 两种原因。上线门槛四条和剩下要人做的步骤见 `docs/progress/2026-09-28-yolo-training.md`「第二层」
   DINOv2-small 在 5070 Ti 上一张裁图约 5 ms、4 张约 20 ms（10-02，onnxruntime-gpu 1.23.2）；CPU 上一张约 32 ms，没 GPU 时别开，或者 `max_crops = 1`、`every = 1.0`（`[perception] device = "cuda"` 而主干只在 CPU 上跑时启动会警告）
+- **难例收件箱（`[inbox]` / `[retrain]`；代码已完成，**还没在真机上跑过**，spec §11 五步；真 ultralytics 训练 / val 只用假函数测过，第一次真跑时核对 epoch 回调和 `all_ap` 读法）**：设计 `docs/superpowers/specs/2026-10-04-hardcase-inbox-design.md`，计划 `docs/superpowers/plans/2026-10-04-hardcase-inbox.md`。把真机 `run` 存的难例变成训练数据：下线时 `runs/<…>/hard/` 收进 `datasets/inbox`（`[inbox] enabled`）→ 管理面板停团子时问要不要整理（`[inbox] ask`），侧栏也提示没整理的运行 → `perception inbox process` 用 YOLO + 外形头先筛（一致概率 ≥ `agree` 的整帧直接进待过目；不一致的可让 Claude 再核对，花额度；`dup_diff` / `dup_gap` 去重；整次运行按 `val_every` 分验证 / 训练）→ 标注页「外形」页的「来自整理」筛选判拿不准的裁图 +「整帧」页过目 / 编辑（按键）→ 通过的帧进 `datasets/sky` → 整帧页「重训」= `perception retrain`（YOLO + 外形头，`[retrain]` 起点权重 / imgsz / epochs / batch / workers；回放对比报告 `tmp/retrain/<时间>/report.md`，攒够 `retrain_min` 张核对过的才提示）→「换上」写 `console.toml`（绝不碰 `config.toml`），「回退」按 adopt.json 还原。整理 / 重训是面板的任务槽（`console/jobs.py`，进度写 `tmp/jobs/`），任务在跑时叫醒团子 / 沙盒会先问要不要停任务
 - **核显 / 没有 N 卡的机器**（`device = "dml"`，`vision/onnxrt.py`，**未在 Windows 核显上验证**）：在 GPU 机器上导出 `.onnx`（`.pydeps\bin\yolo.exe export model=models/sky-yolo-v10.pt format=onnx imgsz=960`）拷过去，
   `pip uninstall onnxruntime` 再 `pip install onnxruntime-directml`（两个包都叫 `onnxruntime` 模块，只能装一个；以后 `pip install -e ".[ocr]"` 会把 onnxruntime 装回来盖掉，要重装 directml；`pip check` 报 skydango 缺 onnxruntime 是正常的）。
   先 `perception bench --model models/sky-yolo.onnx --images <录像目录>` 看后端是不是 `DmlExecutionProvider`、每帧多少 ms，再按实测把 `fps` 降下来（估计 2~3）。
@@ -380,6 +383,7 @@ dir = "private/sandbox"
   第三个标签页「动作名」（`console/emotenames.py` + `static/emotenames.js`）：网格列出 `emotes scan` 扫下来的全部图标，起名 = 把 `scan/NNN.png` 复制成图标库的 `emotes/<名字>.png`，改名 / 清除（挪进 `emotes/_removed/`）；
   哪个扫描图标叫什么按剪影配（门槛 0.7、每张库图只配一个），不靠编号，重扫不错位。**只起名**，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动生效；
   改名 / 清除时旧名字还被 `social.after_light` / `emotes.extra` / `gesture.names` / `reflex` 清单引用的只提示、不自动改。没有“重新扫描”按钮（要往游戏里按键，终端跑 `emotes scan`）
+- **「整帧」标签页**（标注页第四个标签，`console/static/frames.js`，后端 `console/frames.py`，难例收件箱，见「YOLO 感知层」）：整理好的整帧过目 / 编辑、重训区（`retrain.js`）；侧栏有「素材没整理」一行（点了起整理），团子停下时若有难例会问「现在整理吗」；整理 / 重训期间起团子会先问要不要停任务
 - **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
   加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
   `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程
@@ -659,6 +663,8 @@ python -m skydango perception detect [图片]  # 跑一遍 YOLO 感知，标注�
 python -m skydango perception label <录像目录> [--preview] [--model 模型]  # 弱标注（+ 模型预标注）→ datasets/sky（YOLO 格式）
 python -m skydango perception label <录像目录> --assist [--model 模型] [--all-frames]  # Claude 辅助标注：挑帧 + 人物框由 Sonnet 核对，清单在 datasets/sky/_assist/review.md（令牌同 [brain]）
 python -m skydango perception label runs --from-runs --model 模型  # 把各次运行存下的难例收进数据集
+python -m skydango perception inbox collect|process|status  # 难例收件箱：collect 把 runs/*/hard 收进 [inbox] dir；process 用 YOLO + 外形头先筛（模型缺了就报错退出）；status 看各阶段数量
+python -m skydango perception retrain [--epochs N]  # 一键重训 YOLO + 外形头并回放对比 → tmp/retrain/<时间>/report.md（不改配置，换上去管理面板整帧页）
 python -m skydango perception label <spin 目录> --spin --model 模型  # 转圈录像：认出团子，每帧自动补 self 框
 python -m skydango perception label datasets/sky --objects [--model 模型] [--only 通配]  # 物品模式：给已标好人的数据集补标座位 / 篝火 / 乐器 / 先祖和头顶气泡 typing（先备份 labels/），清单在 _assist/objects.md；--only 只做文件名匹配的帧
 python -m skydango perception augment datasets/sky  # 训练集加运动模糊 / 压暗样本（只动 train）
