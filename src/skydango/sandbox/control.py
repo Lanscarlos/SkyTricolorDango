@@ -75,6 +75,9 @@ class SandboxControl:
         self.mono = mono  # 判断"安静了 2 秒"用真实时间
         self._quiet_since: float | None = None
         self.body.on_blocked = lambda text, why: self.transcript.add("blocked", text, "团子", why=why)
+        # 身体读到的话（带跟谁说的标注）才写 heard 行；别的种类沙盒世界 / 这里已经各自写了
+        self.body.on_line = lambda kind, text, who, why="": (
+            self.transcript.add("heard", text, who, why=why) if kind == "heard" else None)
         self.body.on_musing = lambda thought: self._event("心里：" + thought)  # 冷场时心里想的（spec 2026-10-01-lull-musing §3）
         if parts.mind_log is not None:
             parts.mind_log.on_add = self._on_log
@@ -104,7 +107,6 @@ class SandboxControl:
 
         def run():
             self.reader.say(who, text)
-            self.transcript.add("heard", text, who)
             return {"ok": True, "text": f"{who} 说了：{text}"}
         return run
 

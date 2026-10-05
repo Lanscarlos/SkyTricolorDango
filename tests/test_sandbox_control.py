@@ -105,8 +105,19 @@ def rows(sb, kind=None):
 def test_say_goes_to_transcript_and_becomes_chat(sb):
     out = sb.control.op({"op": "say", "who": "小明", "text": "在吗"})
     assert out["ok"]
+    assert wait_for(lambda: len(rows(sb, "heard")) >= 1)  # heard 行由身体读到后写，不是冒充发言当场写
     assert [(r["who"], r["text"]) for r in rows(sb, "heard")] == [("小明", "在吗")]
     assert wait_for(lambda: any(e.kind == "chat" and "在吗" in e.text for e in sb.events.recent(20)))
+
+
+def test_say_heard_row_from_body(sb):  # heard 行由身体写（带跟谁说的），冒充发言这一步不再自己写
+    sb.control.op({"op": "come", "who": "小明"})
+    sb.control.op({"op": "say", "who": "小明", "text": "阿花，你来吗"})
+    assert wait_for(lambda: len(rows(sb, "heard")) >= 1)
+    time.sleep(0.3)
+    heard = rows(sb, "heard")
+    assert len(heard) == 1 and heard[0]["who"] == "小明" and heard[0]["text"] == "阿花，你来吗"
+    assert heard[0].get("why")
 
 
 def test_come_and_leave(sb):
@@ -242,6 +253,7 @@ def test_state_returns_new_rows_and_limit(sb):
     st = sb.control.state(after=0, timeout=0.0)
     assert st["limit"] == "额度用完，约 3 分钟后再试"
     sb.control.op({"op": "say", "who": "小明", "text": "在吗"})
+    assert wait_for(lambda: len(rows(sb, "heard")) >= 1)  # heard 行由身体读到后写
     st = sb.control.state(after=0, timeout=0.0)
     assert [r["text"] for r in st["lines"]] == ["在吗"]
 

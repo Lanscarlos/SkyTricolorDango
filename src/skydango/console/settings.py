@@ -60,6 +60,7 @@ FIELDS: tuple[Field, ...] = (
     Field("call.auto", "自动喊一声", "好友刚“走开”、画面里还有没挂名字的人时，身体自己喊一声确认（1 分钟最多 3 次）", "bool", "brain"),
     Field("attention.search", "有意识地找", "闲着时找刚走开的好友、一个人待着时隔一会儿往没看过的方向看看；关掉只剩“有人说话 / 走近就转过去看”", "bool", "brain"),
     Field("lull.enabled", "冷场时的心理活动", "好友不说话了、聊着聊着走了时团子心里会犯嘀咕，按节点叫醒大脑；关掉就回到老样子", "bool", "brain"),
+    Field("addressee.enabled", "分清在跟谁说话", "好友之间聊天时团子默认不接，叫到它、接它的话才接，偶尔插一句算主动开口；关掉就回到老样子", "bool", "brain"),
     Field("backstage.enabled", "幕后", "团子知道自己是 AI、卡洛做了她，能跟卡洛聊她自己怎么运作；好友要在 friends.md 里写「知道团子是 AI」才会跟他承认", "bool", "brain"),
     Field("vision.source", "读聊天的方式", "a11y：读游戏的无障碍节点（准、面板关着也能读好友头顶气泡），读不到自动退回 OCR；ocr：截图识别（原来的做法）", "choice", "features", ("a11y", "ocr")),
     Field("env.enabled", "识别环境", "后台 OCR 画面：身边有谁、在哪", "bool", "features"),

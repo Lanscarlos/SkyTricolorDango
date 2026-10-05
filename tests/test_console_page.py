@@ -145,6 +145,23 @@ def test_chat_line_kinds():  # 聊天行的样式：反思 = 虚线框，别的�
         "refl", "ev", "ev", "msg", "msg me", "act", "msg me blocked", "msg blocked"]
 
 
+def test_heard_tag_shown():  # 听到的话带 why（跟谁说的）→ 名字后面一个 .tag；被拦的 why 照旧是单独一行 .why
+    stub = ("globalThis.hhmm=()=>'';globalThis.dayTime=()=>'';globalThis.el=(t,c,x)=>({t,c,x:x||'',kids:[],"
+            "append(...a){this.kids.push(...a)}});")
+    node = shutil.which("node") or pytest.skip("没有 node")
+    heard = {"kind": "heard", "who": "小明", "text": "好了", "why": "跟别人说：在接阿花的话", "t": 0}
+    plain = {"kind": "heard", "who": "小明", "text": "好了", "t": 0}
+    blocked = {"kind": "blocked", "who": "团子", "text": "嗯", "why": "太频繁", "t": 0}
+    js = (stub + f"const C=require({json.dumps(str(STATIC / 'chatlog.js'))});"
+          "const f=(r)=>JSON.stringify(globalThis.Chat.line(r));"
+          f"console.log(JSON.stringify([f({json.dumps(heard, ensure_ascii=False)}),f({json.dumps(plain, ensure_ascii=False)}),"
+          f"f({json.dumps(blocked, ensure_ascii=False)})]))")
+    out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+    assert '"c":"tag","x":"跟别人说：在接阿花的话"' in out[0]
+    assert '"c":"tag"' not in out[1]
+    assert '"c":"why","x":"太频繁"' in out[2] and '"c":"tag"' not in out[2]
+
+
 def test_sandbox_summary_text():  # 左栏卡片：「10月1日 11:28 · 开心 · 精神」，缺哪样就不写哪样
     t = "new Date(2026,9,1,11,28).getTime()/1000"
     assert _sandbox_js(f"[Sandbox.summaryText({t},'开心','精神'),Sandbox.summaryText({t},'',''),Sandbox.summaryText({t},null,'困')]") == [
