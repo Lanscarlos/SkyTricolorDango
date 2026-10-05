@@ -29,7 +29,9 @@ class BrainSession:
         effort: str,
         turn_timeout: float,
         on_message: Callable[[dict], None] | None = None,
+        provider: str = "claude",
     ) -> None:
+        self.provider = provider  # 供应商 id（[providers.<id>]）：loop 据此看闸、记 brain.jsonl
         self.base_cmd = base_cmd
         self.env = env
         # 空的专用目录：不让它读到项目的 AGENTS.md / CLAUDE.md。转成绝对路径：子进程的 cwd 就是它，

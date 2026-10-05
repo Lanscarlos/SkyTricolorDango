@@ -80,11 +80,13 @@ class FakeTrace:
 
 
 def make(clock, session, store=None, run=None, nearby=None, trace=None, fallback_session=None, gate=None, **cfg):
+    """fallback_session：备用会话（包成懒建的 fallback）；gate：ProviderGates。"""
     events = EventQueue(clock=clock)
     tb = FakeToolBox()
     near = [] if nearby is None else nearby
+    fallback = None if fallback_session is None else (lambda: fallback_session)
     brain = Brain(BrainConfig(**cfg), ChatConfig(), session, tb, events, lambda now: list(near), eyes=FakeEyes(),
-                  clock=clock, wall=lambda: 0.0, run=run, store=store, trace=trace, fallback_session=fallback_session, gate=gate)
+                  clock=clock, wall=lambda: 0.0, run=run, store=store, trace=trace, fallback=fallback, gates=gate)
     return brain, events, tb, near
 
 
@@ -164,7 +166,7 @@ def test_auth_error_switches_to_fallback_and_trips_gate(clock):
     brain, _, _, _ = make(clock, FakeSession(ClaudeError("401 authentication", auth=True)), fallback_session=fb, gate=gate)
     brain.wake(clock(), "heartbeat")
     assert brain.session is fb and brain.on_fallback is True
-    assert brain.gate is gate and not gate.ok("claude")
+    assert brain.gates is gate and not gate.ok("claude")
 
 
 def test_gate_closed_elsewhere_switches_before_next_turn(clock):
@@ -188,10 +190,11 @@ def test_trace_state_model_and_gate_on_fallback(clock):
     fb = FakeSession(ok())
     fb.model = "deepseek-chat"
     brain, _, _, _ = make(clock, FakeSession(ClaudeError("limit", limit=True)), fallback_session=fb, gate=gate)
-    assert brain.trace_state()["claude_gate"] is None
+    fb.provider = "deepseek"
+    assert brain.trace_state()["provider_gates"] == {}
     brain.wake(clock(), "heartbeat")
     st = brain.trace_state()
-    assert st["model"] == "deepseek-chat" and st["claude_gate"] == gate.reason("claude") and gate.reason("claude")
+    assert st["model"] == "deepseek/deepseek-chat" and st["provider_gates"] == {"claude": gate.reason("claude")} and gate.reason("claude")
 
 
 def test_heartbeat_backs_off_when_idle_and_resets(clock):
@@ -279,7 +282,7 @@ def test_trace_state(clock):
     brain, _, _, _ = make(clock, FakeSession(ClaudeError("挂了")), trace=trace)
     assert trace.state == brain.trace_state
     cfg = brain.cfg
-    assert brain.trace_state() == {"model": cfg.model, "effort": cfg.effort, "failures": 0, "retry_in": None, "offline": False, "on_fallback": False, "claude_gate": None}
+    assert brain.trace_state() == {"model": f"claude/{cfg.model}", "effort": cfg.effort, "failures": 0, "retry_in": None, "offline": False, "on_fallback": False, "provider_gates": {}}
     brain.wake(clock(), "heartbeat")
     state = brain.trace_state()
     assert state["failures"] == 1 and state["retry_in"] == 10.0 and state["offline"] is False
@@ -508,3 +511,76 @@ def test_on_text_not_called_on_failure(clock):
     brain.on_text = got.append
     brain.wake(clock(), "heartbeat")
     assert got == []
+
+
+class ProviderSession(FakeSession):
+    def __init__(self, provider, model, *results):
+        super().__init__(*results)
+        self.provider, self.model = provider, model
+
+
+def test_switches_to_backup_on_limit(clock):
+    from skydango.models.errors import ModelError
+
+    gates = ProviderGates()
+    main = ProviderSession("deepseek", "deepseek-chat", ModelError("402", down="limit", provider="deepseek"))
+    backup = ProviderSession("claude", "sonnet")
+    made = []
+    events = EventQueue(clock=clock)
+    brain = Brain(BrainConfig(), ChatConfig(), main, FakeToolBox(), events, lambda now: [], eyes=FakeEyes(), clock=clock,
+                  wall=lambda: 0.0, fallback=lambda: made.append(1) or backup, gates=gates)
+    brain.wake(clock(), "heartbeat")
+    assert brain.session is backup and gates.ok("deepseek") is False and brain.on_fallback
+    brain.wake(clock(), "heartbeat")
+    assert made == [1] and len(backup.sent) == 1
+
+
+def test_gate_closed_elsewhere_switches_before_send(clock):  # Review Focus 3
+    gates = ProviderGates()
+    main = ProviderSession("deepseek", "deepseek-chat")
+    backup = ProviderSession("claude", "sonnet")
+    brain = Brain(BrainConfig(), ChatConfig(), main, FakeToolBox(), EventQueue(clock=clock), lambda now: [], eyes=FakeEyes(),
+                  clock=clock, wall=lambda: 0.0, fallback=lambda: backup, gates=gates)
+    gates.trip("deepseek", "limit", "402")
+    brain.wake(clock(), "heartbeat")
+    assert main.sent == [] and len(backup.sent) == 1
+
+
+def test_fallback_build_error_does_not_switch(clock):
+    from skydango.models.errors import ModelError
+
+    gates = ProviderGates()
+    main = ProviderSession("deepseek", "deepseek-chat", ModelError("402", down="limit", provider="deepseek"))
+
+    def broken():
+        raise ModelError("没有 Claude 令牌", down="auth", provider="claude")
+
+    brain = Brain(BrainConfig(), ChatConfig(), main, FakeToolBox(), EventQueue(clock=clock), lambda now: [], eyes=FakeEyes(),
+                  clock=clock, wall=lambda: 0.0, fallback=broken, gates=gates)
+    brain.wake(clock(), "heartbeat")
+    assert brain.session is main and not brain.on_fallback and brain.backoff_until == clock() + brain.cfg.limit_retry
+
+
+def test_no_fallback_backs_off(clock):
+    from skydango.models.errors import ModelError
+
+    brain, _, _, _ = make(clock, ProviderSession("deepseek", "deepseek-chat", ModelError("402", down="limit", provider="deepseek")))
+    brain.wake(clock(), "heartbeat")
+    assert brain.backoff_until == clock() + brain.cfg.limit_retry
+
+
+def test_other_error_no_switch(clock):
+    from skydango.models.errors import ModelError
+
+    backup = ProviderSession("claude", "sonnet")
+    brain, _, _, _ = make(clock, ProviderSession("deepseek", "deepseek-chat", ModelError("500")), fallback_session=backup,
+                          gate=ProviderGates())
+    brain.wake(clock(), "heartbeat")
+    assert brain.session is not backup and brain.backoff_until == clock() + 10.0 and brain.gates.closed() == {}
+
+
+def test_brain_jsonl_has_provider(clock):
+    run = FakeRun()
+    brain, _, _, _ = make(clock, ProviderSession("deepseek", "deepseek-chat"), run=run)
+    brain.wake(clock(), "heartbeat")
+    assert run.entries[0]["provider"] == "deepseek" and run.entries[0]["model"] == "deepseek-chat"

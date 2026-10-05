@@ -1,7 +1,7 @@
-"""DeepSeek 备用大脑：Claude 订阅额度用完时顶上（spec 2026-10-03-deepseek-fallback-brain-design）。
+"""OpenAI 兼容的大脑（DeepSeek / ChatGPT……）：function-calling 循环，每轮重发、带最近几轮短期记忆。
 
-`DeepSeekBrain.send(text)` 的签名和 brain.session.BrainSession 对齐，内部跑 OpenAI function-calling 循环，
-工具经同一个 ToolBox.run 执行。失败抛 ClaudeError(msg, limit=False)：loop 里按 BACKOFF 退避，不回 Claude。
+`ToolLoopBrain.send(text)` 的签名和 brain.session.BrainSession 对齐，工具经同一个 ToolBox.run 执行。
+失败抛 ModelError：down 按状态码判（402 余额用完 / 401 认证……，loop 据此关这家的闸、切备用），别的错按 BACKOFF 退避。
 """
 
 from __future__ import annotations
@@ -10,18 +10,17 @@ import json
 import time
 from collections.abc import Callable
 
-from ..chat.llm import read_key
-from ..config import LlmConfig
-from .claude import ClaudeError
+from ..models.errors import ModelError
+from ..models.openai_compat import classify
 
-FALLBACK_NOTE = """你现在是备用大脑（DeepSeek）：Claude 额度不足，眼睛（看图的）也不可用，看不到画面。
-判断只靠消息里的状态、聊天记录、身边人名地名（身体 OCR / YOLO 认的）和旧场景描述；工具里没有看图 / 点人的，别硬调。
+BLIND_NOTE = """你看不到画面：判断靠消息里的状态、聊天记录、身边人名地名（身体 OCR / YOLO 认的）和眼睛写的场景描述。
+看图的工具（look(image=true)、look_at、look_person、check_friend、panel_read(image=true)）会请眼睛代看，返回文字；想看清什么写在 question 里。
 - 前面几条消息是你最近几轮收到的和做了的：别重复你刚说过的话（意思一样也不行），接着上一句聊
 - recall 查不到就说记不清，别顺着别人的话编
 - 嘴上说要做动作（点头、鞠躬……）就真的调 emote，没调就别这么说
 - 单字、语气词（嗯、哦、哈）不用每句都接"""
 
-ASIDE_NOTE = "\n- 标着“跟别人说”的话默认不接"  # [addressee] 开着时接在 FALLBACK_NOTE 后面（10-03 晚它的说听比 0.9~1.15，比 Claude 更爱接）
+ASIDE_NOTE = "\n- 标着“跟别人说”的话默认不接"  # [addressee] 开着时接在 BLIND_NOTE 后面（10-03 晚它的说听比 0.9~1.15，比 Claude 更爱接）
 
 HISTORY_TEXT = 1500  # 历史里每轮的唤醒消息最多留这么多字（状态之类长的截掉）
 HISTORY_CHARS = 12000  # 历史总共最多这么多字，超了从最老的丢
@@ -45,19 +44,7 @@ def _summary(done: list[tuple[str, dict | None, str, bool]], final: str) -> str:
     return "你这一轮：" + ("；".join(parts) if parts else "什么都没做")
 
 
-def build_client(llm: LlmConfig, api_key: str | None = None):
-    """OpenAI 客户端（DeepSeek）。api_key 为 None 时从环境变量读。"""
-    from openai import OpenAI
-
-    return OpenAI(
-        base_url=llm.base_url or None,
-        api_key=api_key or read_key(llm.api_key_env),
-        timeout=llm.timeout,
-        max_retries=0,
-    )
-
-
-class DeepSeekBrain:
+class ToolLoopBrain:
     def __init__(
         self,
         client,
@@ -73,12 +60,14 @@ class DeepSeekBrain:
         clock: Callable[[], float] = time.monotonic,
         on_message: Callable[[dict], None] | None = None,
         history: int = 0,
+        provider: str = "deepseek",
     ) -> None:
         self.client = client
         self.system = system
         self.toolbox = toolbox
         self.tools = tools
         self.model = model
+        self.provider = provider
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_steps = max_steps
@@ -116,16 +105,14 @@ class DeepSeekBrain:
         usage: dict | None = None
         while True:
             if self.clock() >= deadline:
-                raise ClaudeError("超时")
+                raise ModelError("超时", provider=self.provider)
             try:
                 resp = self.client.chat.completions.create(
                     model=self.model, messages=messages, tools=self.tools,
                     temperature=self.temperature, max_tokens=self.max_tokens,
                 )
-            except ClaudeError:
-                raise
-            except Exception as exc:
-                raise ClaudeError(f"DeepSeek 出错：{exc}") from None
+            except Exception as exc:  # noqa: BLE001 SDK 的各种错误一律包成 ModelError
+                raise ModelError(f"{self.provider} 出错：{exc}", down=classify(exc), provider=self.provider) from None
             requests += 1
             u = getattr(resp, "usage", None)  # 取不到就不累加；有一次取到就给 dict
             if u is not None:
@@ -174,4 +161,5 @@ class DeepSeekBrain:
                 done.append((name, args, out, is_error))
         if self.history > 0:
             self._past = (self._past + [(text, _summary(done, final))])[-self.history:]
-        return {"result": final, "subtype": "success", "num_turns": requests, "usage": usage}
+        return {"result": final, "subtype": "success", "num_turns": requests, "usage": usage,
+                "provider": self.provider, "model": self.model}

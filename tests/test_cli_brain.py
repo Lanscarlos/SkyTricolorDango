@@ -85,7 +85,7 @@ def test_run_brain_with_viewer_records_turns(tmp_path, monkeypatch):
     first = out["turns"][0]
     assert first["reason"] == "heartbeat" and "没有新事件" in first["prompt"]
     assert first["end"] is not None and first["error"] is None
-    assert out["state"]["model"] == cfg.brain.model
+    assert out["state"]["model"] == f"claude/{cfg.brain.model}"
 
 
 def test_run_brain_wires_everything(tmp_path, monkeypatch):
@@ -717,84 +717,13 @@ def _fake_tb():
     return SimpleNamespace(body=SimpleNamespace(env=None), calling=False, backstage=False)
 
 
-def test_fallback_brain_off_when_disabled(tmp_path, monkeypatch):
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.brain.fallback = False
-    assert cli._fallback_brain(cfg, object(), "p") is None
-
-
-def test_fallback_brain_none_when_no_key(tmp_path, monkeypatch):
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    monkeypatch.setattr("skydango.brain.deepseek.read_key", lambda name: (_ for _ in ()).throw(RuntimeError("没 Key")))
-    assert cli._fallback_brain(cfg, object(), "p") is None
-
-
-def test_fallback_brain_none_when_openai_missing(tmp_path, monkeypatch):
-    import skydango.brain.deepseek as ds
-
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    monkeypatch.setattr(ds, "build_client", lambda llm, key=None: (_ for _ in ()).throw(ImportError("No module named 'openai'")))
-    assert cli._fallback_brain(cfg, _fake_tb(), "p") is None
-
-
-def test_run_brain_survives_missing_openai(tmp_path, monkeypatch):
-    import skydango.brain.deepseek as ds
-
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    monkeypatch.setattr(ds, "build_client", lambda llm, key=None: (_ for _ in ()).throw(ImportError("No module named 'openai'")))
-    seen = []
-    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
-    assert seen[0].fallback_session is None and seen[0].on_fallback is False
-
-
-def test_fallback_brain_built(tmp_path, monkeypatch):
-    import skydango.brain.deepseek as ds
-
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    made = {}
-    monkeypatch.setattr(ds, "build_client", lambda llm, key=None: made.update(key=key) or object())
-    brain = cli._fallback_brain(cfg, _fake_tb(), "prompt")
-    assert isinstance(brain, ds.DeepSeekBrain) and brain.system == "prompt\n\n" + ds.FALLBACK_NOTE + ds.ASIDE_NOTE  # [addressee] 默认开
-    assert brain.model == cfg.llm.model and brain.max_tokens == cfg.brain.fallback_max_tokens
-    assert brain.history == cfg.brain.fallback_history == 8  # 10-04：带最近 8 轮短期记忆
-
-
-def test_fallback_brain_addressee_off(tmp_path, monkeypatch):
-    import skydango.brain.deepseek as ds
-
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.addressee.enabled = False
-    monkeypatch.setattr(ds, "build_client", lambda llm, key=None: object())
-    brain = cli._fallback_brain(cfg, _fake_tb(), "prompt")
-    assert brain.system == "prompt\n\n" + ds.FALLBACK_NOTE
-
-
 def test_run_brain_passes_fallback_session(tmp_path, monkeypatch):
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
     monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: sentinel)
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
-    assert seen[0].fallback_session is sentinel
-
-
-def test_force_fallback_swaps_session(tmp_path, monkeypatch):
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.brain.force_fallback = True
-    sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
-    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: sentinel)
-    seen = []
-    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
-    assert seen[0].session is sentinel and seen[0].on_fallback is True
-
-
-def test_force_fallback_without_session_is_noop(tmp_path, monkeypatch):  # Review Focus 5
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.brain.force_fallback = True
-    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: None)
-    seen = []
-    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
-    assert seen[0].session is not None and seen[0].on_fallback is False
+    assert seen[0].fallback() is sentinel
 
 
 # ---- Claude 总闸（spec 2026-10-04-claude-gate §1 §3 §6）----
@@ -808,7 +737,7 @@ def test_run_brain_shares_one_gate(tmp_path, monkeypatch):
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=seen.append)
     parts = seen[0]
-    gate = parts.brain.gate
+    gate = parts.brain.gates
     assert isinstance(gate, ProviderGates)
     notes_llm, reflect_llm = parts.body.notes.llm, parts.reflector.llm
     assert isinstance(notes_llm, GatedLlm) and isinstance(reflect_llm, GatedLlm)
@@ -834,15 +763,14 @@ def test_run_brain_sandbox_scene_describe_not_gated(tmp_path, monkeypatch):
     assert seen[0].eyes.describe is scene_text and seen[0].eyes.available is None
 
 
-def test_gated_backup_uses_fallback_max_tokens(tmp_path, monkeypatch):
+def test_gated_backup_uses_brain_max_tokens(tmp_path, monkeypatch):
     import skydango.chat.llm as llm
 
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.brain.fallback_max_tokens = 4321
     made = []
     monkeypatch.setattr(llm, "make_llm", lambda c: made.append(c) or "client")
     assert cli._gated_backup(cfg) == "client"
-    assert made[0].max_tokens == 4321 and made[0].model == cfg.llm.model and made[0].max_retries == cfg.llm.max_retries
+    assert made[0].max_tokens == 4096 and made[0].model == cfg.llm.model and made[0].max_retries == cfg.llm.max_retries
     assert made[0].timeout == max(cfg.llm.timeout, cfg.inner.reflect_timeout)  # 终审 M1：日记 30 秒可能写不完
 
 
@@ -866,16 +794,6 @@ def test_gated_backup_none_when_unavailable(tmp_path, monkeypatch, caplog, exc):
     with caplog.at_level("WARNING"):
         assert cli._gated_backup(cfg) is None
     assert any("备用" in r.getMessage() for r in caplog.records)
-
-
-def test_force_fallback_keeps_gate_open(tmp_path, monkeypatch):
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.brain.force_fallback = True
-    sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
-    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: sentinel)
-    seen = []
-    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
-    assert seen[0].on_fallback is True and seen[0].gate.ok("claude")  # 调试开关不关闸：记忆、反思、眼睛照旧走 Claude
 
 
 def test_wardrobe_describe_gated(tmp_path):

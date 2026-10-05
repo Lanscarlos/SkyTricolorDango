@@ -723,11 +723,7 @@ class BrainConfig:
     move_min_interval: float = 3.0  # 两次 move 调用最小间隔（秒），避免连续走位
     owner_name: str = ""  # 卡洛的游戏昵称，精确匹配；留空 = 主人命令模式关闭
     owner_window: float = 30.0  # 收到一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
-    # DeepSeek 备用大脑（spec 2026-10-03-deepseek-fallback-brain）：Claude 订阅额度用完时顶上
-    fallback: bool = True  # 额度用完切 DeepSeek 备用大脑；[llm] 没 Key 时退回纯文字备用回复
-    fallback_max_tokens: int = 4096  # 备用大脑回复长度（[llm] max_tokens=200 对大脑太短）
-    force_fallback: bool = False  # 调试：从启动就用 DeepSeek 大脑，不等额度真用完
-    fallback_history: int = 8  # 备用大脑带最近几轮（它每轮重发、不是常驻会话；不带就不记得刚说过什么，10-03 晚重复说）；0 = 不带
+    history: int = 8  # OpenAI 兼容的大脑带最近几轮（它每轮重发、不是常驻会话；不带就不记得刚说过什么，10-03 晚重复说）；0 = 不带
 
 
 @dataclass
@@ -954,11 +950,15 @@ class Config:
 DEPRECATED = frozenset({
     "attention.wander_min", "attention.wander_max", "attention.wander_presses", "attention.wander_same_side",  # 2026-10-03 随意看删了
     "viewer.host", "console.child_port",  # 2026-10-04 viewer 网页删了：接口只听本机、端口统一用 [viewer] port
+    "brain.fallback", "brain.force_fallback", "brain.fallback_max_tokens",  # 2026-10-05 备用由 [models.brain] backup 决定
 })
 
 
 # 挪了位置的配置项：旧位置照样生效（还是原来的字段），只警告
 MOVED = {"reflex.followup_window": "addressee.followup_window"}
+
+# 改了名的配置项：旧名字的值写进新字段，警告
+RENAMED = {"brain.fallback_history": "brain.history"}
 
 
 def followup_window(cfg: "Config") -> float:
@@ -972,6 +972,10 @@ def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:
     for key, value in data.items():
         if f"{path}{key}" in MOVED:
             log.warning("配置项 %s%s 挪到了 %s，旧位置照样生效", path, key, MOVED[f"{path}{key}"])
+        if f"{path}{key}" in RENAMED:
+            new = RENAMED[f"{path}{key}"]
+            log.warning("配置项 %s%s 改名为 %s", path, key, new)
+            key = new.rsplit(".", 1)[1]
         if key not in known:
             if f"{path}{key}" in DEPRECATED:
                 log.warning("配置项 %s%s 已经不用了，可以删掉", path, key)

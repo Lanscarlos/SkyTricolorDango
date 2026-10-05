@@ -1,5 +1,6 @@
 """大脑：常驻线程。有事件（攒一小会儿）或到了心跳就醒来，把事件、身体状态、眼睛最近的描述拼成一条文字消息，
-交给常驻的 Claude Code（session），它自己调 MCP 工具，直到这一轮 result。失败退避；连续失败太久算离线（聊天交给备用回复）。"""
+交给大脑会话（session：常驻的 Claude Code，或 OpenAI 兼容的 ToolLoopBrain），它自己调工具，直到这一轮 result。
+主模型那家额度 / 认证撞墙就关它的闸、切备用会话（不切回）；别的失败退避；连续失败太久算离线（聊天交给备用回复）。"""
 
 from __future__ import annotations
 
@@ -11,8 +12,8 @@ from collections.abc import Callable
 
 from ..chat.memory import format_date
 from ..config import BrainConfig, ChatConfig
+from ..models.errors import ModelError, down_kind
 from ..models.gate import ProviderGates
-from .claude import ClaudeError, claude_down
 from .events import Event, EventQueue
 from .prompt import SUMMARY_REQUEST
 
@@ -37,7 +38,7 @@ class Brain:
         self,
         cfg: BrainConfig,
         chat: ChatConfig,
-        session,  # brain.session.BrainSession：send(text) -> result
+        session,  # brain.session.BrainSession / brain.toolloop.ToolLoopBrain：send(text) -> result；有 provider / model
         toolbox,  # brain.tools.ToolBox：begin_turn()、status()、acted、used
         events: EventQueue,
         nearby: Callable[[float], list[str]],
@@ -48,14 +49,14 @@ class Brain:
         store=None,  # chat.memory.MemoryStore：live 时退出前把经过记进 inbox.md
         trace=None,  # brain.trace.BrainTrace：可视化网页的大脑时间线（run --brain --view）
         slow: Callable[[], bool] | None = None,  # 困了：没事时醒得慢一档（内心层第 2 期）
-        fallback_session=None,  # brain.deepseek.DeepSeekBrain：Claude 额度用完切过去（spec 2026-10-03-deepseek-fallback-brain）
-        gate: ProviderGates | None = None,  # Claude 总闸：别处（记忆、反思、眼睛）撞墙关了，下一轮就直接切备用大脑（spec 2026-10-04-claude-gate §2）
+        fallback: Callable[[], object] | None = None,  # 懒建备用会话（[models.brain] backup；切过去时才起进程 / 建客户端）
+        gates: ProviderGates | None = None,  # 按供应商的闸：别处（记忆、反思、眼睛）撞墙关了，下一轮就直接切备用大脑
     ) -> None:
         self.cfg = cfg
         self.chat = chat
         self.session = session
-        self.fallback_session = fallback_session
-        self.gate = gate
+        self.fallback = fallback
+        self.gates = gates
         self.on_fallback = False  # 已经在用备用大脑（切过去就不切回）
         self.toolbox = toolbox
         self.events = events
@@ -108,7 +109,7 @@ class Brain:
         return None
 
     def run(self, stop: threading.Event) -> None:
-        log.info("大脑上线（Claude Code：%s，effort=%s）", self.cfg.model, self.cfg.effort)
+        log.info("大脑上线（%s）", self.model_name())
         while not stop.is_set():
             try:
                 now = self.clock()
@@ -145,8 +146,9 @@ class Brain:
 
     def _wake(self, now: float, reason: str) -> None:
         self.last_wake = now
-        if self.gate is not None and not self.gate.ok("claude") and self.fallback_session is not None and not self.on_fallback:
-            self._switch_to_fallback(f"Claude 总闸已关（{self.gate.reason("claude")}），切到 DeepSeek 备用大脑")
+        provider = self.provider()
+        if self.gates is not None and not self.gates.ok(provider) and self.fallback is not None and not self.on_fallback:
+            self._switch_to_fallback(f"{provider} 不能用了（{self.gates.reason(provider)}）")
         began = self.clock()  # 取事件之前：之后身体才读到的消息不在这一轮里（last_turn 用）
         events = self.events.drain()
         text = self.message(now, events)
@@ -156,7 +158,7 @@ class Brain:
         self.chat_turn = any(e.kind in ("chat", "owner_command") for e in events)
         try:
             result = self.session.send(text)
-        except ClaudeError as exc:
+        except ModelError as exc:
             self._trace("fail", str(exc), self.clock() - start)
             self._failed(self.clock(), exc)
             return
@@ -186,7 +188,7 @@ class Brain:
         start = self.clock()
         try:
             result = self.session.send(SUMMARY_REQUEST)
-        except ClaudeError as exc:
+        except ModelError as exc:
             self._trace("fail", str(exc), self.clock() - start)
             log.warning("退出前写经过失败：%s", exc)
             return ""
@@ -201,18 +203,26 @@ class Brain:
         log.info("这次的经过记进了 inbox.md（%d 字）", len(text))
         return text
 
+    # ---- 当前会话 ----
+    def provider(self) -> str:
+        return getattr(self.session, "provider", "claude")
+
+    def model_name(self) -> str:
+        """「deepseek/deepseek-chat」：当前会话的供应商 / 模型。"""
+        return f"{self.provider()}/{getattr(self.session, 'model', self.cfg.model)}"
+
     # ---- 可视化网页的大脑时间线 ----
     def trace_state(self) -> dict:
         """栏头的总体状态。"""
         now = self.clock()
         return {
-            "model": getattr(self.session, "model", self.cfg.model) if self.on_fallback else self.cfg.model,
+            "model": self.model_name(),
             "effort": self.cfg.effort,
             "failures": self.failures,
             "retry_in": self.backoff_until - now if self.backoff_until > now else None,
             "offline": self.offline(now),
             "on_fallback": self.on_fallback,
-            "claude_gate": self.gate.reason("claude") if self.gate is not None else None,
+            "provider_gates": self.gates.closed() if self.gates is not None else {},
         }
 
     def _trace(self, name: str, *args) -> None:
@@ -228,29 +238,38 @@ class Brain:
         self.failures += 1
         if self.failing_since is None:
             self.failing_since = now
-        kind = claude_down(exc) if exc is not None else None
-        if kind is not None and self.gate is not None:
-            self.gate.trip("claude", kind, str(exc))
-        if kind is not None and self.fallback_session is not None and not self.on_fallback:
-            # 订阅额度用完 / 认证失败：永久切到 DeepSeek 备用大脑，不等 limit_retry（spec 2026-10-03-deepseek-fallback-brain §3）
-            self._switch_to_fallback("Claude 认证失败，切到 DeepSeek 备用大脑" if kind == "auth"
-                                     else "Claude 额度用完，切到 DeepSeek 备用大脑")
-            return
+        kind = down_kind(exc) if exc is not None else None
+        provider = (getattr(exc, "provider", "") or self.provider()) if exc is not None else self.provider()
+        if kind is not None and self.gates is not None:
+            self.gates.trip(provider, kind, str(exc))
+        if kind is not None and self.fallback is not None and not self.on_fallback:
+            # 额度 / 余额用完、认证失败：永久切到备用大脑，不等 limit_retry
+            what = "认证失败" if kind == "auth" else "额度 / 余额用完"
+            if self._switch_to_fallback(f"{provider} {what}"):
+                return
         limit = kind is not None  # 没有备用：额度和认证失败都按 limit_retry 退避
         self.limited = limit
         delay = self.cfg.limit_retry if limit else BACKOFF[min(self.failures, len(BACKOFF)) - 1]
         self.backoff_until = now + delay
-        what = {"limit": "订阅额度用完了", "auth": "Claude 认证失败"}.get(kind, "大脑这一轮失败")
+        what = {"limit": f"{provider} 额度 / 余额用完了", "auth": f"{provider} 认证失败"}.get(kind, "大脑这一轮失败")
         log.warning("%s（第 %d 次），%.0f 秒后再试：%s", what, self.failures, delay, exc)
 
-    def _switch_to_fallback(self, why: str) -> None:
-        self.session = self.fallback_session
+    def _switch_to_fallback(self, why: str) -> bool:
+        """切到备用会话（这时才建）；建不起来（缺令牌 / Key……）就不切、返回 False，走原来的失败退避。"""
+        try:
+            session = self.fallback()
+        except ModelError as exc:
+            log.warning("%s，想切备用大脑但建不起来：%s", why, exc)
+            self.fallback = None
+            return False
+        self.session = session
         self.on_fallback = True
         self.failures = 0
         self.failing_since = None
         self.backoff_until = float("-inf")
         self.limited = False
-        log.warning(why)
+        log.warning("%s，大脑切到 %s", why, self.model_name())
+        return True
 
     def _ok(self) -> None:
         self.failures = 0
@@ -274,6 +293,8 @@ class Brain:
                 "num_turns": result.get("num_turns"),
                 "total_cost_usd": result.get("total_cost_usd"),  # 订阅不按这个收费，只做参考
                 "usage": result.get("usage"),
+                "provider": result.get("provider") or self.provider(),
+                "model": result.get("model") or getattr(self.session, "model", self.cfg.model),
                 "tools": list(self.toolbox.used),
                 "text": text,
             })

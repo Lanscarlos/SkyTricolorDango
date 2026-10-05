@@ -372,3 +372,16 @@ def test_providers_must_be_tables(tmp_path):
     base.write_text('providers = 1\n', encoding="utf-8")
     with pytest.raises(ValueError, match="providers"):
         load_config(base)
+
+
+def test_fallback_history_renamed(tmp_path):
+    base = tmp_path / "config.toml"
+    base.write_text("[brain]\nfallback_history = 3\n", encoding="utf-8")
+    assert load_config(base).brain.history == 3
+
+
+def test_fallback_keys_deprecated(tmp_path):
+    base = tmp_path / "config.toml"
+    base.write_text("[brain]\nforce_fallback = true\nfallback = false\nfallback_max_tokens = 10\n", encoding="utf-8")
+    cfg = load_config(base)
+    assert not hasattr(cfg.brain, "force_fallback") and not hasattr(cfg.brain, "fallback_max_tokens")

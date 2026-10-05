@@ -2726,21 +2726,22 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
 
     没开 / 没 Key 返回 None（退化成现在的纯文字备用回复）。on_message 和 BrainSession 同款：
     把工具调用喂回大脑时间线（trace.chain(log_brain_message)）。"""
-    from .brain.deepseek import ASIDE_NOTE, FALLBACK_NOTE, DeepSeekBrain, build_client
     from .brain.llm_tools import openai_tools
+    from .brain.toolloop import ASIDE_NOTE, BLIND_NOTE, ToolLoopBrain
+    from .models.config import ProviderConfig
+    from .models.openai_compat import build_client
 
-    if not cfg.brain.fallback:
-        return None
+    provider = ProviderConfig("deepseek", "openai", base_url=cfg.llm.base_url, key_env=cfg.llm.api_key_env, timeout=cfg.llm.timeout)
     try:
-        client = build_client(cfg.llm)
+        client = build_client(provider, max_retries=0)
     except (RuntimeError, ImportError) as exc:
         log.warning("备用大脑没开（%s）", exc)
         return None
-    return DeepSeekBrain(
-        client, prompt + "\n\n" + FALLBACK_NOTE + (ASIDE_NOTE if cfg.addressee.enabled else ""), toolbox, openai_tools(toolbox, blind=True),
-        model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=cfg.brain.fallback_max_tokens,
+    return ToolLoopBrain(
+        client, prompt + "\n\n" + BLIND_NOTE + (ASIDE_NOTE if cfg.addressee.enabled else ""), toolbox, openai_tools(toolbox, blind=True),
+        model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=4096,
         max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout, on_message=on_message,
-        history=cfg.brain.fallback_history,
+        history=cfg.brain.history, provider="deepseek",
     )
 
 
@@ -2756,7 +2757,7 @@ def _gated_backup(cfg: Config):
 
     try:
         return make_llm(dataclasses.replace(
-            cfg.llm, max_tokens=cfg.brain.fallback_max_tokens, timeout=max(cfg.llm.timeout, cfg.inner.reflect_timeout),
+            cfg.llm, max_tokens=4096, timeout=max(cfg.llm.timeout, cfg.inner.reflect_timeout),
         ))
     except (RuntimeError, ImportError) as exc:
         log.warning("Claude 不能用时的备用模型没有（%s）：闸关了以后随手记、整理、反思做不了", exc)
@@ -2934,11 +2935,8 @@ def _run_brain(
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
         eyes=eyes, clock=clock, wall=wall, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
-        fallback_session=fallback_session, gate=gate,
+        fallback=(lambda: fallback_session) if fallback_session is not None else None, gates=gate,
     )
-    if cfg.brain.force_fallback and fallback_session is not None:  # 调试开关：只换大脑，不关闸（记忆、反思、眼睛照旧走 Claude）
-        brain.session = fallback_session
-        brain.on_fallback = True
     if viewer is not None:
         viewer.brain = trace
         from .brain.manual import ManualControl
