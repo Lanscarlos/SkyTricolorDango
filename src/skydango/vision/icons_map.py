@@ -4,15 +4,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
+import cv2
 import numpy as np
 
-from ..game.social import KIND_NAMES
+from ..game.social import KIND_NAMES, IconClassifier
+from ..imageio import imread
+from .embed import cosine
 from .track import Rect
 
 # 圈的归属（好友在调用方用名字标签先判，不进这里）
 MAP_OWNERS: tuple[str, ...] = ("spirit", "bonfire", "bench", "instrument", "map")
 UNKNOWN = "unknown"
+TEMPLATE_SCALES = (0.9, 1.0, 1.1)  # 模板匹配的缩放档（裁图先按框缩到 RING_PX，再微调）
+RING_PX = 100  # 模板按近处 1080p 圆圈直径截
 
 _OVERRIDES = {("candle", "bonfire"): "篝火点燃", ("candle", "map"): "可以点的蜡烛 / 灯"}
 _UNKNOWN_LABEL = "不认识的图标"
@@ -102,3 +108,62 @@ def describe_icons(icons: list[Icon]) -> str:
     if unknown:
         known.append(f"{_UNKNOWN_LABEL} {unknown} 个")
     return "、".join(known)
+
+
+def classify_template(icons: IconClassifier, crop: np.ndarray, box: Rect) -> tuple[str, float]:
+    """模板法认种类：裁图按 RING_PX / 框长边 缩放后交 icons.classify；认不出 / 空裁图返回 (UNKNOWN, 分数)。"""
+    long_edge = max(box.w, box.h)
+    if crop.size == 0 or long_edge <= 0:
+        return UNKNOWN, 0.0
+    k = RING_PX / long_edge
+    region = cv2.resize(crop, None, fx=k, fy=k, interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_LINEAR)
+    if region.size == 0:
+        return UNKNOWN, 0.0
+    kind, score = icons.classify(region, TEMPLATE_SCALES)
+    return (kind if kind is not None else UNKNOWN), score
+
+
+class IconGallery:
+    """DINOv2 最近邻底库：每种图标若干参考图，认图标取和参考图余弦最大的那一种。"""
+
+    def __init__(self, embedder, refs: dict[str, list[np.ndarray]], match: float, margin: float) -> None:
+        self.embedder = embedder
+        self.match = match
+        self.margin = margin
+        self._feats: dict[str, list[np.ndarray]] = {}
+        for kind, imgs in refs.items():
+            feats = [f for f in (embedder.embed(img) for img in imgs) if f is not None]  # 参考图特征只提一次
+            if feats:
+                self._feats[kind] = feats
+
+    @property
+    def kinds(self) -> list[str]:
+        return list(self._feats)
+
+    @classmethod
+    def load(cls, directory: str | Path, embedder, match: float, margin: float) -> "IconGallery":
+        """<directory>/<kind>/*.jpg；_ 开头的目录跳过，没有图的目录不算一种。"""
+        refs: dict[str, list[np.ndarray]] = {}
+        root = Path(directory)
+        if root.is_dir():
+            for sub in sorted(root.iterdir()):
+                if not sub.is_dir() or sub.name.startswith("_"):
+                    continue
+                imgs = [imread(p) for p in sorted(sub.glob("*.jpg"))]
+                if imgs:
+                    refs[sub.name] = imgs
+        return cls(embedder, refs, match, margin)
+
+    def classify(self, crop: np.ndarray) -> tuple[str, float]:
+        """每种取最像的一张；最好的 >= match 且（只有一种 或 领先第二种 >= margin）才算，否则 (UNKNOWN, 最好分)。"""
+        feat = self.embedder.embed(crop)
+        if feat is None or not self._feats:
+            return UNKNOWN, 0.0
+        scores = {kind: max(cosine(feat, f) for f in feats) for kind, feats in self._feats.items()}
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        best, score = ranked[0]
+        if score < self.match:
+            return UNKNOWN, score
+        if len(ranked) > 1 and score - ranked[1][1] < self.margin:
+            return UNKNOWN, score
+        return best, score

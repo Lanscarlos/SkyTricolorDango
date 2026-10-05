@@ -109,15 +109,15 @@ class IconClassifier:
         self.icons = icons
         self.min_score = min_score
 
-    def classify(self, region: np.ndarray) -> tuple[str | None, float]:
-        """一小块画面（圆圈附近）里是哪种图标；认不出返回 (None, 最高分)。"""
+    def classify(self, region: np.ndarray, scales=SCALES) -> tuple[str | None, float]:
+        """一小块画面（圆圈附近）里是哪种图标；认不出返回 (None, 最高分)。scales 是模板缩放档，默认 SCALES。"""
         if region.size == 0:
             return None, 0.0
         mask = cream(region)
         scores: dict[str, float] = {}
         for name, icon in self.icons.items():
             kind = kind_of(name)
-            scores[kind] = max(scores.get(kind, 0.0), best_match(mask, icon, SCALES).score)
+            scores[kind] = max(scores.get(kind, 0.0), best_match(mask, icon, scales).score)
         if not scores:
             return None, 0.0
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)

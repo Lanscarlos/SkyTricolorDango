@@ -47,3 +47,83 @@ def test_describe_icons():
              Icon(3, "memory", "map", "留影", b, "左边")]
     assert describe_icons(icons) == "坐下（右边）、留影（左边）、不认识的图标 1 个"
     assert describe_icons([]) == ""
+
+
+# ---- Task 2：两种分类器 ----
+import cv2
+import numpy as np
+
+from skydango.game.social import SCALES, IconClassifier, load_icons
+from skydango.vision.icons_map import IconGallery, classify_template
+
+ICONS = load_icons("assets/social")
+
+
+def _hand_region():
+    frame = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+    icon = cv2.imread("assets/social/hand.png")
+    h, w = icon.shape[:2]
+    frame[400 - h // 2 : 400 - h // 2 + h, 1400 - w // 2 : 1400 - w // 2 + w] = icon
+    return frame[344:456, 1344:1456]
+
+
+def test_classifier_scales_param_default_unchanged():
+    clf = IconClassifier(ICONS)
+    region = _hand_region()
+    assert clf.classify(region) == clf.classify(region, SCALES)
+
+
+def test_classify_template_rescales_by_box():
+    clf = IconClassifier(ICONS)
+    region = _hand_region()
+    big = cv2.resize(region, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)  # 近处的大圈
+    kind, score = classify_template(clf, big, Rect(0, 0, 224, 224))
+    assert kind == "hand" and score > 0.7
+    assert classify_template(clf, np.zeros((0, 0, 3), np.uint8), Rect(0, 0, 10, 10)) == (UNKNOWN, 0.0)
+
+
+class FakeEmbedder:
+    """按裁图平均颜色出 3 维单位向量。"""
+    def __init__(self, fail=False):
+        self.fail = fail
+
+    def embed(self, img):
+        if self.fail:
+            return None
+        v = img.reshape(-1, 3).mean(axis=0).astype(np.float32)
+        n = float(np.linalg.norm(v))
+        return v / n if n else v
+
+
+def _img(bgr):
+    return np.full((20, 20, 3), bgr, np.uint8)
+
+
+RED, BLUE, GREY = (0, 0, 255), (255, 0, 0), (200, 200, 200)
+
+
+def test_gallery_nearest():
+    g = IconGallery(FakeEmbedder(), {"sit": [_img(RED), _img(RED)], "memory": [_img(BLUE)]}, 0.9, 0.1)
+    assert g.classify(_img(RED))[0] == "sit"
+    assert g.classify(_img(GREY))[0] == UNKNOWN
+
+
+def test_gallery_single_kind_no_margin():
+    g = IconGallery(FakeEmbedder(), {"sit": [_img(RED)]}, 0.9, 0.5)
+    assert g.classify(_img(RED))[0] == "sit"
+
+
+def test_gallery_embed_error_is_unknown():
+    g = IconGallery(FakeEmbedder(), {"sit": [_img(RED)]}, 0.9, 0.1)
+    g.embedder = FakeEmbedder(fail=True)
+    assert g.classify(_img(RED)) == (UNKNOWN, 0.0)
+
+
+def test_gallery_load_skips_underscore_and_empty(tmp_path):
+    (tmp_path / "sit").mkdir()
+    (tmp_path / "_removed").mkdir()
+    (tmp_path / "music").mkdir()
+    cv2.imwrite(str(tmp_path / "sit" / "a.jpg"), _img(RED))
+    cv2.imwrite(str(tmp_path / "_removed" / "b.jpg"), _img(BLUE))
+    g = IconGallery.load(tmp_path, FakeEmbedder(), 0.9, 0.1)
+    assert g.kinds == ["sit"]
