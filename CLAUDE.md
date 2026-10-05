@@ -95,6 +95,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/attrs_train.py` | 第二层的训练和评估：`perception attrs-train`（提特征 + 线性头 → `models/attrs-<日期>.npz` + 报告）、`attrs-eval`、`bench --attrs` |
 | `src/skydango/vision/trackeval.py` | 追踪和接回的离线评估（`perception track-eval`）：基线（升级开关全关）vs 当前配置，断开原因、假走开、确认冤枉、接回对错、运动方向 |
 | `src/skydango/vision/hardcases.py` `compare.py` `augment.py` | 感知层一期工具：运行时收集难例、离线对比 YOLO 和整图 OCR（`perception compare`）、训练集增强（`perception augment`） |
+| `src/skydango/vision/icons_map.py` `icon_eval.py` | 地图交互图标（见「认交互图标」）：`icons_map.py` 归属 `owner_of`（人 / 先祖 / 物件 / 地图）、叫法 `map_label`、多数表决、裁图、`classify_template` 模板匹配、DINOv2 最近邻 `IconGallery`、运行时 `MapIcons`、收件箱整图火焰预标 `flame_rings`；`icon_eval.py` 离线评估 `perception icon-eval` 和截模板 `icon-cut` |
 | `src/skydango/vision/inbox.py` | 难例收件箱（见「难例收件箱」）：`collect`（`runs/<…>/hard` → `datasets/inbox/<运行>/raw`，记 `_index.jsonl`）、`process`（YOLO + 外形头先筛，一致的整帧进待过目、拿不准的裁图交外形页人工判，不调 Claude）、`status`、去重、整次运行分验证 / 训练、通过的帧写进 `datasets/sky` |
 | `src/skydango/vision/retrain.py` | 一键重训和对比（`perception retrain`）：训 YOLO + 外形头 → 新旧模型在验证集上回放 + ultralytics val → `tmp/retrain/<时间>/report.md` + `result.json`，失败抛 `RetrainFailed`、不改配置 |
 | `src/skydango/vision/assist.py` | Claude 辅助标注（`perception label --assist`）：挑帧、人物候选框、`claude -p` 核对（分批并发、缓存、额度用完可续跑）、合并成标注 + 预览 + 待核对清单；`Protocol` 让物品模式复用 |
@@ -189,6 +190,7 @@ dir = "private/sandbox"
 | `light/<时间>/` | 每次点亮陌生人（`[social]` light）：出请求那一刻 + 举起后每 0.5 秒的截图（每次最多 30 张、每次 run 最多 50 次；所有火焰候选画青圈，他那团画粗）和 `summary.json`（线索、结局、举起时和最后的 `black()`、火焰最后看到的时间和位置、最后在不在边上 `away`） |
 | `unknown_names/` | YOLO 感知层读得清楚、但不在 friends.md 里的名字（`names.jsonl` + 每个名字一张裁剪图）；`perception unknown-names` 汇总，**只列出，不自动写 friends.md** |
 | `enroll/` | 启动时转一圈登记团子取到的团子裁图（`<序号>.jpg`），事后核对登记的是不是团子各个角度 |
+| `icons/` | 认交互图标时认不出 / 低分的图标裁图 + `icons.jsonl`（`[icons] save`，每条轨迹 2 秒一张、每次最多 200 张）；难例原因 `icon_unknown` |
 | `appearance/` | 认装扮攒的训练数据：`crops/<身份>/*.jpg`（好友名，或 `t<轨迹>`）+ `appearance.jsonl`（`[appearance] save`，每条轨迹 2 秒一张、每次最多 2000 张） |
 | `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有大脑模式，`--no-brain` 没有）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
 
@@ -296,6 +298,20 @@ dir = "private/sandbox"
   `pip uninstall onnxruntime` 再 `pip install onnxruntime-directml`（两个包都叫 `onnxruntime` 模块，只能装一个；以后 `pip install -e ".[ocr]"` 会把 onnxruntime 装回来盖掉，要重装 directml；`pip check` 报 skydango 缺 onnxruntime 是正常的）。
   先 `perception bench --model models/sky-yolo.onnx --images <录像目录>` 看后端是不是 `DmlExecutionProvider`、每帧多少 ms，再按实测把 `fps` 降下来（估计 2~3）。
   DirectML 没装就退回 CPU 并警告；`.pt` 模型不支持 dml（torch 没有 DirectML，退回 CPU）。`[places]` / `[appearance]` 的 `device` 也能填 dml，动作模型跟着 `[perception] device`
+
+## 认交互图标（`[icons]`，要配合 `[perception]`）
+
+设计见 `docs/superpowers/specs/2026-10-05-icon-detection-design.md`，计划 `docs/superpowers/plans/2026-10-05-icon-detection.md`（路线图 ②b）。
+目标：画面里所有可点的圆圈 / 图标（互动请求、地图上的交互点）YOLO 都框成 `social_ring`，再认出是什么，写进状态和画面——**只认、不点**。**代码默认关；代码完成，还没有地图图标的模板 / 参考图、标好的数据和新 YOLO，真机验证见 spec §8**。
+- **三步**（`vision/icons_map.py`）：① 归属 `owner_of`：圈在谁头顶（`under_x` / `under_up`）→ 人 / 先祖 / 物件 / 地图；② 认种类：`classifier = "template"`（`classify_template`，模板按框缩放匹配）或 `"dino"`（DINOv2 最近邻 `IconGallery`，`dino_match` / `dino_margin`，参考图在 `assets/icons`）；
+  ③ 每条轨迹多数表决（`vote`、`min_hits` 连续帧）后才进 `PerceptionWatcher.icons(now)`；归属是地图的叫法走 `map_label`
+- **防误点（不受 `[icons] enabled` 管，关着也生效）**：没名字的圆圈只有「下面是人」（owner = person）才可能成为陌生人请求；先祖 / 物件 / 地图上的圈永远不进 requests。
+  第二层没放行的低分人物框不算人、YOLO 漏一帧人请求立刻撤——**偏安全，真机可能少接一点陌生人点火**
+- **看得到的地方**（`enabled` 时）：status「画面里的图标：…」、眼睛的位置说明（scene_note）、系统提示词一句、管理面板画面 kind `icon`（认不出画虚线）；认不出 / 低分的图标裁图存 `runs/<…>/icons/`，难例原因 `icon_unknown`。管理面板有 `icons.enabled`
+- **改名**：`PerceptionWatcher` / `EnvWatcher` 的圆圈模板分类器实例属性改叫 `ring_icons`（构造参数仍是 `icons=`）
+- **离线**：`perception icon-eval` 在标好的数据上比两种分类器；`perception icon-cut` 截模板 / 参考图
+- **收件箱配套**（`perception inbox add`）：`<录像目录> [--every N]` 导入录像；`datasets/sky --redo` 老帧回炉（`_redo-<时间>/redo.json`，沿用原 split，通过时允许覆盖、先备份到 `datasets/sky/_backup/redo-<时间>/`，增强图 `_blur` / `_dark` 的标注副本一起改，撤销还原）；
+  整理时 `find_flames` 整图补 `social_ring` 框（`flame_ring` = 1.82，**只量到 1 个样本**，而且那些旧框是 100 px 定尺，等有火焰录像重量）。标注规则见 `docs/progress/2026-09-28-yolo-training.md`
 
 ## 认装扮（`[appearance]`，要配合 `[perception]`）
 
@@ -664,6 +680,9 @@ python -m skydango perception label <录像目录> [--preview] [--model 模型] 
 python -m skydango perception label <录像目录> --assist [--model 模型] [--all-frames]  # Claude 辅助标注：挑帧 + 人物框由 Sonnet 核对，清单在 datasets/sky/_assist/review.md（令牌同 [brain]）
 python -m skydango perception label runs --from-runs --model 模型  # 把各次运行存下的难例收进数据集
 python -m skydango perception inbox collect|process|status  # 难例收件箱：collect 把 runs/*/hard 收进 [inbox] dir；process 用 YOLO + 外形头先筛（模型缺了就报错退出）；status 看各阶段数量
+python -m skydango perception inbox add <录像目录> [--every N] | datasets/sky --redo  # 收件箱：导入录像 / 老帧回炉（备份 + 撤销），整图火焰补圆圈框
+python -m skydango perception icon-eval <数据集> [--model …]  # 地图交互图标：比模板和 DINOv2 两种分类器
+python -m skydango perception icon-cut <图片> …  # 截图标模板 / 参考图存进 assets/icons
 python -m skydango perception retrain [--epochs N]  # 一键重训 YOLO + 外形头并回放对比 → tmp/retrain/<时间>/report.md（不改配置，换上去管理面板整帧页）
 python -m skydango perception label <spin 目录> --spin --model 模型  # 转圈录像：认出团子，每帧自动补 self 框
 python -m skydango perception label datasets/sky --objects [--model 模型] [--only 通配]  # 物品模式：给已标好人的数据集补标座位 / 篝火 / 乐器 / 先祖和头顶气泡 typing（先备份 labels/），清单在 _assist/objects.md；--only 只做文件名匹配的帧
