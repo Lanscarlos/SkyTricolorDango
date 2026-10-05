@@ -109,7 +109,7 @@ def brain_with_perception(tmp_path, monkeypatch):
 def test_run_brain_loads_cards_and_starts_wardrobe(tmp_path, monkeypatch):
     cfg, run, world, seen = brain_with_perception(tmp_path, monkeypatch)
     calls = []
-    monkeypatch.setattr("skydango.brain.claude.one_shot", lambda *a: calls.append(a) or "描述")
+    monkeypatch.setattr("skydango.models.claude_code.one_shot_message", lambda *a: calls.append(a) or {"result": "描述"})
     cli._run_brain(cfg, run, world, 2.0)
     env = world.env
     assert seen["cards"] == [{"小明": [{"desc": "红斗篷", "key": "color-v1", "feat": [1.0, 0.0]}]}]
@@ -121,7 +121,7 @@ def test_run_brain_loads_cards_and_starts_wardrobe(tmp_path, monkeypatch):
     calls.clear()  # 眼睛可能也调过
     assert wardrobe.describe(["图"]) == "描述"
     [(cmd, _env, cwd, content, timeout)] = calls
-    assert cmd[cmd.index("--model") + 1] == cfg.appearance.describe_model
+    assert cmd[cmd.index("--model") + 1] == "haiku"  # [models.wardrobe] 默认 claude/haiku
     assert cwd == run.path / "brain" / "wardrobe" and content == ["图"] and timeout == cfg.appearance.describe_timeout
     prompt = (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
     assert APPEARANCE_RULES.splitlines()[0] in prompt

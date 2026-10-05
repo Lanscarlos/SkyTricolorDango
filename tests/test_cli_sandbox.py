@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from model_seams import old_world
 from skydango import cli
 from skydango.brain.claude import claude_env
 from skydango.config import Config
@@ -46,7 +47,6 @@ def sandbox_setup(tmp_path, monkeypatch, mode="say"):
     log = tmp_path / "claude.jsonl"
     env = claude_env("tok", tmp_path / "cfg")
     env.update(FAKE_CLAUDE_MODE=mode, FAKE_CLAUDE_LOG=str(log))
-    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (FAKE, env))
     memory = tmp_path / "memory"
     (memory / "inner").mkdir(parents=True)
     (memory / "friends.md").write_text("## 小明\n老朋友\n", encoding="utf-8")
@@ -60,7 +60,7 @@ def sandbox_setup(tmp_path, monkeypatch, mode="say"):
     cfg.sandbox.emotes = ["鞠躬"]
     cfg.wheel.library_dir = str(tmp_path / "没有图标库")
     cfg.run.dir = str(tmp_path / "runs")
-    cfg.llm.provider = "echo"
+    old_world(monkeypatch, cfg, FAKE, env)
     port = free_port()
     args = argparse.Namespace(port=port, no_browser=True, parent_pid=None, start="resume", duration=90.0)
     return cfg, args, memory, f"http://127.0.0.1:{port}/"

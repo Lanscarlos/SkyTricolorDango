@@ -80,6 +80,9 @@ class ToolLoopBrain:
         self.history = history
         self._past: list[tuple[str, str]] = []
 
+    def close(self) -> None:
+        """同 BrainSession.close：没有常驻进程，什么都不用关。"""
+
     def _history_messages(self) -> list[dict]:
         out: list[dict] = []
         total = 0

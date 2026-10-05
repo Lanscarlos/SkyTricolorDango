@@ -1,6 +1,6 @@
 """反思（spec 2026-09-30-inner-phase2 §2）：隔一阵回头想想刚才发生的事，更新心情、别扭、心愿；下线前再写日记和要点。
 
-模型只给建议（JSON），收不收由 mind.Mind.apply 定。一次性 claude -p（和随手记同一套 ClaudeLlm），跑在后台线程里，
+模型只给建议（JSON），收不收由 mind.Mind.apply 定。[models.reflect] 的模型（GatedCall），跑在后台线程里，
 结果放进队列，身体线程每圈取走再套进 Mind（Mind 不用锁）。什么时候跑由身体报的动静决定。
 """
 
@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 
-from ..brain.claude import ClaudeError
+from ..models.errors import ModelError, ModelUnavailable
 from ..chat.memory import format_date
 from ..config import InnerConfig
 from .mind import parse_reflection
@@ -107,7 +107,7 @@ class Reflector:
                  system: str = REFLECT_SYSTEM) -> None:
         self.cfg = cfg
         self.system = system  # 第 3 期：persona 开着时是 REFLECT_SYSTEM + PERSONA_SYSTEM
-        self.llm = llm  # complete(system, messages) -> str（brain.claude.ClaudeLlm）
+        self.llm = llm  # complete(system, messages) -> str（models.registry.GatedCall）
         self.clock = clock
         self.threaded = threaded  # 测试里同步跑
         now = clock()
@@ -184,10 +184,10 @@ class Reflector:
     def _ask(self, content: str) -> dict | None:
         try:
             raw = self.llm.complete(self.system, [{"role": "user", "content": content}])
-        except ClaudeError as exc:
-            if exc.limit:
+        except ModelError as exc:
+            if exc.down == "limit" or isinstance(exc, ModelUnavailable):
                 self._paused_until = self.clock() + LIMIT_RETRY
-                log.warning("反思：订阅额度用完了，%.0f 秒内不再反思", LIMIT_RETRY)
+                log.warning("反思：模型用不了（%s），%.0f 秒内不再反思", exc, LIMIT_RETRY)
             else:
                 log.warning("反思失败，沿用上一份：%s", exc)
             return None

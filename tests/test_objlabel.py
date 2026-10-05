@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 
+from model_seams import fake_claude
 from skydango.config import AssistConfig, PerceptionConfig
 from skydango.vision.assist import FrameInput
 from skydango.vision.bubbles import Rect
@@ -172,8 +173,8 @@ def _dataset(tmp_path, monkeypatch):
                 out[stem] = {"boxes": {}, "missing": [{"cls": "bench", "box": [100, 700, 400, 900]}], "spirits": ["P1"], "unsure": ""}
         return {"result": json.dumps(out), "usage": {"input_tokens": 1, "output_tokens": 1}}
 
-    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (["claude"], {}))
-    monkeypatch.setattr("skydango.brain.claude.one_shot_message", run)
+    fake_claude(monkeypatch, ["claude"])
+    monkeypatch.setattr("skydango.models.claude_code.one_shot_message", run)
     return root, sent
 
 
@@ -259,7 +260,7 @@ def test_apply_keeps_unjudged_existing_and_reports_changes():
 
 def _count_calls(monkeypatch):
     """包一层假 Claude：数调用次数。"""
-    import skydango.brain.claude as claude
+    import skydango.models.claude_code as claude
 
     real = claude.one_shot_message
     calls = []
@@ -311,7 +312,7 @@ def test_objects_mode_writes_data_yaml_first(tmp_path, monkeypatch):
     def limit(*a, **k):
         raise ClaudeError("额度", limit=True)
 
-    monkeypatch.setattr("skydango.brain.claude.one_shot_message", limit)
+    monkeypatch.setattr("skydango.models.claude_code.one_shot_message", limit)
     with pytest.raises(SystemExit):
         cli.main(["perception", "label", str(root), "--objects"])
     assert "9: spirit" in (root / "data.yaml").read_text(encoding="utf-8")

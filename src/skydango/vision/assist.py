@@ -21,7 +21,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from ..brain.claude import ClaudeError
+from ..models.errors import ModelError, ModelUnavailable
 from ..brain.images import image_block
 from ..config import AssistConfig
 from .bubbles import Rect
@@ -307,16 +307,6 @@ def review_report(results: list[tuple[str, FrameReview | None]]) -> str:
     return "\n".join(lines)
 
 
-def assist_command(base: list[str], cfg: AssistConfig, system: str = ASSIST_SYSTEM) -> list[str]:
-    """一次性 claude -p：图片直接放在消息里，不需要任何内置工具。system：标人 / 物品模式各自的系统提示词。
-    --no-session-persistence（只配 -p）：不在配置目录的 projects/ 下留会话记录 —— 每批一个，跑一次上百个、从来不 --resume。"""
-    return [
-        *base, "-p", "--no-session-persistence", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-        "--model", cfg.model, "--tools", "", "--strict-mcp-config",
-        "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", system,
-    ]
-
-
 def assist_workdir() -> Path:
     """claude -p 的工作目录：放在仓库外面的空目录。Claude Code 会从工作目录往上找 CLAUDE.md，
     放在仓库里会把项目说明（约 1 万 token）塞进每一批，还会诱导它先写说明文字（2026-09-28 实测）。"""
@@ -361,7 +351,7 @@ class AssistLimit(RuntimeError):
 class Reviewer:
     """分批、并发地让 Claude 核对；每帧结果缓存成 <cache_dir>/<帧名>.json，重跑跳过已核对的帧。
 
-    run：内容块 → result 消息（{"result": 文字, "usage": {...}}），失败抛 ClaudeError（测试里换成假的）。
+    run：内容块 → result 消息（{"result": 文字, "usage": {...}}），失败抛 ModelError（测试里换成假的）。
     source：候选框来源（模型路径），和提示词版本、候选框坐标一起决定缓存算不算数。
     """
 
@@ -404,8 +394,8 @@ class Reviewer:
             try:
                 m = self.run(content)
                 break
-            except ClaudeError as e:
-                if e.limit:
+            except ModelError as e:
+                if e.down == "limit" or isinstance(e, ModelUnavailable):
                     self._limited.set()
                     raise AssistLimit(str(e)) from e
                 log.warning("核对 %s 失败（第 %d 次）：%s", ",".join(f.stem for f in frames), attempt, e)

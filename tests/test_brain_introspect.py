@@ -58,12 +58,12 @@ def test_introspect_bad_topic():
 
 def test_introspect_eyes():
     eyes = FakeEyes()
-    tb = ToolBox(IntrospectBody(), eyes, backstage=True)
+    tb = ToolBox(IntrospectBody(), eyes, backstage=True, eyes_label="claude/haiku")
     out, err = tb.run("introspect", {"topic": "眼睛"})
     assert not err and "还没看过" in out
     eyes.latest = ("一棵树", 70.0)  # FakeBody.clock() == 100
     out, _ = tb.run("introspect", {"topic": "眼睛"})
-    assert "30 秒前" in out and "一棵树" in out and "haiku" in out
+    assert "30 秒前" in out and "一棵树" in out and "眼睛（claude/haiku）" in out
 
 
 def test_introspect_not_action():

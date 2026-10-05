@@ -8,6 +8,7 @@ import pytest
 from conftest import FakeDevice, FakeOcr, scene
 from test_brain_body import FakeReader
 
+from model_seams import old_world
 from skydango import cli
 from skydango.brain.claude import claude_env
 from skydango.brain.manual import ManualControl
@@ -24,7 +25,6 @@ def fake_brain_run(tmp_path, monkeypatch):
     log = tmp_path / "claude.jsonl"
     env = claude_env("tok", tmp_path / "cfg")
     env.update(FAKE_CLAUDE_MODE="ok", FAKE_CLAUDE_LOG=str(log))
-    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (FAKE, env))
     monkeypatch.setattr(cli, "_device", lambda cfg: FakeDevice([scene()]))
     monkeypatch.setattr(cli, "_build_reader", lambda cfg: (FakeReader(), SelfFilter(60, 0.8, "")))
     monkeypatch.setattr(cli, "_chat_reader", lambda cfg, dev, save=None: (FakeReader(), SelfFilter(60, 0.8, "")))
@@ -32,7 +32,7 @@ def fake_brain_run(tmp_path, monkeypatch):
     cfg = Config()
     cfg.panels.cards_dir = str(Path(__file__).resolve().parents[1] / "assets" / "panels")
     cfg.run.dir = str(tmp_path / "runs")
-    cfg.llm.provider = "echo"
+    old_world(monkeypatch, cfg, FAKE, env)
     cfg.env.enabled = False
     cfg.reply.memory_dir = ""
     return cfg, RunDir.create(cfg, "dry-brain"), log
@@ -172,7 +172,7 @@ def test_profile_template_has_likes(tmp_path):
     assert "## 喜好和看法" in (tmp_path / "profile.md").read_text(encoding="utf-8")
 
 
-def test_memory_update_uses_claude(tmp_path, monkeypatch):
+def test_memory_update_uses_memory_model(tmp_path, monkeypatch):
     import argparse
 
     from skydango.chat.memory import MemoryStore
@@ -180,20 +180,11 @@ def test_memory_update_uses_claude(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     env = claude_env("tok", tmp_path / "cfg")
     env.update(FAKE_CLAUDE_MODE="ok", FAKE_CLAUDE_LOG=str(tmp_path / "claude.jsonl"))
-    monkeypatch.setattr(cli, "_claude_base", lambda cfg, hint="": (FAKE, env))
-    cfg = Config()
-    cfg.llm.provider = "nope"  # 用到 DeepSeek（make_llm）就会报错
+    cfg = old_world(monkeypatch, Config(), FAKE, env)  # [models.memory] = claude/sonnet（假 claude 进程）
     cfg.reply.memory_dir = str(tmp_path / "memory")
     MemoryStore(cfg.reply.memory_dir).history.append("懒洋洋大王：「我加班」", "辛苦啦", 1.0)
     cli.cmd_memory(cfg, argparse.Namespace(action="update"))
     assert "我加班" in MemoryStore(cfg.reply.memory_dir).notes()  # 假 claude 把收到的内容原样写回
-
-
-def test_brain_env_needs_token(monkeypatch):
-    monkeypatch.delenv("SKYDANGO_CLAUDE_TOKEN", raising=False)
-    monkeypatch.setattr("skydango.chat.llm._user_env", lambda name: "")
-    with pytest.raises(RuntimeError, match="setup-token"):
-        cli._brain_env(Config())
 
 
 def test_run_and_look_arguments(monkeypatch):
@@ -215,11 +206,18 @@ def test_run_defaults_to_brain(tmp_path, monkeypatch, argv, mode):
     assert seen == [mode]
 
 
-def test_brain_env_error_mentions_no_brain(monkeypatch):
-    monkeypatch.delenv("SKYDANGO_CLAUDE_TOKEN", raising=False)
+def test_no_brain_model_error_mentions_no_brain(tmp_path, monkeypatch):
+    from skydango.models.errors import ModelError
+
+    def refuse(provider, environ=None):
+        raise ModelError("没有 Claude 令牌：先运行 claude setup-token", down="auth", provider=provider.id)
+
+    monkeypatch.setattr("skydango.models.claude_code.claude_base", refuse)
     monkeypatch.setattr("skydango.chat.llm._user_env", lambda name: "")
-    with pytest.raises(RuntimeError, match="--no-brain"):
-        cli._brain_env(Config())
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="--no-brain") as e:
+        cli._check_brain_models(cli._registry(Config(), tmp_path))
+    assert "setup-token" in str(e.value) and "DEEPSEEK_API_KEY" in str(e.value)
 
 
 def test_viewer_has_brain_trace_from_the_start(monkeypatch):
@@ -480,75 +478,69 @@ def test_final_reflection_timeout_fits_console_stop():  # 终审 I7
     assert cli._final_timeout(cfg) == cfg.inner.reflect_timeout
 
 
-def _final_parts(tmp_path, backup, gate):
-    """_final_reflection 的准备：live 记忆目录 + 真的 _inner_mind（GatedLlm 包 ClaudeLlm）+ 假身体。"""
+def _final_parts(tmp_path, monkeypatch, reply="{}", claude_exc=None):
+    """_final_reflection 的准备：live 记忆目录 + 真的 _inner_mind（反思主 claude/sonnet、备 deepseek）+ 假身体。
+    返回 (cfg, store, ledger, reflector, body, registry, seen)：seen 记 claude 每次的超时、deepseek 换超时时的超时 / 重试。"""
     from types import SimpleNamespace
 
+    from model_seams import fake_claude
     from skydango.chat.memory import MemoryStore
     from skydango.inner.mind import Mind
 
+    seen = {"claude": [], "deepseek": []}
+    fake_claude(monkeypatch, ["claude"])
+
+    def one_shot_message(cmd, env, cwd, content, timeout):
+        seen["claude"].append(timeout)
+        if claude_exc is not None:
+            raise claude_exc
+        return {"result": reply}
+
+    def build_client(provider, *, api_key=None, timeout=None, max_retries=None, environ=None):
+        def create(**kw):
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))], usage=None)
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        client.with_options = lambda **o: seen["deepseek"].append((o.get("timeout"), max_retries)) or client
+        return client
+
+    monkeypatch.setattr("skydango.models.claude_code.one_shot_message", one_shot_message)
+    monkeypatch.setattr("skydango.models.openai_compat.build_client", build_client)
     cfg = Config()
+    cfg.models = {"reflect": {"main": "claude/sonnet", "backup": "deepseek/deepseek-chat"}}
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
     store = MemoryStore(cfg.reply.memory_dir)
     ledger = cli._inner_ledger(cfg, store, time.time())
-    _, reflector = cli._inner_mind(cfg, ledger, FAKE, {}, SimpleNamespace(path=tmp_path / "run"), gate=gate, backup=backup)
+    registry = cli._registry(cfg, tmp_path / "run")
+    _, reflector = cli._inner_mind(cfg, ledger, registry)
     body = SimpleNamespace(
         reflect_materials=lambda final: "材料：今天和阿花玩了", mind=Mind(), _safe_friends=lambda: [], persona=None,
         soft_names_this_session=lambda: set(), mind_log=None, _energy=None,
     )
-    return cfg, store, ledger, reflector, body
+    return cfg, store, ledger, reflector, body, registry, seen
 
 
-def test_final_reflection_shortens_gated_claude_timeout(tmp_path):  # 终审 I1
-    from skydango.models.gate import ProviderGates
-
-    cfg, store, ledger, reflector, body = _final_parts(tmp_path, None, ProviderGates())
-    claude = reflector.llm.claude
-    assert claude.timeout == cfg.inner.reflect_timeout > cli._final_timeout(cfg)
-    seen = []
-    claude.complete = lambda system, messages, max_tokens=None: seen.append(claude.timeout) or "{}"
+def test_final_reflection_shortens_timeout(tmp_path, monkeypatch):  # 终审 I1
+    cfg, store, ledger, reflector, body, _, seen = _final_parts(tmp_path, monkeypatch)
+    assert reflector.llm.timeout == cfg.inner.reflect_timeout > cli._final_timeout(cfg)
     cli._final_reflection(cfg, body, reflector, ledger, store)
-    assert seen == [cli._final_timeout(cfg)]  # 管理面板 stop_timeout 到之前就得写完日记
-
-
-class _Backup:
-    """假 DeepSeek：with_timeout 给出缩短的副本，记下这一笔用的超时 / 重试次数。"""
-
-    def __init__(self, reply, timeout=90.0, max_retries=2, calls=None):
-        self.reply, self.timeout, self.max_retries = reply, timeout, max_retries
-        self.calls = [] if calls is None else calls
-
-    def with_timeout(self, timeout, max_retries=None):
-        return _Backup(self.reply, timeout, self.max_retries if max_retries is None else max_retries, self.calls)
-
-    def complete(self, system, messages, max_tokens=None):
-        self.calls.append((self.timeout, self.max_retries))
-        return self.reply
+    assert seen["claude"] == [cli._final_timeout(cfg)]  # 管理面板 stop_timeout 到之前就得写完日记
 
 
 @pytest.mark.parametrize("how", ["closed", "auth"])
-def test_final_reflection_writes_diary_via_backup(tmp_path, how):  # 终审 M1：闸关着 / Claude 一直 401，日记照样写
+def test_final_reflection_writes_diary_via_backup(tmp_path, monkeypatch, how):  # 终审 M1：闸关着 / Claude 一直 401，日记照样写
     from skydango.brain.claude import ClaudeError
-    from skydango.models.gate import ProviderGates
 
-    gate = ProviderGates()
     reply = json.dumps({"mood": {"level": "开心", "text": "今天和阿花玩了"}, "diary": "今天和阿花去了雨林。", "memos": []},
                        ensure_ascii=False)
-    backup = _Backup(reply)
-    cfg, store, ledger, reflector, body = _final_parts(tmp_path, backup, gate)
-    claude_calls = []
-
-    def claude_complete(system, messages, max_tokens=None):
-        claude_calls.append(1)
-        raise ClaudeError("Claude Code 这一轮失败：401 Invalid bearer token", auth=True)
-
-    reflector.llm.claude.complete = claude_complete
+    cfg, store, ledger, reflector, body, registry, seen = _final_parts(
+        tmp_path, monkeypatch, reply, claude_exc=ClaudeError("Claude Code 这一轮失败：401 Invalid bearer token", auth=True))
     if how == "closed":
-        gate.trip("claude", "limit", "429")
+        registry.gates.trip("claude", "limit", "429")
     cli._final_reflection(cfg, body, reflector, ledger, store)
-    assert len(claude_calls) == (0 if how == "closed" else 1) and not gate.ok("claude")
-    assert backup.calls == [(cli._final_timeout(cfg), 0)]  # 备用也按下线的预算：缩短、不重试
+    assert len(seen["claude"]) == (0 if how == "closed" else 1) and not registry.gates.ok("claude")
+    assert seen["deepseek"] == [(cli._final_timeout(cfg), 0)]  # 备用也按下线的预算：缩短、不重试
     assert ledger.store.last_diaries(1) and "今天和阿花去了雨林。" in ledger.store.last_diaries(1)[0]
 
 
@@ -709,27 +701,37 @@ def test_run_brain_switches_ime_and_back_after_body_shutdown(tmp_path, monkeypat
         assert order == ["shutdown"]
 
 
-# ---- DeepSeek 备用大脑（spec 2026-10-03-deepseek-fallback-brain） ----
-
-def _fake_tb():
+# ---- 大脑的主 / 备用和按供应商的闸（spec 2026-10-05-model-providers §2.2 §2.3）----
+def _fake_deepseek(monkeypatch):
     from types import SimpleNamespace
 
-    return SimpleNamespace(body=SimpleNamespace(env=None), calling=False, backstage=False)
+    def create(**kw):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="好", tool_calls=None))], usage=None)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    client.with_options = lambda **o: client
+    monkeypatch.setattr("skydango.models.openai_compat.build_client", lambda provider, **kw: client)
 
 
-def test_run_brain_passes_fallback_session(tmp_path, monkeypatch):
+def test_run_brain_backup_session_is_lazy(tmp_path, monkeypatch):
+    from skydango.brain.session import BrainSession
+    from skydango.brain.toolloop import ToolLoopBrain
+
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    sentinel = type("FB", (), {"send": lambda self, t: {"result": "好", "subtype": "success"}})()
-    monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: sentinel)
+    cfg.models["brain"] = {"main": "claude/sonnet", "backup": "deepseek/deepseek-chat"}
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    _fake_deepseek(monkeypatch)
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
-    assert seen[0].fallback() is sentinel
+    brain = seen[0]
+    assert isinstance(brain.session, BrainSession) and brain.session.provider == "claude"
+    backup = brain.fallback()
+    assert isinstance(backup, ToolLoopBrain) and backup.provider == "deepseek" and backup.model == "deepseek-chat"
 
 
-# ---- Claude 总闸（spec 2026-10-04-claude-gate §1 §3 §6）----
-def test_run_brain_shares_one_gate(tmp_path, monkeypatch):
-    from skydango.brain.claude import ClaudeError, GatedLlm
-    from skydango.models.gate import ProviderGates
+def test_run_brain_shares_one_registry(tmp_path, monkeypatch):
+    from skydango.models.errors import ModelUnavailable
+    from skydango.models.registry import GatedCall
 
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     cfg.reply.memory_dir = str(tmp_path / "memory")
@@ -737,16 +739,17 @@ def test_run_brain_shares_one_gate(tmp_path, monkeypatch):
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=seen.append)
     parts = seen[0]
-    gate = parts.brain.gates
-    assert isinstance(gate, ProviderGates)
+    gates = parts.brain.gates
     notes_llm, reflect_llm = parts.body.notes.llm, parts.reflector.llm
-    assert isinstance(notes_llm, GatedLlm) and isinstance(reflect_llm, GatedLlm)
-    assert notes_llm.gate is gate and reflect_llm.gate is gate
-    assert notes_llm.backup is not None and notes_llm.backup is reflect_llm.backup  # 一个 DeepSeek 备用，两处共用
-    assert parts.eyes.available() is True  # 眼睛：闸关了就不看
-    gate.trip("claude", "auth", "401")
-    with pytest.raises(ClaudeError):
-        parts.eyes.describe([{"type": "text", "text": "看"}])  # 闸关着：不起 claude 进程，直接抛
+    assert isinstance(notes_llm, GatedCall) and isinstance(reflect_llm, GatedCall)
+    assert notes_llm.registry.gates is gates and reflect_llm.registry.gates is gates  # 一次运行一套闸
+    assert parts.eyes.available() is True
+    assert "模型：大脑 claude/sonnet" in parts.body.status()
+    gates.trip("claude", "auth", "401")
+    assert parts.eyes.available() is False  # 眼睛没备用：闸关了就不看
+    assert "眼睛用不了" in parts.body.status()
+    with pytest.raises(ModelUnavailable):
+        parts.eyes.describe([{"type": "text", "text": "看"}])  # 不起 claude 进程，直接抛
     assert notes_llm.complete("你负责记笔记", [{"role": "user", "content": "整理"}]) == "收到：整理"  # 改走备用（echo）
 
 
@@ -763,52 +766,19 @@ def test_run_brain_sandbox_scene_describe_not_gated(tmp_path, monkeypatch):
     assert seen[0].eyes.describe is scene_text and seen[0].eyes.available is None
 
 
-def test_gated_backup_uses_brain_max_tokens(tmp_path, monkeypatch):
-    import skydango.chat.llm as llm
-
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    made = []
-    monkeypatch.setattr(llm, "make_llm", lambda c: made.append(c) or "client")
-    assert cli._gated_backup(cfg) == "client"
-    assert made[0].max_tokens == 4096 and made[0].model == cfg.llm.model and made[0].max_retries == cfg.llm.max_retries
-    assert made[0].timeout == max(cfg.llm.timeout, cfg.inner.reflect_timeout)  # 终审 M1：日记 30 秒可能写不完
-
-
-def test_gated_backup_keeps_longer_llm_timeout(tmp_path, monkeypatch):
-    import skydango.chat.llm as llm
-
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    cfg.llm.timeout = cfg.inner.reflect_timeout + 50
-    made = []
-    monkeypatch.setattr(llm, "make_llm", lambda c: made.append(c) or "client")
-    cli._gated_backup(cfg)
-    assert made[0].timeout == cfg.llm.timeout
-
-
-@pytest.mark.parametrize("exc", [RuntimeError("没有找到 API Key"), ImportError("No module named 'openai'")])
-def test_gated_backup_none_when_unavailable(tmp_path, monkeypatch, caplog, exc):
-    import skydango.chat.llm as llm
-
-    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
-    monkeypatch.setattr(llm, "make_llm", lambda c: (_ for _ in ()).throw(exc))
-    with caplog.at_level("WARNING"):
-        assert cli._gated_backup(cfg) is None
-    assert any("备用" in r.getMessage() for r in caplog.records)
-
-
-def test_wardrobe_describe_gated(tmp_path):
+def test_wardrobe_describe_follows_models(tmp_path):
     from types import SimpleNamespace
 
-    from skydango.brain.claude import ClaudeError
-    from skydango.models.gate import ProviderGates
+    from skydango.models.errors import ModelUnavailable
 
     cfg = Config()
     env = SimpleNamespace(appearance=SimpleNamespace(load_cards=lambda cards: None), on_described=lambda *a: None)
-    gate = ProviderGates()
-    w = cli._wardrobe(cfg, env, None, SimpleNamespace(name="game"), FAKE, {}, tmp_path, time.monotonic, gate=gate)
+    registry = cli._registry(cfg, tmp_path)
+    w = cli._wardrobe(cfg, env, None, SimpleNamespace(name="game"), registry, time.monotonic)
     assert w is not None and w.available() is True
-    gate.trip("claude", "limit", "429")
-    with pytest.raises(ClaudeError):
+    registry.gates.trip("claude", "limit", "429")
+    assert w.available() is False
+    with pytest.raises(ModelUnavailable):
         w.describe([{"type": "text", "text": "看"}])
 
 

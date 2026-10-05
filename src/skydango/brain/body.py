@@ -212,6 +212,7 @@ class Body:
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
         self.said: list[str] = []  # 说过（含 dry-run）的话
         self.spoken: deque[Spoken] = deque(maxlen=50)  # 大脑说过的话（含 dry-run）和是不是主动开口；手动控制说的不记
+        self.models_line: Callable[[], str] | None = None  # status 的「模型：」一行（大脑在用哪个、切没切备用），cli 设
         self.friend_names: Callable[[], list[str]] = lambda: []  # 好友名单（场合里认聊天的说话人），cli 设
         # 冷场时的心理活动（spec 2026-10-01-lull-musing）：好友不说话了 / 聊着聊着走了，叫醒大脑、记它心里想的
         self.lulls: LullTracker | None = (
@@ -1991,6 +1992,11 @@ class Body:
                 thread = self.addressee.thread_note(self.clock())
             except Exception:
                 log.exception("算对话走向出错")
+        if self.models_line is not None:
+            try:
+                parts.append("模型：" + self.models_line())
+            except Exception:
+                log.debug("拼模型那一行出错", exc_info=True)
         if self.cfg.proactive.enabled:
             try:
                 parts.append("场合：" + self.occasion().line(self.wall()) + (f"；{thread}" if thread else ""))

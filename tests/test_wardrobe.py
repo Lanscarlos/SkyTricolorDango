@@ -2,7 +2,7 @@ import numpy as np
 
 from skydango.brain.claude import ClaudeError
 from skydango.config import AppearanceConfig
-from skydango.vision.wardrobe import ME, FRIEND, STRANGER, Wardrobe, parse_outfit, wardrobe_command
+from skydango.vision.wardrobe import ME, FRIEND, STRANGER, Wardrobe, parse_outfit
 
 C = np.zeros((40, 20, 3), np.uint8)
 F = np.zeros(8, np.float32)
@@ -29,12 +29,6 @@ def test_parse_outfit():
     assert parse_outfit("看不清") is None
     assert len(parse_outfit('{"desc": "' + "长" * 40 + '"}')[0]) == 25
     assert parse_outfit('{"desc": " 红 斗篷 "}') == ("红斗篷", True)
-
-
-def test_command():
-    cmd = wardrobe_command(["claude"], "haiku")
-    assert cmd[0] == "claude" and cmd[cmd.index("--model") + 1] == "haiku"
-    assert "--system-prompt" in cmd
 
 
 def test_priority_and_dedup():

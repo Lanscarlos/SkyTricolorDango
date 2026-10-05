@@ -3,6 +3,7 @@ import json
 from conftest import FakeDevice, scene
 from test_brain_body import FakeReader
 
+from model_seams import fake_claude
 from skydango import cli
 from skydango.chat.tracker import SelfFilter
 
@@ -94,10 +95,10 @@ def test_look_describes_given_image(tmp_path, monkeypatch, capsys):
             pass
 
     got = []
-    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (["claude"], {}))
+    fake_claude(monkeypatch, ["claude"])
     monkeypatch.setattr(cli, "_device", lambda cfg: pytest.fail("给了图片就不截屏"))
     monkeypatch.setattr(cli, "_scene_watcher", lambda cfg, **kw: Env())
-    monkeypatch.setattr("skydango.brain.claude.one_shot", lambda *a: got.append(a) or "描述")
+    monkeypatch.setattr("skydango.models.claude_code.one_shot_message", lambda *a: got.append(a) or {"result": "描述"})
     monkeypatch.chdir(tmp_path)
     cli.main(["look", str(img)])
     out = capsys.readouterr().out

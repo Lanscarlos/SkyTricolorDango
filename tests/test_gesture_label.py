@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from model_seams import fake_claude
 from skydango.config import AssistConfig, Config
 from skydango.imageio import imwrite
 from skydango.vision.assist import FrameInput
@@ -81,8 +82,8 @@ def _cli_env(tmp_path, monkeypatch):
         return {"result": json.dumps({s: {"label": "wave", "confidence": 0.9, "reason": "r"} for s in stems}),
                 "usage": {"input_tokens": 1, "output_tokens": 1}}
 
-    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (["claude"], {}))
-    monkeypatch.setattr("skydango.brain.claude.one_shot_message", run)
+    fake_claude(monkeypatch, ["claude"])
+    monkeypatch.setattr("skydango.models.claude_code.one_shot_message", run)
     cfg = Config()
     cfg.gesture.dataset = str(tmp_path / "ds")
     return cli, cfg, sent
@@ -117,11 +118,11 @@ def test_incomplete_clip_skipped(tmp_path, monkeypatch, capsys):
 
 def test_clip_labeled_in_page_while_running_is_skipped(tmp_path, monkeypatch, capsys):
     cli, cfg, sent = _cli_env(tmp_path, monkeypatch)
-    from skydango.brain import claude
+    from skydango.models import claude_code
 
     un = tmp_path / "ds" / "_unlabeled"
     a, b = _clip(un, "r__0001_track1_t0.00s"), _clip(un, "r__0002_track1_t1.00s")
-    inner = claude.one_shot_message
+    inner = claude_code.one_shot_message  # _cli_env 换上的假的
 
     def run(cmd, env, cwd, content, timeout):
         out = inner(cmd, env, cwd, content, timeout)
@@ -129,7 +130,7 @@ def test_clip_labeled_in_page_while_running_is_skipped(tmp_path, monkeypatch, ca
         a.rename(tmp_path / "ds" / "wave" / a.name)  # Claude 还在看的时候，网页上标走了
         return out
 
-    monkeypatch.setattr("skydango.brain.claude.one_shot_message", run)
+    monkeypatch.setattr("skydango.models.claude_code.one_shot_message", run)
     cli._perception_gesture_label(cfg, _args())
     assert load_guess(b).label == "wave"
     assert load_guess(tmp_path / "ds" / "wave" / a.name) is None  # 标走的不写 claude.json

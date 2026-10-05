@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from skydango.brain.events import EventQueue
-from skydango.brain.eyes import AROUND_REQUEST, Eyes, eyes_command, parse_news
+from skydango.brain.eyes import AROUND_REQUEST, Eyes, parse_news
 from skydango.config import BrainConfig, ProactiveConfig
 
 
@@ -90,13 +90,6 @@ def test_event_queue_pokes_eyes(clock):
     q.subscribe(e.notice)
     q.put("scene_change", "画面变化很大")
     assert e.tick(clock() + 21) is True
-
-
-def test_eyes_command_is_locked_down():
-    cmd = eyes_command(["claude"], BrainConfig())
-    assert cmd[cmd.index("--model") + 1] == "haiku" and cmd[cmd.index("--tools") + 1] == ""
-    for flag in ("--strict-mcp-config", "--disable-slash-commands", "--system-prompt", "--verbose"):
-        assert flag in cmd
 
 
 def test_eyes_use_scene_note_when_given(clock):

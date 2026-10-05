@@ -81,14 +81,6 @@ AROUND_REQUEST = """这是原地转一圈拍的四张图（前、右、后、左
 最后一句总结现在在什么地方。"""
 
 
-def eyes_command(base: list[str], cfg: BrainConfig) -> list[str]:
-    return [
-        *base, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-        "--model", cfg.eyes_model, "--effort", "low", "--tools", "", "--strict-mcp-config",
-        "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", EYES_SYSTEM,
-    ]
-
-
 PROXY_REQUEST = "大脑看不到图，请你替它看：{question}\n只说图里看得到的，名字只用上面位置说明里给的，别编；两三句话。"
 
 

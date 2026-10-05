@@ -194,15 +194,14 @@ def cmd_say(cfg: Config, args) -> None:
 
 def cmd_chat(cfg: Config, args) -> None:
     """不开游戏，在终端里和人设对话，调提示词用。"""
-    from .chat.llm import make_llm
     from .chat.reader import Message
     from .chat.responder import Responder
     from .vision.bubbles import Rect
 
     if args.echo:
-        cfg.llm.provider = "echo"
+        cfg.models["reply"] = {"main": "echo/echo", "backup": ""}
     names = [n.strip() for n in args.emotes.split(",") if n.strip()]  # 假装轮盘上有这些动作
-    responder = Responder(make_llm(cfg.llm), cfg.reply, available_emotes=lambda: names)
+    responder = Responder(_registry(cfg, Path("tmp/chat-models")).call("reply"), cfg.reply, available_emotes=lambda: names)
     print("输入一句话模拟别人的聊天（“名字：内容”带上说话人，多句用 | 分隔），空行退出。")
     while True:
         try:
@@ -318,10 +317,9 @@ def cmd_memory(cfg: Config, args) -> None:
 
                 print("\n" + "\n".join(InnerStore(store.dir / "inner").load_persona(quarantine=False).show_lines()))
     elif args.action == "update":
-        from .brain.claude import ClaudeLlm
-
-        base, claude_vars = _claude_base(cfg)
-        llm = ClaudeLlm(base, claude_vars, cfg.brain.memory_model, Path("tmp/memory-claude"), cfg.brain.memory_timeout)
+        llm = _registry(cfg, Path("tmp/memory-models")).call("memory", timeout=cfg.brain.memory_timeout)
+        if not llm.available():
+            raise SystemExit("整理记忆的模型用不了：" + _registry(cfg, Path("tmp")).describe("memory"))
         keeper = NotesKeeper(llm, store, cfg.reply.persona, background=False)
         print("长期记忆已更新" if keeper.update_now() else "没有需要整理的内容（或整理失败，见日志）")
 
@@ -658,7 +656,6 @@ def cmd_addressee(cfg: Config, args) -> None:
     """离线评估「好友在跟谁说话」（spec 2026-10-05-addressee-design §8）：label = 读旧日志、挑句子、Claude 初标、写 review.md；eval = 用当前规则重放、算三条门槛。"""
     from datetime import datetime
 
-    from .brain import claude
     from .chat import addressee_eval as ae
     from .vision import assist
 
@@ -696,14 +693,13 @@ def cmd_addressee(cfg: Config, args) -> None:
     out = Path(args.out) if args.out else Path("datasets/addressee") / datetime.now().strftime("%Y%m%d-%H%M%S")
     ae.save_lines(out / "lines.jsonl", lines, picked)
     print(f"读了 {len(logs)} 份日志、{len(lines)} 句，选了 {len(picked)} 句 → {out / 'lines.jsonl'}")
-    base, env = _brain_env(cfg)
     a = cfg.assist
-    cmd = assist.assist_command(base, a, system=ae.SYSTEM)
     work = assist.assist_workdir()
     work.mkdir(parents=True, exist_ok=True)
+    call = _labeler(cfg, "text_label", a.timeout, work)
     by_id = {l.id: l for l in lines}
     items = [by_id[i] for i in picked]
-    got = ae.claude_labels(items, lines, lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), out / "claude.jsonl")
+    got = ae.claude_labels(items, lines, lambda content: call.message(ae.SYSTEM, content), out / "claude.jsonl")
     print(f"Claude 标了 {len(got)} / {len(items)} 句 → {out / 'claude.jsonl'}")
     rule = ae.replay(lines, cfg.addressee, self_names, followup, aliases)
     n = ae.write_review(out / "review.md", items, lines, rule, got)
@@ -1241,7 +1237,6 @@ def _perception_attrs_label(cfg: Config, args) -> None:
     """第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json，见 vision/attrs_data.py。"""
     import dataclasses
 
-    from .brain import claude
     from .imageio import imread
     from .vision import assist, attrs_data as ad
 
@@ -1255,17 +1250,15 @@ def _perception_attrs_label(cfg: Config, args) -> None:
     if not todo:
         print(f"没有要初分的裁图（{done} 张已有 {ad.FORM_GUESS_FILE}；要重做加 --recheck）")
         return
-    base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错
     a = dataclasses.replace(cfg.assist, batch=2)  # 每批 2 张拼图（32 张裁图）
-    cmd = assist.assist_command(base, a, system=ad.FORM_PROTOCOL.system)
-    work = assist.assist_workdir()
+    call = _labeler(cfg, "image_label", a.timeout)  # 模型用不了先报错
     cache = Path("tmp") / "attrs-label" / "cache"  # Reviewer 的缓存按拼图名存，这里用不上：续跑靠 claude.json
     cache.mkdir(parents=True, exist_ok=True)
     reviewer = assist.Reviewer(
-        lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), cache, a,
+        lambda content: call.message(ad.FORM_PROTOCOL.system, content), cache, a,
         "attrs", protocol=ad.FORM_PROTOCOL,
     )
-    print(f"{len(todo)} 张裁图交给 Claude（{a.model}）初分：每张拼图 {ad.FORM_PER_SHEET} 张、每批 {a.batch} 张拼图、{a.jobs} 路并发"
+    print(f"{len(todo)} 张裁图交给 {_label_model(call)} 初分：每张拼图 {ad.FORM_PER_SHEET} 张、每批 {a.batch} 张拼图、{a.jobs} 路并发"
           + (f"；{done} 张已有 {ad.FORM_GUESS_FILE}，跳过" if done else ""))
     counts: dict[str, int] = {}
     failed = 0
@@ -1292,7 +1285,7 @@ def _perception_attrs_label(cfg: Config, args) -> None:
         asked = {n for s in sheets for n in s.hints}
         failed += len(asked - set(batch_new))
         batch_new = {n: g for n, g in batch_new.items() if (unl / n).is_file()}  # 初分期间被标注页挪走的不写
-        ad.write_form_guesses(unl, batch_new, a.model)
+        ad.write_form_guesses(unl, batch_new, _label_model(call))
         for g in batch_new.values():
             counts[g.label] = counts.get(g.label, 0) + 1
         print(f"  {min(c0 + step, len(todo))}/{len(todo)} 张")
@@ -1308,7 +1301,6 @@ def _perception_gesture_label(cfg: Config, args) -> None:
     """动作片段的 Claude 初分：每段 16 帧拼成 4×4 一张图，结果写进片段目录的 claude.json（标注页读它），见 vision/gesture_label.py。"""
     import dataclasses
 
-    from .brain import claude
     from .vision import assist, gesture_label as gl
     from .vision.gesture import SUFFIXES, load_clip
 
@@ -1334,19 +1326,17 @@ def _perception_gesture_label(cfg: Config, args) -> None:
     if not todo:
         print(f"没有要初分的片段（{done} 段已有 {name}；要重做加 --recheck）")
         return
-    base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错
     a = dataclasses.replace(cfg.assist, batch=8)
+    call = _labeler(cfg, "image_label", a.timeout)  # 模型用不了先报错
     cache = dataset / "_assist" / ("blind" if blind else "")  # 两种初分的缓存键一样，分开放
     if args.recheck:  # 重做：Reviewer 的缓存也清掉，不然直接命中
         for d in todo:
             (cache / f"{key(d.name)}.json").unlink(missing_ok=True)
-    cmd = assist.assist_command(base, a, system=protocol.system)
-    work = assist.assist_workdir()
     reviewer = assist.Reviewer(
-        lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), cache, a,
+        lambda content: call.message(protocol.system, content), cache, a,
         "gesture", protocol=protocol,
     )
-    print(f"{len(todo)} 段交给 Claude（{a.model}）初分" + ("（不看录像名）" if blind else "")
+    print(f"{len(todo)} 段交给 {_label_model(call)} 初分" + ("（不看录像名）" if blind else "")
           + f"：每批 {a.batch} 段、{a.jobs} 路并发" + (f"；{done} 段已有 {name}，跳过" if done else ""))
     same, both = 0, 0  # --blind：和看录像名的那次比
     counts: dict[str, int] = {}
@@ -1374,7 +1364,7 @@ def _perception_gesture_label(cfg: Config, args) -> None:
                 gone += 1
                 continue
             try:
-                gl.write_guess(d, g, a.model, name)
+                gl.write_guess(d, g, _label_model(call), name)
             except OSError:
                 gone += 1
                 continue
@@ -2049,14 +2039,13 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
     """--assist：挑帧 → 人物候选框 → claude -p 核对 → 和弱标注合并写成数据集 + 预览 + 待核对清单。"""
     import cv2
 
-    from .brain import claude
     from .brain.images import thumb
     from .vision import assist
     from .vision.ocr import make_ocr
     from .vision.weaklabel import CLASH_REASON, data_yaml, dataset_clash, ring_labels, split_of, write_sample, yolo_line
 
-    base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错，别白跑检测
     a = cfg.assist
+    call = _labeler(cfg, "image_label", a.timeout)  # 模型用不了先报错，别白跑检测
     if not (args.from_runs or args.all_frames) and items:  # 难例不是连续录像，不挑
         picked = assist.pick_frames([thumb(imread(p)) for p, _ in items], a.min_change, a.max_gap)
         print(f"挑了 {len(picked)} / {len(items)} 帧（和上一张差不多的去掉；--all-frames 不挑）")
@@ -2074,12 +2063,10 @@ def _perception_label_assist(cfg: Config, args, items: list) -> None:
     icons = _icon_classifier(cfg)
     names = _friend_names(cfg)()
     out = Path(args.output)
-    cmd = assist.assist_command(base, a)
-    work = assist.assist_workdir()
     reviewer = assist.Reviewer(
-        lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), out / "_assist", a, source
+        lambda content: call.message(assist.ASSIST_SYSTEM, content), out / "_assist", a, source
     )
-    print(f"{len(items)} 帧交给 Claude（{a.model}）核对：每批 {a.batch} 帧、{a.jobs} 路并发")
+    print(f"{len(items)} 帧交给 {_label_model(call)} 核对：每批 {a.batch} 帧、{a.jobs} 路并发")
     index = {c: i for i, c in enumerate(cfg.perception.classes)}
     counts: dict[str, int] = {}
     results: list = []  # (帧名, 核对结果)，写清单用
@@ -2136,7 +2123,6 @@ def _perception_label_objects(cfg: Config, args) -> None:
 
     import cv2
 
-    from .brain import claude
     from .vision import assist, objlabel
     from .vision.augment import SUFFIXES
     from .vision.track import iou
@@ -2163,7 +2149,7 @@ def _perception_label_objects(cfg: Config, args) -> None:
             raise SystemExit(f"--only {' '.join(only)} 一帧也没匹配上：按图片文件名匹配（不带扩展名的 0001 或带扩展名的 0001.jpg 都行，"
                              f"通配 * ? []），增强图（_blur / _dark）不算")
         print(f"--only：只处理 {len(images)} 帧")
-    base, env = _brain_env(cfg)  # 没令牌 / 没 claude 先报错
+    call = _labeler(cfg, "image_label", cfg.assist.timeout)  # 模型用不了先报错
     (root / "data.yaml").write_text(data_yaml(root, classes), encoding="utf-8")  # 先写：中途停下时标注里已经有 6~9 类
     labels = root / "labels"
     if labels.is_dir():  # 写回前整个备份：人物标注是人工修过的
@@ -2181,10 +2167,8 @@ def _perception_label_objects(cfg: Config, args) -> None:
         p = cfg.perception
         detector = make_detector(args.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
     a = cfg.assist
-    cmd = assist.assist_command(base, a, system=objlabel.OBJECT_SYSTEM)
-    work = assist.assist_workdir()
     reviewer = assist.Reviewer(
-        lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), root / "_assist_objects", a,
+        lambda content: call.message(objlabel.OBJECT_SYSTEM, content), root / "_assist_objects", a,
         args.model or "none", protocol=objlabel.OBJECTS_PROTOCOL,
     )
     # 每帧写回后记下标注的哈希：重跑时标注没变的帧跳过（清单照样列），被人改过的帧也跳过（人工优先），--recheck 才重新核对
@@ -2208,7 +2192,7 @@ def _perception_label_objects(cfg: Config, args) -> None:
             continue
         todo.append(path)
     done = len(images) - len(todo) - len(edited)
-    print(f"{len(todo)} 帧交给 Claude（{a.model}）补标物品和气泡：每批 {a.batch} 帧、{a.jobs} 路并发"
+    print(f"{len(todo)} 帧交给 {_label_model(call)} 补标物品和气泡：每批 {a.batch} 帧、{a.jobs} 路并发"
           + (f"；{done} 帧上次做过、{len(edited)} 帧你改过，跳过（要重新核对加 --recheck）" if done or edited else ""))
     counts: dict[str, int] = {}
     spirits = 0
@@ -2471,13 +2455,13 @@ def cmd_run(cfg: Config, args) -> None:
     request_exit = watchdog.once(_thread.interrupt_main)  # 看门狗和 /shutdown 共用：只中断一次，不打断收尾
     if args.parent_pid is not None:
         watchdog.watch_parent(args.parent_pid, request_exit)
-    if args.echo:
-        cfg.llm.provider = "echo"
+    if args.echo:  # 回复不调模型、原样回显（[models.reply] 换成内部的 echo）
+        cfg.models["reply"] = {"main": "echo/echo", "backup": ""}
     cfg.brain.enabled = not args.no_brain  # 默认接大脑；普通 Agent 只留作调试
     if cfg.vision.debug_dir:
         log.warning("vision.debug_dir 已废弃，改用 [run] dir；这次先把它当 run.dir 用")
         cfg.run.dir = cfg.vision.debug_dir
-    mode = ("dry" if cfg.reply.dry_run else "live") + ("-echo" if cfg.llm.provider == "echo" else "")
+    mode = ("dry" if cfg.reply.dry_run else "live") + ("-echo" if args.echo else "")
     mode += "-brain" if cfg.brain.enabled else ""
     run = RunDir.create(cfg, mode)
     run.attach_log()
@@ -2594,7 +2578,6 @@ def _build_emotes(cfg: Config, dev, panel, no_emotes: bool):
 
 def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: float = 0.0, viewer=None) -> None:
     from .agent import Agent
-    from .chat.llm import make_llm
     from .chat.responder import Responder
     from .chat.sender import ChatSender
     from .vision.envdiff import snapshot
@@ -2604,7 +2587,10 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     try:
         reader.trace_path = run.rows_log
         panel = _panel(cfg, dev, reader)
-        llm = make_llm(cfg.llm)
+        registry = _registry(cfg, run.path / "models")
+        llm = registry.call("reply")
+        if not llm.available():
+            raise RuntimeError("回复的模型用不了：" + registry.describe("reply"))
         from .chat.memory import MemoryStore
 
         # #friend/#remember 是主人自己的本地操作，不算"团子回复了什么"：不受 dry_run 影响，配了就写
@@ -2616,7 +2602,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             store = command_store
             if not store.profile():
                 log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
-            notes = NotesKeeper(llm, store, cfg.reply.persona, cfg.reply.notes_every)
+            notes = NotesKeeper(registry.call("memory", timeout=cfg.brain.memory_timeout), store, cfg.reply.persona, cfg.reply.notes_every)
         icons = _icon_classifier(cfg) if cfg.env.enabled else None
         env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
         social = None
@@ -2697,71 +2683,105 @@ def cmd_camera(cfg: Config, args) -> None:
             print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}")
 
 
-def _claude_base(cfg: Config, hint: str = "") -> tuple[list[str], dict[str, str]]:
-    """隔离的 Claude Code（单独配置目录 + claude setup-token 令牌）：命令 + 环境。大脑、眼睛、记忆整理共用。"""
-    from .brain.claude import claude_env, resolve_claude
-    from .chat.llm import read_key
+def _registry(cfg: Config, workdir: Path, environ=None):
+    """按用处给模型（spec 2026-10-05-model-providers §2）：解析 [providers] / [models]（含旧字段换算），每个用处 INFO 一行。
+    一次运行一个（闸是这次运行的）；离线命令各自建一个。"""
+    import os
 
-    try:
-        token = read_key(cfg.brain.token_env)
-    except RuntimeError:
-        raise RuntimeError(
-            f"没有找到大脑用的 Claude 令牌：先运行 claude setup-token，再 setx {cfg.brain.token_env} \"<令牌>\"" + hint
-        ) from None
-    return resolve_claude(cfg.brain.claude_path), claude_env(token, cfg.brain.config_dir)
+    from .models.config import resolve
+    from .models.gate import ProviderGates
+    from .models.registry import Registry
+
+    registry = Registry(resolve(cfg), ProviderGates(), workdir, os.environ if environ is None else environ)
+    registry.log_summary()
+    return registry
 
 
-def _brain_env(cfg: Config) -> tuple[list[str], dict[str, str]]:
-    """大脑和眼睛的 Claude Code：先检查 mcp，再 _claude_base。"""
+def _labeler(cfg: Config, use: str, timeout: float, cwd: Path | None = None):
+    """离线标注命令的模型（image_label / text_label）：主和备都用不了就先报错退出，别白跑检测。
+    cwd 默认放在仓库外面的空目录（assist_workdir：Claude Code 会从工作目录往上找 CLAUDE.md）。"""
+    from .vision import assist
+
+    work = cwd or assist.assist_workdir()
+    work.mkdir(parents=True, exist_ok=True)
+    registry = _registry(cfg, work)
+    u = registry.setup.uses[use]
+    if u.disabled:
+        raise SystemExit(f"{use} 的模型用不了：{u.disabled}")
+    problems = registry.requirements([use])
+    refs = [r for r in (u.main, u.backup) if r is not None]
+    if refs and len({p.provider for p in problems}) >= len({r.provider for r in refs}):
+        raise SystemExit(f"{use} 的模型用不了：" + "；".join(p.text for p in problems))
+    return registry.call(use, timeout=timeout, cwd=work)
+
+
+def _label_model(call) -> str:
+    """这次标注实际走的模型（写进初分结果、打印用）。"""
+    ref = call.registry.current(call.use)
+    return str(ref) if ref is not None else "（没有能用的模型）"
+
+
+def _brain_env(cfg: Config) -> None:
+    """大脑模式先检查 mcp（模型的令牌 / Key 由 Registry 按用处查）。"""
     import importlib.util
 
-    hint = "；不想接大脑可以用 --no-brain（调试用的普通模式）"
     if importlib.util.find_spec("mcp") is None:
-        raise RuntimeError("大脑要用 mcp：先 pip install --user mcp" + hint)
-    return _claude_base(cfg, hint)
+        raise RuntimeError("大脑要用 mcp：先 pip install --user mcp；不想接大脑可以用 --no-brain（调试用的普通模式）")
 
 
-def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
-    """DeepSeek 备用大脑（spec 2026-10-03-deepseek-fallback-brain §1）：额度用完时 cli 切过去用。
+def _check_brain_models(registry) -> None:
+    """大脑的主和备都用不了（缺 Key / 令牌 / claude 命令、没配好）才拦；别的用处的问题只警告，用到时那一处停用。"""
+    from .models.config import USE_NAMES
 
-    没开 / 没 Key 返回 None（退化成现在的纯文字备用回复）。on_message 和 BrainSession 同款：
-    把工具调用喂回大脑时间线（trace.chain(log_brain_message)）。"""
-    from .brain.llm_tools import openai_tools
-    from .brain.toolloop import ASIDE_NOTE, BLIND_NOTE, ToolLoopBrain
-    from .models.config import ProviderConfig
-    from .models.openai_compat import build_client
+    u = registry.setup.uses["brain"]
+    refs = [r for r in (u.main, u.backup) if r is not None]
+    problems = registry.requirements(["brain"])
+    bad = {p.provider for p in problems}
+    if u.disabled or all(r.provider in bad for r in refs):
+        why = u.disabled or "；".join(p.text for p in problems)
+        raise RuntimeError("大脑没有能用的模型：" + why + "；不想接大脑可以用 --no-brain（调试用的普通模式）")
+    missing: dict[str, list[str]] = {}  # 问题 → 受影响的用处
+    for name in USE_NAMES:
+        if name != "brain":
+            for p in registry.requirements([name]):
+                missing.setdefault(p.text, []).append(name)
+    for text, names in missing.items():
+        log.warning("模型：%s —— %s 用到时用不了（有备用的改走备用）", text, "、".join(names))
 
-    provider = ProviderConfig("deepseek", "openai", base_url=cfg.llm.base_url, key_env=cfg.llm.api_key_env, timeout=cfg.llm.timeout)
+
+def _brain_sessions(registry, build):
+    """大脑会话：主那家能用就建主的、备用懒建；主建不起来（缺令牌 / Key）直接用备的、不再有备用。"""
+    import functools
+
+    from .models.errors import ModelError
+
+    u = registry.setup.uses["brain"]
+    first, rest = (u.main, u.backup) if u.main is not None and registry.gates.ok(u.main.provider) else (u.backup, None)
     try:
-        client = build_client(provider, max_retries=0)
-    except (RuntimeError, ImportError) as exc:
-        log.warning("备用大脑没开（%s）", exc)
-        return None
-    return ToolLoopBrain(
-        client, prompt + "\n\n" + BLIND_NOTE + (ASIDE_NOTE if cfg.addressee.enabled else ""), toolbox, openai_tools(toolbox),
-        model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=4096,
-        max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout, on_message=on_message,
-        history=cfg.brain.history, provider="deepseek",
-    )
+        session = build(first)
+    except ModelError as exc:
+        if rest is None:
+            raise RuntimeError(f"大脑没有能用的模型：{exc}") from exc
+        log.warning("大脑的主模型 %s 用不了（%s），改用 %s", first, exc, rest)
+        return build(rest), None
+    return session, (functools.partial(build, rest) if rest is not None else None)
 
 
-def _gated_backup(cfg: Config):
-    """Claude 总闸关了以后随手记、整理 notes、反思改走的备用模型（[llm]，一般是 DeepSeek；spec 2026-10-04-claude-gate §3.1）。
+def _models_line(brain, registry) -> str:
+    """status 里的「模型：」：大脑现在用的（切过备用写原因），停用 / 用不了的看图用处跟在后面。"""
+    from .models.config import USE_BY_NAME
 
-    max_tokens 取 [brain] fallback_max_tokens（反思要写日记，[llm] 的回复长度不够），超时至少 [inner] reflect_timeout
-    （[llm] 的 30 秒写不完日记；下线那次由 GatedLlm.timeout 再压到管理面板的停止预算里）。
-    没 Key / 没装 openai 返回 None（只是防御：_run_brain 建备用回复时就要 [llm]，缺了起不来）。"""
-    import dataclasses
-
-    from .chat.llm import make_llm
-
-    try:
-        return make_llm(dataclasses.replace(
-            cfg.llm, max_tokens=4096, timeout=max(cfg.llm.timeout, cfg.inner.reflect_timeout),
-        ))
-    except (RuntimeError, ImportError) as exc:
-        log.warning("Claude 不能用时的备用模型没有（%s）：闸关了以后随手记、整理、反思做不了", exc)
-        return None
+    closed = registry.gates.closed()
+    now = brain.model_name()
+    text = f"大脑已切到 {now}（{'；'.join(f'{p} {r}' for p, r in closed.items())}）" if brain.on_fallback else f"大脑 {now}"
+    off = []
+    for name, u in registry.setup.uses.items():
+        label = USE_BY_NAME[name].label
+        if u.disabled:
+            off.append(f"{label}停用：{u.disabled}")
+        elif USE_BY_NAME[name].vision and registry.current(name) is None:
+            off.append(f"{label}用不了（{'；'.join(f'{p} {r}' for p, r in closed.items())}）")
+    return text + (f"（{'；'.join(off)}）" if off else "")
 
 
 def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
@@ -2816,55 +2836,52 @@ def _run_brain(
     world：接世界的东西（brain.world.World）；None = 真机（_game_world，在检查完令牌之后才建、才连设备）。
     时间一律从 world 取（沙盒是模拟时钟）。on_ready(BrainParts)：身体建好、线程启动前调一次。
     trace：大脑时间线（沙盒没有 viewer 时由调用方传进来）。"""
-    import dataclasses
     import threading
 
+    import functools
+
     from .brain.body import Body
-    from .brain.claude import ClaudeLlm, GatedLlm, gated_describe, one_shot
-    from .models.gate import ProviderGates
     from .brain.events import EventQueue
-    from .brain.eyes import Eyes, eyes_command
+    from .brain.eyes import EYES_SYSTEM, Eyes
     from .brain.images import scene_note
     from .brain.loop import Brain, log_brain_message
     from .brain.mcp_server import SkyServer
     from .brain.prompt import brain_prompt
     from .brain.session import BrainSession
+    from .brain.sessions import make_session
     from .brain.tools import ToolBox
     from .brain.trace import BrainTrace
     from .brain.world import BrainParts
-    from .chat.llm import make_llm
     from .chat.responder import Responder
+    from .models.config import ModelRef
 
-    base, claude_vars = _brain_env(cfg)  # 先检查令牌和 claude 命令，缺了早点报错
+    _brain_env(cfg)  # 先检查 mcp
+    # 按用处给模型（spec 2026-10-05-model-providers）：一次运行一个 Registry、一套按供应商的闸，
+    # 大脑、记忆、反思、眼睛、装扮描述、备用回复共用；主那家额度 / 认证撞墙就关它的闸、改走备用
+    registry = _registry(cfg, run.path / "brain")
+    _check_brain_models(registry)  # 大脑的主和备都用不了才拦；别的用处的问题只警告（用到时那一处停用）
     if world is None:
         world = _game_world(cfg, run, no_emotes)
     wall, clock = world.wall, world.clock
     env = world.env
     try:
-        # Claude 总闸（spec 2026-10-04-claude-gate）：一次运行一个，大脑、记忆、反思、眼睛、装扮描述共用；
-        # 额度 / 认证出错关上后不再起 claude，文字的改走 backup（[llm] DeepSeek），看图的跳过
-        gate = ProviderGates()
-        backup = _gated_backup(cfg)
         store = notes = None
         if cfg.reply.memory_dir:  # dry-run 也读人设和记忆（看大脑的表现要用），但不写
             from .chat.memory import MemoryStore, NotesKeeper
 
             store = MemoryStore(cfg.reply.memory_dir)
             if not cfg.reply.dry_run:
-                # 记忆整理也走 Claude（订阅）：随手记、整理 notes.md 各起一次性 claude -p，在记忆后台线程里跑
-                memory_llm = GatedLlm(
-                    ClaudeLlm(base, claude_vars, cfg.brain.memory_model, run.path / "brain" / "memory", cfg.brain.memory_timeout),
-                    backup, gate,
-                )
+                # 随手记、整理 notes.md：[models.memory]，在记忆后台线程里跑
+                memory_llm = registry.call("memory", timeout=cfg.brain.memory_timeout)
                 notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every, wall=wall)
         live_store = None if cfg.reply.dry_run else store
         ledger = _inner_ledger(cfg, store, wall())
-        mind, reflector = _inner_mind(cfg, ledger, base, claude_vars, run, wall(), clock, gate=gate, backup=backup)
+        mind, reflector = _inner_mind(cfg, ledger, registry, wall(), clock)
         persona = _inner_persona(cfg, ledger, wall())
         mind_log = _inner_log(ledger, reflector, wall())
         events = EventQueue(clock=clock)
         # 大脑离线时的备用回复：在身体线程里调，给短超时、不重试；不带记忆存储，免得和身体重复记聊天记录
-        fallback = Responder(make_llm(dataclasses.replace(cfg.llm, timeout=10.0, max_retries=0)), cfg.reply)
+        fallback = Responder(registry.call("reply", timeout=10.0, max_retries=0), cfg.reply)
         body = Body(
             cfg, world.device, world.reader, world.sender, world.self_filter, events,
             env=env, social=world.social, emotes=world.emotes, camera=world.camera, locomotion=world.locomotion,
@@ -2873,13 +2890,11 @@ def _run_brain(
             ledger=ledger, mind=mind, reflector=reflector, persona=persona, mind_log=mind_log, clock=clock, wall=wall,
         )
         work = run.path / "brain"
-        if world.describe is not None:  # 沙盒自己的场景描述：不走 Claude，不接闸
+        if world.describe is not None:  # 沙盒自己的场景描述：不调模型，不接闸
             describe, eyes_available = world.describe, None
-        else:
-            def claude_describe(content):
-                return one_shot(eyes_command(base, cfg.brain), claude_vars, work / "eyes", content, cfg.brain.eyes_timeout)
-
-            describe, eyes_available = gated_describe(claude_describe, gate), (lambda: gate.ok("claude"))
+        else:  # 眼睛：[models.eyes]，主和备都用不了时自动看跳过、代看回"现在看不了图"
+            eyes_call = registry.call("eyes", timeout=cfg.brain.eyes_timeout)
+            describe, eyes_available = (lambda content: eyes_call.text(EYES_SYSTEM, content)), eyes_call.available
         if world.text_only:  # 沙盒：没有画面，不给位置说明
             note = lambda now, s: ""  # noqa: E731
         else:
@@ -2906,9 +2921,17 @@ def _run_brain(
         body.recent_changes = _recent_changes(cfg)
         events.subscribe(eyes.notice)
         # recall 只读，dry-run 也给
+        brain_box: list = []  # 大脑建好后放进来：代看要知道大脑现在用的模型看不看得了图
+
+        def sees() -> bool:
+            # OpenAI 兼容的大脑一律代看（tool 消息放不了图）；常驻 Claude Code 看模型勾没勾「能看图」
+            session = brain_box[0].session if brain_box else None
+            return isinstance(session, BrainSession) and registry.sees(ModelRef(session.provider, session.model))
+
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
-                          sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled, call=_call_enabled(cfg, env))
-        wardrobe = _wardrobe(cfg, env, ledger, world, base, claude_vars, work, clock, gate=gate)
+                          sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled, call=_call_enabled(cfg, env),
+                          proxy=eyes.proxy, sees=sees, eyes_label=registry.describe("eyes"))
+        wardrobe = _wardrobe(cfg, env, ledger, world, registry, clock)
         server = SkyServer(toolbox)
         server.start()
     except BaseException:
@@ -2922,21 +2945,21 @@ def _run_brain(
         now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
         days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
         persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
-        appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
+        appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store, models=registry),
         lull=cfg.lull.enabled, call=_call_enabled(cfg, env), addressee=cfg.addressee.enabled,
         icons=cfg.perception.enabled and cfg.icons.enabled,
     )
-    session = BrainSession(
-        base, claude_vars, work / "session", server.url, prompt,
-        cfg.brain.model, cfg.brain.effort, cfg.brain.turn_timeout,
-        on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message,
-    )
-    fallback_session = _fallback_brain(cfg, toolbox, prompt, on_message=trace.chain(log_brain_message) if trace is not None else log_brain_message)
+    on_message = trace.chain(log_brain_message) if trace is not None else log_brain_message
+    build = functools.partial(make_session, registry, prompt=prompt, toolbox=toolbox, mcp_url=server.url, workdir=work,
+                              cfg=cfg.brain, addressee=cfg.addressee.enabled, on_message=on_message)
+    session, backup = _brain_sessions(registry, build)
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
         eyes=eyes, clock=clock, wall=wall, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
-        fallback=(lambda: fallback_session) if fallback_session is not None else None, gates=gate,
+        fallback=backup, gates=registry.gates,
     )
+    brain_box.append(brain)
+    body.models_line = lambda: _models_line(brain, registry)
     if viewer is not None:
         viewer.brain = trace
         from .brain.manual import ManualControl
@@ -3020,7 +3043,11 @@ def _run_brain(
                 ledger.close(summary, wall())  # 这一次记进 days.jsonl（dry-run 不写）
             except Exception:
                 log.exception("内心账本收尾出错")
-        session.close()
+        for s in {id(session): session, id(brain.session): brain.session}.values():  # 切过备用的话两个都关
+            try:
+                s.close()
+            except Exception:
+                log.exception("关大脑会话出错")
         server.stop()
 
 
@@ -3039,10 +3066,10 @@ def _finish_wardrobe(thread: threading.Thread, body) -> None:
         log.exception("下线时记装扮出错")
 
 
-def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock, gate=None):
+def _wardrobe(cfg: Config, env, ledger, world, registry, clock):
     """认装扮（spec 2026-10-01-appearance）：关系卡里的旧外观载入记忆簿；[appearance] describe 开着、不是沙盒时建描述器挂到感知层上。
     感知层没挂记忆簿时什么都不做、返回 None。描述器的钟和感知层的帧时间同一个（world.clock）。
-    gate：按供应商的闸（models.gate.ProviderGates，看 claude 那家）；关了就不再排描述（spec 2026-10-04-claude-gate §3.3）。"""
+    描述用 [models.wardrobe]；主和备都用不了（停用 / 闸关了）就不再排描述。"""
     book = getattr(env, "appearance", None)
     if book is None:
         return None
@@ -3054,20 +3081,15 @@ def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock, g
     a = cfg.appearance
     if not a.describe or world.name == "sandbox":
         return None
-    from .brain.claude import gated_describe, one_shot
-    from .vision.wardrobe import Wardrobe, wardrobe_command
+    from .vision.wardrobe import WARDROBE_SYSTEM, Wardrobe
 
-    cmd = wardrobe_command(base, a.describe_model)
-
-    def describe(content):
-        return one_shot(cmd, claude_vars, work / "wardrobe", content, a.describe_timeout)
-
+    call = registry.call("wardrobe", timeout=a.describe_timeout)
     wardrobe = Wardrobe(
-        a, describe=gated_describe(describe, gate) if gate is not None else describe,
-        on_done=env.on_described, clock=clock, available=(lambda: gate.ok("claude")) if gate is not None else None,
+        a, describe=lambda content: call.text(WARDROBE_SYSTEM, content),
+        on_done=env.on_described, clock=clock, available=call.available,
     )
     env.wardrobe = wardrobe
-    log.info("描述装扮：%s，每小时最多 %d 次", a.describe_model, a.describe_max)
+    log.info("描述装扮：%s，每小时最多 %d 次", registry.describe("wardrobe"), a.describe_max)
     return wardrobe
 
 
@@ -3087,23 +3109,18 @@ def _inner_ledger(cfg: Config, store, now: float | None = None):
         return None
 
 
-def _inner_mind(
-    cfg: Config, ledger, base, claude_vars, run, now: float | None = None, clock=time.monotonic, gate=None, backup=None,
-):
+def _inner_mind(cfg: Config, ledger, registry, now: float | None = None, clock=time.monotonic):
     """内心层第 2 期：(Mind, Reflector)；没有账本或 [inner] reflect = false 时 (None, None)。
-    gate / backup：Claude 总闸和备用模型（spec 2026-10-04-claude-gate §3.1）：给了闸就包成 GatedLlm，闸关了反思改走 backup。"""
+    反思用 [models.reflect]（主那家撞墙改走备用；下线那次 _final_reflection 再压超时）。"""
     if ledger is None or not cfg.inner.reflect:
         return None, None
-    from .brain.claude import ClaudeLlm, GatedLlm
     from .inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM, Reflector
 
     try:
         mind = ledger.store.load_mind(quarantine=ledger.persist)
         if mind.wake(time.time() if now is None else now, cfg.inner.rest_gap):
             log.info("睡过一觉：心情回到平常")
-        llm = ClaudeLlm(base, claude_vars, cfg.inner.reflect_model, run.path / "brain" / "reflect", cfg.inner.reflect_timeout)
-        if gate is not None:
-            llm = GatedLlm(llm, backup, gate)
+        llm = registry.call("reflect", timeout=cfg.inner.reflect_timeout)
         system = REFLECT_SYSTEM + "\n\n" + PERSONA_SYSTEM if cfg.inner.persona else REFLECT_SYSTEM
         return mind, Reflector(cfg.inner, llm, clock=clock, system=system)
     except Exception:
@@ -3153,7 +3170,7 @@ def _persona_prompt(persona) -> str:
         return ""
 
 
-def _backstage_prompt(cfg: Config, store, now: float | None = None, run=None, repo=None) -> str:
+def _backstage_prompt(cfg: Config, store, now: float | None = None, run=None, repo=None, models=None) -> str:
     """「幕后」一节（spec 2026-10-01-backstage）：[backstage] enabled 才有；live 时记下看到了哪个提交。拼出错就不写这一节。
 
     now 默认真实时间：提交时间是真实时间，别用世界的钟（沙盒的 wall() 会超前）。"""
@@ -3172,7 +3189,14 @@ def _backstage_prompt(cfg: Config, store, now: float | None = None, run=None, re
                                     cfg.backstage.changelog_max, cfg.backstage.changelog_days)
         if head and mark is not None and not cfg.reply.dry_run:
             write_seen(mark, head)
-        return section(cfg.brain.owner_name, cfg.brain.model, cfg.brain.eyes_model, cfg.inner.reflect_model, lines)
+        if models is None:  # 测试 / 离线：按配置算一份（启动时定，切过备用不改提示词）
+            from .models.config import resolve
+            from .models.gate import ProviderGates
+            from .models.registry import Registry
+
+            models = Registry(resolve(cfg), ProviderGates(), Path("tmp"))
+        brain, eyes, reflect = (str(models.current(u) or "停用") for u in ("brain", "eyes", "reflect"))
+        return section(cfg.brain.owner_name, brain, eyes, reflect, lines)
     except Exception:
         log.exception("拼「幕后」一节出错")
         return ""
@@ -3206,7 +3230,7 @@ def _final_reflection(cfg: Config, body, reflector, ledger, live_store, now: flo
     from .inner import finish_reflection
 
     try:
-        if hasattr(reflector.llm, "timeout"):  # GatedLlm：Claude 和备用（DeepSeek，不重试）一起缩短
+        if hasattr(reflector.llm, "timeout"):  # GatedCall：主和备一起缩短，备用不重试
             reflector.llm.timeout = _final_timeout(cfg)
         result = reflector.final(body.reflect_materials(True))
         return finish_reflection(
@@ -3325,15 +3349,17 @@ def cmd_panels(cfg: Config, args) -> None:
 
 
 def cmd_look(cfg: Config, args) -> None:
-    """截一张图让眼睛（Haiku）描述一遍：在真实画面上调眼睛的提示词，看它认得准不准、会不会编名字。"""
-    from .brain.claude import one_shot
-    from .brain.eyes import Eyes, eyes_command
+    """截一张图让眼睛（[models.eyes]）描述一遍：在真实画面上调眼睛的提示词，看它认得准不准、会不会编名字。"""
+    from .brain.eyes import EYES_SYSTEM, Eyes
     from .vision.bubbles import roi_rect
     from .vision.chatlog import find_input_top
 
     from .brain.images import label_note, scene_note
 
-    base, claude_vars = _brain_env(cfg)
+    registry = _registry(cfg, Path("tmp/look-models"))
+    eyes_call = registry.call("eyes", timeout=cfg.brain.eyes_timeout)
+    if not eyes_call.available():
+        raise SystemExit("眼睛的模型用不了：" + registry.describe("eyes"))
     frame = imread(args.image) if args.image else _device(cfg).screenshot()
     height, width = frame.shape[:2]
     area = roi_rect(cfg.vision.log_roi, width, height)
@@ -3354,9 +3380,7 @@ def cmd_look(cfg: Config, args) -> None:
     print("交给眼睛的位置说明：\n" + (scene_note(env, now, scale) if yolo else label_note(dict(env.labels), scale)) + "\n")
     eyes = Eyes(
         cfg.brain,
-        describe=lambda content: one_shot(
-            eyes_command(base, cfg.brain), claude_vars, Path("tmp/look-claude"), content, cfg.brain.eyes_timeout
-        ),
+        describe=lambda content: eyes_call.text(EYES_SYSTEM, content),
         frame=lambda: frame,
         labels=lambda: dict(env.labels),
         blackout=lambda: False,
@@ -3368,7 +3392,7 @@ def cmd_look(cfg: Config, args) -> None:
     started = time.perf_counter()
     text = eyes.describe_frame(frame, now)
     print(text)
-    print(f"\n{cfg.brain.eyes_model}：{time.perf_counter() - started:.1f} 秒" + ("" if args.image else "；截图存在 tmp/look.jpg"))
+    print(f"\n{registry.describe('eyes')}：{time.perf_counter() - started:.1f} 秒" + ("" if args.image else "；截图存在 tmp/look.jpg"))
 
 
 def main(argv: list[str] | None = None) -> None:

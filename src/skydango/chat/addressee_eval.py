@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ..brain import claude
+from ..models.errors import ModelError, ModelUnavailable
 from ..brain.addressee import LABEL_NAMES, Addressee, Verdict
 from ..config import AddresseeConfig
 from .tracker import similar
@@ -213,9 +213,9 @@ def claude_labels(
         text = "判断下面每条任务里 » 那一句：\n\n" + "\n\n".join(blocks)
         try:
             reply = run_fn([{"type": "text", "text": text}])
-        except claude.ClaudeError as exc:
-            if getattr(exc, "limit", False):
-                raise SystemExit(f"订阅额度用完了：已标的存在 {cache}，额度恢复后重跑同一条命令会接着做") from None
+        except ModelError as exc:
+            if exc.down == "limit" or isinstance(exc, ModelUnavailable):
+                raise SystemExit(f"模型额度 / 余额用完了：已标的存在 {cache}，额度恢复后重跑同一条命令会接着做") from None
             raise
         labels = _parse_reply(reply.get("result", ""))
         new = [(l.id, labels[l.id]) for l in part if l.id in labels]

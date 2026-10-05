@@ -145,7 +145,9 @@ class ToolBox:
         self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None, text_only: bool = False, sandbox: bool = False,
         backstage: bool = False, call: bool = False,
         proxy: Callable[[list[dict], str], str] | None = None, sees: Callable[[], bool] = lambda: True,
+        eyes_label: str = "",
     ) -> None:
+        self.eyes_label = eyes_label  # introspect(眼睛) 里说眼睛是哪个模型（registry.describe("eyes")）
         self.body = body
         self.proxy = proxy  # 大脑看不了图时把图交给眼睛代看：(内容块, 想看清什么) → 文字（Eyes.proxy）
         self.sees = sees  # 大脑现在用的模型看不看得了图
@@ -330,5 +332,6 @@ class ToolBox:
             if latest is None:
                 return "眼睛还没看过"
             text, t = latest
-            return f"眼睛（{b.cfg.brain.eyes_model}）{b.clock() - t:.0f} 秒前写的：\n{text}"
+            label = f"（{self.eyes_label}）" if self.eyes_label else ""
+            return f"眼睛{label}{b.clock() - t:.0f} 秒前写的：\n{text}"
         return b.call(lambda: b.introspect(topic))

@@ -2436,3 +2436,11 @@ def test_status_and_scene_note_with_real_envwatcher(clock):
     b, _, _, _ = body(clock, env=env)
     assert "画面里的图标" not in b.status()
     assert "图标" not in scene_note(env, 0.0, 1.0)
+
+
+def test_status_has_models_line(clock):  # spec 2026-10-05-model-providers §4
+    b = body(clock)[0]
+    plain = b.status()
+    assert "模型：" not in plain
+    b.models_line = lambda: "大脑 deepseek/deepseek-chat"
+    assert "模型：大脑 deepseek/deepseek-chat" in b.status()

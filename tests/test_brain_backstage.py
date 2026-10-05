@@ -131,8 +131,8 @@ from skydango.brain.backstage import section  # noqa: E402
 
 
 def test_section_with_owner():
-    s = section("卡洛", "sonnet", "haiku", "sonnet", [])
-    assert s.startswith("## 幕后") and "做出你的人是卡洛" in s and "Claude（sonnet）" in s and "（haiku）" in s
+    s = section("卡洛", "deepseek/deepseek-chat", "claude/haiku", "deepseek/deepseek-chat", [])
+    assert s.startswith("## 幕后") and "做出你的人是卡洛" in s and "大模型（deepseek/deepseek-chat）" in s and "（claude/haiku）" in s
     assert "知道团子是 AI" in s and "introspect" in s and "###" not in s
     assert "{" not in s
 

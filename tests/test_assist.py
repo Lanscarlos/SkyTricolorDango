@@ -6,13 +6,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from model_seams import fake_claude
 from skydango.brain.claude import ClaudeError
 from skydango.config import AssistConfig, Config
 from skydango.vision.assist import (
     AssistLimit,
     FrameInput,
     Reviewer,
-    assist_command,
     assist_workdir,
     PROMPT_VERSION,
     FrameReview,
@@ -183,11 +183,6 @@ def test_reviewer_counts_usage(tmp_path):
     assert r.usage["cache_creation_input_tokens"] == 300  # 图片的 token 记在这里（实测 input_tokens 只有个位数）
 
 
-def test_assist_command_uses_model_and_no_tools():
-    cmd = assist_command(["claude"], AssistConfig(model="sonnet"))
-    assert cmd[cmd.index("--model") + 1] == "sonnet" and cmd[cmd.index("--tools") + 1] == ""
-
-
 def test_merge_proposals_dedups_across_models():
     a = [Detection("player", Rect(0, 0, 100, 200), 0.3)]
     b = [Detection("player", Rect(5, 5, 100, 200), 0.6), Detection("player", Rect(500, 0, 50, 100), 0.2)]
@@ -236,9 +231,9 @@ def _cli_env(tmp_path, monkeypatch, n=2, runs=False, reply=None, limit=False):
     monkeypatch.setattr("skydango.vision.ocr.make_ocr", lambda *a, **k: Ocr())
     monkeypatch.setattr(cli, "_icon_classifier", lambda cfg: None)
     monkeypatch.setattr(cli, "_friend_names", lambda cfg: (lambda: []))
-    monkeypatch.setattr(cli, "_brain_env", lambda cfg: (["claude"], {}))
+    fake_claude(monkeypatch, ["claude"])
     monkeypatch.setattr("skydango.vision.assist.CocoPeople", Coco)
-    monkeypatch.setattr("skydango.brain.claude.one_shot_message", run)
+    monkeypatch.setattr("skydango.models.claude_code.one_shot_message", run)
     return src, tmp_path / "ds", sent
 
 
@@ -443,13 +438,6 @@ def test_cache_key_includes_people(tmp_path):
     assert len(calls) == 2
 
 
-def test_assist_command_system_prompt():
-    from skydango.vision.assist import assist_command
-
-    cmd = assist_command(["claude"], AssistConfig(), system="X")
-    assert cmd[cmd.index("--system-prompt") + 1] == "X"
-
-
 # ---- 辅助标注审查留下的小问题（进度文档「没做完 / 待办」第 6 条） ----
 def test_parse_boxes_as_list_uses_order_as_ids():
     """Claude 把 boxes 回成列表时按顺序当编号 1、2…，不能整帧当"全不是人"。"""
@@ -523,12 +511,6 @@ def test_reviewer_caches_frames_answered_with_prefixed_names(tmp_path):
     assert out["f0"].verdicts[1].cls == out["f1"].verdicts[1].cls == "player"
     assert Reviewer(run, tmp_path, cfg, "m").review(_frames(2))["f1"].verdicts[1].cls == "player"
     assert len(calls) == 1  # 第二次全部命中缓存
-
-
-def test_assist_command_does_not_persist_sessions():
-    """一次性 claude -p 不在配置目录的 projects/ 下留会话记录（--no-session-persistence 只配 --print）。"""
-    cmd = assist_command(["claude"], AssistConfig())
-    assert "--no-session-persistence" in cmd and "-p" in cmd
 
 
 def test_build_message_uses_actual_frame_size():

@@ -15,7 +15,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from ..brain.claude import ClaudeError
+from ..models.errors import ModelError, ModelUnavailable
 from ..brain.images import fit, image_block
 from ..config import AppearanceConfig
 
@@ -54,14 +54,6 @@ def parse_outfit(text: str) -> tuple[str, bool] | None:
     if not desc:
         clear = False
     return desc, clear
-
-
-def wardrobe_command(base: list[str], model: str) -> list[str]:
-    return [
-        *base, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-        "--model", model, "--effort", "low", "--tools", "", "--strict-mcp-config",
-        "--permission-mode", "dontAsk", "--disable-slash-commands", "--system-prompt", WARDROBE_SYSTEM,
-    ]
 
 
 class Wardrobe:
@@ -127,9 +119,9 @@ class Wardrobe:
         content = [image_block(fit(crop, (512, 512)), 85), {"type": "text", "text": WARDROBE_REQUEST}]
         try:
             outfit = parse_outfit(self.describe(content))
-        except ClaudeError as exc:
-            if exc.limit:
-                log.warning("描述装扮：额度用完，%.0f 秒后再试", self.cfg.quota_wait)
+        except ModelError as exc:
+            if exc.down == "limit" or isinstance(exc, ModelUnavailable):
+                log.warning("描述装扮：模型用不了（%s），%.0f 秒后再试", exc, self.cfg.quota_wait)
                 with self._lock:
                     self._limit_until = now + self.cfg.quota_wait
                     self._queue.append(item)
