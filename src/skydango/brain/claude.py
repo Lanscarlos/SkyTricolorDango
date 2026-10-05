@@ -19,6 +19,9 @@ from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
+from ..models.errors import ModelError, down_kind
+from ..models.gate import ProviderGates
+
 log = logging.getLogger(__name__)
 
 LIMIT_WORDS = ("limit", "上限", "额度")
@@ -27,44 +30,18 @@ AUTH_WORDS = ("authentication", "invalid api key", "invalid x-api-key", "oauth t
 _DROP_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
 
 
-class ClaudeError(RuntimeError):
+class ClaudeError(ModelError):
     """Claude Code 这一轮没成：起不来、挂了、超时、返回错误。limit=True 表示订阅额度用完了，auth=True 表示认证失败。"""
 
-    def __init__(self, message: str, limit: bool = False, auth: bool = False) -> None:
-        super().__init__(message)
+    def __init__(self, message: str, limit: bool = False, auth: bool = False, provider: str = "claude") -> None:
+        super().__init__(message, down="limit" if limit else "auth" if auth else None, provider=provider)
         self.limit = limit
         self.auth = auth
 
 
 def claude_down(exc: BaseException) -> str | None:
-    """这个异常说明 Claude 整个不能用了吗：'limit'（额度）/ 'auth'（认证）/ None（别的错，只认 ClaudeError）。"""
-    if isinstance(exc, ClaudeError):
-        if exc.limit:
-            return "limit"
-        if exc.auth:
-            return "auth"
-    return None
-
-
-class ClaudeGate:
-    """Claude 总闸：额度用完 / 认证失败后关上，这次运行里不再起 claude 进程。线程安全，只关不开。"""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.reason: str | None = None
-
-    def ok(self) -> bool:
-        return self.reason is None
-
-    def trip(self, kind: str, detail: str) -> bool:
-        """关闸；返回这次是不是刚关上（已经关了返回 False，原因不改）。"""
-        why = "额度用完" if kind == "limit" else f"认证失败：{detail[:80]}"
-        with self._lock:
-            if self.reason is not None:
-                return False
-            self.reason = why
-        log.warning("Claude 不能用了（%s），这次运行里记忆、反思改走 DeepSeek，眼睛和装扮描述停用", why)
-        return True
+    """兼容旧名：同 models.errors.down_kind。"""
+    return down_kind(exc)
 
 
 def claude_env(token: str, config_dir: str | Path) -> dict[str, str]:
@@ -234,10 +211,11 @@ class GatedLlm:
     超时等别的错原样抛出、不关闸。没有备用时闸关着抛 ClaudeError（不再起 claude 进程）。
     """
 
-    def __init__(self, claude, backup, gate: ClaudeGate) -> None:
+    def __init__(self, claude, backup, gate: ProviderGates, provider: str = "claude") -> None:
         self.claude = claude
         self.backup = backup
         self.gate = gate
+        self.provider = provider
 
     @property
     def timeout(self) -> float | None:
@@ -254,34 +232,34 @@ class GatedLlm:
             self.backup = shorten(value, max_retries=0)
 
     def complete(self, system: str, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
-        if self.gate.ok():
+        if self.gate.ok(self.provider):
             try:
                 return self.claude.complete(system, messages, max_tokens)
             except ClaudeError as exc:
                 kind = claude_down(exc)
                 if kind is None:
                     raise
-                self.gate.trip(kind, str(exc))
+                self.gate.trip(self.provider, kind, str(exc))
                 if self.backup is None:
                     raise
         elif self.backup is None:
-            raise ClaudeError(f"Claude 不能用了（{self.gate.reason}），也没有备用模型", limit=True)
-        log.debug("Claude 不能用了：%s，这一笔改走 DeepSeek", self.gate.reason)
+            raise ClaudeError(f"Claude 不能用了（{self.gate.reason(self.provider)}），也没有备用模型", limit=True)
+        log.debug("Claude 不能用了：%s，这一笔改走 DeepSeek", self.gate.reason(self.provider))
         return self.backup.complete(system, messages, max_tokens)
 
 
-def gated_describe(describe: Callable[[object], str], gate: ClaudeGate) -> Callable[[object], str]:
+def gated_describe(describe: Callable[[object], str], gate: ProviderGates, provider: str = "claude") -> Callable[[object], str]:
     """给看图（眼睛、装扮描述）套上总闸：闸关着不调 describe、直接抛；额度 / 认证出错关闸后原样抛。"""
 
     def wrapped(content):
-        if not gate.ok():
+        if not gate.ok(provider):
             raise ClaudeError("Claude 不能用了，看不了图", limit=True)
         try:
             return describe(content)
         except ClaudeError as exc:
             kind = claude_down(exc)
             if kind is not None:
-                gate.trip(kind, str(exc))
+                gate.trip(provider, kind, str(exc))
             raise
 
     return wrapped

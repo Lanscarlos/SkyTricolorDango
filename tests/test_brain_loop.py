@@ -4,7 +4,8 @@ import time
 
 import pytest
 
-from skydango.brain.claude import ClaudeError, ClaudeGate
+from skydango.brain.claude import ClaudeError
+from skydango.models.gate import ProviderGates
 from skydango.brain.events import EventQueue
 from skydango.brain.loop import Brain, log_brain_message
 from skydango.brain.prompt import SUMMARY_REQUEST
@@ -158,39 +159,39 @@ def test_limit_without_fallback_still_backs_off(clock):  # Review Focus 4
 
 
 def test_auth_error_switches_to_fallback_and_trips_gate(clock):
-    gate = ClaudeGate()
+    gate = ProviderGates()
     fb = FakeSession(ok())
     brain, _, _, _ = make(clock, FakeSession(ClaudeError("401 authentication", auth=True)), fallback_session=fb, gate=gate)
     brain.wake(clock(), "heartbeat")
     assert brain.session is fb and brain.on_fallback is True
-    assert brain.gate is gate and not gate.ok()
+    assert brain.gate is gate and not gate.ok("claude")
 
 
 def test_gate_closed_elsewhere_switches_before_next_turn(clock):
-    gate = ClaudeGate()
+    gate = ProviderGates()
     claude = FakeSession(ok())
     fb = FakeSession(ok("ds"))
     brain, _, _, _ = make(clock, claude, fallback_session=fb, gate=gate)
-    gate.trip("auth", "token 过期")
+    gate.trip("claude", "auth", "token 过期")
     brain.wake(clock(), "heartbeat")
     assert claude.sent == [] and len(fb.sent) == 1 and brain.on_fallback is True
 
 
 def test_auth_error_without_fallback_backs_off_limit_retry(clock):
-    brain, _, _, _ = make(clock, FakeSession(ClaudeError("authentication", auth=True)), gate=ClaudeGate())
+    brain, _, _, _ = make(clock, FakeSession(ClaudeError("authentication", auth=True)), gate=ProviderGates())
     brain.wake(clock(), "heartbeat")
     assert brain.backoff_until == clock() + brain.cfg.limit_retry and not brain.on_fallback
 
 
 def test_trace_state_model_and_gate_on_fallback(clock):
-    gate = ClaudeGate()
+    gate = ProviderGates()
     fb = FakeSession(ok())
     fb.model = "deepseek-chat"
     brain, _, _, _ = make(clock, FakeSession(ClaudeError("limit", limit=True)), fallback_session=fb, gate=gate)
     assert brain.trace_state()["claude_gate"] is None
     brain.wake(clock(), "heartbeat")
     st = brain.trace_state()
-    assert st["model"] == "deepseek-chat" and st["claude_gate"] == gate.reason and gate.reason
+    assert st["model"] == "deepseek-chat" and st["claude_gate"] == gate.reason("claude") and gate.reason("claude")
 
 
 def test_heartbeat_backs_off_when_idle_and_resets(clock):

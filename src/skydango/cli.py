@@ -2819,7 +2819,8 @@ def _run_brain(
     import threading
 
     from .brain.body import Body
-    from .brain.claude import ClaudeGate, ClaudeLlm, GatedLlm, gated_describe, one_shot
+    from .brain.claude import ClaudeLlm, GatedLlm, gated_describe, one_shot
+    from .models.gate import ProviderGates
     from .brain.events import EventQueue
     from .brain.eyes import Eyes, eyes_command
     from .brain.images import scene_note
@@ -2841,7 +2842,7 @@ def _run_brain(
     try:
         # Claude 总闸（spec 2026-10-04-claude-gate）：一次运行一个，大脑、记忆、反思、眼睛、装扮描述共用；
         # 额度 / 认证出错关上后不再起 claude，文字的改走 backup（[llm] DeepSeek），看图的跳过
-        gate = ClaudeGate()
+        gate = ProviderGates()
         backup = _gated_backup(cfg)
         store = notes = None
         if cfg.reply.memory_dir:  # dry-run 也读人设和记忆（看大脑的表现要用），但不写
@@ -2877,7 +2878,7 @@ def _run_brain(
             def claude_describe(content):
                 return one_shot(eyes_command(base, cfg.brain), claude_vars, work / "eyes", content, cfg.brain.eyes_timeout)
 
-            describe, eyes_available = gated_describe(claude_describe, gate), gate.ok
+            describe, eyes_available = gated_describe(claude_describe, gate), (lambda: gate.ok("claude"))
         if world.text_only:  # 沙盒：没有画面，不给位置说明
             note = lambda now, s: ""  # noqa: E731
         else:
@@ -3043,7 +3044,7 @@ def _finish_wardrobe(thread: threading.Thread, body) -> None:
 def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock, gate=None):
     """认装扮（spec 2026-10-01-appearance）：关系卡里的旧外观载入记忆簿；[appearance] describe 开着、不是沙盒时建描述器挂到感知层上。
     感知层没挂记忆簿时什么都不做、返回 None。描述器的钟和感知层的帧时间同一个（world.clock）。
-    gate：Claude 总闸（brain.claude.ClaudeGate）；关了就不再排描述（spec 2026-10-04-claude-gate §3.3）。"""
+    gate：按供应商的闸（models.gate.ProviderGates，看 claude 那家）；关了就不再排描述（spec 2026-10-04-claude-gate §3.3）。"""
     book = getattr(env, "appearance", None)
     if book is None:
         return None
@@ -3065,7 +3066,7 @@ def _wardrobe(cfg: Config, env, ledger, world, base, claude_vars, work, clock, g
 
     wardrobe = Wardrobe(
         a, describe=gated_describe(describe, gate) if gate is not None else describe,
-        on_done=env.on_described, clock=clock, available=gate.ok if gate is not None else None,
+        on_done=env.on_described, clock=clock, available=(lambda: gate.ok("claude")) if gate is not None else None,
     )
     env.wardrobe = wardrobe
     log.info("描述装扮：%s，每小时最多 %d 次", a.describe_model, a.describe_max)

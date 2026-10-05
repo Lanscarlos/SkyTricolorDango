@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from skydango.brain.claude import (ClaudeError, ClaudeGate, GatedLlm, StreamProcess, check_result, claude_down,
+from skydango.models.gate import ProviderGates
+from skydango.brain.claude import (ClaudeError, GatedLlm, StreamProcess, check_result, claude_down,
                                    claude_env, gated_describe, one_shot, resolve_claude)
 
 FAKE = [sys.executable, str(Path(__file__).parent / "fake_claude.py")]
@@ -133,20 +134,20 @@ def test_check_result_limit_and_other():
 
 
 def test_gate_trips_once_and_stays_closed(caplog):
-    g = ClaudeGate()
-    assert g.ok() and g.reason is None
-    assert g.trip("auth", "401 bad key") is True
-    assert g.trip("limit", "429") is False
-    assert not g.ok() and g.reason.startswith("认证失败")
-    assert sum("Claude 不能用了" in r.getMessage() for r in caplog.records) == 1
+    g = ProviderGates()
+    assert g.ok("claude") and g.reason("claude") is None
+    assert g.trip("claude", "auth", "401 bad key") is True
+    assert g.trip("claude", "limit", "429") is False
+    assert not g.ok("claude") and g.reason("claude").startswith("认证失败")
+    assert sum("claude 不能用了" in r.getMessage() for r in caplog.records) == 1
 
 
 def test_gate_trip_from_many_threads_once(caplog):
-    g = ClaudeGate()
-    ts = [threading.Thread(target=g.trip, args=("auth", "401")) for _ in range(20)]
+    g = ProviderGates()
+    ts = [threading.Thread(target=g.trip, args=("claude", "auth", "401")) for _ in range(20)]
     [t.start() for t in ts]
     [t.join() for t in ts]
-    assert not g.ok() and sum("Claude 不能用了" in r.getMessage() for r in caplog.records) == 1
+    assert not g.ok("claude") and sum("claude 不能用了" in r.getMessage() for r in caplog.records) == 1
 
 
 class _Fake:
@@ -163,7 +164,7 @@ class _Fake:
 
 
 def test_gated_llm_uses_claude_while_open():
-    claude, backup, gate = _Fake("来自claude"), _Fake("来自backup"), ClaudeGate()
+    claude, backup, gate = _Fake("来自claude"), _Fake("来自backup"), ProviderGates()
     llm = GatedLlm(claude, backup, gate)
     assert llm.complete("s", [{"role": "user", "content": "x"}]) == "来自claude"
     assert (claude.calls, backup.calls) == (1, 0)
@@ -171,31 +172,31 @@ def test_gated_llm_uses_claude_while_open():
 
 
 def test_gated_llm_auth_error_trips_and_uses_backup():
-    claude, backup, gate = _Fake(exc=ClaudeError("bad token", auth=True)), _Fake("来自backup"), ClaudeGate()
+    claude, backup, gate = _Fake(exc=ClaudeError("bad token", auth=True)), _Fake("来自backup"), ProviderGates()
     llm = GatedLlm(claude, backup, gate)
     assert llm.complete("s", []) == "来自backup"
-    assert not gate.ok()
+    assert not gate.ok("claude")
     assert (claude.calls, backup.calls) == (1, 1)
 
 
 def test_gated_llm_closed_gate_skips_claude():
-    claude, backup, gate = _Fake("来自claude"), _Fake("来自backup"), ClaudeGate()
-    gate.trip("limit", "")
+    claude, backup, gate = _Fake("来自claude"), _Fake("来自backup"), ProviderGates()
+    gate.trip("claude", "limit", "")
     assert GatedLlm(claude, backup, gate).complete("s", []) == "来自backup"
     assert (claude.calls, backup.calls) == (0, 1)
 
 
 def test_gated_llm_timeout_does_not_trip():
-    claude, backup, gate = _Fake(exc=ClaudeError("超时")), _Fake("来自backup"), ClaudeGate()
+    claude, backup, gate = _Fake(exc=ClaudeError("超时")), _Fake("来自backup"), ProviderGates()
     with pytest.raises(ClaudeError):
         GatedLlm(claude, backup, gate).complete("s", [])
-    assert gate.ok()
+    assert gate.ok("claude")
     assert backup.calls == 0
 
 
 def test_gated_llm_no_backup_raises_without_calling_claude():
-    claude, gate = _Fake("来自claude"), ClaudeGate()
-    gate.trip("limit", "")
+    claude, gate = _Fake("来自claude"), ProviderGates()
+    gate.trip("claude", "limit", "")
     with pytest.raises(ClaudeError):
         GatedLlm(claude, None, gate).complete("s", [])
     assert claude.calls == 0
@@ -215,7 +216,7 @@ class _Timed(_Fake):
 def test_gated_llm_timeout_setter_reaches_claude_and_backup():  # 终审 I1 / M1
     claude, backup = _Fake(), _Timed()
     claude.timeout = 90.0
-    llm = GatedLlm(claude, backup, ClaudeGate())
+    llm = GatedLlm(claude, backup, ProviderGates())
     assert llm.timeout == 90.0
     llm.timeout = 35.0
     assert claude.timeout == 35.0 and llm.timeout == 35.0
@@ -226,10 +227,10 @@ def test_gated_llm_timeout_setter_reaches_claude_and_backup():  # 终审 I1 / M1
 def test_gated_llm_timeout_setter_tolerates_plain_backup():
     claude, backup = _Fake(), _Fake()
     claude.timeout = 90.0
-    llm = GatedLlm(claude, backup, ClaudeGate())
+    llm = GatedLlm(claude, backup, ProviderGates())
     llm.timeout = 35.0
     assert claude.timeout == 35.0 and llm.backup is backup
-    llm2 = GatedLlm(claude, None, ClaudeGate())
+    llm2 = GatedLlm(claude, None, ProviderGates())
     llm2.timeout = 20.0
     assert claude.timeout == 20.0 and llm2.backup is None
 
@@ -241,15 +242,15 @@ def test_gated_describe_skips_and_trips():
         calls.append(content)
         raise ClaudeError("额度", limit=True)
 
-    gate = ClaudeGate()
+    gate = ProviderGates()
     wrapped = gated_describe(describe, gate)
     with pytest.raises(ClaudeError):
         wrapped("img")
-    assert not gate.ok() and calls == ["img"]
+    assert not gate.ok("claude") and calls == ["img"]
     with pytest.raises(ClaudeError) as info:
         wrapped("img2")
     assert info.value.limit and calls == ["img"]  # 闸关了不再调
 
 
 def test_gated_describe_passes_through_while_open():
-    assert gated_describe(lambda c: f"看到{c}", ClaudeGate())("x") == "看到x"
+    assert gated_describe(lambda c: f"看到{c}", ProviderGates())("x") == "看到x"

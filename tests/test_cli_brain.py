@@ -501,9 +501,9 @@ def _final_parts(tmp_path, backup, gate):
 
 
 def test_final_reflection_shortens_gated_claude_timeout(tmp_path):  # 终审 I1
-    from skydango.brain.claude import ClaudeGate
+    from skydango.models.gate import ProviderGates
 
-    cfg, store, ledger, reflector, body = _final_parts(tmp_path, None, ClaudeGate())
+    cfg, store, ledger, reflector, body = _final_parts(tmp_path, None, ProviderGates())
     claude = reflector.llm.claude
     assert claude.timeout == cfg.inner.reflect_timeout > cli._final_timeout(cfg)
     seen = []
@@ -529,9 +529,10 @@ class _Backup:
 
 @pytest.mark.parametrize("how", ["closed", "auth"])
 def test_final_reflection_writes_diary_via_backup(tmp_path, how):  # 终审 M1：闸关着 / Claude 一直 401，日记照样写
-    from skydango.brain.claude import ClaudeError, ClaudeGate
+    from skydango.brain.claude import ClaudeError
+    from skydango.models.gate import ProviderGates
 
-    gate = ClaudeGate()
+    gate = ProviderGates()
     reply = json.dumps({"mood": {"level": "开心", "text": "今天和阿花玩了"}, "diary": "今天和阿花去了雨林。", "memos": []},
                        ensure_ascii=False)
     backup = _Backup(reply)
@@ -544,9 +545,9 @@ def test_final_reflection_writes_diary_via_backup(tmp_path, how):  # 终审 M1�
 
     reflector.llm.claude.complete = claude_complete
     if how == "closed":
-        gate.trip("limit", "429")
+        gate.trip("claude", "limit", "429")
     cli._final_reflection(cfg, body, reflector, ledger, store)
-    assert len(claude_calls) == (0 if how == "closed" else 1) and not gate.ok()
+    assert len(claude_calls) == (0 if how == "closed" else 1) and not gate.ok("claude")
     assert backup.calls == [(cli._final_timeout(cfg), 0)]  # 备用也按下线的预算：缩短、不重试
     assert ledger.store.last_diaries(1) and "今天和阿花去了雨林。" in ledger.store.last_diaries(1)[0]
 
@@ -798,7 +799,8 @@ def test_force_fallback_without_session_is_noop(tmp_path, monkeypatch):  # Revie
 
 # ---- Claude 总闸（spec 2026-10-04-claude-gate §1 §3 §6）----
 def test_run_brain_shares_one_gate(tmp_path, monkeypatch):
-    from skydango.brain.claude import ClaudeError, ClaudeGate, GatedLlm
+    from skydango.brain.claude import ClaudeError, GatedLlm
+    from skydango.models.gate import ProviderGates
 
     cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
     cfg.reply.memory_dir = str(tmp_path / "memory")
@@ -807,13 +809,13 @@ def test_run_brain_shares_one_gate(tmp_path, monkeypatch):
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=seen.append)
     parts = seen[0]
     gate = parts.brain.gate
-    assert isinstance(gate, ClaudeGate)
+    assert isinstance(gate, ProviderGates)
     notes_llm, reflect_llm = parts.body.notes.llm, parts.reflector.llm
     assert isinstance(notes_llm, GatedLlm) and isinstance(reflect_llm, GatedLlm)
     assert notes_llm.gate is gate and reflect_llm.gate is gate
     assert notes_llm.backup is not None and notes_llm.backup is reflect_llm.backup  # 一个 DeepSeek 备用，两处共用
-    assert parts.eyes.available == gate.ok  # 眼睛：闸关了就不看
-    gate.trip("auth", "401")
+    assert parts.eyes.available() is True  # 眼睛：闸关了就不看
+    gate.trip("claude", "auth", "401")
     with pytest.raises(ClaudeError):
         parts.eyes.describe([{"type": "text", "text": "看"}])  # 闸关着：不起 claude 进程，直接抛
     assert notes_llm.complete("你负责记笔记", [{"role": "user", "content": "整理"}]) == "收到：整理"  # 改走备用（echo）
@@ -873,20 +875,21 @@ def test_force_fallback_keeps_gate_open(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_fallback_brain", lambda cfg, tb, p, on_message=None: sentinel)
     seen = []
     cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts.brain))
-    assert seen[0].on_fallback is True and seen[0].gate.ok()  # 调试开关不关闸：记忆、反思、眼睛照旧走 Claude
+    assert seen[0].on_fallback is True and seen[0].gate.ok("claude")  # 调试开关不关闸：记忆、反思、眼睛照旧走 Claude
 
 
 def test_wardrobe_describe_gated(tmp_path):
     from types import SimpleNamespace
 
-    from skydango.brain.claude import ClaudeError, ClaudeGate
+    from skydango.brain.claude import ClaudeError
+    from skydango.models.gate import ProviderGates
 
     cfg = Config()
     env = SimpleNamespace(appearance=SimpleNamespace(load_cards=lambda cards: None), on_described=lambda *a: None)
-    gate = ClaudeGate()
+    gate = ProviderGates()
     w = cli._wardrobe(cfg, env, None, SimpleNamespace(name="game"), FAKE, {}, tmp_path, time.monotonic, gate=gate)
-    assert w is not None and w.available == gate.ok
-    gate.trip("limit", "429")
+    assert w is not None and w.available() is True
+    gate.trip("claude", "limit", "429")
     with pytest.raises(ClaudeError):
         w.describe([{"type": "text", "text": "看"}])
 
