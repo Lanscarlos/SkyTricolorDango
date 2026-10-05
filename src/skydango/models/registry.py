@@ -152,7 +152,7 @@ class GatedCall:
 
     def _backend(self, ref: ModelRef, backup: bool):
         if ref not in self._cache:
-            retries = 0 if (backup and self._short) else self.max_retries
+            retries = 0 if self._short else self.max_retries  # 下线反思：主和备都不重试，免得超出停止预算
             self._cache[ref] = self.registry.backend(ref, self.use, self.cwd, retries)
         return self._cache[ref]
 

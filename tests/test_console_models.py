@@ -174,3 +174,20 @@ def test_test_provider_claude(monkeypatch):
     assert probe_provider(p, "tok", run=run)["ok"] is True
     assert calls[1][calls[1].index("--model") + 1] == "sonnet"
     assert probe_provider(p, "", run=run) == {"ok": False, "text": "还没填 Claude 令牌"}
+
+
+def test_restore_default_overrides_legacy_console_fields(tmp_path):  # 终审 I3：console.toml 里旧设置页写的模型字段
+    v, store = view_of(tmp_path, console='[brain]\nmodel = "sonnet"\nowner_name = "卡洛"\n[llm]\ntemperature = 0.3\n')
+    assert str(effective(store).uses["brain"].main) == "claude/sonnet"
+    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-chat", "backup": "claude/sonnet"}})[0] == 200
+    s = effective(store)
+    assert str(s.uses["brain"].main) == "deepseek/deepseek-chat" and s.uses["reply"].temperature == 0.3
+    data = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
+    assert data["brain"] == {"owner_name": "卡洛"} and "llm" not in data  # 旧字段迁走，别的照留
+
+
+def test_untouched_legacy_console_choice_is_kept(tmp_path):
+    v, store = view_of(tmp_path, console='[brain]\nmodel = "opus"\n')
+    assert submit(v)[0] == 200
+    assert str(effective(store).uses["brain"].main) == "claude/opus"
+    assert "brain" not in tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))

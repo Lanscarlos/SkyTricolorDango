@@ -77,3 +77,11 @@ def test_unknown_model_only_warns(tmp_path):
     s = resolve(_cfg(tmp_path, '[models.brain]\nmain = "deepseek/deepseek-v9"\n'))
     assert not s.uses["brain"].disabled
     assert any(p.use == "brain" and "deepseek-v9" in p.text for p in s.problems)
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "echo"])
+def test_legacy_non_openai_llm_not_poured_into_deepseek(tmp_path, provider):  # 终审 I1：旧 anthropic 配置的 Key 别发到 OpenAI
+    s = resolve(_cfg(tmp_path, f'[llm]\nprovider = "{provider}"\nbase_url = ""\nmodel = "claude-sonnet-5"\napi_key_env = "ANTHROPIC_API_KEY"\n'))
+    ds = s.providers["deepseek"]
+    assert (ds.base_url, ds.key_env) == ("https://api.deepseek.com", "DEEPSEEK_API_KEY")
+    assert "claude-sonnet-5" not in ds.models

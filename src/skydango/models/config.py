@@ -140,6 +140,8 @@ def _get(cfg: Config, dotted: str):
 
 def _builtin(cfg: Config) -> dict[str, ProviderConfig]:
     llm, brain = cfg.llm, cfg.brain
+    if llm.provider != "openai":  # 旧的 anthropic / echo：地址、Key、型号都不是 DeepSeek 的，别灌进来（Key 会被发到别家）
+        llm = type(llm)()
     models = ["deepseek-chat", "deepseek-reasoner"]
     if llm.model and llm.model not in models:
         models.insert(0, llm.model)

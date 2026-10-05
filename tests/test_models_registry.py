@@ -112,3 +112,27 @@ def test_requirements(tmp_path, monkeypatch):
     assert {p.provider for p in probs} == {"deepseek", "claude"}
     reg, _ = _registry(tmp_path, environ={"DEEPSEEK_API_KEY": "k"})
     assert {p.provider for p in reg.requirements(["brain"])} == {"claude"}
+
+
+def test_shortened_timeout_means_no_retries_on_main_too(tmp_path, monkeypatch):  # 终审 I2：下线反思主和备都不重试
+    from types import SimpleNamespace
+
+    from skydango.models import openai_compat
+
+    made = []
+
+    def build_client(provider, *, api_key=None, timeout=None, max_retries=None, environ=None):
+        made.append(max_retries)
+
+        def create(**kw):
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="好"))], usage=None)
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        client.with_options = lambda **o: client
+        return client
+
+    monkeypatch.setattr(openai_compat, "build_client", build_client)
+    reg = Registry(resolve(Config()), ProviderGates(), tmp_path, environ={"DEEPSEEK_API_KEY": "k"})
+    call = reg.call("reflect", timeout=600)
+    call.timeout = 35
+    assert call.text("S", "x") == "好" and made == [0]

@@ -28,6 +28,11 @@ TEMPLATES = [
      "config_dir": ".brain-claude", "models": [["sonnet", True], ["haiku", True], ["opus", True]]},
 ]
 
+# console.toml 里旧设置页写过的模型字段：保存「模型」页时迁走（它们已经由这次写的 [providers] / [models] 表达了，
+# 留着的话会被换算成 legacy、盖过页面上「恢复默认」的选择）
+LEGACY_KEYS = ("brain.model", "brain.eyes_model", "brain.memory_model", "brain.claude_path", "brain.token_env", "brain.config_dir",
+               "inner.reflect_model", "appearance.describe_model", "assist.model")
+
 FIELDS = {  # 每种接入方式写进 console.toml 的字段（kind / models / vision 之外）
     "claude-code": ("path", "token_env", "config_dir"),
     "openai": ("base_url", "key_env", "timeout", "max_retries"),
@@ -85,6 +90,24 @@ def provider_table(p: ProviderConfig) -> dict:
     for key in FIELDS[p.kind]:
         table[key] = getattr(p, key)
     return table
+
+
+def _drop_legacy(console: dict) -> None:
+    """迁走 console.toml 里的旧模型字段；[llm] 的 temperature / max_tokens 挪进 [models.reply]（页面不调这两项）。"""
+    llm = console.pop("llm", None)
+    if isinstance(llm, dict):
+        keep = {k: llm[k] for k in ("temperature", "max_tokens") if k in llm}
+        if keep:
+            reply = console.setdefault("models", {}).setdefault("reply", {})
+            for k, val in keep.items():
+                reply.setdefault(k, val)
+    for dotted in LEGACY_KEYS:
+        section, key = dotted.split(".")
+        table = console.get(section)
+        if isinstance(table, dict):
+            table.pop(key, None)
+            if not table:
+                console.pop(section)
 
 
 class ModelsView:
@@ -169,6 +192,7 @@ class ModelsView:
                 raise BadRequest(f"还有 {'、'.join(users)} 在用 {pid}，先给它们换个模型")
 
         console["providers"] = {p.id: provider_table(p) for p in providers}
+        _drop_legacy(console)
         # 用处：只写和「默认值 + config.toml」算出来不一样的；一样就删掉，让 config.toml / 默认生效
         base = self._baseline()
         models = console.setdefault("models", {})
