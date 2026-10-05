@@ -36,79 +36,39 @@ def read_key(env_name: str) -> str:
     return key
 
 
-def _api_key(cfg: LlmConfig) -> str:
-    return read_key(cfg.api_key_env)
-
-
-def _with_options(client, timeout: float, max_retries: int | None):
-    """换了超时（和重试次数）的副本：SDK 客户端建好后超时就定死了，用 with_options 复制一个；原来的不动。
-    下线反思改走备用时用（brain.claude.GatedLlm 的 timeout）。"""
-    import copy
-
-    opts: dict = {"timeout": timeout}
-    if max_retries is not None:
-        opts["max_retries"] = max_retries
-    out = copy.copy(client)
-    out._client = client._client.with_options(**opts)
-    return out
-
-
 class OpenAICompatClient:
+    """过渡用：LlmConfig 的 LlmClient 包一层 models.openai_compat.OpenAIBackend（Registry 接上后删）。"""
+
     def __init__(self, cfg: LlmConfig, api_key: str | None = None) -> None:
-        try:
-            from openai import OpenAI
-        except ImportError as exc:
-            raise ImportError("pip install \"skydango[openai]\"") from exc
+        from ..models.config import ProviderConfig
+        from ..models.openai_compat import OpenAIBackend, build_client
+
         self.cfg = cfg
-        self._client = OpenAI(
-            base_url=cfg.base_url or None, api_key=api_key or _api_key(cfg), timeout=cfg.timeout, max_retries=cfg.max_retries
-        )
+        provider = ProviderConfig("deepseek", "openai", models=(cfg.model,), base_url=cfg.base_url,
+                                  key_env=cfg.api_key_env, timeout=cfg.timeout, max_retries=cfg.max_retries)
+        self._client = build_client(provider, api_key=api_key)
+        self.backend = OpenAIBackend(provider, cfg.model, temperature=cfg.temperature, max_tokens=cfg.max_tokens,
+                                     client=self._client)
 
     def with_timeout(self, timeout: float, max_retries: int | None = None) -> OpenAICompatClient:
-        return _with_options(self, timeout, max_retries)
+        """换了超时（和重试次数）的副本，原来的不动（下线反思改走备用时用）。"""
+        import copy
+
+        opts: dict = {"timeout": timeout}
+        if max_retries is not None:
+            opts["max_retries"] = max_retries
+        out = copy.copy(self)
+        out._client = self._client.with_options(**opts)
+        out.backend = copy.copy(self.backend)
+        out.backend._client = out._client
+        out.backend.timeout = timeout
+        return out
 
     def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
-        resp = self._client.chat.completions.create(
-            model=self.cfg.model,
-            messages=[{"role": "system", "content": system}, *messages],
-            temperature=self.cfg.temperature,
-            max_tokens=max_tokens or self.cfg.max_tokens,  # 整理记忆时要比回复长
-        )
-        return resp.choices[0].message.content or ""
-
-
-# 这些型号不再接受 temperature（传了返回 400）；不传 thinking 时默认会思考，回复的 max_tokens 只有 200，会被思考吃光
-_NO_SAMPLING = ("claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-8")
-
-
-class AnthropicClient:
-    def __init__(self, cfg: LlmConfig, api_key: str | None = None) -> None:
-        try:
-            import anthropic
-        except ImportError as exc:
-            raise ImportError("pip install \"skydango[anthropic]\"") from exc
-        self.cfg = cfg
-        kwargs = {"api_key": api_key or _api_key(cfg), "timeout": cfg.timeout, "max_retries": cfg.max_retries}
-        if cfg.base_url:
-            kwargs["base_url"] = cfg.base_url
-        self._client = anthropic.Anthropic(**kwargs)
-
-    def with_timeout(self, timeout: float, max_retries: int | None = None) -> AnthropicClient:
-        return _with_options(self, timeout, max_retries)
-
-    def complete(self, system: str, messages: list[ChatMessage], max_tokens: int | None = None) -> str:
-        kwargs = {
-            "model": self.cfg.model,
-            "system": system,
-            "messages": messages,
-            "max_tokens": max_tokens or self.cfg.max_tokens,  # 整理记忆时要比回复长
-        }
-        if self.cfg.model.startswith(_NO_SAMPLING):
-            kwargs["thinking"] = {"type": "disabled"}
-        else:
-            kwargs["temperature"] = self.cfg.temperature
-        resp = self._client.messages.create(**kwargs)
-        return "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
+        if not messages:
+            return self.backend.message(system, "", max_tokens=max_tokens)["result"]
+        return self.backend.message(system, messages[-1]["content"], history=list(messages[:-1]),
+                                    max_tokens=max_tokens)["result"]  # 整理记忆时要比回复长
 
 
 class EchoClient:
@@ -124,8 +84,6 @@ def make_llm(cfg: LlmConfig, api_key: str | None = None) -> LlmClient:
     """api_key：直接用这个 Key，不读环境变量（管理面板「测试大模型」用页面上还没保存的 Key）。"""
     if cfg.provider == "openai":
         return OpenAICompatClient(cfg, api_key)
-    if cfg.provider == "anthropic":
-        return AnthropicClient(cfg, api_key)
     if cfg.provider == "echo":
         return EchoClient()
     raise ValueError(f"不支持的 llm.provider: {cfg.provider}")
