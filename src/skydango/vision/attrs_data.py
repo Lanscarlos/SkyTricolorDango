@@ -45,27 +45,38 @@ log = logging.getLogger(__name__)
 _FRAME = re.compile(r"^(.*)_\d+_[\d.]+s$")
 
 
+def live_records(entries: list[dict]) -> list[dict]:
+    """记账里撤销之后还算数的记录（原顺序，不含撤销记录本身）。标注页的撤销（console/labeling.py）和 hand_labels 共用这条配对规则：
+    撤销记录抵消它前面最近一条没被抵消、不带 `by` 的记录（人在页面上标的）；带 `by` 的是程序追加的
+    （整理的 auto-agree、整帧编辑的 frame-edit），撤销抵消不到它们，照样留着。"""
+    kept: list[dict] = []
+    for e in entries:
+        if not e.get("undo"):
+            kept.append(e)
+            continue
+        for i in range(len(kept) - 1, -1, -1):
+            if not kept[i].get("by"):
+                del kept[i]
+                break
+    return kept
+
+
 def hand_labels(root: Path) -> dict[str, str]:
-    """标注页记账里每张裁图最后一次有效操作的去处（撤销抵消它前面最近一条没被抵消的操作，同 labeling 的撤销）。
+    """标注页记账里每张裁图最后一次有效操作的去处（撤销配对同 labeling 的撤销，见 `live_records`；auto-agree 也算确认过）。
     裁图现在就在这个位置 = 人确认过（含原地确认 from == to）；datasets/sky 导进 form/ 的裁图没有记录 = 没人看过。"""
     try:
         lines = (Path(root) / LABEL_LOG).read_text(encoding="utf-8").splitlines()
     except OSError:
         return {}
-    stack: list[dict] = []
+    entries: list[dict] = []
     for line in lines:
         try:
             e = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(e, dict):
-            continue
-        if e.get("undo"):
-            if stack:
-                stack.pop()
-        elif isinstance(e.get("crop"), str) and isinstance(e.get("to"), str):
-            stack.append(e)
-    return {e["crop"]: e["to"] for e in stack}
+        if isinstance(e, dict) and (e.get("undo") or (isinstance(e.get("crop"), str) and isinstance(e.get("to"), str))):
+            entries.append(e)
+    return {e["crop"]: e["to"] for e in live_records(entries)}
 
 
 def crop_name(frame_stem: str, box: Rect) -> str:

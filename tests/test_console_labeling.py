@@ -425,5 +425,7 @@ def test_form_undo_skips_automatic_records(tmp_path):
     code, item = f.undo()
     assert code == 200 and item["crop"] == CROP and item["where"] == "_unlabeled"
     assert (tmp_path / "form" / "unlit" / "auto.jpg").is_file() and (tmp_path / "form" / "lit" / "edit.jpg").is_file()
+    # 复审：hand_labels 的撤销配对要和页面的一样——撤销抵消的是人那条，自动记录照样算确认过
+    assert hand_labels(tmp_path) == {"auto.jpg": "unlit", "edit.jpg": "lit"}
     assert f.undo()[0] == 409  # 只剩自动记录：没有可撤销的
-    assert hand_labels(tmp_path).get("auto.jpg") == "unlit"
+    assert hand_labels(tmp_path) == {"auto.jpg": "unlit", "edit.jpg": "lit"}

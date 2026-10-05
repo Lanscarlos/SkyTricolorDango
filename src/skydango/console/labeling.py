@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 from ..vision.attrs import FORMS
-from ..vision.attrs_data import hand_labels
+from ..vision.attrs_data import hand_labels, live_records
 from ..vision.gesture import recording_of
 from ..vision.gesture_label import BLIND_FILE, load_guess
 
@@ -123,16 +123,9 @@ class _Moves:
 
     def _revert(self) -> tuple[int, dict, str]:
         """撤销最近一条没被抵消的操作。返回 (状态码, body, 条目名)：成功时 body = {"where": 回到的位置}，失败时是错误 body。
-        带 `by` 的是程序追加的（整理的 auto-agree、整帧编辑的 frame-edit），不进撤销栈：按 Z 只撤人在页面上标的。"""
-        stack: list[dict] = []  # 撤销记录抵消它前面最近一条没被抵消的操作
-        for e in self._entries():
-            if e.get("by"):
-                continue
-            if e.get("undo"):
-                if stack:
-                    stack.pop()
-            else:
-                stack.append(e)
+        带 `by` 的是程序追加的（整理的 auto-agree、整帧编辑的 frame-edit），不进撤销栈：按 Z 只撤人在页面上标的。
+        配对规则和 `attrs_data.hand_labels` 共用（`live_records`），两边不会算岔。"""
+        stack = [e for e in live_records(self._entries()) if not e.get("by")]
         if not stack:
             return 409, {"ok": False, "text": "没有可撤销的操作"}, ""
         e = stack[-1]
