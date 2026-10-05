@@ -41,7 +41,7 @@ import numpy as np
 
 from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
-from ..config import AppearanceConfig, EnvConfig, GestureConfig, PerceptionConfig, SocialConfig, SpinConfig
+from ..config import AppearanceConfig, EnvConfig, GestureConfig, IconsConfig, PerceptionConfig, SocialConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_request
 from .appearance import describe_crop, make_sample
 from .gallery import Sample
@@ -52,6 +52,7 @@ from .catalog import Who, stranger_key
 from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
+from .icons_map import owner_of
 from .lighting import DISK_EVERY, DISK_GAP, GONE_RETRY, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, OTHERS, WHO, CallSeen, Person, Seen, Thing, object_distance, side_of
@@ -348,6 +349,7 @@ class PerceptionWatcher:
         attrs=None,  # vision.attrs.PersonAttrs：第二层（复核低分框、撤下误框、点没点火两边投票；None = 不接，行为照旧）
         catalog=None,  # vision.catalog.CatalogCollector：图鉴收集（None = 不收，行为照旧）
         enroll_dir: Path | None = None,  # 启动登记团子时取到的裁图存这里（<序号>.jpg，None = 不存）
+        icons_cfg: IconsConfig | None = None,  # 认地图交互图标（spec 2026-10-05-icon-detection）；圈的归属判断不受 enabled 管
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -356,6 +358,7 @@ class PerceptionWatcher:
         self.names = names
         self.log_roi = log_roi
         self.icons = icons
+        self.icons_cfg = icons_cfg or IconsConfig()
         self.background = background
         self.capture = capture
         self.clock = clock
@@ -764,8 +767,22 @@ class PerceptionWatcher:
             tag = self._tag_above(ring, tags)
             if tag is not None and tag.id not in owner:
                 owner[tag.id] = ring
+                ring.data["owner"] = "friend"
             else:
                 orphans.append(ring)
+        # 没名字的圆圈先判归属（spec 2026-10-05-icon-detection §3.3–3.4，防误点、不受 [icons] enabled 管）：
+        # 只有下面是人的才可能是陌生人的请求；先祖 / 座位 / 篝火 / 乐器 / 地图上的图标（灯、篝火"点燃"）一律不点
+        if orphans:
+            ring_people = [t.box for t in players] + [t.box for t in self._others if self._other_form(t) != "spirit"]
+            ring_spirits = [t.box for t in tracks if t.cls == "spirit" and t.last == now] + [
+                t.box for t in self._others if self._other_form(t) == "spirit"
+            ]
+            ring_things = [(t.cls, t.box) for t in tracks if t.cls in ("bench", "bonfire", "instrument") and t.last == now]
+            for ring in orphans:
+                ring.data["owner"] = owner_of(
+                    ring.box, ring_people, ring_spirits, ring_things, self.icons_cfg.under_x, self.icons_cfg.under_up
+                )
+            orphans = [ring for ring in orphans if ring.data["owner"] == "person"]
 
         tagged = self._assign_tags([p for p in players if not self._unlit(p)], tags)
         assigned = {t.id for t in tagged.values()}

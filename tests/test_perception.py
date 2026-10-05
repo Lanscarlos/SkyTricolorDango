@@ -130,9 +130,11 @@ def ringed(cx=1400, cy=428):
     return f
 
 
-def watcher(detector, ocr=None, icons=None, clock=None, **cfg):
+def watcher(detector, ocr=None, icons=None, clock=None, icons_cfg=None, **cfg):
     cfg.setdefault("stranger_after", 1.0)
     extra = {"clock": clock} if clock is not None else {}
+    if icons_cfg is not None:
+        extra["icons_cfg"] = icons_cfg
     return PerceptionWatcher(
         detector, ocr or FakeOcr({}), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
         log_roi=[0.0, 0.0, 0.335, 0.855], icons=icons, background=False, **extra,
@@ -260,7 +262,7 @@ def test_ring_under_friend_tag_becomes_a_request():
 
 def test_ring_without_tag_is_a_stranger_request():
     det = FakeDetector()
-    det.frames = [[ring(1400)]]
+    det.frames = [[ring(1400), player(1355, y=440)]]  # 人在圆圈正下方：没名字的圆圈只有下面是人才算请求
     w = watcher(det, icons=FakeIcons({"next": "candle"}))
     w.process(ringed(), 0.0, panel_visible=False)
     assert w.requests[STRANGER].kind == "candle"
@@ -273,7 +275,7 @@ def test_stranger_request_survives_a_frame_where_the_icon_is_unclear():
     """实测（2026-09-30 22:56）：火焰图标会晃，这一帧认出、下一帧认不出，请求一闪就没，身体来不及去点。
     圆圈还在原地、只是这一帧没认出图标：请求留 REQUEST_HOLD 秒；圆圈没了 / 认成别的就马上撤。"""
     det = FakeDetector()
-    det.frames = [[ring(1400)]]
+    det.frames = [[ring(1400), player(1355, y=440)]]  # 人在圆圈正下方：没名字的圆圈只有下面是人才算请求
     icons = FakeIcons({"next": "candle"})
     w = watcher(det, icons=icons)
     w.process(ringed(), 0.0, panel_visible=False)
@@ -1244,7 +1246,7 @@ def test_status_icons_are_not_requests():
     """眼睛（在看留影 / 听音乐）、陌生人平时的蜡烛图标、共享空间的入口：只是状态，不能当请求去点。"""
     for kind in ("eye", "stranger", "shared"):
         det = FakeDetector()
-        det.frames = [[tag(990, 110), ring(1045), ring(1400)]]
+        det.frames = [[tag(990, 110), ring(1045), ring(1400), player(1355, y=440)]]  # 没名字的圆圈下面有人：照样走到认图标那一步
         w = watcher(det, FakeOcr({110: "懒洋洋大王"}), icons=FakeIcons({"next": kind}))
         w.process(frame(), 0.0, panel_visible=False)
         assert w.requests == {}, kind
@@ -1941,7 +1943,7 @@ def test_orphan_dark_disk_is_not_a_candle_request_even_over_bright_background(na
     """录像 c：半透明圆盘透出后面亮的塔（外环亮度 97~109），以前按"够暗"判断漏过 → 当成陌生人举蜡烛 → 点了圆盘团子跟着他走。
     现在只看有没有白圈；也不管点亮陌生人开没开（没开时以前直接不查）。"""
     det = FakeDetector()
-    det.frames = [[ring(1400)]]
+    det.frames = [[ring(1400), player(1355, y=440)]]  # 人在圆圈正下方：没名字的圆圈只有下面是人才算请求
     w = watcher(det, icons=FakeIcons({"next": "candle"}))
     w.process(ring_frame(name), 0.0, panel_visible=False)
     assert STRANGER not in w.requests
@@ -1950,10 +1952,63 @@ def test_orphan_dark_disk_is_not_a_candle_request_even_over_bright_background(na
 @pytest.mark.parametrize("name", ["ring-c-22.5s.png", "ring-c-25.0s.png"])
 def test_orphan_white_ring_is_still_a_candle_request(name):
     det = FakeDetector()
-    det.frames = [[ring(1400)]]
+    det.frames = [[ring(1400), player(1355, y=440)]]  # 人在圆圈正下方：没名字的圆圈只有下面是人才算请求
     w = watcher(det, icons=FakeIcons({"next": "candle"}))
     w.process(ring_frame(name), 0.0, panel_visible=False)
     assert w.requests[STRANGER].kind == "candle"
+
+
+# ---- 没名字的圆圈先判归属（spec 2026-10-05-icon-detection §3.3–3.4）：地图上的图标不会被当成请求去点 ----
+def ring_owner(w):
+    return [t for t in w.last_tracks if t.cls == "social_ring"][0].data["owner"]
+
+
+def test_orphan_ring_without_person_is_never_a_request():
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}))
+    w.process(ringed(), 0.0, panel_visible=False)
+    assert STRANGER not in w.requests
+    assert ring_owner(w) == "map"
+
+
+def test_orphan_ring_over_bonfire_is_not_a_request():
+    det = FakeDetector()
+    det.frames = [[ring(1400), Detection("bonfire", Rect(1340, 470, 120, 100), 0.9)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}))
+    w.process(ringed(), 0.0, panel_visible=False)
+    assert STRANGER not in w.requests
+    assert ring_owner(w) == "bonfire"
+
+
+def test_orphan_ring_over_spirit_is_not_a_request():
+    det = FakeDetector()
+    det.frames = [[ring(1400), Detection("spirit", Rect(1355, 440, 90, 220), 0.9)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}))
+    w.process(ringed(), 0.0, panel_visible=False)
+    assert STRANGER not in w.requests
+    assert ring_owner(w) == "spirit"
+
+
+def test_ring_owner_rule_ignores_icons_enabled():
+    """归属规则是防误点的，不受 [icons] enabled 管。"""
+    from skydango.config import IconsConfig
+
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}), icons_cfg=IconsConfig(enabled=False))
+    w.process(ringed(), 0.0, panel_visible=False)
+    assert STRANGER not in w.requests
+    assert ring_owner(w) == "map"
+
+
+def test_friend_ring_owner_is_friend():
+    det = FakeDetector()
+    det.frames = [[tag(990, 110), ring(1045)]]
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), icons=FakeIcons({"next": "hug"}))
+    w.process(frame(), 0.0, panel_visible=False)
+    assert w.requests["懒洋洋大王"].kind == "hug"
+    assert ring_owner(w) == "friend"
 
 
 def test_scene_watcher_loads_flame_only_for_brain(monkeypatch, tmp_path):
