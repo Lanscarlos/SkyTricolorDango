@@ -33,6 +33,8 @@ memory/
 # YOLO 数据集和训练出来的模型（本机私有、体积大）
 datasets/
 models/
+# 但不忽略代码包 src/skydango/models/（模型供应商和按用处选模型）
+!src/skydango/models/
 # 图鉴收集的原始图（只在本机，见 CLAUDE.md「装扮图鉴」）；加 / 只忽略仓库根，免得以后 src/…/catalog/ 包也被忽略
 /catalog/
 
