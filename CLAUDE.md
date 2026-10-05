@@ -681,8 +681,8 @@ python -m skydango perception label <录像目录> --assist [--model 模型] [--
 python -m skydango perception label runs --from-runs --model 模型  # 把各次运行存下的难例收进数据集
 python -m skydango perception inbox collect|process|status  # 难例收件箱：collect 把 runs/*/hard 收进 [inbox] dir；process 用 YOLO + 外形头先筛（模型缺了就报错退出）；status 看各阶段数量
 python -m skydango perception inbox add <录像目录> [--every N] | datasets/sky --redo  # 收件箱：导入录像 / 老帧回炉（备份 + 撤销），整图火焰补圆圈框
-python -m skydango perception icon-eval <数据集> [--model …]  # 地图交互图标：比模板和 DINOv2 两种分类器
-python -m skydango perception icon-cut <图片> …  # 截图标模板 / 参考图存进 assets/icons
+python -m skydango perception icon-eval <截图目录或数据集> [--model …] [--labels 目录] [-o 输出]  # 地图交互图标：比模板和 DINOv2 两种分类器 → tmp/icon-eval/<时间>/
+python -m skydango perception icon-cut <图片> <种类> --box x,y,w,h [--template]  # 裁图存进 [icons] refs（assets/icons）/<种类>/，--template 再存一份模板到 [social] icons_dir（assets/social）
 python -m skydango perception retrain [--epochs N]  # 一键重训 YOLO + 外形头并回放对比 → tmp/retrain/<时间>/report.md（不改配置，换上去管理面板整帧页）
 python -m skydango perception label <spin 目录> --spin --model 模型  # 转圈录像：认出团子，每帧自动补 self 框
 python -m skydango perception label datasets/sky --objects [--model 模型] [--only 通配]  # 物品模式：给已标好人的数据集补标座位 / 篝火 / 乐器 / 先祖和头顶气泡 typing（先备份 labels/），清单在 _assist/objects.md；--only 只做文件名匹配的帧
