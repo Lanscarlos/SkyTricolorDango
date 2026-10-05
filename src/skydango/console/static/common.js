@@ -79,27 +79,29 @@ function ask(text,opts){
       inp.name=f.name;inp.type="text";inp.autocomplete="off";
       if(f.placeholder)inp.placeholder=f.placeholder;if(f.value!=null)inp.value=f.value;
       lab.append(el("span","",f.label||f.name),inp);card.append(lab);inputs.push(inp)}
-    const row=el("div","dlg-actions"),no=el("button","btn",opts.cancel||"取消"),yes=el("button",opts.danger?"btn danger":"btn go",opts.ok||"确定");
-    no.type="button";yes.type="submit";row.append(no,yes);card.append(row);
+    const row=el("div","dlg-actions"),no=el("button","btn",opts.cancel||"取消"),yes=el("button",opts.danger?"btn danger":"btn go",opts.ok||"确定"),
+      alt=opts.alt?el("button","btn",opts.alt):null;  // 第三个按钮（opts.alt）：点了 resolve "alt"
+    no.type="button";yes.type="submit";if(alt)alt.type="button";row.append(no,...(alt?[alt]:[]),yes);card.append(row);
     let done=false;
-    function finish(ok){
+    function finish(ok,isAlt){
       if(done)return;done=true;closeDialog=null;
       document.removeEventListener("keydown",onKey,true);
       const values={};for(const i of inputs)values[i.name]=i.value;
       root.hidden=true;root.textContent="";root.onmousedown=null;
       if(back&&typeof back.focus==="function"&&document.contains(back))back.focus();
-      resolve(fields?(ok?values:null):!!ok);
+      resolve(isAlt?"alt":fields?(ok?values:null):!!ok);
     }
     function onKey(e){
       if(e.key==="Escape"){e.preventDefault();e.stopPropagation();finish(false);return}
       if(e.key==="Enter"&&!e.isComposing&&!(e.target&&e.target.tagName==="BUTTON")){e.preventDefault();finish(true);return}
       if(e.key==="Tab"){  // 焦点留在框里
-        const items=[...inputs,no,yes],n=items.length,i=items.indexOf(document.activeElement);
+        const items=[...inputs,no,...(alt?[alt]:[]),yes],n=items.length,i=items.indexOf(document.activeElement);
         e.preventDefault();items[i<0?0:(i+(e.shiftKey?-1:1)+n)%n].focus();
       }
     }
     card.onsubmit=e=>{e.preventDefault();finish(true)};
     no.onclick=()=>finish(false);
+    if(alt)alt.onclick=()=>finish(true,true);
     root.onmousedown=e=>{if(e.target===root)finish(false)};  // 点遮罩 = 取消
     document.addEventListener("keydown",onKey,true);
     closeDialog=finish;
@@ -159,6 +161,17 @@ function renderRunCard(st){
   if(canStop){stop.textContent=isSb?"下线（写日记）":"停止";stop.dataset.kind=runKind(run)}
   else stop.disabled=false;
 }
+function renderInboxLine(st){
+  const box=$("rc-inbox");if(!box)return;
+  const l=inboxLine(st);
+  box.hidden=!l;box.textContent=l?l.text:"";box.dataset.action=l&&l.action||"";
+  box.classList.toggle("act",!!(l&&l.action));
+}
+async function inboxClick(){
+  const a=$("rc-inbox").dataset.action;
+  if(a==="open-labeling")go("labeling","frames");
+  else if(a==="start-inbox"){const r=await post("api/jobs/start",{job:"inbox"});if(!r.data.ok)toast(r.data.text||r.data.error||"没起来","bad");refresh()}
+}
 function renderMarks(st){
   const run=(st&&st.run)||{},dangoBusy=BUSY.includes(run.state)&&runKind(run)==="dango";
   const live=$("mark-live");if(live){live.textContent=dangoBusy?"在跑":"没在跑";live.classList.toggle("on",dangoBusy)}
@@ -177,16 +190,70 @@ async function loadCrashLog(){
   try{const r=await getJSON("api/logs?after=0");const lines=(r.lines||[]).slice(-20);pre.textContent=lines.length?lines.join("\n"):"（没有日志）"}
   catch(e){pre.textContent="读不到日志（面板停了？）"}
 }
+/* ---- 难例收件箱：停止时的提问、侧栏提示（纯函数，node 能测） ---- */
+function stopQuestion(info){
+  if(!info||info.ask===false)return null;
+  const hard=info.hard||0,pending=info.pending||0;
+  if(hard===0&&pending===0)return null;
+  return `这次存了 ${hard} 张难例（还有 ${pending} 次运行没整理），现在整理吗？约 ${info.eta_min||0} 分钟`;
+}
+function inboxHint(ib){  // 没任务时的提示：先待看、再没整理
+  if(!ib)return null;
+  const crops=ib.judge_left||0,frames=(ib.glance||0)+(ib.edit||0);
+  if(crops+frames>0)return {text:`${crops} 张裁图、${frames} 帧等你看`,action:"open-labeling"};
+  if((ib.pending||0)>0)return {text:`${ib.pending} 次运行的素材没整理`,action:"start-inbox"};
+  return null;
+}
+function inboxLine(st){
+  if(!st)return null;
+  const job=st.job||{},ib=st.inbox,hint=inboxHint(ib);
+  if(job.state==="running"&&job.job==="inbox")return {text:"整理素材："+(job.progress||""),action:null};
+  if(job.state==="running"&&job.job==="retrain")return {text:"重训中："+(job.progress||""),action:null};
+  if(job.state==="failed"){  // 失败一直挂到下次起任务：按任务分开说，不盖住待看 / 没整理的提示
+    const t=job.tail||[],why=t.length?"："+t[t.length-1]:"";
+    if(job.job==="retrain"){  // 重训的报告和「重训」按钮在标注页「整帧」里
+      if(!hint)return {text:"重训失败"+why,action:"open-labeling"};
+      return {text:`重训失败${why}；${hint.text}`+(hint.action==="open-labeling"?" →":""),action:hint.action};
+    }
+    const wait=hint&&hint.action==="open-labeling"?`；另有 ${hint.text}`:"";  // 没整理的运行重试时一起整理
+    return {text:`整理失败${why}（点这里重试）${wait}`,action:"start-inbox"};
+  }
+  if(!hint)return null;
+  return hint.action==="open-labeling"?{text:hint.text+" →",action:hint.action}:hint;
+}
+function busyQuestion(j){  // 起团子 / 沙盒时整理或重训在跑
+  const left=j.progress?`（剩 ${j.progress}）`:"",name=j.job==="retrain"?"重训":"整理";
+  return `${name}还没完${left}，先停下再叫醒？`+(j.job==="retrain"?"\n训练停了要从头来。":"");
+}
+/* 起团子 / 沙盒：整理 / 重训任务在跑时服务端回 409 + job，问一句，同意就带 stop_job 重发 */
+async function startGuarded(url,body){
+  let r=await post(url,body);
+  const j=r.status===409&&r.data&&r.data.job;
+  if(j&&j.state==="running"){
+    const ok=await ask(busyQuestion(j),{ok:"停下再叫醒",danger:j.job==="retrain"});
+    if(!ok)return {status:0,data:{ok:false,cancelled:true}};
+    r=await post(url,Object.assign({},body,{stop_job:true}));
+  }
+  return r;
+}
+
 async function stopRun(btn){
   const sb=btn.dataset.kind==="sandbox";
-  const ok=await ask(sb?"让沙盒下线？会先做最终反思、写日记，再停下。":"让团子停下？会先恢复轮盘、复原镜头，再退出。",{ok:sb?"下线":"停止",danger:true});
-  if(!ok)return;
+  let curate=null;
+  if(!sb){  // 团子停下时有难例 / 没整理的运行：问要不要顺手整理
+    let q=null;try{q=stopQuestion(await getJSON("api/inbox/stop-info"))}catch(e){}
+    if(q){const c=await ask(q,{ok:"整理",alt:"下次再说",cancel:"取消"});
+      if(c===false)return;curate=c===true}
+  }
+  if(curate===null){
+    const ok=await ask(sb?"让沙盒下线？会先做最终反思、写日记，再停下。":"让团子停下？会先恢复轮盘、复原镜头，再退出。",{ok:sb?"下线":"停止",danger:true});
+    if(!ok)return;
+  }
   btn.disabled=true;
-  const r=await post(sb?"api/sandbox/stop":"api/run/stop");
+  const r=await post(sb?"api/sandbox/stop":"api/run/stop",sb||curate===null?undefined:{curate});
   if(!r.data.ok)toast(r.data.text||"没停成","bad");
   btn.disabled=false;refresh();
 }
-
 /* ---- 轮询 /api/state ---- */
 function onState(fn){listeners.push(fn);if(S.state)try{fn(S.state)}catch(e){console.error(e)}}
 async function refresh(){
@@ -194,13 +261,14 @@ async function refresh(){
   try{st=await getJSON("api/state")}catch(e){S.offline=true;renderOffline();return}
   S.state=st;S.offline=false;
   document.body.dataset.state=(st.run&&st.run.state)||"idle";
-  renderRunCard(st);renderMarks(st);
+  renderRunCard(st);renderInboxLine(st);renderMarks(st);
   for(const fn of listeners){try{fn(st)}catch(e){console.error(e)}}
 }
 async function tick(){await refresh();setTimeout(tick,1000)}
 
 function start(){
   for(const name of Object.keys(Pages))hook(name,"init");
+  $("rc-inbox").onclick=e=>{e.stopPropagation();inboxClick()};
   $("rc-stop").onclick=e=>{e.stopPropagation();stopRun(e.currentTarget)};
   $("rc-log").addEventListener("toggle",e=>{if(e.currentTarget.open)loadCrashLog()});
   $("runcard").addEventListener("click",e=>{
@@ -216,7 +284,7 @@ function start(){
   route();tick();
 }
 
-Object.assign(g,{$,el,getJSON,post,pad2,hhmm,dayTime,span,fmtUptime,ask,toast,problemList,Pages,go,parseHash,S,onState,refresh,BUSY});
+Object.assign(g,{$,el,getJSON,post,pad2,hhmm,dayTime,span,fmtUptime,ask,toast,startGuarded,problemList,Pages,go,parseHash,S,onState,refresh,BUSY});
 if(HAS_DOM){if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",start);else setTimeout(start,0)}
-if(typeof module!=="undefined"&&module.exports)module.exports={parseHash};
+if(typeof module!=="undefined"&&module.exports)module.exports={parseHash,inboxLine,stopQuestion,busyQuestion};
 })(globalThis);

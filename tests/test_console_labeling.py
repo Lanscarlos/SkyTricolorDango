@@ -226,6 +226,7 @@ def test_form_state_lists_items(tmp_path):
     a = s["items"][0]
     assert a["where"] == "_unlabeled" and a["guess"] == {"label": "lit", "confidence": 0.9, "reason": "有光"}
     assert a["image"] == "/x/a.jpg" and a["box"] == [10, 20, 30, 40]
+    assert a["inbox"] is False
     assert s["items"][1]["where"] == "unlit" and s["items"][1]["guess"] is None
     assert FormLabels(tmp_path / "nope").state()["ok"] is False
 
@@ -394,3 +395,37 @@ def test_form_api_routes(tmp_path, upstream, monkeypatch):  # noqa: F811
         assert st == 200 and d["where"] == "_unlabeled"
     finally:
         s.stop()
+
+
+def test_form_items_flag_inbox_crops(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path)
+    make_crop(tmp_path, name="c0002.jpg")
+    with (tmp_path / "_crops.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"crop": "c0002.jpg", "source": "inbox"}) + "\n")
+    items = {i["crop"]: i for i in FormLabels(tmp_path).state()["items"]}
+    assert items[CROP]["inbox"] is False and items["c0002.jpg"]["inbox"] is True
+
+
+def test_form_undo_skips_automatic_records(tmp_path):
+    # 终审 2：整理（auto-agree）和整帧编辑（frame-edit）追加的记录不进撤销栈；人按 Z 撤的是人自己那条。
+    # hand_labels 照样把 auto-agree 算成确认过的
+    from skydango.console.labeling import FormLabels
+    from skydango.vision.attrs_data import hand_labels
+
+    make_crop(tmp_path)
+    f = FormLabels(tmp_path)
+    assert f.label(CROP, "lit")[0] == 200
+    make_crop(tmp_path, "form/unlit", "auto.jpg")
+    make_crop(tmp_path, "form/lit", "edit.jpg")
+    with (tmp_path / "_labels.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"t": 1, "crop": "auto.jpg", "from": "_unlabeled", "to": "unlit", "by": "auto-agree"}) + "\n")
+        fh.write(json.dumps({"t": 2, "crop": "edit.jpg", "from": "_unlabeled", "to": "lit", "by": "frame-edit"}) + "\n")
+    code, item = f.undo()
+    assert code == 200 and item["crop"] == CROP and item["where"] == "_unlabeled"
+    assert (tmp_path / "form" / "unlit" / "auto.jpg").is_file() and (tmp_path / "form" / "lit" / "edit.jpg").is_file()
+    # 复审：hand_labels 的撤销配对要和页面的一样——撤销抵消的是人那条，自动记录照样算确认过
+    assert hand_labels(tmp_path) == {"auto.jpg": "unlit", "edit.jpg": "lit"}
+    assert f.undo()[0] == 409  # 只剩自动记录：没有可撤销的
+    assert hand_labels(tmp_path) == {"auto.jpg": "unlit", "edit.jpg": "lit"}

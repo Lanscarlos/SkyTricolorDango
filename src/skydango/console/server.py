@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import urllib.error
@@ -29,8 +30,11 @@ from ..config import Config, console_paths, read_secrets
 from ..vision.viewer import is_local_host, post_guard
 from . import probes
 from .devicecheck import ime_state, run_checks
+from .jobs import JOBS, JobRunner
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
 from .emotenames import EmoteNames
+from .frames import FramesApi
+from .retrain_view import RetrainView
 from .labeling import FormLabels, GestureLabels
 from .preflight import preflight, problem
 from .reports import list_reports, read_report
@@ -77,6 +81,10 @@ def _console_static(name: str) -> tuple[str, bytes] | None:
     except (OSError, FileNotFoundError):
         return None
 
+
+INBOX_CACHE = 3.0  # /api/state 里收件箱摘要的缓存秒数
+DEFAULT_SEC_PER_FRAME = 1.5  # _stats.json 还没有记录时整理一帧按几秒估
+ATTRS_ROOT = "datasets/attrs"  # 和 form_labels 一致
 
 SANDBOX_POST = ("op", "inner/forget")  # 转发给沙盒的 POST（/shutdown 不给页面直接发，走 /api/sandbox/stop）
 
@@ -144,6 +152,12 @@ class ConsoleServer:
         self.replayer: Replayer | None = None
         self.last_report: str | None = None
         self._replay_lock = threading.Lock()
+        # 任务槽（整理难例 / 重训）和停团子后接着整理（难例收件箱 Task 6）
+        self.jobs = JobRunner(getattr(runner, "cwd", Path.cwd()))
+        self.curate_poll = 1.0
+        self._curate_after = False
+        self._curate_lock = threading.Lock()
+        self._inbox_cache: tuple[float, dict] | None = None
         self.discover()  # 面板起来之前终端里已经在跑的团子：直接接上
 
     # ---- 各个接口 ----
@@ -191,17 +205,128 @@ class ConsoleServer:
         self.discover()  # 页面每秒拉一次：终端里刚起的团子在这里接上
         opts = self.launch_options()
         return {"run": self.runner.status(), "launch": dataclasses.asdict(opts),
-                "problems": self._run_problems(opts),
+                "problems": self._run_problems(opts), "job": self.jobs.status(), "inbox": self.inbox_summary(),
                 "emotes_allowed": self.store._fallback().emotes.enabled}  # config.toml 关了动作：面板上只能关不能开
+
+    # ---- 难例收件箱：任务槽、摘要（plan 2026-10-04-hardcase-inbox Task 6）----
+    def inbox_dir(self) -> Path:
+        return Path(self.store._fallback().inbox.dir)
+
+    def inbox_summary(self) -> dict | None:
+        """/api/state 里的收件箱一节；页面每秒拉，所以算一次缓存 3 秒。"""
+        cfg = self.store._fallback().inbox
+        if not cfg.enabled:
+            return None
+        now = time.monotonic()
+        if self._inbox_cache is not None and now - self._inbox_cache[0] < INBOX_CACHE:
+            return self._inbox_cache[1]
+        from ..vision import inbox as ib
+
+        try:
+            st = ib.status(self.inbox_dir(), Path(ATTRS_ROOT))
+            runs = list(st["runs"].values())
+            out = {"pending": len(ib.pending_runs(self.inbox_dir())), "judge_left": st["judge_left"],
+                   "glance": sum(r.get("glance", 0) for r in runs), "edit": sum(r.get("edit", 0) for r in runs),
+                   "passed_since_train": st["passed_since_train"], "retrain_min": cfg.retrain_min}
+        except Exception:
+            log.exception("读收件箱摘要出错")
+            return None
+        self._inbox_cache = (now, out)
+        return out
+
+    def _job_conflict(self, body: dict) -> dict | None:
+        """任务在跑时起团子 / 沙盒：body 带 stop_job 先停任务，否则给 409 的内容。"""
+        if self.jobs.status()["state"] != "running":
+            return None
+        if body.get("stop_job") is True:
+            self.jobs.stop()
+            return None
+        return self._job_busy()
+
+    def _job_busy(self) -> dict:
+        job = self.jobs.status()
+        name = "重训" if job.get("job") == "retrain" else "整理"
+        error = f"{name}还没完，等它做完，或者选「停掉{name}再叫醒」"
+        return {"ok": False, "job": job, "error": error, "text": error}
+
+    def start_job(self, job: str) -> tuple[int, dict]:
+        if job not in JOBS:
+            return 400, {"ok": False, "text": f"job 要是 {' / '.join(JOBS)}"}
+        with self._device_lock:
+            self.discover()
+            if self._busy():
+                return 409, {"ok": False, "text": "团子 / 沙盒在运行，先停它（整理要用模型和显卡）"}
+            try:
+                secrets = read_secrets(console_paths(self.config_path)[1])
+            except ValueError as exc:
+                return 409, {"ok": False, "text": str(exc)}
+            cmd = [sys.executable, "-m", "skydango", "-c", str(self.config_path), "perception",
+                   *(["inbox", "process"] if job == "inbox" else ["retrain"])]
+            try:
+                self.jobs.start(job, cmd, child_env(os.environ, secrets))
+            except (RuntimeError, OSError) as exc:
+                return 409, {"ok": False, "text": str(exc), "job": self.jobs.status()}
+        self._inbox_cache = None
+        return 200, {"ok": True}
+
+    def stop_job(self) -> tuple[int, dict]:
+        self.jobs.stop()
+        return 200, {"ok": True}
+
+    def stop_info(self) -> dict:
+        """停团子对话框要的数：当前运行目录 hard/ 的张数、没整理的运行数、估计整理多久。"""
+        from ..vision import inbox as ib
+
+        cfg = self.store._fallback().inbox
+        run_dir = self.runner.status().get("run_dir")
+        hard_dir = Path(run_dir) / "hard" if run_dir else None
+        hard = len(list(hard_dir.glob("*.jpg"))) if hard_dir is not None and hard_dir.is_dir() else 0
+        inbox = self.inbox_dir()
+        pending = ib.pending_runs(inbox)
+        frames = hard + ib.pending_frames(inbox)
+        try:
+            sec = float(ib.read_stats(inbox).get("sec_per_frame") or 0) or DEFAULT_SEC_PER_FRAME
+        except (TypeError, ValueError):
+            sec = DEFAULT_SEC_PER_FRAME
+        return {"hard": hard, "pending": len(pending), "eta_min": round(sec * frames / 60, 1),
+                "ask": bool(cfg.enabled and cfg.ask)}
+
+    def _curate_when_stopped(self, pid, run_dir) -> None:
+        """stop_run(curate) 的后半：等团子槽退出（最多 stop_timeout + 30 秒）再起整理任务。
+        pid / run_dir 是停的那个团子；槽里换成别的团子了（期间又叫醒过）就放弃，不替没要求整理的那次停止整理。"""
+        wait = self.store._fallback().console.stop_timeout + 30
+        deadline = time.monotonic() + wait
+        try:
+            while time.monotonic() < deadline:
+                st = self.runner.status()
+                if st["state"] in BUSY and st.get("pid") != pid:
+                    return
+                if st["state"] in ("exited", "crashed", "idle"):
+                    if run_dir is not None and st.get("run_dir") != run_dir:
+                        return
+                    code, res = self.start_job("inbox")
+                    if code != 200:
+                        log.warning("停团子后没能起整理：%s", res.get("text"))
+                    return
+                time.sleep(self.curate_poll)
+            log.warning("团子 %.0f 秒还没退出，不自动整理了", wait)
+        finally:
+            with self._curate_lock:
+                self._curate_after = False
 
     def start_run(self, body: dict) -> tuple[int, dict]:
         try:
             opts = _launch(body)
         except ValueError as exc:
             return 400, {"ok": False, "text": str(exc)}
+        conflict = self._job_conflict(body)
+        if conflict:
+            return 409, conflict
         self.store.save({"console.brain": opts.brain, "console.live": opts.live, "console.emotes": opts.emotes,
                          "console.duration": opts.duration})  # 下次打开面板还是这次的选择
         with self._device_lock:  # 和设备检测互斥：检查完到真的起进程之间，检测不能插进来
+            if self.jobs.status()["state"] == "running":  # 锁里再看一次：整理任务可能刚被守护线程起了
+                return 409, self._job_busy()
             problems = self._run_problems(opts)
             if self._checking:
                 problems.append(problem("正在检测设备，等检测完再叫醒"))
@@ -296,9 +421,17 @@ class ConsoleServer:
             return 200, {"ok": send_shutdown(self.sandbox_port())}
         return 400, {"ok": False, "text": "团子会被接管，到「真机团子」页停止它"}
 
-    def stop_run(self) -> tuple[int, dict]:
-        """真机团子的「停止」：只停团子（沙盒在跑时不动它）。"""
-        if _kind(self.runner.status()) == "dango":
+    def stop_run(self, body: dict | None = None) -> tuple[int, dict]:
+        """真机团子的「停止」：只停团子（沙盒在跑时不动它）。body.curate 为真：团子退出后接着整理难例。"""
+        st = self.runner.status()
+        if _kind(st) == "dango":
+            if (body or {}).get("curate") and st["state"] in BUSY:
+                with self._curate_lock:
+                    start = not self._curate_after
+                    self._curate_after = True
+                if start:
+                    threading.Thread(target=self._curate_when_stopped, args=(st.get("pid"), st.get("run_dir")),
+                                     name="console-curate", daemon=True).start()
             self.runner.stop()
         return 200, {"ok": True}
 
@@ -316,6 +449,13 @@ class ConsoleServer:
     def form_labels(self) -> FormLabels:
         return FormLabels(Path("datasets/attrs"))  # 配置里没有这个路径；和 perception crops 的默认 --out 一致
 
+    def frames_api(self) -> FramesApi:
+        cfg = self.store._fallback()
+        return FramesApi(Path(cfg.inbox.dir), Path(ATTRS_ROOT), Path("datasets/sky"), cfg.perception.classes)
+
+    def retrain_view(self) -> RetrainView:
+        return RetrainView(Path("tmp/retrain"), self.store)
+
     def emote_names(self) -> EmoteNames:
         cfg = self.store._fallback()
         return EmoteNames(Path(cfg.wheel.library_dir), cfg)
@@ -331,6 +471,9 @@ class ConsoleServer:
             return 400, {"ok": False, "text": str(exc)}
         if self.replaying():
             return 409, {"ok": False, "problems": [problem("正在回放剧本，先停止回放")]}
+        conflict = self._job_conflict(body)
+        if conflict:
+            return 409, conflict
         code, res = self.launch_sandbox(start)
         if code == 200:
             self.recorder.started(start)  # 第一次启动是剧本的 [start]，之后记成 online
@@ -362,6 +505,8 @@ class ConsoleServer:
         """起沙盒子进程（页面启动和回放共用；只有页面启动才记进录制）。"""
         port = self.sandbox_port()
         with self._device_lock:
+            if self.jobs.status()["state"] == "running":
+                return 409, self._job_busy()
             problems, orphan = self.sandbox_problems()
             if problems:
                 return 409, {"ok": False, "problems": problems, "orphan": orphan}
@@ -704,6 +849,16 @@ class ConsoleServer:
                         self._json(404, {"ok": False, "text": "没有这张图"})
                     else:
                         self._send(200, "image/jpeg", data)
+                elif url.path == "/api/retrain/latest":
+                    self._json(200, console.retrain_view().latest())
+                elif url.path == "/api/frames/state":
+                    self._json(200, console.frames_api().state())
+                elif url.path == "/api/frames/image":
+                    path = console.frames_api().image(parse_qs(url.query).get("frame", [""])[0])
+                    if path is None:
+                        self._json(404, {"ok": False, "text": "没有这一帧"})
+                    else:
+                        self._send(200, "image/jpeg", path.read_bytes())
                 elif url.path == "/api/emotes/state":
                     self._json(200, console.emote_names().state())
                 elif url.path == "/api/emotes/icon":
@@ -714,6 +869,8 @@ class ConsoleServer:
                         self._send(200, "image/png", data)
                 elif url.path == "/api/state":
                     self._json(200, console.state())
+                elif url.path == "/api/inbox/stop-info":
+                    self._json(200, console.stop_info())
                 elif url.path == "/api/logs":
                     self._json(200, console.runner.logs(self._after(url)))
                 elif url.path == "/api/settings":
@@ -745,13 +902,18 @@ class ConsoleServer:
                     "/api/device": lambda body: console.check_device(),
                     "/api/device/ime": console.ime,
                     "/api/run/start": console.start_run,
-                    "/api/run/stop": lambda body: console.stop_run(),
+                    "/api/run/stop": console.stop_run,
+                    "/api/jobs/start": lambda body: console.start_job(str(body.get("job") or "")),
+                    "/api/jobs/stop": lambda body: console.stop_job(),
                     "/api/orphan/stop": console.stop_orphan,
                     "/api/inner/forget": console.forget,
                     "/api/gesture/label": lambda body: console.gesture_labels().label(str(body.get("clip") or ""), str(body.get("to") or "")),
                     "/api/gesture/undo": lambda body: console.gesture_labels().undo(),
                     "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or "")),
                     "/api/form/undo": lambda body: console.form_labels().undo(),
+                    "/api/frames/act": lambda body: console.frames_api().act(body),
+                    "/api/retrain/adopt": lambda body: console.retrain_view().adopt(str(body.get("what") or ""), console._busy()),
+                    "/api/retrain/rollback": lambda body: console.retrain_view().rollback(str(body.get("what") or ""), console._busy()),
                     "/api/emotes/name": lambda body: console.emote_names().name(body.get("id"), body.get("name")),
                     "/api/emotes/clear": lambda body: console.emote_names().clear(body.get("id")),
                     "/api/sandbox/start": console.start_sandbox,

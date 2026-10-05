@@ -12,6 +12,7 @@
     <div class="rc-k"><span class="rc-dot" aria-hidden="true"></span><span id="rc-title">连接面板…</span></div>
     <div class="rc-m" id="rc-sub"></div>
     <details class="rc-log" id="rc-log" hidden><summary>看日志</summary><pre id="rc-log-text">读取中…</pre></details>
+    <button class="rc-inbox" id="rc-inbox" type="button" hidden></button>
     <button class="btn sm halt" id="rc-stop" type="button" hidden>停止</button>
   </div>
 
@@ -233,7 +234,7 @@
     </div>
   </section>
   <section id="page-labeling" class="page" hidden>
-    <div class="page-title"><h1>标注</h1><span class="seg" id="lb-tabs" role="group" aria-label="标注哪一种"><button type="button" data-tab="gesture" aria-pressed="true">动作</button><button type="button" data-tab="form" aria-pressed="false">外形</button><button type="button" data-tab="names" aria-pressed="false">动作名</button></span><span class="note" id="lb-note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
+    <div class="page-title"><h1>标注</h1><span class="seg" id="lb-tabs" role="group" aria-label="标注哪一种"><button type="button" data-tab="gesture" aria-pressed="true">动作</button><button type="button" data-tab="form" aria-pressed="false">外形</button><button type="button" data-tab="names" aria-pressed="false">动作名</button><button type="button" data-tab="frames" aria-pressed="false">整帧</button></span><span class="note" id="lb-note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
     <div class="banner warn" id="lb-empty" hidden></div>
     <div class="cols lb-cols" id="lb-cols">
       <section class="pane lb-listpane" aria-label="片段列表">
@@ -309,6 +310,42 @@
         </div>
       </section>
     </div>
+    <section class="pane fr-train" id="fr-train" aria-label="重训" hidden>
+      <div class="fr-train-bar">
+        <span id="fr-train-count"></span>
+        <button class="btn sm" id="fr-train-go" type="button">重训</button>
+        <span class="note" id="fr-train-prog"></span>
+        <span class="grow"></span>
+        <button class="btn sm" id="fr-train-toggle" type="button">展开最近一次报告</button>
+      </div>
+      <div class="fr-train-report" id="fr-train-report" hidden>
+        <div class="md" id="fr-train-md"></div>
+        <div id="fr-train-adopt"></div>
+      </div>
+    </section>
+    <div class="banner warn" id="fr-empty" hidden></div>
+    <div class="cols fr-cols" id="fr-cols" hidden>
+      <section class="pane lb-listpane" aria-label="帧列表">
+        <h3>帧<span class="grow"></span><select id="fr-run" aria-label="哪次运行"></select><select id="fr-filter" aria-label="筛选帧"></select></h3>
+        <div class="lb-counts" id="fr-counts"></div>
+        <div class="lb-list" id="fr-list"></div>
+      </section>
+      <section class="pane fr-main" aria-label="整帧">
+        <h3><span class="fr-mode" id="fr-mode" data-mode="glance">过目</span><span class="lb-title" id="fr-title">—</span><span class="grow"></span><span class="lb-pos" id="fr-pos"></span></h3>
+        <p class="fr-reason" id="fr-reason"></p>
+        <div class="fr-stage" id="fr-stage"><canvas id="fr-canvas" aria-label="整张截图和标注框（滚轮缩放、拖动画面）"></canvas><p class="lb-stage-note" id="fr-stage-note" hidden></p></div>
+      </section>
+      <section class="pane lb-side" aria-label="这一帧和操作">
+        <h3>这一帧</h3>
+        <div class="pane-body"><dl class="lb-meta" id="fr-meta"></dl></div>
+        <h3>操作</h3>
+        <div class="pane-body lb-actions" id="fr-actions"></div>
+        <h3>类别（编辑时用）</h3>
+        <div class="pane-body fr-classes" id="fr-classes"></div>
+        <h3>按键</h3>
+        <div class="pane-body"><dl class="fr-keys" id="fr-keys"></dl></div>
+      </section>
+    </div>
   </section>
   <section id="page-settings" class="page" hidden>
     <div class="page-title"><h1>设置</h1><span class="note">面板改的设置写在 console.toml（叠加在 config.toml 之后，config.toml 不会被改），密钥明文写在本机 secrets.toml，别发给别人。</span></div>
@@ -357,6 +394,8 @@
 <script src="console/static/live.js"></script>
 <script src="console/static/scenarios.js"></script>
 <script src="console/static/emotenames.js"></script>
+<script src="console/static/retrain.js"></script>
+<script src="console/static/frames.js"></script>
 <script src="console/static/labeling.js"></script>
 <script src="console/static/settings.js"></script>
 <script src="console/static/device.js"></script>

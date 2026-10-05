@@ -461,6 +461,31 @@ class GestureConfig:
 
 
 @dataclass
+class InboxConfig:
+    """难例收件箱：live 运行时存下的难例 → 外形头先筛 → 整帧核对 → 一键重训对比。"""
+
+    enabled: bool = True
+    dir: str = "datasets/inbox"  # 收件箱目录（gitignore）
+    ask: bool = True  # 管理面板停团子时问不问要不要整理（这次存了难例 / 还有没整理的运行时）
+    agree: float = 0.9  # 外形头与 YOLO 一致的概率门槛
+    dup_diff: float = 6.0  # 去重：缩略图平均像素差低于这个算重复
+    dup_gap: float = 5.0  # 去重：和上一张保留帧相隔不超过这么久（秒，按文件名的时间）才可能算重复
+    val_every: int = 5  # 按运行目录名 crc32 % val_every == 0 整次运行进验证集（约每 val_every 次运行一次）
+    retrain_min: int = 50  # 攒够这么多张核对过的才提示重训
+
+
+@dataclass
+class RetrainConfig:
+    """一键重训的参数。"""
+
+    base: str = "models/yolo11n.pt"  # 起点权重
+    imgsz: int = 960
+    epochs: int = 120
+    batch: int = 16
+    workers: int = 2
+
+
+@dataclass
 class AttrsConfig:
     """感知层第二层：人物属性 + 复核（给 YOLO 的人物框裁图，过冻住的 DINOv2 主干 + npz 线性头，判形态等属性、复核低分框）。
 
@@ -873,6 +898,8 @@ class Config:
     assist: AssistConfig = field(default_factory=AssistConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
     attrs: AttrsConfig = field(default_factory=AttrsConfig)
+    inbox: InboxConfig = field(default_factory=InboxConfig)
+    retrain: RetrainConfig = field(default_factory=RetrainConfig)
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     panels: PanelsConfig = field(default_factory=PanelsConfig)

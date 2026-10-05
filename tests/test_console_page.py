@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "live.js", "scenarios.js", "emotenames.js", "labeling.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "labeling.js", "settings.js", "device.js"]
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做
@@ -315,3 +315,151 @@ def test_live_log_drawer_restarts_on_each_run():  # 终审 Important 2：重新�
 def test_run_card_says_terminal_dango_exited():  # spec §2：卡片写「终端起的团子已经退出」
     common = (STATIC / "common.js").read_text(encoding="utf-8")
     assert "终端起的团子已经退出" in common
+
+
+def _frames_js(expr: str):  # 在 node 里载入 frames.js（没有 document），算 expr
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = f"const F=require({json.dumps(str(STATIC / 'frames.js'))});console.log(JSON.stringify({expr}))"
+    return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+
+
+def test_frames_view_transform():  # 屏幕 = 图像 × scale + 偏移；往返不变；缩放以光标为中心（光标下的图像点不动）
+    v = "{scale:2,ox:100,oy:50}"
+    assert _frames_js(f"[F.toScreen([10,20],{v}),F.toImage([120,90],{v}),F.toImage(F.toScreen([37.5,-4],{v}),{v})]") == [
+        [120, 90], [10, 20], [37.5, -4]]
+    z = _frames_js(f"(()=>{{const v=F.zoomAt({v},[300,250],1.5);return [v.scale,F.toImage([300,250],v)]}})()")
+    assert z == [3, [100, 100]]
+
+
+def test_frames_norm_box():  # 同后端 frames.normalize_box：负宽高翻正、裁进画面、太小的丢掉
+    assert _frames_js("[F.normBox([100,100,-50,-60],200,100),F.normBox([150,10,100,50],200,100),F.normBox([0,0,3,50],200,100)]") == [
+        [50, 40, 50, 60], [150, 10, 50, 50], None]
+    assert _frames_js("[F.normBox([-10,-10,30,30],200,100),F.normBox([10.5,11.5,20.4,20.6],200,100),F.normBox([300,0,20,20],200,100)]") == [
+        [0, 0, 20, 20], [10, 12, 20, 21], None]  # 0.5 同 Python round：取偶数
+
+
+def test_frames_hit_test():  # 边角优先、最小的框优先；框里 = move；离得远 = null
+    boxes = "[{box:[10,10,100,100]},{box:[40,40,20,20]}]"
+    assert _frames_js(f"[F.hitTest({boxes},[11,12],4),F.hitTest({boxes},[50,50],4),F.hitTest({boxes},[90,90],4),"
+                      f"F.hitTest({boxes},[60,61],4),F.hitTest({boxes},[60,30],4),F.hitTest({boxes},[300,300],4),F.hitTest({boxes},[110,60],4)]") == [
+        {"i": 0, "part": "nw"}, {"i": 1, "part": "move"}, {"i": 0, "part": "move"}, {"i": 1, "part": "se"},
+        {"i": 0, "part": "move"}, None, {"i": 0, "part": "e"}]
+
+
+def test_frames_resize_box():
+    assert _frames_js("[F.resizeBox([10,10,100,50],'se',10,20),F.resizeBox([10,10,100,50],'nw',5,5),F.resizeBox([10,10,100,50],'move',-3,4),"
+                      "F.resizeBox([10,10,100,50],'n',0,-10),F.resizeBox([10,10,100,50],'w',200,0)]") == [
+        [10, 10, 110, 70], [15, 15, 95, 45], [7, 14, 100, 50], [10, 0, 100, 60], [210, 10, -100, 50]]
+
+
+def test_frames_key_class():  # 编辑模式键位：1 点过火的人 2 黑影 3 团子 4 先祖 5 名字标签 6 圆圈 7 气泡 8 座位 9 篝火 0 乐器
+    assert _frames_js("[F.keyClass('1'),F.keyClass('2'),F.keyClass('0'),F.keyClass('9'),F.keyClass('x'),F.keyClass('toString')]") == [
+        0, 4, 8, 7, None, None]
+    assert _frames_js("F.KEY_CLASS") == {"1": 0, "2": 4, "3": 3, "4": 9, "5": 1, "6": 2, "7": 5, "8": 6, "9": 7, "0": 8}
+
+
+def test_frames_page():  # spec 2026-10-04-hardcase-inbox §5.2：标注页第四个标签「整帧」
+    page = (STATIC / "console.html").read_text(encoding="utf-8")
+    tabs = page.split('id="lb-tabs"', 1)[1].split("</span>", 1)[0]
+    assert 'data-tab="frames"' in tabs and "整帧" in tabs
+    for id_ in ("fr-empty", "fr-cols", "fr-run", "fr-filter", "fr-counts", "fr-list", "fr-mode", "fr-title", "fr-pos", "fr-reason",
+                "fr-stage", "fr-canvas", "fr-stage-note", "fr-meta", "fr-actions", "fr-classes", "fr-keys"):
+        assert f'id="{id_}"' in page, id_
+    assert page.index('src="console/static/stage.js"') < page.index('src="console/static/frames.js"') < page.index('src="console/static/labeling.js"')
+    js = (STATIC / "frames.js").read_text(encoding="utf-8")
+    for s in ("api/frames/state", "api/frames/image", "api/frames/act", "window.FramesTab", "过目", "编辑中", "Stage.COLORS",
+              '"pass"', '"discard"', '"undo"', '"edit"', '"cancel_edit"', "toast(", "wheel", "keyup"):
+        assert s in js, s
+    assert "innerHTML" not in js  # 帧名、原因都是数据：只用 textContent
+    lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
+    assert "FramesTab" in lab and '"frames"' in lab
+
+
+
+def test_frames_plain_pass_guard_and_final_src():  # 终审 9 / 4：「要编辑」的帧回车只提示先编辑；通过时写的框有自己的来源名
+    js = (STATIC / "frames.js").read_text(encoding="utf-8")
+    body = js.split("async function passFrame()", 1)[1].split("async function discardFrame()", 1)[0]
+    assert 'f.state === "edit"' in body and "toast(" in body and body.index('f.state === "edit"') < body.index('do: "pass"')
+    assert 'final: "' in js
+
+
+def test_form_page_inbox_filter():  # 外形页「来自整理」筛选：c.inbox === true，计数照「回放用」
+    lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
+    assert "c.inbox === true" in lab and '"inbox"' in lab and "来自整理" in lab
+
+
+def test_frames_load_queues_while_in_flight():  # 评审：load 正在跑时再调不能丢掉 pick（startEdit 没 await 的 load + 紧接着回车保存）
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = (f"const F=require({json.dumps(str(STATIC / 'frames.js'))});(async()=>{{const log=[];"
+          "const run=F.serial(async p=>{log.push('start');await new Promise(r=>setTimeout(r,20));if(p)log.push(p())});"
+          "const a=run(),b=run(()=>'second'),c=run();await a;"
+          "const d=run(()=>'again');await d;"
+          "console.log(JSON.stringify([log,a===b&&b===c,a===d]))})()")
+    out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+    assert out == [["start", "start", "second", "start", "again"], True, False]  # 排队的只跑一次、没带 pick 的不盖掉之前的 pick
+
+
+def test_frames_tab_badge():  # 评审：「整帧（N）」打开标注页就有，不用先点进整帧页
+    fr = [{"state": s} for s in ("glance", "edit", "crops", "done", "glance")]
+    assert _frames_js(f"[F.badgeText({json.dumps(fr)}),F.badgeText([{{state:'done'}}]),F.badgeText([])]") == ["整帧（3）", "整帧", "整帧"]
+    lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
+    show = lab.split("  show(", 1)[1].split("\n  },", 1)[0]
+    assert "FramesTab.peek()" in show
+
+
+def _common_js(expr: str):  # 在 node 里载入 common.js（没有 document），算 expr
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = f"const C=require({json.dumps(str(STATIC / 'common.js'))});console.log(JSON.stringify({expr}))"
+    return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+
+
+def test_stop_question():  # 停团子时问要不要整理：没有素材 / 不用问 → null
+    q = "C.stopQuestion({hard:85,pending:2,eta_min:4,ask:true})"
+    assert _common_js(q) == "这次存了 85 张难例（还有 2 次运行没整理），现在整理吗？约 4 分钟"
+    assert _common_js("C.stopQuestion({hard:0,pending:0,eta_min:0,ask:true})") is None
+    assert _common_js("C.stopQuestion({hard:85,pending:2,eta_min:4,ask:false})") is None
+    assert _common_js("C.stopQuestion(null)") is None
+
+
+def test_inbox_line():  # 侧栏整理提示：任务进度 > 失败 > 待看 > 待整理
+    ib = "{pending:0,judge_left:0,glance:0,edit:0}"
+    run = _common_js("C.inboxLine({job:{state:'running',job:'inbox',progress:'外形头 3/9',tail:[]},inbox:%s})" % ib)
+    assert run == {"text": "整理素材：外形头 3/9", "action": None}
+    re = _common_js("C.inboxLine({job:{state:'running',job:'retrain',progress:'第 5 轮',tail:[]},inbox:%s})" % ib)
+    assert re["text"] == "重训中：第 5 轮"
+    bad = _common_js("C.inboxLine({job:{state:'failed',job:'inbox',progress:'',tail:['a','没显卡']},inbox:%s})" % ib)
+    assert bad == {"text": "整理失败：没显卡（点这里重试）", "action": "start-inbox"}  # 终审 5：失败行能重试
+    wait = _common_js("C.inboxLine({job:{state:'idle'},inbox:{pending:1,judge_left:12,glance:3,edit:0}})")
+    assert wait == {"text": "12 张裁图、3 帧等你看 →", "action": "open-labeling"}
+    pend = _common_js("C.inboxLine({job:{state:'idle'},inbox:{pending:3,judge_left:0,glance:0,edit:0}})")
+    assert pend == {"text": "3 次运行的素材没整理", "action": "start-inbox"}
+    assert _common_js("C.inboxLine({job:{state:'idle'},inbox:%s})" % ib) is None
+    assert _common_js("C.inboxLine({job:null,inbox:null})") is None
+
+
+def test_inbox_line_failure_keeps_other_hints():  # 终审 5：失败行按任务分、给 action、不盖住待看 / 没整理的提示
+    wait = "{pending:2,judge_left:12,glance:3,edit:0}"
+    bad = _common_js("C.inboxLine({job:{state:'failed',job:'inbox',tail:['没显卡']},inbox:%s})" % wait)
+    assert bad == {"text": "整理失败：没显卡（点这里重试）；另有 12 张裁图、3 帧等你看", "action": "start-inbox"}
+    re = _common_js("C.inboxLine({job:{state:'failed',job:'retrain',tail:['爆显存']},inbox:%s})" % wait)
+    assert re == {"text": "重训失败：爆显存；12 张裁图、3 帧等你看 →", "action": "open-labeling"}
+    pend = _common_js("C.inboxLine({job:{state:'failed',job:'retrain',tail:[]},inbox:{pending:3,judge_left:0,glance:0,edit:0}})")
+    assert pend == {"text": "重训失败；3 次运行的素材没整理", "action": "start-inbox"}
+    alone = _common_js("C.inboxLine({job:{state:'failed',job:'retrain',tail:['x']},inbox:{pending:0,judge_left:0,glance:0,edit:0}})")
+    assert alone == {"text": "重训失败：x", "action": "open-labeling"}  # 标注页「整帧」里有重训区和报告
+    assert _common_js("C.inboxLine({job:{state:'failed',job:'inbox',tail:[]},inbox:null})") == {"text": "整理失败（点这里重试）", "action": "start-inbox"}
+
+
+def test_busy_question_names_job():  # 终审 5：起团子时任务在跑，问话按任务分
+    assert _common_js("C.busyQuestion({job:'inbox',progress:'3/9'})") == "整理还没完（剩 3/9），先停下再叫醒？"
+    assert _common_js("C.busyQuestion({job:'retrain',progress:''})") == "重训还没完，先停下再叫醒？\n训练停了要从头来。"
+
+
+def test_frames_tab_hidden_when_inbox_disabled():  # 终审 11 / spec §8：inbox.enabled = false（/api/state 的 inbox 为 null）不出「整帧」标签
+    lab = (STATIC / "labeling.js").read_text(encoding="utf-8")
+    sync = lab.split("function syncFramesTab(", 1)[1].split("\n}", 1)[0]
+    assert "st.inbox" in sync and ".hidden" in sync and 'setTab("gesture")' in sync
+    init = lab.split("  init() {", 1)[1].split("\n  },", 1)[0]
+    assert "onState(syncFramesTab)" in init
+    set_tab = lab.split("function setTab(", 1)[1].split("\n}", 1)[0]
+    assert "framesOn" in set_tab  # 关着时点不进去（侧栏链接 go("labeling","frames") 也一样）

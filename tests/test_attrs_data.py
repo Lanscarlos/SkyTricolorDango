@@ -333,3 +333,17 @@ def test_form_guess_file_skip_and_merge(tmp_path):
     assert ad.pending_crops(tmp_path / "nope", {}) == []
     (unl / "claude.json").write_text("坏的", encoding="utf-8")
     assert ad.load_form_guesses(unl) == {}
+
+
+def test_writeback_skips_inbox_rows(tmp_path):
+    """收件箱整理出的裁图（source = inbox）归标注页的整帧通过管，writeback 不碰它们。"""
+    root, out = tmp_path / "ds", tmp_path / "attrs"
+    (root / "labels" / "train").mkdir(parents=True)
+    (root / "images" / "train").mkdir(parents=True)
+    (out / "form" / "lit").mkdir(parents=True)
+    (out / "form" / "lit" / "c1.jpg").write_bytes(b"x")
+    row = {"crop": "c1.jpg", "image": str(tmp_path / "inbox" / "r1" / "raw" / "f.jpg"), "box": [10, 10, 50, 100],
+           "size": [1920, 1080], "score": 0.8, "yolo_cls": "player", "source": "inbox", "split": "train", "group": "r1", "known": False}
+    (out / "_crops.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert ad.writeback(root, out, datetime(2026, 10, 4, 12, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
+    assert not list((root / "labels").rglob("*.txt"))

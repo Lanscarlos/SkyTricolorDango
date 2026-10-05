@@ -311,6 +311,8 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
   mAP50（v7 / v10 / v11）旧 val：player_unlit 0.633 / 0.693 / **0.778**、social_ring 0.922 / 0.912 / 0.949、spirit 0 / 0.426 / 0.003；茶座：player_unlit 0.671 / 0.688 / **0.761**、social_ring 0.545 / 0.662 / 0.421、typing 0.274 / 0.391 / 0.298。
   回放（门槛 0.35）v11 81% / 72%、认反 23；+ 外形头 82% / 77%、8（v10 + 外形头 88% / 77%、3）——精确率掉了。数据只多 62 个人就有涨有跌，多半是单次训练的波动，要定论得同设置换几个 seed 训几次取平均
 
+**10-05 补记**：门槛 4（真机效果）**还没定论**——10-04 晚没做开 / 关对比（见 `2026-10-04-tonight.md`）。另外「难例收件箱」流水线（spec `docs/superpowers/specs/2026-10-04-hardcase-inbox-design.md`）已经有了：真机运行存下的难例下线时收进 `datasets/inbox`，外形头先筛、整帧页过目、一键重训并回放对比，用来把真机难例变成训练数据；**还没用真数据跑过**。
+
 ## 没做完 / 待办（按建议顺序）
 
 1. ~~**用 v4 在 `run` 里试感知层**：`config.toml` 加 `[perception] enabled = true`、`model = "models/sky-yolo-v4.pt"`、`device = "cuda"`，

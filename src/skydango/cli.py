@@ -754,13 +754,23 @@ def _embed_ms(library) -> float:
     return (time.perf_counter() - started) * 1000 / 3
 
 
-def _stop_scene(env) -> None:
-    """退出时停掉感知线程；收集了难例就告诉用户在哪（runs/ 只留最近几次，要用的及时收进数据集）。"""
+def _stop_scene(env, inbox=None) -> None:
+    """退出时停掉感知线程；收集了难例就收进收件箱（inbox 非 None 且开着），出错只记日志。"""
     if hasattr(env, "stop"):
         env.stop()
     hard = getattr(env, "hardcases", None)
     if hard is not None and hard.saved:
-        print(f"难例：存了 {hard.saved} 张 → {hard.folder}（收进数据集：perception label runs --from-runs）")
+        collected = False
+        if inbox is not None and inbox.enabled:
+            try:
+                from .vision import inbox as hardcase_inbox
+
+                hardcase_inbox.collect(Path(hard.folder).parent, Path(inbox.dir))
+                collected = True
+            except Exception as exc:  # noqa: BLE001 收件失败不能挡住退出
+                log.warning("难例收进收件箱失败：%s", exc)
+        tail = "已收进 datasets/inbox，管理面板里整理" if collected else "收进数据集：perception inbox collect"
+        print(f"难例：存了 {hard.saved} 张 → {hard.folder}（{tail}）")
     unknown = getattr(env, "unknown", None)
     if unknown is not None and unknown.entries:
         print(f"没认出的名字：{len(unknown.entries)} 个 → {unknown.folder}（汇总：perception unknown-names）")
@@ -938,6 +948,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_compare(cfg, args)
     elif args.action == "unknown-names":
         _perception_unknown_names(cfg, args)
+    elif args.action == "inbox":
+        _perception_inbox(cfg, args)
     elif args.action == "clips":
         _perception_clips(cfg, args)
     elif args.action == "gesture-eval":
@@ -952,6 +964,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_crops(cfg, args)
     elif args.action == "attrs-train":
         _perception_attrs_train(cfg, args)
+    elif args.action == "retrain":
+        _perception_retrain(cfg, args)
     elif args.action == "attrs-eval":
         _perception_attrs_eval(cfg, args)
     elif args.action == "appearance-eval":
@@ -1054,28 +1068,23 @@ def _attrs_replays(cfg: Config, frames: list, model, notes: list[str], attrs_roo
     """在验证帧上回放 0.2 和 [perception] low_conf 两档：([回放结果], 建议阈值)。检测器建不起来 / 没有带标注的帧就返回空。
     attrs_root：外形裁图目录，标准答案按标注页确认过的结果修正（`attrs_train.gt_fixes`，只在内存里）。"""
     from .vision import attrs_train as at
-    from .vision.detect import make_detector
 
     p, a = cfg.perception, cfg.attrs
     if not frames:
         notes.append("没有可回放的验证帧（数据集的 images/val 里没有图），没做整帧回放")
         return [], None
     try:
-        detector = make_detector(p.model, p.classes, p.imgsz, 0.2, p.iou, p.device)
+        detector = at.replay_detector(p)
     except Exception as exc:
         notes.append(f"YOLO 检测器加载失败（{exc}），没做整帧回放")
         return [], None
-    fixes = at.gt_fixes(attrs_root) if attrs_root is not None and Path(attrs_root).is_dir() else {}
-    if fixes:
-        notes.append(f"回放的标准答案用 {attrs_root} 里标注页确认过的结果修正了 {sum(len(v) for v in fixes.values())} 处"
-                     "（改点没点火、删不是人、补漏标的人；只在内存里，datasets/sky 的 labels/ 没动）")
+    fixes = at.load_fixes(attrs_root, notes)
     replays, suggest = [], None
     for low in sorted({0.2, p.low_conf}):
         records = at.collect(frames, detector, model, low, fixes)
         if suggest is None or low == p.low_conf:
             suggest = at.sweep_thresholds(records, p.conf)
-        replays.append({**at.simulate(records, p.conf, a.accept, a.reject, a.yolo_w), "conf_low": low, "conf": p.conf,
-                        "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n, "yolo_w": a.yolo_w})
+        replays.append(at.replay_row(records, low, p.conf, a))
     return replays, suggest
 
 
@@ -1133,6 +1142,28 @@ def _perception_attrs_train(cfg: Config, args) -> None:
     (folder / "report.md").write_text(at.report_md(data=data, model=out, when=now, result=res, replays=replays,
                                                     suggest=suggest, notes=notes), encoding="utf-8")
     print(f"报告 → {folder / 'report.md'}" + (f"；建议 accept = {suggest[0]:g}、reject = {suggest[1]:g}" if suggest else ""))
+
+
+def _perception_retrain(cfg: Config, args) -> None:
+    """一键重训 YOLO + 外形头、回放对比出报告（vision/retrain.py）→ tmp/retrain/<时间>/。失败打印是哪一步、退出码 1。"""
+    import datetime as dt
+    import traceback
+
+    from .vision import retrain
+
+    if args.epochs:
+        cfg.retrain.epochs = args.epochs
+    out = Path("tmp") / "retrain" / f"{dt.datetime.now():%Y%m%d-%H%M%S}"
+    print(f"重训：输出在 {out}", flush=True)
+    try:
+        res = retrain.run_retrain(cfg, retrain.DATASET, Path(cfg.inbox.dir), out, lambda s: print(s, flush=True))
+    except retrain.RetrainFailed as exc:
+        traceback.print_exception(exc.cause)
+        sys.stderr.flush()
+        print(f"重训失败（{exc.step}）：{type(exc.cause).__name__}: {exc.cause}", flush=True)
+        raise SystemExit(1) from None
+    print(f"重训完了：新 YOLO → {res['yolo']}，新外形头 → {res['attrs']}；报告 → {out / 'report.md'}"
+          "（换不换在管理面板「标注」页定）", flush=True)
 
 
 def _perception_attrs_eval(cfg: Config, args) -> None:
@@ -1437,6 +1468,86 @@ def _perception_gesture_eval(cfg: Config, args) -> None:
         print(f"{data / SPLIT_FILE} 里没有验证集：评全部片段（包括训练过的，结果会偏好）")
     clf = gesture.OnnxGestureClassifier(g.model, g.labels, cfg.perception.device)
     _print_gesture_eval(gesture.evaluate(data, clf, g, only=only), g)
+
+
+def _perception_inbox(cfg: Config, args) -> None:
+    """难例收件箱：collect = 把 runs/*/hard 收进 [inbox] dir。"""
+    from .vision import inbox as hardcase_inbox
+
+    if getattr(args, "runs", None) is None and args.inbox_action in ("collect", "process"):
+        args.runs = cfg.run.dir  # 没给运行目录：用配置里的 [run] dir
+
+    if args.inbox_action == "collect":
+        inbox = Path(cfg.inbox.dir)
+        runs = hardcase_inbox.collect_all(Path(args.runs), inbox)
+        frames = sum(len(list((inbox / r / "raw").glob("*.jpg"))) for r in runs)
+        print(f"收了 {len(runs)} 次运行 / 共 {frames} 张 → {cfg.inbox.dir}")
+    elif args.inbox_action == "process":
+        _inbox_process(cfg, args)
+    elif args.inbox_action == "status":
+        st = hardcase_inbox.status(Path(cfg.inbox.dir), Path(args.attrs_data))
+        for run, counts in st["runs"].items():
+            print(f"{run}：" + "、".join(f"{k} {v}" for k, v in sorted(counts.items())))
+        print(f"裁图待判 {st['judge_left']} 张；上次训练以来通过 {st['passed_since_train']} 帧")
+
+
+def _form_judge(model):
+    """外形头判一帧里的人物框：裁法同训练 / 评估（模型自己的 pad、size、keep，框外填灰）。返回每个框 {类: 概率}。"""
+    from .vision import attrs
+
+    labels = model.labels("form")
+
+    def judge(frame, boxes):
+        items = [("player", attrs.crop(frame, b, model.pad("form"), model.size, model.keep("form"))) for b in boxes]
+        return [dict(zip(labels, (float(v) for v in out["form"]))) for out in model.predict(items)]
+
+    return judge
+
+
+def _inbox_process(cfg: Config, args) -> None:
+    """perception inbox process：模型都在才开工（缺了打印原因、退出码 1、不碰收件箱）。"""
+    from types import SimpleNamespace
+
+    from .vision import attrs
+    from .vision import inbox as hardcase_inbox
+    from .vision.detect import make_detector
+    from .vision.embed import OnnxEmbedder
+    from .vision.ocr import make_ocr
+
+    for ok, why in (
+        (Path(cfg.perception.model).is_file(), f"找不到 YOLO 模型 {cfg.perception.model}"),
+        (Path(cfg.attrs.model).is_file(), f"找不到外形头模型 {cfg.attrs.model}：先 perception attrs-train"),
+        (Path(cfg.attrs.backbone).is_file(), f"找不到外形头的 DINOv2 主干 {cfg.attrs.backbone}"),
+    ):
+        if not ok:
+            print(f"整理不了：{why}")
+            raise SystemExit(1)
+    device = _attrs_device(cfg)
+    try:
+        embedder = OnnxEmbedder(cfg.attrs.backbone, norm="imagenet", device=device, what="attrs.backbone")
+        model = attrs.load_model(cfg.attrs, device, embedder)
+        if model is None or "form" not in model.heads:
+            print(f"整理不了：外形头模型 {cfg.attrs.model} 打不开或和主干对不上（详见上面的警告）")
+            raise SystemExit(1)
+        p = cfg.perception
+        detector = make_detector(p.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"整理不了：模型加载失败（{type(exc).__name__}: {exc}）")
+        raise SystemExit(1)
+    ocr = make_ocr(cfg.ocr.engine, cfg.env.threads)
+    icons = _icon_classifier(cfg)
+    names = _friend_names(cfg)()
+    weak_args = SimpleNamespace(all_text=False, min_score=0.9)  # 同 perception label --min-score 的默认
+    judge = _form_judge(model)
+
+    res = hardcase_inbox.process(
+        Path(cfg.inbox.dir), Path(args.attrs_data), Path(args.runs), cfg, detector.detect,
+        lambda frame, dets: _prelabel(frame, _weak_boxes(cfg, weak_args, frame, ocr, icons, names), dets, icons), judge,
+    )
+    print(f"整理完了：{res['runs']} 次运行 / {res['frames']} 帧（重复 {res['dups']}），"
+          f"外形头自动确认 {res['auto']} 个、{res['to_judge']} 个裁图等你在标注页判，{res['glance']} 帧可以直接过目")
 
 
 def _perception_unknown_names(cfg: Config, args) -> None:
@@ -1749,6 +1860,20 @@ def _perception_detect(cfg: Config, args) -> None:
         print(f"互动请求：{req.name} → {req.kind}（圆圈在 {req.pos}）")
 
 
+def _prelabel(frame, boxes: list, detections: list | None, icons, me=None) -> list:
+    """一帧的预标注：弱标注 + 模型检测（detections 不是 None 才合并）+ 转圈认出的团子（me）+ 人物头顶的圆圈。
+    perception label 和 inbox process 共用。"""
+    from .vision.weaklabel import merge_labels, ring_labels, with_self
+
+    if detections is not None:
+        boxes = merge_labels(boxes, detections)
+    if me is not None:
+        boxes = with_self(boxes, me)
+    if detections is not None and icons is not None:  # 模型预标注出了人：顺带补他们头顶的圆圈
+        boxes += [("social_ring", r) for r in ring_labels(frame, boxes, icons)]
+    return boxes
+
+
 def _weak_boxes(cfg: Config, args, frame, ocr, icons, names: list[str]) -> list:
     """一帧的弱标注：整图 OCR 读好友名字标签 + 圆圈模板；面板开着时跳过面板区域。"""
     from .vision.bubbles import roi_rect
@@ -1999,7 +2124,7 @@ def _perception_label(cfg: Config, args) -> None:
     from .vision.bubbles import Rect
     from .vision.ocr import make_ocr
     from .vision.weaklabel import (
-        CLASH_REASON, data_yaml, dataset_clash, hard_images, label_items, merge_labels, ring_labels, split_of, with_self,
+        CLASH_REASON, data_yaml, dataset_clash, hard_images, label_items, split_of,
         write_sample, yolo_line,
     )
 
@@ -2062,12 +2187,8 @@ def _perception_label(cfg: Config, args) -> None:
         height, width = frame.shape[:2]
         boxes = _weak_boxes(cfg, args, frame, ocr, icons, names)
         weak = len(boxes)
-        if detector is not None:
-            boxes = merge_labels(boxes, predicted[stem] if stem in predicted else detector.detect(frame))
-        if stem in selves:
-            boxes = with_self(boxes, selves[stem])
-        if detector is not None and icons is not None:  # 模型预标注出了人：顺带补他们头顶的圆圈
-            boxes += [("social_ring", r) for r in ring_labels(frame, boxes, icons)]
+        boxes = _prelabel(frame, boxes, (predicted[stem] if stem in predicted else detector.detect(frame)) if detector is not None else None,
+                          icons, selves.get(stem))
         lines = [yolo_line(index[c], box, width, height) for c, box in boxes if c in index]
         if write_sample(out, split_of(stem, args.val), stem, frame, lines) is not None:
             skipped.append(stem)
@@ -2381,7 +2502,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
-        _stop_scene(env)
+        _stop_scene(env, cfg.inbox)
         if emotes is not None:
             try:
                 emotes.restore()
@@ -2522,7 +2643,7 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
 
         def close() -> None:
             try:
-                _stop_scene(env)
+                _stop_scene(env, cfg.inbox)
                 if panels is not None:
                     panels.close()
             finally:
@@ -3255,6 +3376,15 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("unknown-names", help="汇总最近几次运行里读到、但不在好友名单里的名字（只列出，不改 friends.md）")
     q.add_argument("--runs", default="runs", help="运行目录的上级（默认 runs/）")
     q.add_argument("--last", type=int, default=5, help="看最近几次运行")
+    q = psub.add_parser("inbox", help="难例收件箱（live 存下的难例 → datasets/inbox）")
+    isub = q.add_subparsers(dest="inbox_action", required=True)
+    qi = isub.add_parser("collect", help="把各次运行 runs/*/hard 里的难例收进收件箱（已收的跳过）")
+    qi.add_argument("runs", nargs="?", help="运行目录的上级（默认 [run] dir）")
+    qi = isub.add_parser("process", help="整理收件箱：去重、YOLO 预标注、外形头分流（可续跑）")
+    qi.add_argument("runs", nargs="?", help="运行目录的上级（默认 [run] dir；整理前先补收）")
+    qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
+    qi = isub.add_parser("status", help="收件箱各次运行各状态的帧数")
+    qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
     q = psub.add_parser("clips", help="动作识别的数据：录像按人物轨迹切成 16 帧的片段（人工再分到 <动作>/ 目录）")
     q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
     q.add_argument("-o", "--output", help="输出目录（默认 <[gesture] dataset>/_unlabeled）")
@@ -3271,6 +3401,8 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("attrs-label", help="第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json")
     q.add_argument("source", nargs="?", help="数据目录（默认 datasets/attrs）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的裁图也重新初分")
+    q = psub.add_parser("retrain", help="一键重训：datasets/sky 训 YOLO（[retrain]）+ 外形头，旧 / 新模型回放对比，报告在 tmp/retrain/<时间>/（不换配置）")
+    q.add_argument("--epochs", type=int, help="YOLO 训几轮（默认 [retrain] epochs）")
     q = psub.add_parser("attrs-train", help="训练外形头：form/ 里确认过的裁图 -> DINOv2 特征 + numpy 线性头 -> models/attrs-<日期>.npz，整帧回放评估、写报告")
     q.add_argument("data", nargs="?", help="数据目录（默认 datasets/attrs）")
     q.add_argument("--out", help="模型输出路径（默认 models/attrs-<日期>.npz；是 [attrs] model 时要加 --force）")
