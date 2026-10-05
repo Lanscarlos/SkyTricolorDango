@@ -246,6 +246,23 @@ gap = 3.0                       # 留下的图两两至少隔几秒
 flush_every = 300.0             # 多久写一次盘（秒）
 max_per_run = 300               # 每次运行最多几张
 
+[icons]
+# 认地图交互图标（只认不点）：YOLO 框出的图标认出种类、写进状态和画面；要配合 [perception]
+enabled = false
+classifier = "template"         # 认种类的办法：template 模板匹配 / dino DINOv2 特征检索
+dino = "models/dinov2-small.onnx"  # classifier = "dino" 时的特征模型
+refs = "assets/icons"           # 参考图目录
+dino_match = 0.75               # DINOv2 最像一张的相似度门槛
+dino_margin = 0.05              # 领先第二像的种类至少多少
+vote = 5                        # 每条轨迹多数表决看最近几次
+min_hits = 3                    # 连续几帧都在才算
+under_x = 0.25                  # 圈算在某个框头顶：横着放宽几倍框宽
+under_up = 1.0                  # 圈算在某个框头顶：往上最多几倍框高
+crop_scale = 1.3                # 图标裁图放大几倍
+flame_ring = 2.0                # 火焰圈判断用的倍数（待真机量了再改）
+save = true                     # 认不出的图标存盘
+save_max = 200                  # 每次运行最多存几张
+
 [assist]
 # Claude 辅助标注：python -m skydango perception label <录像目录> --assist
 # 检测器出人物候选框 → 隔离的 claude -p 核对（令牌、配置目录同 [brain]）→ 和名字标签 / 圆圈弱标注合并写进数据集

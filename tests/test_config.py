@@ -321,3 +321,14 @@ def test_viewer_port_is_19391_and_old_port_keys_are_skipped(tmp_path, caplog):  
         cfg = load_config(p)
     assert not hasattr(cfg.viewer, "host") and not hasattr(cfg.console, "child_port") and cfg.viewer.fps == 5.0
     assert "viewer.host" in caplog.text and "console.child_port" in caplog.text
+
+
+def test_icons_config_defaults_and_classifier_check(tmp_path):
+    from skydango.config import IconsConfig
+    assert IconsConfig().enabled is False
+    p = tmp_path / "c.toml"
+    p.write_text('[icons]\nclassifier = "foo"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="classifier"):
+        load_config(p)
+    p.write_text('[icons]\nclassifier = "dino"\n', encoding="utf-8")
+    assert load_config(p).icons.classifier == "dino"

@@ -529,6 +529,30 @@ class CatalogConfig:
 
 
 @dataclass
+class IconsConfig:
+    """认地图交互图标（spec 2026-10-05-icon-detection）：YOLO 框出的图标认出种类、写进状态和画面（只认不点）。要配合 [perception]。"""
+
+    enabled: bool = False
+    classifier: str = "template"  # 认种类的办法：template 模板匹配 / dino DINOv2 特征检索
+    dino: str = "models/dinov2-small.onnx"  # classifier = "dino" 时的特征模型
+    refs: str = "assets/icons"  # 参考图目录
+    dino_match: float = 0.75  # DINOv2 最像一张的相似度门槛
+    dino_margin: float = 0.05  # 领先第二像的种类至少多少
+    vote: int = 5  # 每条轨迹多数表决看最近几次
+    min_hits: int = 3  # 连续几帧都在才算
+    under_x: float = 0.25  # 圈算在某个框头顶：横着放宽几倍框宽
+    under_up: float = 1.0  # 圈算在某个框头顶：往上最多几倍框高
+    crop_scale: float = 1.3  # 图标裁图放大几倍
+    flame_ring: float = 2.0  # 火焰圈判断用的倍数（Task 7 量了再改）
+    save: bool = True  # 认不出的图标存盘
+    save_max: int = 200  # 每次运行最多存几张
+
+    def check(self) -> None:
+        if self.classifier not in ("template", "dino"):
+            raise ValueError(f"配置项 icons.classifier 只能是 template 或 dino，现在是 {self.classifier!r}")
+
+
+@dataclass
 class FriendCheckConfig:
     """大脑的 check_friend 工具：点一下人物打开右侧的好友树面板，截图给大脑看是不是好友，再关掉。
 
@@ -887,6 +911,7 @@ class Config:
     inbox: InboxConfig = field(default_factory=InboxConfig)
     retrain: RetrainConfig = field(default_factory=RetrainConfig)
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
+    icons: IconsConfig = field(default_factory=IconsConfig)
     friend_check: FriendCheckConfig = field(default_factory=FriendCheckConfig)
     panels: PanelsConfig = field(default_factory=PanelsConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
@@ -949,6 +974,7 @@ def load_config(path: str | Path | None, overlay: str | Path | None = None) -> C
             _merge(config, _read_toml(o))
         except (ValueError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"{o.name}：{exc}") from exc
+    config.icons.check()
     return config
 
 

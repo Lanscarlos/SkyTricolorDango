@@ -33,6 +33,8 @@ KIND_NAMES = {
     "light": "点亮陌生人",  # 团子举蜡烛给身边没点火的黑影点火（2026-10-01，身体按 3 号键做，见 brain/body.py）
     "stranger": "陌生人", "eye": "在看留影 / 听音乐", "shared": "共享空间",
 }
+# 地图上的交互图标种类（认图标用）：真机看完图标再往里加，见 spec 2026-10-05-icon-detection §1
+MAP_KINDS: frozenset[str] = frozenset()
 LIGHT = "light"
 LIGHT_KEY = "陌生人·点亮"  # 感知层 requests 里"团子该举蜡烛点亮身边这个黑影"的键（和陌生人举蜡烛的 "陌生人" 分开，两件事可能同时有）
 IDLE = "star"  # 没有请求时圆圈里是 ✦
