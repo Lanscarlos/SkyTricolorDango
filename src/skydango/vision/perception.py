@@ -52,7 +52,7 @@ from .catalog import Who, stranger_key
 from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
-from .icons_map import owner_of
+from .icons_map import MAP_OWNERS, UNKNOWN, Icon, map_label, owner_of
 from .lighting import DISK_EVERY, DISK_GAP, GONE_RETRY, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
 from .ocr import OcrEngine, join_lines
 from .people import OBJECT_NAMES, OTHERS, WHO, CallSeen, Person, Seen, Thing, object_distance, side_of
@@ -350,6 +350,7 @@ class PerceptionWatcher:
         catalog=None,  # vision.catalog.CatalogCollector：图鉴收集（None = 不收，行为照旧）
         enroll_dir: Path | None = None,  # 启动登记团子时取到的裁图存这里（<序号>.jpg，None = 不存）
         icons_cfg: IconsConfig | None = None,  # 认地图交互图标（spec 2026-10-05-icon-detection）；圈的归属判断不受 enabled 管
+        map_icons=None,  # vision.icons_map.MapIcons：先祖 / 物件 / 地图上的圈认种类（None = 不认，icons() 为空）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -357,8 +358,9 @@ class PerceptionWatcher:
         self.env_cfg = env_cfg
         self.names = names
         self.log_roi = log_roi
-        self.icons = icons
+        self.ring_icons = icons  # 圆圈里的互动图标（模板）；不叫 self.icons：icons() 是给身体的地图图标
         self.icons_cfg = icons_cfg or IconsConfig()
+        self.map_icons = map_icons
         self.background = background
         self.capture = capture
         self.clock = clock
@@ -782,6 +784,19 @@ class PerceptionWatcher:
                 ring.data["owner"] = owner_of(
                     ring.box, ring_people, ring_spirits, ring_things, self.icons_cfg.under_x, self.icons_cfg.under_up
                 )
+            for ring in orphans:
+                owner_now = ring.data["owner"]
+                if owner_now == "person":
+                    continue
+                ring.data.pop("kind", None)  # 下面原来是人时认的（candle）：别让画面还画成请求
+                if owner_now in MAP_OWNERS and self.map_icons is not None and self.icons_cfg.enabled:
+                    try:
+                        told = self.map_icons.observe(frame, ring, owner_now, now)
+                    except Exception:
+                        told = False
+                        log.debug("认地图图标出错", exc_info=True)
+                    if told and self.hardcases is not None and not self.paused:
+                        self._report_hard(frame, now, "icon_unknown", f"轨迹 {ring.id} 的图标认不出（{owner_now}）", tracks)
             orphans = [ring for ring in orphans if ring.data["owner"] == "person"]
 
         tagged = self._assign_tags([p for p in players if not self._unlit(p)], tags)
@@ -2466,12 +2481,12 @@ class PerceptionWatcher:
         return int(cx), int(cy)
 
     def _classify(self, frame: np.ndarray, ring: Track) -> str | None:
-        if self.icons is None:
+        if self.ring_icons is None:
             return None
         cx, cy = self._ring_center(ring)
         r = round(56 * frame.shape[0] / 1080)
         region = frame[max(0, cy - r) : cy + r, max(0, cx - r) : cx + r]
-        return self.icons.classify(region)[0]
+        return self.ring_icons.classify(region)[0]
 
     # ---- 可视化（vision/viewer.py） ----
     def overlay(self, now: float) -> list[dict]:
@@ -2521,6 +2536,8 @@ class PerceptionWatcher:
                 label = d.get("name") or (f"?{d['text']}" if d.get("text") else "?")
             elif t.cls in OBJECT_NAMES:
                 kind, label = t.cls, OBJECT_NAMES[t.cls]
+            elif self._map_icon_shown(t):  # 先祖 / 物件 / 地图上的图标：只认不点，画成 icon
+                kind, label = "icon", map_label(d["icon"], d["owner"])
             elif t.cls == "social_ring":
                 ring = d.get("kind")
                 kind = "request" if is_request(ring) else "ring"
@@ -2529,6 +2546,8 @@ class PerceptionWatcher:
                 kind, label = t.cls, t.cls
             b = t.box
             entry = {"x": b.x, "y": b.y, "w": b.w, "h": b.h, "kind": kind, "label": label, "score": round(t.score, 2)}
+            if kind == "icon" and d.get("icon") == UNKNOWN:
+                entry["unknown"] = True  # 网页画虚线
             if self.cfg.motion and t.cls in ("player", UNLIT) and (motion := d.get("motion")):
                 entry["motion"] = motion
             if self.appearance is not None and (desc := self._desc(kind, who)):
@@ -2589,6 +2608,28 @@ class PerceptionWatcher:
                              object_distance(t.box.y2, self._frame_h, self.cfg.object_near, self.cfg.object_far)))
         order = {"左边": 0, "前面": 1, "右边": 2}
         return sorted(out, key=lambda o: (order[o.side], -o.box.y2))
+
+    def _map_icon_shown(self, t: Track) -> bool:
+        """这个圈是不是投票定下来的地图图标（先祖 / 物件 / 地图上的，连续 min_hits 帧）：icons() 和画面共用。"""
+        return (self.icons_cfg.enabled and self.map_icons is not None and t.cls == "social_ring"
+                and t.data.get("owner") in MAP_OWNERS and t.data.get("icon") is not None
+                and t.hits >= self.icons_cfg.min_hits)
+
+    def icons(self, now: float) -> list[Icon]:
+        """最近一帧里先祖 / 物件 / 地图上的交互图标（spec 2026-10-05-icon-detection §3.5），左 / 前 / 右、同一边按 x。
+
+        只认不点；[icons] 没开、没有 MapIcons、暂停中、这一帧已经过时返回空（同 objects()）。"""
+        if not self.icons_cfg.enabled or self.map_icons is None or self.paused:
+            return []
+        out = []
+        for t in list(self.last_tracks):
+            if now - t.last > PEOPLE_STALE or not self._map_icon_shown(t):
+                continue
+            kind, owner = t.data["icon"], t.data["owner"]
+            side = side_of(t.box.x + t.box.w / 2, self._frame_w)
+            out.append(Icon(t.id, kind, owner, map_label(kind, owner), t.box, side))
+        order = {"左边": 0, "前面": 1, "右边": 2}
+        return sorted(out, key=lambda i: (order[i.side], i.box.x + i.box.w / 2))
 
     # ---- 给身体 / 提示词用的（和 EnvWatcher 一样） ----
     def nearby(self, now: float) -> list[str]:

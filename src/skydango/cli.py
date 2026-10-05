@@ -437,6 +437,37 @@ def _catalog_collector(cfg: Config, run: RunDir | None):
     return collector
 
 
+def _map_icons(cfg: Config, icons, dino, run: RunDir | None):
+    """认地图交互图标（spec 2026-10-05-icon-detection §3.2）：[icons] 开着才建 MapIcons。
+    icons = 圆圈的模板分类器（IconClassifier，可能是 None）；dino = 认装扮建好的 DINOv2（可能是 None），和 [icons] dino 是同一个文件就共用会话。
+    classifier = "dino" 时模型建不起来、参考图读不了或一张都没有：警告、退回模板（不拖垮 _scene_watcher）。"""
+    c = cfg.icons
+    if not c.enabled:
+        return None
+    from .vision.appearance import DinoGuard
+    from .vision.icons_map import IconGallery, MapIcons
+
+    gallery = None
+    if c.classifier == "dino":
+        try:
+            if dino is not None and cfg.appearance.dino and Path(cfg.appearance.dino).resolve() == Path(c.dino).resolve():
+                embedder = DinoGuard(dino)  # 和认装扮同一个文件：共用一个推理会话
+            else:
+                from .vision.embed import OnnxEmbedder
+
+                embedder = DinoGuard(OnnxEmbedder(c.dino, norm="imagenet", device=cfg.perception.device, what="icons.dino"))
+            gallery = IconGallery.load(c.refs, embedder, c.dino_match, c.dino_margin)
+            if not gallery.kinds:
+                raise FileNotFoundError(f"{c.refs}/ 里一张参考图都没有")
+        except Exception as exc:
+            log.warning("认图标：DINOv2 用不了（%s），退回模板", exc)
+            gallery = None
+    save_dir = run.path / "icons" if run is not None else None
+    how = f"DINOv2 底库（{'、'.join(gallery.kinds)}）" if gallery is not None else "模板"
+    log.info("认图标：%s%s", how, f"，拿不准的裁图存进 {save_dir}" if save_dir is not None and c.save else "")
+    return MapIcons(c, icons, gallery, save_dir)
+
+
 def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, run: RunDir | None = None, light: bool = False):
     """[env] 打开时"身边有谁"由谁来认：[perception] 打开就用 YOLO 感知层，否则用原来的定时整图 OCR。
 
@@ -448,6 +479,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
             log.warning("[places] 要配合 [perception] 用（YOLO 感知层里认地图），现在没打开，不认地图")
         if cfg.appearance.enabled:
             log.warning("[appearance] 要配合 [perception] 用，现在没打开，不认装扮")
+        if cfg.icons.enabled:
+            log.warning("[icons] 要配合 [perception] 用，现在没打开，不认地图图标")
         return _env_watcher(cfg, background=background, icons=icons)
     from .vision.detect import make_detector
     from .vision.ocr import make_ocr
@@ -486,7 +519,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         social_cfg=cfg.social, flame=flame,
         light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run, dino),
         call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
-        catalog=_catalog_collector(cfg, run),
+        catalog=_catalog_collector(cfg, run), icons_cfg=cfg.icons, map_icons=_map_icons(cfg, icons, dino, run),
     )
 
 

@@ -130,11 +130,15 @@ def ringed(cx=1400, cy=428):
     return f
 
 
-def watcher(detector, ocr=None, icons=None, clock=None, icons_cfg=None, **cfg):
+def watcher(detector, ocr=None, icons=None, clock=None, icons_cfg=None, map_icons=None, hardcases=None, **cfg):
     cfg.setdefault("stranger_after", 1.0)
     extra = {"clock": clock} if clock is not None else {}
     if icons_cfg is not None:
         extra["icons_cfg"] = icons_cfg
+    if map_icons is not None:
+        extra["map_icons"] = map_icons
+    if hardcases is not None:
+        extra["hardcases"] = hardcases
     return PerceptionWatcher(
         detector, ocr or FakeOcr({}), PerceptionConfig(**cfg), EnvConfig(), lambda: list(FRIENDS),
         log_roi=[0.0, 0.0, 0.335, 0.855], icons=icons, background=False, **extra,
@@ -2011,6 +2015,159 @@ def test_friend_ring_owner_is_friend():
     assert ring_owner(w) == "friend"
 
 
+def test_orphan_ring_drops_stale_kind_when_person_leaves():
+    """圈下面原来有人（认成过 candle），人走了圈还在：旧的 kind 要清掉，不然管理面板画面还画成 request。"""
+    det = FakeDetector()
+    det.frames = [[ring(1400), player(1355, y=440)]]
+    w = watcher(det, icons=FakeIcons({"next": "candle"}))
+    w.process(ringed(), 0.0, panel_visible=False)
+    assert w.requests[STRANGER].kind == "candle"
+    det.frames = [[ring(1400)]]
+    w.process(ringed(), 0.1, panel_visible=False)
+    r = [t for t in w.last_tracks if t.cls == "social_ring"][0]
+    assert r.data["owner"] == "map" and "kind" not in r.data
+    assert [b["kind"] for b in w.overlay(0.1) if b["x"] == 1350] == ["ring"]
+
+
+def test_stranger_request_dropped_when_person_gone_but_ring_stays():
+    """人在圈下举着蜡烛出了请求；下一帧人没了、圈还在原地、图标也没认出：请求马上撤（REQUEST_HOLD 不靠不是人的圈续命）。"""
+    det = FakeDetector()
+    det.frames = [[ring(1400), player(1355, y=440)]]
+    icons = FakeIcons({"next": "candle"})
+    w = watcher(det, icons=icons)
+    w.process(ringed(), 0.0, panel_visible=False)
+    assert w.requests[STRANGER].kind == "candle"
+    icons.kinds["next"] = None
+    det.frames = [[ring(1400)]]
+    w.process(ringed(), 0.1, panel_visible=False)
+    assert STRANGER not in w.requests
+
+
+# ---- 地图交互图标（spec 2026-10-05-icon-detection §3.5）：MapIcons、icons()、画面、难例 ----
+class FakeTemplate:
+    """假模板分类器（IconClassifier 的接口）：总是返回 (kind, score)。"""
+
+    min_score = 0.75
+
+    def __init__(self, kind, score=0.9):
+        self.kind, self.score = kind, score
+
+    def classify(self, region, scales=None):
+        return self.kind, self.score
+
+
+class FakeHard:
+    def __init__(self):
+        self.reports = []
+
+    def check(self, *a, **k):
+        pass
+
+    def report(self, frame, now, reason, detail, tracks):
+        self.reports.append((reason, detail))
+        return True
+
+
+def map_watcher(kind="candle", enabled=True, **kw):
+    from skydango.config import IconsConfig
+    from skydango.vision.icons_map import MapIcons
+
+    cfg = IconsConfig(enabled=enabled, save=False)
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]  # 下面没人：归属 map
+    w = watcher(det, icons=FakeIcons({"next": "candle"}), icons_cfg=cfg,
+                map_icons=MapIcons(cfg, FakeTemplate(kind), None, None), **kw)
+    return w, det
+
+
+def test_map_icon_reported_after_min_hits():
+    w, _ = map_watcher()
+    w.process(ringed(), 0.0, panel_visible=False)
+    w.process(ringed(), 0.1, panel_visible=False)
+    assert w.icons(0.1) == []  # 才 2 帧
+    w.process(ringed(), 0.2, panel_visible=False)
+    (icon,) = w.icons(0.2)
+    assert icon.kind == "candle" and icon.owner == "map" and icon.label == "可以点的蜡烛 / 灯"
+    assert icon.side == "右边" and icon.box == Rect(1350, 378, 100, 100)
+    assert STRANGER not in w.requests  # 只认不点
+    assert w.icons(0.2 + 1.5) == []  # 过时了
+
+
+def test_map_icons_sorted_left_front_right():
+    from skydango.config import IconsConfig
+    from skydango.vision.icons_map import MapIcons
+
+    cfg = IconsConfig(enabled=True, save=False)
+    det = FakeDetector()
+    det.frames = [[ring(1400), ring(900), ring(1800)]]
+    w = watcher(det, icons_cfg=cfg, map_icons=MapIcons(cfg, FakeTemplate("candle"), None, None))
+    for t in (0.0, 0.1, 0.2):
+        w.process(frame(), t, panel_visible=False)
+    assert [i.box.x + 50 for i in w.icons(0.2)] == [900, 1400, 1800]
+
+
+def test_map_icons_empty_when_disabled():
+    w, _ = map_watcher(enabled=False)
+    for t in (0.0, 0.1, 0.2):
+        w.process(ringed(), t, panel_visible=False)
+    assert w.icons(0.2) == []
+    r = [b for b in w.overlay(0.2) if b["x"] == 1350]
+    assert [b["kind"] for b in r] == ["ring"]
+    assert "votes" not in [t for t in w.last_tracks if t.cls == "social_ring"][0].data  # 关着时不花时间认
+
+
+def test_map_icons_empty_without_map_icons_or_paused():
+    from skydango.config import IconsConfig
+
+    det = FakeDetector()
+    det.frames = [[ring(1400)]]
+    w = watcher(det, icons_cfg=IconsConfig(enabled=True))
+    for t in (0.0, 0.1, 0.2):
+        w.process(ringed(), t, panel_visible=False)
+    assert w.icons(0.2) == []
+    w, _ = map_watcher()
+    for t in (0.0, 0.1, 0.2):
+        w.process(ringed(), t, panel_visible=False)
+    assert len(w.icons(0.2)) == 1
+    w.hold("test")
+    assert w.icons(0.2) == []
+
+
+def test_map_icon_overlay_kind():
+    w, _ = map_watcher()
+    for t in (0.0, 0.1, 0.2):
+        w.process(ringed(), t, panel_visible=False)
+    (b,) = [b for b in w.overlay(0.2) if b["x"] == 1350]
+    assert b["kind"] == "icon" and b["label"] == "可以点的蜡烛 / 灯" and not b.get("unknown")
+    w, _ = map_watcher(kind=None)
+    for t in (0.0, 0.1, 0.2):
+        w.process(ringed(), t, panel_visible=False)
+    (b,) = [b for b in w.overlay(0.2) if b["x"] == 1350]
+    assert b["kind"] == "icon" and b["label"] == "不认识的图标" and b["unknown"] is True
+
+
+def test_map_icon_under_open_panel_not_reported():
+    from skydango.config import IconsConfig
+    from skydango.vision.icons_map import MapIcons
+
+    cfg = IconsConfig(enabled=True, save=False)
+    det = FakeDetector()
+    det.frames = [[ring(400)]]  # 圈心 (400, 428) 在聊天面板里
+    w = watcher(det, icons_cfg=cfg, map_icons=MapIcons(cfg, FakeTemplate("candle"), None, None))
+    for t in (0.0, 0.1, 0.2, 0.3):
+        w.process(frame(), t, panel_visible=True)
+    assert w.icons(0.3) == []
+
+
+def test_unknown_icon_reports_hard_case_once():
+    hard = FakeHard()
+    w, _ = map_watcher(kind=None, hardcases=hard)
+    for t in (0.0, 0.1, 0.2, 0.3, 0.4):
+        w.process(ringed(), t, panel_visible=False)
+    assert [r for r, _ in hard.reports] == ["icon_unknown"]
+    assert "认不出（map）" in hard.reports[0][1]
+
+
 def test_scene_watcher_loads_flame_only_for_brain(monkeypatch, tmp_path):
     """只有大脑模式的身体会举蜡烛：普通 Agent 不找火焰圆盘（否则 light 请求一直挂着）。"""
     from skydango import cli
@@ -2031,6 +2188,91 @@ def test_scene_watcher_loads_flame_only_for_brain(monkeypatch, tmp_path):
     run = SimpleNamespace(path=tmp_path, hard=tmp_path / "hard")
     assert cli._scene_watcher(cfg, run=run, light=True).light_dir == tmp_path / "light"
     assert cli._scene_watcher(cfg, run=run).light_dir is None
+
+
+def _icons_cfg(monkeypatch):
+    from skydango.config import Config
+    import skydango.vision.detect as detect
+    import skydango.vision.ocr as ocr
+
+    monkeypatch.setattr(detect, "make_detector", lambda *a, **k: object())
+    monkeypatch.setattr(ocr, "make_ocr", lambda *a, **k: FakeOcr({}))
+    cfg = Config()
+    cfg.perception.enabled = True
+    cfg.perception.hardcases = False
+    return cfg
+
+
+def test_scene_watcher_passes_icons_cfg_and_map_icons(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from skydango import cli
+
+    cfg = _icons_cfg(monkeypatch)
+    w = cli._scene_watcher(cfg)
+    assert w.icons_cfg is cfg.icons and w.map_icons is None  # [icons] 关着：不建
+    cfg.icons.enabled = True
+    w = cli._scene_watcher(cfg, icons="TPL", run=SimpleNamespace(path=tmp_path, hard=tmp_path / "hard"))
+    assert w.map_icons is not None and w.map_icons.template == "TPL" and w.map_icons.gallery is None
+    assert w.map_icons.save_dir == tmp_path / "icons"
+    assert cli._map_icons(cfg, None, None, None).save_dir is None
+
+
+def test_scene_watcher_map_icons_falls_back_to_template(monkeypatch, tmp_path, caplog):
+    from skydango import cli
+
+    cfg = _icons_cfg(monkeypatch)
+    cfg.icons.enabled = True
+    cfg.icons.classifier = "dino"
+    cfg.icons.dino = str(tmp_path / "missing.onnx")
+    with caplog.at_level("WARNING"):
+        w = cli._scene_watcher(cfg)
+    assert w.map_icons is not None and w.map_icons.gallery is None
+    assert "退回模板" in caplog.text
+
+
+def test_map_icons_gallery_errors_fall_back_to_template(monkeypatch, tmp_path, caplog):
+    """参考图坏了（imread 抛 RuntimeError）也只是退回模板，不能拖垮 _scene_watcher。"""
+    from skydango import cli
+    import skydango.vision.icons_map as icons_map
+
+    cfg = _icons_cfg(monkeypatch)
+    cfg.icons.enabled = True
+    cfg.icons.classifier = "dino"
+    cfg.icons.dino = cfg.appearance.dino = str(tmp_path / "dino.onnx")  # 和认装扮同一个文件：共用，不自己建
+
+    def boom(*a, **k):
+        raise RuntimeError("读不了图片")
+
+    monkeypatch.setattr(icons_map.IconGallery, "load", classmethod(lambda cls, *a, **k: boom()))
+    with caplog.at_level("WARNING"):
+        m = cli._map_icons(cfg, None, object(), None)
+    assert m is not None and m.gallery is None
+    assert "读不了图片" in caplog.text and "退回模板" in caplog.text
+
+
+def test_map_icons_shares_appearance_dino_and_needs_refs(monkeypatch, tmp_path, caplog):
+    from skydango import cli
+    from skydango.vision.appearance import DinoGuard
+
+    class Emb:
+        def embed(self, img):
+            return np.ones(4, np.float32)
+
+    cfg = _icons_cfg(monkeypatch)
+    cfg.icons.enabled = True
+    cfg.icons.classifier = "dino"
+    cfg.icons.dino = cfg.appearance.dino = str(tmp_path / "dino.onnx")
+    cfg.icons.refs = str(tmp_path / "refs")
+    with caplog.at_level("WARNING"):
+        assert cli._map_icons(cfg, None, Emb(), None).gallery is None  # 参考图一张都没有
+    assert "退回模板" in caplog.text
+    (tmp_path / "refs" / "sit").mkdir(parents=True)
+    cv2.imwrite(str(tmp_path / "refs" / "sit" / "a.jpg"), np.full((40, 40, 3), 128, np.uint8))
+    emb = Emb()
+    m = cli._map_icons(cfg, None, emb, None)
+    assert m.gallery is not None and m.gallery.kinds == ["sit"]
+    assert isinstance(m.gallery.embedder, DinoGuard) and m.gallery.embedder._embedder is emb
 
 
 def lit_setup(monkeypatch, flames, black_seq=(0.9,), seen_after=True):

@@ -127,3 +127,152 @@ def test_gallery_load_skips_underscore_and_empty(tmp_path):
     cv2.imwrite(str(tmp_path / "_removed" / "b.jpg"), _img(BLUE))
     g = IconGallery.load(tmp_path, FakeEmbedder(), 0.9, 0.1)
     assert g.kinds == ["sit"]
+
+
+# ---- MapIcons：运行时（投票、选分类器、难例、存裁图） ----
+import json  # noqa: E402
+
+from skydango.config import IconsConfig  # noqa: E402
+from skydango.vision.icons_map import MapIcons  # noqa: E402
+from skydango.vision.track import Track  # noqa: E402
+
+
+class FakeTemplate:
+    """假模板分类器（IconClassifier 的接口）：依次返回 seq 里的 (kind, score)，用完了一直返回最后一个。"""
+
+    def __init__(self, *seq, min_score=0.75):
+        self.seq = list(seq)
+        self.min_score = min_score
+        self.calls = 0
+
+    def classify(self, region, scales=None):
+        self.calls += 1
+        return self.seq.pop(0) if len(self.seq) > 1 else self.seq[0]
+
+
+class FakeGallery:
+    def __init__(self, kind, score, match=0.75):
+        self.kind, self.score, self.match = kind, score, match
+        self.calls = 0
+
+    def classify(self, crop):
+        self.calls += 1
+        return self.kind, self.score
+
+
+def _ring_track(tid=7, hits=1):
+    return Track(tid, "social_ring", Rect(950, 300, 100, 100), 0.9, 0.0, 0.0, hits=hits)
+
+
+def _frame():
+    return np.full((1080, 1920, 3), 60, np.uint8)
+
+
+def test_map_icons_votes_capped_and_icon_is_majority():
+    tpl = FakeTemplate(("bench", 0.9), ("bench", 0.9), ("hand", 0.9), ("hand", 0.9), ("hand", 0.9), ("bench", 0.9))
+    m = MapIcons(IconsConfig(enabled=True, save=False), tpl, None, None)
+    ring = _ring_track()
+    for i in range(6):
+        ring.hits = i + 1
+        m.observe(_frame(), ring, "map", float(i))
+    assert len(ring.data["votes"]) == 5
+    assert ring.data["votes"] == ["bench", "hand", "hand", "hand", "bench"]
+    assert ring.data["icon"] == "hand" and ring.data["icon_score"] == 0.9
+
+
+def test_map_icons_template_none_kind_is_unknown():
+    m = MapIcons(IconsConfig(enabled=True, save=False), FakeTemplate((None, 0.3)), None, None)
+    ring = _ring_track()
+    m.observe(_frame(), ring, "map", 0.0)
+    assert ring.data["votes"] == [UNKNOWN] and ring.data["icon"] == UNKNOWN
+
+
+def test_map_icons_dino_uses_gallery_else_template():
+    tpl, gal = FakeTemplate(("hand", 0.9)), FakeGallery("bench", 0.8)
+    ring = _ring_track()
+    MapIcons(IconsConfig(enabled=True, classifier="dino", save=False), tpl, gal, None).observe(_frame(), ring, "map", 0.0)
+    assert ring.data["icon"] == "bench" and gal.calls == 1 and tpl.calls == 0
+    ring = _ring_track()
+    MapIcons(IconsConfig(enabled=True, classifier="dino", save=False), tpl, None, None).observe(_frame(), ring, "map", 0.0)
+    assert ring.data["icon"] == "hand" and tpl.calls == 1  # 没有底库：退回模板
+    ring = _ring_track()
+    MapIcons(IconsConfig(enabled=True, classifier="template", save=False), tpl, gal, None).observe(_frame(), ring, "map", 0.0)
+    assert ring.data["icon"] == "hand" and gal.calls == 1  # template 模式不用底库
+
+
+def test_map_icons_no_classifier_is_unknown():
+    ring = _ring_track()
+    MapIcons(IconsConfig(enabled=True, save=False), None, None, None).observe(_frame(), ring, "map", 0.0)
+    assert ring.data["icon"] == UNKNOWN
+
+
+def test_map_icons_classifier_error_is_unknown():
+    class Boom:
+        min_score = 0.75
+
+        def classify(self, region, scales=None):
+            raise RuntimeError("坏了")
+
+    ring = _ring_track()
+    MapIcons(IconsConfig(enabled=True, save=False), Boom(), None, None).observe(_frame(), ring, "map", 0.0)
+    assert ring.data["icon"] == UNKNOWN
+
+
+def test_map_icons_unknown_reported_once_after_min_hits():
+    m = MapIcons(IconsConfig(enabled=True, save=False), FakeTemplate((None, 0.2)), None, None)
+    ring = _ring_track()
+    got = []
+    for i in range(6):
+        ring.hits = i + 1
+        got.append(m.observe(_frame(), ring, "map", float(i)))
+    assert got == [False, False, True, False, False, False]
+
+
+def test_map_icons_known_never_reported():
+    m = MapIcons(IconsConfig(enabled=True, save=False), FakeTemplate(("bench", 0.9)), None, None)
+    ring = _ring_track()
+    for i in range(5):
+        ring.hits = i + 1
+        assert m.observe(_frame(), ring, "map", float(i)) is False
+
+
+def test_map_icons_saves_unsure_crops_throttled(tmp_path):
+    # 模板门槛 0.75：0.8 < 0.85 算拿不准、存；0.9 不存
+    tpl = FakeTemplate(("bench", 0.8), ("bench", 0.8), ("bench", 0.8), ("bench", 0.9), (None, 0.3))
+    m = MapIcons(IconsConfig(enabled=True), tpl, None, tmp_path)
+    ring = _ring_track(tid=3)
+    for t in (0.0, 1.0, 2.5, 5.0, 7.0):  # 0.0 存；1.0 离上次不到 2 秒不存；2.5 存；5.0 分数够高不存；7.0 认不出、存
+        m.observe(_frame(), ring, "map", t)
+    lines = [json.loads(s) for s in (tmp_path / "icons.jsonl").read_text("utf-8").splitlines()]
+    assert [ln["t"] for ln in lines] == [0.0, 2.5, 7.0]
+    assert [ln["kind"] for ln in lines] == ["bench", "bench", UNKNOWN]
+    first = lines[0]
+    assert set(first) == {"t", "track", "kind", "score", "classifier", "owner", "box", "file"}
+    assert first["track"] == 3 and first["classifier"] == "template" and first["owner"] == "map"
+    assert first["box"] == [950, 300, 100, 100] and first["score"] == 0.8
+    for ln in lines:
+        assert (tmp_path / ln["file"]).is_file()
+        assert ln["file"].startswith(ln["kind"] + "/") and ln["file"].endswith("-t3.jpg")
+
+
+def test_map_icons_save_max_and_save_off(tmp_path):
+    m = MapIcons(IconsConfig(enabled=True, save_max=2), FakeTemplate((None, 0.1)), None, tmp_path / "a")
+    for tid in range(4):  # 不同轨迹不受 2 秒节流
+        m.observe(_frame(), _ring_track(tid=tid), "map", 0.0)
+    assert len((tmp_path / "a" / "icons.jsonl").read_text("utf-8").splitlines()) == 2
+    m = MapIcons(IconsConfig(enabled=True, save=False), FakeTemplate((None, 0.1)), None, tmp_path / "b")
+    m.observe(_frame(), _ring_track(), "map", 0.0)
+    assert not (tmp_path / "b").exists()
+    m = MapIcons(IconsConfig(enabled=True), FakeTemplate((None, 0.1)), None, None)
+    m.observe(_frame(), _ring_track(), "map", 0.0)  # 没有存盘目录：不存、不出错
+
+
+def test_map_icons_save_uses_dino_threshold(tmp_path):
+    m = MapIcons(IconsConfig(enabled=True, classifier="dino", dino_match=0.75), None, FakeGallery("bench", 0.84), tmp_path)
+    m.observe(_frame(), _ring_track(), "map", 0.0)  # 0.84 < 0.85：存
+    m2 = MapIcons(IconsConfig(enabled=True, classifier="dino", dino_match=0.75), None, FakeGallery("bench", 0.86),
+                  tmp_path / "x")
+    m2.observe(_frame(), _ring_track(), "map", 0.0)
+    lines = (tmp_path / "icons.jsonl").read_text("utf-8").splitlines()
+    assert len(lines) == 1 and json.loads(lines[0])["classifier"] == "dino"
+    assert not (tmp_path / "x").exists()

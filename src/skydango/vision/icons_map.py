@@ -1,18 +1,25 @@
-"""认地图交互图标的纯计算（spec 2026-10-05-icon-detection §3.3 / §3.6）：归属、叫法、投票、裁图。
-
-不碰设备、不跑模型；运行时接线在后面的任务里。"""
+"""认地图交互图标（spec 2026-10-05-icon-detection §3.2–3.6）：归属、叫法、投票、裁图的纯计算，DINOv2 底库，
+运行时 MapIcons（感知层每帧对先祖 / 物件 / 地图上的圈调一次）。不碰设备。"""
 from __future__ import annotations
 
+import json
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from ..config import IconsConfig
 from ..game.social import KIND_NAMES, IconClassifier
-from ..imageio import imread
+from ..imageio import imread, imwrite
 from .embed import cosine
-from .track import Rect
+from .track import Rect, Track
+
+log = logging.getLogger(__name__)
+SAVE_GAP = 2.0  # 同一条轨迹两张裁图至少隔几秒
+SAVE_UNSURE = 0.1  # 分数不到 门槛 + 这么多 也存（拿不准的）
 
 # 圈的归属（好友在调用方用名字标签先判，不进这里）
 MAP_OWNERS: tuple[str, ...] = ("spirit", "bonfire", "bench", "instrument", "map")
@@ -167,3 +174,78 @@ class IconGallery:
         if len(ranked) > 1 and score - ranked[1][1] < self.margin:
             return UNKNOWN, score
         return best, score
+
+
+class MapIcons:
+    """运行时：先祖 / 物件 / 地图上的圈每帧认一次种类，按轨迹投票（spec §3.2、§3.5）；拿不准 / 认不出的裁图存盘攒参考图。
+
+    classifier = "dino" 且有底库用底库，否则模板；两个都没有一律 UNKNOWN。分类出错只记 DEBUG、当 UNKNOWN（不拖垮感知线程）。"""
+
+    def __init__(self, cfg: IconsConfig, template: IconClassifier | None, gallery: IconGallery | None,
+                 save_dir: Path | None) -> None:
+        self.cfg = cfg
+        self.template = template
+        self.gallery = gallery
+        self.save_dir = save_dir
+        self.saved = 0  # 这次运行存了几张
+
+    @property
+    def classifier(self) -> str:
+        if self.cfg.classifier == "dino" and self.gallery is not None:
+            return "dino"
+        return "template" if self.template is not None else "none"
+
+    def _threshold(self, how: str) -> float:
+        if how == "dino":
+            return self.gallery.match
+        if how == "template":
+            return getattr(self.template, "min_score", 0.75)
+        return 0.0
+
+    def _classify(self, crop: np.ndarray, box: Rect, how: str) -> tuple[str, float]:
+        try:
+            if how == "dino":
+                return self.gallery.classify(crop) if crop.size else (UNKNOWN, 0.0)
+            if how == "template":
+                return classify_template(self.template, crop, box)
+        except Exception:
+            log.debug("认图标出错（%s）", how, exc_info=True)
+        return UNKNOWN, 0.0
+
+    def observe(self, frame: np.ndarray, ring: Track, owner: str, now: float) -> bool:
+        """认这一帧、投票，结果写进 ring.data（votes / icon / icon_score）；
+        返回 True = 这条轨迹第一次投出 UNKNOWN 且已经连续 min_hits 帧（调用方报难例）。"""
+        crop = icon_crop(frame, ring.box, self.cfg.crop_scale)
+        how = self.classifier
+        kind, score = self._classify(crop, ring.box, how)
+        votes = ring.data.setdefault("votes", [])
+        votes.append(kind)
+        del votes[: max(0, len(votes) - max(1, self.cfg.vote))]
+        ring.data["icon"] = vote(votes)
+        ring.data["icon_score"] = score
+        if kind == UNKNOWN or score < self._threshold(how) + SAVE_UNSURE:
+            self._save(crop, ring, kind, score, how, owner, now)
+        if ring.data["icon"] == UNKNOWN and ring.hits >= self.cfg.min_hits and not ring.data.get("icon_unknown_told"):
+            ring.data["icon_unknown_told"] = True
+            return True
+        return False
+
+    def _save(self, crop: np.ndarray, ring: Track, kind: str, score: float, how: str, owner: str, now: float) -> None:
+        if not self.cfg.save or self.save_dir is None or crop.size == 0 or self.saved >= self.cfg.save_max:
+            return
+        if now - ring.data.get("icon_saved_at", float("-inf")) < SAVE_GAP:
+            return
+        ring.data["icon_saved_at"] = now
+        wall = time.time()
+        stamp = time.strftime("%H%M%S", time.localtime(wall)) + f"-{int(wall * 1000) % 1000:03d}"
+        rel = f"{kind}/{stamp}-t{ring.id}.jpg"
+        b = ring.box
+        line = {"t": round(now, 3), "track": ring.id, "kind": kind, "score": round(float(score), 3),
+                "classifier": how, "owner": owner, "box": [b.x, b.y, b.w, b.h], "file": rel}
+        try:
+            imwrite(self.save_dir / rel, crop)
+            with open(self.save_dir / "icons.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+            self.saved += 1
+        except Exception:
+            log.debug("存图标裁图出错", exc_info=True)
