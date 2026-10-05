@@ -21,7 +21,7 @@ FALLBACK_NOTE = """你现在是备用大脑（DeepSeek）：Claude 额度不足�
 - 嘴上说要做动作（点头、鞠躬……）就真的调 emote，没调就别这么说
 - 单字、语气词（嗯、哦、哈）不用每句都接"""
 
-ASIDE_NOTE = "\n-标着“跟别人说”的话默认不接"  # [addressee] 开着时接在 FALLBACK_NOTE 后面（10-03 晚它的说听比 0.9~1.15，比 Claude 更爱接）
+ASIDE_NOTE = "\n- 标着“跟别人说”的话默认不接"  # [addressee] 开着时接在 FALLBACK_NOTE 后面（10-03 晚它的说听比 0.9~1.15，比 Claude 更爱接）
 
 HISTORY_TEXT = 1500  # 历史里每轮的唤醒消息最多留这么多字（状态之类长的截掉）
 HISTORY_CHARS = 12000  # 历史总共最多这么多字，超了从最老的丢

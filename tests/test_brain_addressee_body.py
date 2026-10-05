@@ -198,3 +198,62 @@ def test_judge_error_is_unsure(clock, monkeypatch):
     say_batch(b, reader, ("小明", "阿花你看"))
     ev = events.drain()
     assert ev[0].kind == "chat" and ev[0].text.endswith("（拿不准：判断出错）")
+
+
+class _Fallback:
+    def __init__(self):
+        self.batches = []
+
+    def reply(self, batch):
+        from skydango.chat.responder import Reply
+
+        self.batches.append(list(batch))
+        return Reply("在呢")
+
+
+def _offline(clock, addressee=True):
+    fb = _Fallback()
+    if addressee:
+        b, env, reader, events = ab(clock, fallback=fb)
+    else:
+        env = FakeEnv()
+        env.near = ["小明", "阿花"]
+        b, _, reader, events = body(clock, live=True, env=env, fallback=fb)
+        b.friend_names = lambda: ["小明", "阿花"]
+        b.step()
+        events.drain()
+    b.brain_offline = lambda now: True
+    return b, reader, fb
+
+
+def test_fallback_skips_when_all_other(clock):
+    b, reader, fb = _offline(clock)
+    say_batch(b, reader, ("小明", "阿花你看"))
+    clock.advance(2)
+    b.step()
+    assert fb.batches == [] and b._fallback_pending == []
+
+
+def test_fallback_replies_when_one_to_me(clock):
+    b, reader, fb = _offline(clock)
+    say_batch(b, reader, ("小明", "阿花你看"), ("小明", "团子你说呢"))
+    clock.advance(2)
+    b.step()
+    assert len(fb.batches) == 1 and len(fb.batches[0]) == 2  # 跟别人说的留作上下文
+
+
+def test_fallback_unchanged_when_disabled(clock):
+    b, reader, fb = _offline(clock, addressee=False)
+    say_batch(b, reader, ("小明", "阿花你看"))
+    clock.advance(2)
+    b.step()
+    assert len(fb.batches) == 1
+
+
+def test_owner_command_row_has_no_why(clock):
+    b, _, reader, _ = ab(clock)
+    b.cfg.brain.owner_name = "小明"
+    lines = []
+    b.on_line = lambda kind, text, who, why="": lines.append((text, why))
+    say_batch(b, reader, ("小明", "#过来"))
+    assert ("#过来", "") in lines

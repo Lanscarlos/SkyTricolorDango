@@ -319,6 +319,8 @@ class Report:
     gold_total: int
     unreviewed: int
     wrong: list[tuple[str, str, str, str]] = field(default_factory=list)  # (id, 标准答案, 规则判的, 上下文)
+    by_reason: dict[str, dict[str, dict[str, int]]] = field(default_factory=dict)  # 规则理由（名字换成 X）→ 混淆矩阵
+    old_logs: bool = False  # 日志里没有「跟谁说」记录（旧运行）
 
     @property
     def other_gold(self) -> int:
@@ -353,18 +355,38 @@ class Report:
             f"- 拿不准占全部：{self.unsure_rate:.1%}（上限 {UNSURE_MAX:.0%}，共 {self.total} 句）→ {ok(self.unsure_rate <= UNSURE_MAX)}",
             f"- 有标准答案的 {self.gold_total} 句；规则改了以后新出现的不一致 {self.unreviewed} 句没核对",
             f"- 结论：{'通过' if self.passed else '没通过'}", "",
+        ]
+        if self.old_logs:
+            out += ["旧日志上的门槛只作参考（团子当时句句都接，「在接你的话」的窗口几乎一直开着）。", ""]
+        out += [
             "## 混淆矩阵（行 = 标准答案，列 = 规则判的）", "",
             "| 标准答案 | " + " | ".join(LABEL_NAMES[p] for p in preds) + " |",
             "| --- |" + " --- |" * len(preds),
         ]
         for g in GOLD:
             out.append(f"| {g} | " + " | ".join(str(self.confusion[g][p]) for p in preds) + " |")
+        out += ["", "## 按规则分（行 = 标准答案，列 = 规则判的；规则理由里的名字换成 X）", ""]
+        for reason, conf in sorted(self.by_reason.items()):
+            out += [
+                f"### {reason}", "",
+                "| 标准答案 | " + " | ".join(LABEL_NAMES[p] for p in preds) + " |",
+                "| --- |" + " --- |" * len(preds),
+            ]
+            for g in GOLD:
+                out.append(f"| {g} | " + " | ".join(str(conf[g][p]) for p in preds) + " |")
+            out.append("")
         out += ["", "## 判错的句子", ""]
         if not self.wrong:
             out.append("没有。")
         for i, gold, pred, ctx in self.wrong:
             out += [f"### {i}", f"标准答案：{gold} · 规则：{pred}", "```", ctx, "```", ""]
         return "\n".join(out)
+
+
+def reason_bucket(v: Verdict) -> str:
+    """规则理由归桶：把目标名字换成 X，「叫了阿花」和「叫了小明」同一桶。"""
+    reason = v.reason or "（无理由）"
+    return reason.replace(v.target, "X") if v.target else reason
 
 
 def evaluate(
@@ -374,6 +396,7 @@ def evaluate(
     index = _context_map(lines)
     confusion = {g: {p: 0 for p in LABEL_NAMES} for g in GOLD}
     wrong: list[tuple[str, str, str, str]] = []
+    by_reason: dict[str, dict[str, dict[str, int]]] = {}
     total = unsure = unreviewed = 0
     for i in picked:
         v = rule.get(i)
@@ -395,6 +418,10 @@ def evaluate(
         if gold not in GOLD:
             continue
         confusion[gold][v.label] += 1
+        bucket = by_reason.setdefault(
+            reason_bucket(v), {g: {p: 0 for p in LABEL_NAMES} for g in GOLD}
+        )
+        bucket[gold][v.label] += 1
         if mine != gold:
             wrong.append((i, gold, mine if v.label != "unsure" else "拿不准", context_text(lines, index[i]) if i in index else ""))
     def rate(gold: str, pred: str) -> float:
@@ -403,7 +430,8 @@ def evaluate(
 
     return Report(
         confusion, rate("跟别人", "me"), rate("跟团子", "other"), unsure / total if total else 0.0, total,
-        sum(sum(r.values()) for r in confusion.values()), unreviewed, wrong,
+        sum(sum(r.values()) for r in confusion.values()), unreviewed, wrong, by_reason,
+        bool(lines) and all(l.nearby is None for l in lines),
     )
 
 

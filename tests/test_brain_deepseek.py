@@ -303,4 +303,4 @@ def test_fallback_note_rules_from_10_03_night():
 def test_aside_note():
     from skydango.brain.deepseek import ASIDE_NOTE
 
-    assert "跟别人说" in ASIDE_NOTE
+    assert "跟别人说" in ASIDE_NOTE and ASIDE_NOTE == "\n- 标着“跟别人说”的话默认不接"

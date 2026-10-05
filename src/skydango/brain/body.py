@@ -241,6 +241,7 @@ class Body:
         self._thread = threading.get_ident()  # 身体线程；run() 里会更新成实际跑循环的线程
         self.limiter = RateLimiter(cfg.reply.min_interval, cfg.reply.max_per_minute)
         self._fallback_pending: list[Message] = []
+        self._fallback_labels: list[str] = []  # 和 _fallback_pending 一一对应的「跟谁说」标签（addressee 关着时全是 me / unsure）
         self._fallback_last_new = 0.0
         self.stopped = False  # shutdown 之后不再接大脑的命令
         self.skills = SkillRunner(events, clock, panel=self.panel)  # 大脑交代的事（盯人、走过去……），跟着主循环一圈圈做
@@ -498,13 +499,16 @@ class Body:
             self._inner_call(lambda: self._watch_upset(fresh))
         self.heard = (self.heard + fresh)[-20:]
         tagged = self.cfg.addressee.enabled
+        owner_name = self.cfg.brain.owner_name
         for m, v in zip(fresh, verdicts):
-            self._line("heard", m.text, m.speaker or "（看不出是谁）", why=v.tag() if tagged else "")
+            is_cmd = bool(owner_name) and m.speaker == owner_name and m.text.startswith("#")  # 主人命令不判，不写标注
+            self._line("heard", m.text, m.speaker or "（看不出是谁）", why=v.tag() if tagged and not is_cmd else "")
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
         notes = [self._lull_call(lambda m=m: self.lulls.heard(self.wall(), m.speaker, m.text), "") or "" for m in fresh]
         if self.brain_offline(now):  # 大脑离线：交给备用回复，不排进大脑的事件
             self._fallback_pending.extend(fresh)
+            self._fallback_labels.extend(v.label for v in verdicts)
             self._fallback_last_new = now
             return
         owner = self.cfg.brain.owner_name
@@ -3001,10 +3005,15 @@ class Body:
             return
         if self.fallback is None:
             self._fallback_pending.clear()
+            self._fallback_labels.clear()
             return
         if now - self._fallback_last_new < self.cfg.chat.debounce or not self.limiter.allow(now):
             return
         batch, self._fallback_pending = self._fallback_pending, []
+        labels, self._fallback_labels = self._fallback_labels, []
+        if self.cfg.addressee.enabled and labels and all(x == "other" for x in labels):
+            log.info("备用回复：这批都是好友跟别人说的话，不接")
+            return
         reply = self.fallback.reply(batch)
         if reply is None or reply.text is None:
             return

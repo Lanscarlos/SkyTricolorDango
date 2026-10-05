@@ -122,8 +122,8 @@ def test_ocr_speaker_maps_to_friend():
 
 
 def test_fuzzy_alias_three_chars():
-    fr = {"小明": ["小明", "懒洋洋"], "阿花": ["阿花", "明哥"]}
-    assert lt(j(make(), 0, "阿花", "懒羊洋你看", friends=fr)) == ("other", "小明")
+    fr = {"小明": ["小明", "胖胖虎"], "阿花": ["阿花", "明哥"]}
+    assert lt(j(make(), 0, "阿花", "胖胖乎你看", friends=fr)) == ("other", "小明")
     assert j(make(), 0, "阿花", "明天去哪", friends={"小明": ["小明", "明哥"], "阿花": ["阿花"]}).label != "other"
 
 

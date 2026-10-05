@@ -213,3 +213,28 @@ def test_review_keeps_filled_without_claude_label(tmp_path):
     ev.write_review(path, [lines[0], lines[1]], lines, rule, {"r#0": "跟别人"})
     assert ev.read_review(path) == {"r#1": "大家", "r#2": "大家"}
     assert "Claude：没标" in path.read_text(encoding="utf-8")
+
+
+def test_report_by_reason_and_old_log_note():
+    ls, rule, human = [], {}, {}
+    for i, (name, gold) in enumerate([("阿花", "跟别人"), ("小红", "跟别人")]):
+        l = _line(i, i * 10, "小明")  # nearby None = 旧日志
+        ls.append(l)
+        rule[l.id] = Verdict("other", f"叫了{name}", name)
+        human[l.id] = gold
+    l = _line(5, 100, "小明")
+    ls.append(l)
+    rule[l.id] = Verdict("me", "在接你的话")
+    human[l.id] = "跟别人"
+    r = ev.evaluate(ls, [x.id for x in ls], rule, {}, human)
+    text = r.markdown()
+    assert "## 按规则分" in text
+    assert "叫了X" in text and "叫了阿花" not in text.split("## 按规则分")[1].split("## 判错")[0]
+    assert r.by_reason["叫了X"]["跟别人"]["other"] == 2
+    assert r.by_reason["在接你的话"]["跟别人"]["me"] == 1
+    assert "旧日志上的门槛只作参考" in text and "句句都接" in text
+    # 新日志（有「跟谁说」记录 = nearby 不是 None）不写这行
+    for x in ls:
+        x.nearby = ["小明"]
+    r2 = ev.evaluate(ls, [x.id for x in ls], rule, {}, human)
+    assert "旧日志上的门槛" not in r2.markdown()

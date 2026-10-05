@@ -494,13 +494,13 @@ dir = "private/sandbox"
 ## 分清在跟谁说话（`[addressee]`，大脑模式）
 
 设计见 `docs/superpowers/specs/2026-10-05-addressee-design.md`，计划 `docs/superpowers/plans/2026-10-05-addressee.md`，路线图 ③。起因：好友之间聊天团子句句都接（10-03 / 10-04 真机）。
-**代码 10-05 做完，还没在真机验证；离线评估（`addressee label` / `eval`）也还没在真实数据上跑过，三条门槛过没过不知道，数字都是估的。**
+**代码 10-05 做完，还没在真机验证；离线评估（`addressee label` / `eval`）也还没在真实数据上跑过，三条门槛过没过不知道，数字都是估的。旧日志（没有「跟谁说」行）上算出的门槛只作参考（团子当时句句都接，「在接你的话」窗口几乎一直开着，`report.md` 按规则理由分列）；正式门槛用合并后录下的新日志算。代码带着 `enabled` 默认开合并，不合适可在管理面板设置页关掉。**
 - **每句好友聊天判一次**（`brain/addressee.py`，纯规则、不调模型；身体 `_heard` 里调）：`me` 跟你说 / `other` 跟别人说 / `all` 说给大家 / `unsure` 拿不准。
   规则从上往下命中即停：不是好友 → unsure；叫了 `[proactive] self_names` → me；叫了别的好友 → other；`group_words`、或身边 ≥ 2 个好友时开头是 `greet_words` → all；
   接团子的话（团子 `followup_window` 内说过、他之后头 `followup_lines` 句、中间没有跟别人的来往）→ me；`thread_window` 内还在跟别人一来一回（团子没插进来）→ other；身边只有他 → me；其余 unsure。
   卡洛的 `#` 命令、陌生人的聊天不进这套判断（陌生人一律 unsure）。判断出错记日志、按 unsure
 - **叫法**：friends.md 每个好友那一节加一行 `- 叫法：卡洛、老登`（顿号 / 逗号 / 空格分开，加上游戏昵称）；≥ 3 个字的叫法允许错一个字（OCR），1~2 个字只认原样。没写就只认昵称，改了不用重启。已有的 friends.md 自己加
-- **事件**：`me` / `all` / `unsure` → `chat`（立刻叫醒）；`other` → 主动开口额度还有放 `aside`（叫醒）、用完放 `aside_bg`（`BACKGROUND`，攒着）。正文末尾带标注「（跟别人说：在接小明的话）」。
+- **事件**：`me` / `all` / `unsure` → `chat`（立刻叫醒）；`other` → 主动开口额度还有放 `aside`（叫醒）、用完放 `aside_bg`（`BACKGROUND`，攒着）。正文末尾带标注「（跟别人说：在回小明）」。
   `[proactive] enabled = false` 时 `other` 一律 `aside_bg`。日志（INFO）一行 `跟谁说 …`，评估能原样回放
 - **插话走主动开口的护栏**：`Brain.chat_turn` 只看 `chat` / `owner_command`，整批都是 aside 的那一轮 `say` 算主动开口（额度、`min_gap`、连着没人接就停、没熟人不说）；有一句 `me` / `all` / `unsure` 就算接话、不拦
 - **别的地方跟着改**：反射（输入气泡、被叫到的小动作）、关系卡「跟团子说的几句」、`_cheered_at` 只认 `me`；status 「场合」后多一行「小明 和 阿花 在聊（1 分钟内 6 句）」；聊天记录（真机 / 沙盒共用）行尾带标注，沙盒的 heard 行改由身体写
@@ -510,7 +510,7 @@ dir = "private/sandbox"
   `python -m skydango addressee label <runs…> [--out 目录]` 取各次运行 `agent.log` 的聊天、挑多人聊天段落 + 约 20% 单人对照 → `lines.jsonl`，Claude 初标（花额度，额度用完可续跑）→ `claude.jsonl`，规则重放，写 `review.md`（不一致的全列、一致的抽 20%，在 `标：` 后填 跟团子 / 跟别人 / 大家 / 看不出；重跑保留已填的标）；
   `python -m skydango addressee eval <目录>` 读回人标 → `report.md`（混淆矩阵 + 判错的句子）；三条门槛：跟别人说被判 me ≤ 5%、跟团子被判 other ≤ 10%、unsure ≤ 40%；没有足够人工核对的标准答案、或没过线退出码 1。
   改了规则不用重标，eval 用当前规则重放。数据来源建议 10-03 21:02、23:04、23:25、10-04 21:27 那几次多人聊天
-- 沙盒剧本 `docs/sandbox-scenarios/两个好友互相聊.toml`（占位名，换成 friends.md 里的好友名）；真机验收：两个以上好友在的一晚，抽查「跟谁说」行、数只有 aside 的那几轮团子开了几次口、问好友「怎么什么都接」没有
+- 沙盒剧本 `docs/sandbox-scenarios/两个好友互相聊.toml`（占位名，换成 friends.md 里的好友名）；真机验收：两个以上好友在的一晚，抽查「跟谁说」行、数只有 aside 的那几轮团子开了几次口、问好友「怎么什么都接」没有；另外数一数「在接你的话」→ 团子回 → 又「在接你的话」的连锁（规则 4 会自己续命，`occasion.reply_state` 又把它当「有人接」，插话护栏不触发；要收紧可选：插话那一轮之后不开规则 4 窗口 / 规则 4 只给团子上一句回应的那个人 / `reply_state` 跳过判成 other 的句子）
 
 ## 身体反射（`[reflex]`，大脑模式）
 
