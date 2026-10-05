@@ -1,0 +1,40 @@
+name = "两个好友互相聊"
+note = "两个好友互相叫名字聊，团子大部分不接、插话不超额度；有人叫团子立刻接"
+
+[start]
+memory = "reset"          # reset = 先从 memory/ 重置；keep = 用沙盒现在的记忆
+time = "20:00"            # 起始沙盒时间：HH:MM（下限之后最近的这个时刻）或 "YYYY-MM-DD HH:MM"
+nearby = ["小明", "阿花"]
+strangers = 0
+place = "霞谷"
+scene = "霞谷，傍晚，两个好友站在团子旁边聊天"
+
+[[steps]]
+who = "小明"
+say = "阿花你今天去哪了"
+[[steps]]
+who = "阿花"
+say = "去霞谷跑了一圈"
+[[steps]]
+who = "小明"
+say = "跑完了吗"
+[[steps]]
+who = "阿花"
+say = "还差一点"
+[[steps]]
+who = "小明"
+say = "那等会一起"
+[[steps]]
+who = "阿花"
+say = "行"
+[[steps]]
+who = "小明"
+say = "阿花你那个斗篷哪来的"
+[[steps]]
+who = "阿花"
+say = "季节送的"
+expect = "团子大部分不接；插话不超过主动开口额度，聊天记录里这些行标着 跟别人说"
+[[steps]]
+who = "阿花"
+say = "团子你说呢"
+expect = "团子马上接，聊天记录里标着 跟你说：叫了你"
