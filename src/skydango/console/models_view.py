@@ -34,6 +34,10 @@ FIELDS = {  # 每种接入方式写进 console.toml 的字段（kind / models / 
 }
 
 
+def _ref(ref) -> str:
+    return str(ref) if ref is not None else ""
+
+
 class BadRequest(ValueError):
     """提交的内容不对：400，原因给页面。"""
 
@@ -94,6 +98,14 @@ class ModelsView:
         except ValueError as exc:  # console.toml 坏了：照样显示 config.toml 的
             return resolve(self.store._fallback()), str(exc)
 
+    def _baseline(self) -> dict:
+        """不算面板改的：默认值 + config.toml 算出来的每个用处（config.toml 坏了就只看默认值）。"""
+        path = self.store.config_path
+        try:
+            return resolve(load_config(path if path.exists() else None)).uses
+        except ValueError:
+            return resolve(load_config(None)).uses
+
     # ---- 读 ----
     def view(self) -> dict:
         setup, error = self._setup()
@@ -109,13 +121,15 @@ class ModelsView:
             for key in ("path", "token_env", "config_dir", "base_url", "key_env", "timeout", "max_retries"):
                 row[key] = getattr(p, key)
             providers.append(row)
+        base = self._baseline()
         uses = []
         for use in USES:
-            u = setup.uses[use.name]
+            u, b = setup.uses[use.name], base[use.name]
             issues = [p.text for p in setup.problems if p.use == use.name]
             uses.append({"name": use.name, "label": use.label, "help": use.help, "vision": use.vision,
-                         "main": str(u.main) if u.main else "", "backup": str(u.backup) if u.backup else "",
-                         "source": u.source, "problem": u.disabled or (issues[0] if issues else "")})
+                         "main": _ref(u.main), "backup": _ref(u.backup), "source": u.source,
+                         "default_main": _ref(b.main), "default_backup": _ref(b.backup),  # 「恢复默认」= 默认值 + config.toml
+                         "problem": u.disabled or (issues[0] if issues else "")})
         return {"providers": providers, "uses": uses, "kinds": list(KINDS), "templates": TEMPLATES, "error": error}
 
     # ---- 写 ----
@@ -156,7 +170,7 @@ class ModelsView:
 
         console["providers"] = {p.id: provider_table(p) for p in providers}
         # 用处：只写和「默认值 + config.toml」算出来不一样的；一样就删掉，让 config.toml / 默认生效
-        base = resolve(load_config(config_path)).uses
+        base = self._baseline()
         models = console.setdefault("models", {})
         for name, sel in uses.items():
             if name not in base or not isinstance(sel, dict):
@@ -164,7 +178,7 @@ class ModelsView:
             main, backup = str(sel.get("main") or "").strip(), str(sel.get("backup") or "").strip()
             b = base[name]
             table = models.setdefault(name, {})
-            if (main, backup) == (str(b.main) if b.main else "", str(b.backup) if b.backup else ""):
+            if (main, backup) == (_ref(b.main), _ref(b.backup)):
                 table.pop("main", None)
                 table.pop("backup", None)
             else:

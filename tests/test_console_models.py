@@ -49,6 +49,7 @@ def test_view_lists_builtin_and_uses(tmp_path):
     assert "1234567890" not in str(data)
     assert [u["name"] for u in data["uses"]] == list(USE_NAMES)
     assert data["uses"][0]["main"] == "deepseek/deepseek-chat" and data["uses"][0]["backup"] == "claude/sonnet"
+    assert (data["uses"][0]["default_main"], data["uses"][0]["default_backup"]) == ("deepseek/deepseek-chat", "claude/sonnet")
     assert data["kinds"] == ["claude-code", "openai"] and data["templates"]
 
 

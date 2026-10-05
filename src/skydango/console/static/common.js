@@ -9,8 +9,8 @@
 (function(g){
 "use strict";
 const HAS_DOM=typeof document!=="undefined";
-const PAGES=["sandbox","live","inner","scenarios","labeling","settings","device"];
-const TITLES={sandbox:"沙盒",live:"真机团子",inner:"内心",scenarios:"剧本和报告",labeling:"标注",settings:"设置",device:"设备"};
+const PAGES=["sandbox","live","inner","scenarios","labeling","models","settings","device"];
+const TITLES={sandbox:"沙盒",live:"真机团子",inner:"内心",scenarios:"剧本和报告",labeling:"标注",models:"模型",settings:"设置",device:"设备"};
 const ALIAS={overview:"live"};  // 旧书签
 const BUSY=["starting","running","stopping"];
 const S={state:null,offline:false};
@@ -44,6 +44,8 @@ function parseHash(hash){
   return {page,arg:arg===""?null:arg};
 }
 function hashOf(page,arg){return "#"+page+(arg==null||arg===""?"":"/"+arg)}
+function settingHash(setting){  // 预检问题的跳转：models.<用处> 去「模型」页那一行，别的去设置页
+  return setting.startsWith("models.")?hashOf("models",setting.slice(7)):hashOf("settings",setting)}
 function sameHash(a,b){const d=x=>{try{return decodeURIComponent(x||"")}catch(e){return x||""}};return d(a)===d(b)}  // 中文参数在 location.hash 里是编码过的
 let current=null;
 function hook(name,fn,...args){const p=Pages[name];if(!p||typeof p[fn]!=="function")return;
@@ -131,7 +133,7 @@ function problemList(container,problems){
   if(!list.length)return;
   const ul=el("ul","problems");
   for(const p of list){const li=el("li","",p.text);
-    if(p.setting){const a=el("a","to-setting","去设置 →");a.href=hashOf("settings",p.setting);li.append(" ",a)}
+    if(p.setting){const a=el("a","to-setting","去设置 →");a.href=settingHash(p.setting);li.append(" ",a)}
     ul.append(li)}
   container.append(ul);
 }
@@ -286,5 +288,5 @@ function start(){
 
 Object.assign(g,{$,el,getJSON,post,pad2,hhmm,dayTime,span,fmtUptime,ask,toast,startGuarded,problemList,Pages,go,parseHash,S,onState,refresh,BUSY});
 if(HAS_DOM){if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",start);else setTimeout(start,0)}
-if(typeof module!=="undefined"&&module.exports)module.exports={parseHash,inboxLine,stopQuestion,busyQuestion};
+if(typeof module!=="undefined"&&module.exports)module.exports={parseHash,settingHash,inboxLine,stopQuestion,busyQuestion};
 })(globalThis);

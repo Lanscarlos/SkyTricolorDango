@@ -26,6 +26,7 @@
     <div class="g">数据</div>
     <a href="#labeling" data-page="labeling">标注<small class="mark" id="mark-labeling"></small></a>
     <div class="g">配置</div>
+    <a href="#models" data-page="models">模型<small class="mark" id="mark-models"></small></a>
     <a href="#settings" data-page="settings">设置<small class="mark" id="mark-settings"></small></a>
     <a href="#device" data-page="device">设备<small class="mark" id="mark-device"></small></a>
   </nav>
@@ -347,6 +348,30 @@
       </section>
     </div>
   </section>
+  <section id="page-models" class="page" hidden>
+    <div class="page-title"><h1>模型</h1><span class="note">每个用到模型的地方选一个主模型（可以再配一个备用：主那家额度 / 余额用完或认证出错，这次运行里改用备用）。改的写在 console.toml，Key 明文写在本机 secrets.toml。</span></div>
+    <div class="banner bad" id="models-error" hidden></div>
+    <div class="settings-main models-main">
+      <section class="group">
+        <h2>供应商</h2>
+        <div id="providers"></div>
+        <div class="probe">
+          <select id="mp-template" aria-label="从模板添加"></select>
+          <button class="btn sm" type="button" id="mp-add">+ 添加供应商</button>
+          <span class="note">模板只填地址和常见模型名，Key 自己填</span>
+        </div>
+      </section>
+      <section class="group">
+        <h2>用处</h2>
+        <div id="uses"></div>
+      </section>
+      <div class="savebar" id="models-savebar" hidden>
+        <button class="btn go" type="button" id="models-save">保存</button>
+        <button class="btn" type="button" id="models-discard">放弃修改</button>
+        <span class="msg" id="models-save-msg"></span>
+      </div>
+    </div>
+  </section>
   <section id="page-settings" class="page" hidden>
     <div class="page-title"><h1>设置</h1><span class="note">面板改的设置写在 console.toml（叠加在 config.toml 之后，config.toml 不会被改），密钥明文写在本机 secrets.toml，别发给别人。</span></div>
     <div class="banner bad" id="settings-error" hidden></div>
@@ -397,6 +422,7 @@
 <script src="console/static/retrain.js"></script>
 <script src="console/static/frames.js"></script>
 <script src="console/static/labeling.js"></script>
+<script src="console/static/models.js"></script>
 <script src="console/static/settings.js"></script>
 <script src="console/static/device.js"></script>
 </body></html>

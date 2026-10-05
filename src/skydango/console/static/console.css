@@ -566,11 +566,33 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .imes .id{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 .imes .now{color:var(--matcha-ink);font-size:13px;font-weight:600;white-space:nowrap}
 .checks img{display:block;max-width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)}
+/* 模型页：供应商卡片 + 用处（行样式沿用设置页的 .settings-main .row） */
+.models-main{max-width:1040px}
+.mp-card{border-top:1px solid var(--line);padding:12px 8px 6px;display:flex;flex-direction:column;gap:8px}
+.mp-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mp-head b{font-size:15px}
+.mp-head .note{margin-left:auto}
+.mp-field{display:grid;grid-template-columns:110px minmax(0,1fr);gap:4px 12px;align-items:center}
+.mp-field>.note{grid-column:2;font-size:12px}
+.mp-label{color:var(--muted);font-size:13px}
+.mp-line{display:flex;gap:8px;align-items:center;min-width:0}
+.mp-line input{flex:1;min-width:0}
+.mp-models{display:grid;grid-template-columns:110px minmax(0,1fr);gap:4px 12px;align-items:start}
+.mp-model-rows{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.mp-model{display:flex;gap:10px;align-items:center;width:100%}
+.mp-model input[type=text]{flex:1;min-width:0;max-width:320px}
+.mp-vision{display:inline-flex;gap:4px;align-items:center;font-size:13px;white-space:nowrap}
+.models-main .control .line+.line{margin-top:6px}
+.models-main .control .mp-label{width:1.5em;flex:none}
+select.bad{border-color:var(--brick);color:var(--brick-ink)}
 @media (prefers-reduced-motion:reduce){.settings-main .row.flash{animation:none}.toggle span,.toggle span::after{transition:none}}
 @media (max-width:999px){
   .settings-wrap{grid-template-columns:1fr}
   #settings-toc{position:static;flex-direction:row;flex-wrap:wrap}
   .settings-main .row{grid-template-columns:1fr}
+  .mp-field,.mp-models{grid-template-columns:1fr}
+  .mp-field>.note{grid-column:1}
+  .mp-head .note{margin-left:0}
 }
 
 /* ---- 标注 ---- */

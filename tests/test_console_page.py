@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "labeling.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "labeling.js", "models.js", "settings.js", "device.js"]
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做
@@ -201,7 +201,7 @@ def test_settings_and_device_pages():
                 "ime-read", "imes", "ime-msg"):
         assert f'id="{id_}"' in b, id_
     assert '"set-"+' in b.replace(" ", "") and 'replaceAll(".","-")' in b.replace(" ", "")
-    for api in ("api/settings", "api/settings/test", "api/device", "api/device/ime"):
+    for api in ("api/settings", "api/device", "api/device/ime", "api/models", "api/models/test"):
         assert api in b
     assert "Pages.settings" in b and "Pages.device" in b
 
@@ -463,3 +463,26 @@ def test_frames_tab_hidden_when_inbox_disabled():  # 终审 11 / spec §8：inbo
     assert "onState(syncFramesTab)" in init
     set_tab = lab.split("function setTab(", 1)[1].split("\n}", 1)[0]
     assert "framesOn" in set_tab  # 关着时点不进去（侧栏链接 go("labeling","frames") 也一样）
+
+
+def test_models_page_wired():  # spec 2026-10-05-model-providers §3
+    page = (STATIC / "console.html").read_text(encoding="utf-8")
+    assert 'href="#models"' in page and 'id="page-models"' in page and 'data-page="models"' in page and 'id="mark-models"' in page
+    assert page.index('src="console/static/common.js"') < page.index('src="console/static/models.js"') < page.index('src="console/static/settings.js"')
+    assert page.index('href="#models"') < page.index('href="#settings"')
+
+
+def test_models_js_uses_api():
+    js = (STATIC / "models.js").read_text(encoding="utf-8")
+    assert "api/models" in js and "api/models/test" in js and "Pages.models" in js
+    assert not re.search(r"""fetch\(\s*[`"']/""", js)
+    settings = (STATIC / "settings.js").read_text(encoding="utf-8")
+    assert "api/settings/test" not in settings and '"llm"' not in settings and 'go("models")' in settings
+
+
+def test_problem_links_to_models_page():
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = (f"const c=require({json.dumps(str(STATIC / 'common.js'))});"
+          "console.log(JSON.stringify([c.settingHash('models.brain'),c.settingHash('device.serial'),c.parseHash('#models/eyes')]))")
+    out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, check=True).stdout)
+    assert out == ["#models/brain", "#settings/device.serial", {"page": "models", "arg": "eyes"}]
