@@ -284,8 +284,8 @@ def cmd_memory(cfg: Config, args) -> None:
         files = {
             "profile.md": PROFILE_TEMPLATE.format(persona=cfg.reply.persona.strip()),
             "friends.md": FRIENDS_TEMPLATE.format(
-                friends="\n\n".join(f"## {name}\n- {note}" for name, note in cfg.reply.friends.items())
-                or "## 好友昵称\n- 本名 / 怎么称呼 / 什么关系"
+                friends="\n\n".join(f"## {name}\n- {note}\n- 叫法：" for name, note in cfg.reply.friends.items())
+                or "## 好友昵称\n- 本名 / 怎么称呼 / 什么关系\n- 叫法："
             ),
         }
         for name, content in files.items():
@@ -2391,7 +2391,7 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
 
     没开 / 没 Key 返回 None（退化成现在的纯文字备用回复）。on_message 和 BrainSession 同款：
     把工具调用喂回大脑时间线（trace.chain(log_brain_message)）。"""
-    from .brain.deepseek import FALLBACK_NOTE, DeepSeekBrain, build_client
+    from .brain.deepseek import ASIDE_NOTE, FALLBACK_NOTE, DeepSeekBrain, build_client
     from .brain.llm_tools import openai_tools
 
     if not cfg.brain.fallback:
@@ -2402,7 +2402,7 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
         log.warning("备用大脑没开（%s）", exc)
         return None
     return DeepSeekBrain(
-        client, prompt + "\n\n" + FALLBACK_NOTE, toolbox, openai_tools(toolbox, blind=True),
+        client, prompt + "\n\n" + FALLBACK_NOTE + (ASIDE_NOTE if cfg.addressee.enabled else ""), toolbox, openai_tools(toolbox, blind=True),
         model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=cfg.brain.fallback_max_tokens,
         max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout, on_message=on_message,
         history=cfg.brain.fallback_history,
@@ -2586,7 +2586,7 @@ def _run_brain(
         days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
         persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
         appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
-        lull=cfg.lull.enabled, call=_call_enabled(cfg, env),
+        lull=cfg.lull.enabled, call=_call_enabled(cfg, env), addressee=cfg.addressee.enabled,
     )
     session = BrainSession(
         base, claude_vars, work / "session", server.url, prompt,

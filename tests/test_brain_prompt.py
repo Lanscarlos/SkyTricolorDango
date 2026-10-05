@@ -329,3 +329,34 @@ def test_brain_prompt_backstage_replaces_identity():
 
 def test_brain_prompt_without_backstage_unchanged():
     assert brain_prompt(ReplyConfig(), None, backstage="") == brain_prompt(ReplyConfig(), None)
+
+
+def test_addressee_off_unchanged():
+    from skydango.brain.prompt import ADDRESSEE_ANCHOR
+
+    base = brain_prompt(ReplyConfig(), None)
+    assert base == brain_prompt(ReplyConfig(), None, addressee=False)
+    assert ADDRESSEE_ANCHOR in base
+
+
+def test_addressee_rules():
+    text = brain_prompt(ReplyConfig(), None, addressee=True)
+    assert "明显不是跟你说的" not in text
+    for s in ("乱码、纯表情、刷屏，不用回。", "跟别人说：默认不接", "算主动开口", "拿不准时宁可不接", "有人让你先别回", "不说：他们在聊"):
+        assert s in text
+    section = text.split("## 主动开口", 1)[1].split("\n## ", 1)[0]
+    assert "插话的规矩看“说话”一节" in section
+
+
+def test_prompt_no_proactive_variant():
+    text = brain_prompt(ReplyConfig(), None, proactive=False, addressee=True)
+    assert "跟别人说：不接" in text
+    assert "插一句" not in text and "算主动开口" not in text
+
+
+def test_addressee_with_temper():
+    from skydango.brain.prompt import GO_ON_NEW
+
+    text = brain_prompt(ReplyConfig(), None, addressee=True, temper=True, inner=True)
+    assert GO_ON_NEW in text
+    assert text.count("跟别人说：默认不接") == 1

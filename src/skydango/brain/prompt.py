@@ -157,6 +157,21 @@ APPEARANCE_RULES = """- 状态里的装扮（“你自己”、好友名字后�
 - 提装扮像玩家那样随口提：夸、吐槽、问在哪换的；别报一长串。好友换了装扮可以说一句，别每次见面都念。
 - “你自己”那行是你身上穿的，有人问你穿的什么就照着答。
 """
+ADDRESSEE_ANCHOR = "乱码、纯表情、刷屏、明显不是跟你说的，不用回。"  # [addressee] 开着时换成下面的规矩（spec §5）
+_ADDRESSEE_OTHER = "  - 跟别人说：默认不接，让他们聊。真有想法（接梗、吐槽、他们在说你）可以插一句，算主动开口，被身体拦下就别说；插完没人理就别再插。\n"
+ADDRESSEE_RULES = (
+    "乱码、纯表情、刷屏，不用回。\n"
+    "- 身体会在每句聊天后面标出它在跟谁说：\n"
+    "  - 跟你说：照常接。\n"
+    "  - 说给大家：你也是其中一员，想接就接，像朋友间搭腔，不用每句都回。\n"
+    + _ADDRESSEE_OTHER
+    + "  - 拿不准：自己看前后几句判断。觉得是在跟别人说，就按跟别人说处理；拿不准时宁可不接。\n"
+    "- 有人让你先别回、别插嘴，照做，直到又有人叫你。\n"
+    "- 不接的时候在心里写一句“不说：他们在聊…”。"
+)
+ADDRESSEE_RULES_QUIET = ADDRESSEE_RULES.replace(_ADDRESSEE_OTHER, "  - 跟别人说：不接。\n", 1)  # [proactive] 关着：没有插话
+ADDRESSEE_POINTER_OLD = "插一句吐槽、对眼前的事说说看法；"
+ADDRESSEE_POINTER_NEW = "插一句吐槽、对眼前的事说说看法（好友之间在聊的，插话的规矩看“说话”一节）；"
 GO_ON_OLD = "接对方的话往下聊；"
 GO_ON_NEW = "接得住就接，不想接也可以吐槽一句或者敷衍两句；"
 IDENTITY_SECTION = re.compile(r"## 身份\n.*?(?=\n\n## )", re.S)  # 「身份」整节（到下一节之前）
@@ -239,6 +254,7 @@ def brain_prompt(
     backstage: str = "",
     lull: bool = False,
     call: bool = False,
+    addressee: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -252,8 +268,12 @@ def brain_prompt(
     appearance：认装扮开着（[appearance] enabled，加装扮的规矩）。
     backstage：「幕后」整节（[backstage] enabled，brain/backstage.py 拼好的）；非空时换掉「身份」一节。
     lull：冷场时的心理活动（[lull] enabled，加「冷场的时候」）。
-    call：有 call 工具（按 Q 喊一声），「视角」一节加一句什么时候喊。"""
+    call：有 call 工具（按 Q 喊一声），「视角」一节加一句什么时候喊。
+    addressee：身体给聊天标了在跟谁说（[addressee] enabled，换掉“明显不是跟你说的，不用回”，加怎么接的规矩）。"""
     rules = static_prompt(reply, proactive)
+    if addressee:  # 只换锚点那半句，和 NO_NEW_TOPIC / GO_ON_NEW 的替换互不相干
+        rules = rules.replace(ADDRESSEE_ANCHOR, ADDRESSEE_RULES if proactive else ADDRESSEE_RULES_QUIET, 1)
+        rules = rules.replace(ADDRESSEE_POINTER_OLD, ADDRESSEE_POINTER_NEW, 1)
     if lull:  # 插在「身份」之前；幕后再换「身份」整节时不会碰到它
         rules = rules.replace(LULL_ANCHOR, LULL_POINTER, 1).replace("## 身份", LULL_RULES + "\n\n## 身份", 1)
     if backstage:  # 在主动开口插进来之后换：主动开口还在它前面
