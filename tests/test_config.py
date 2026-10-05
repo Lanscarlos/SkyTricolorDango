@@ -207,7 +207,8 @@ def test_example_config_has_appearance():
 
     raw = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))["appearance"]
     d = AppearanceConfig()
-    assert raw == {f.name: getattr(d, f.name) for f in dataclasses.fields(d)}
+    legacy = {"describe_model"}  # 旧写法：现在是 [models.wardrobe]，示例里注释掉了（写了会换算、启动时警告）
+    assert raw == {f.name: getattr(d, f.name) for f in dataclasses.fields(d) if f.name not in legacy}
     assert load_config(ROOT / "config.example.toml").appearance.enabled is False
 
 
