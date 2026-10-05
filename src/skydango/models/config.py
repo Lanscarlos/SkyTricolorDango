@@ -117,6 +117,7 @@ class Problem:
     text: str
     use: str | None = None
     provider: str | None = None
+    warn: bool = False  # 只是提醒（模型不在列表里、照样用）：面板保存不拦
 
 
 @dataclass
@@ -280,5 +281,6 @@ def _check(use: Use, which: str, text: str, providers: dict[str, ProviderConfig]
         reasons.append(f"这是看图的用处，{ref} 看不了图")
         return None
     if provider.kind != "echo" and ref.model not in provider.models:
-        problems.append(Problem(f"{where} {ref}：{ref.provider} 的模型列表里没有 {ref.model}（照样用）", use=use.name, provider=ref.provider))
+        problems.append(Problem(f"{where} {ref}：{ref.provider} 的模型列表里没有 {ref.model}（照样用）", use=use.name,
+                                provider=ref.provider, warn=True))
     return ref

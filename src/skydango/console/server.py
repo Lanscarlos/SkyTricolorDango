@@ -28,7 +28,6 @@ from urllib.parse import parse_qs, urlparse
 
 from ..config import Config, console_paths, read_secrets
 from ..vision.viewer import is_local_host, post_guard
-from . import probes
 from .devicecheck import ime_state, run_checks
 from .jobs import JOBS, JobRunner
 from .inner_view import BUSY_ERROR, forget_offline, inner_state
@@ -356,21 +355,11 @@ class ConsoleServer:
             result["restart"] = True
         return 200, result
 
-    def test_settings(self, body: dict) -> tuple[int, dict]:
-        values = body.get("values") or {}
-        what = body.get("what")
-        if what not in ("llm", "claude") or not isinstance(values, dict):
-            return 400, {"ok": False, "text": "what 要是 llm 或 claude"}
-        try:
-            cfg = self.store.effective()
-        except ValueError as exc:
-            return 200, {"ok": False, "text": str(exc)}
-        form = {k: v for k, v in values.items() if isinstance(v, str)}
-        if what == "llm":
-            llm = dataclasses.replace(cfg.llm, **{k[4:]: form[k] for k in ("llm.provider", "llm.base_url", "llm.model") if k in form})
-            return 200, probes.test_llm(llm, form.get("secret.llm") or self.store.secret("llm"))
-        path = form.get("brain.claude_path") or cfg.brain.claude_path
-        return 200, probes.test_claude(path, cfg.brain.config_dir, form.get("secret.claude") or self.store.secret("claude"))
+    def models(self):
+        """「模型」页（spec 2026-10-05-model-providers §3）：团子 / 沙盒在跑时照样保存，提示下次启动生效。"""
+        from .models_view import ModelsView
+
+        return ModelsView(self.store, busy=self._busy)
 
     def check_device(self) -> tuple[int, dict]:
         with self._device_lock:
@@ -875,6 +864,8 @@ class ConsoleServer:
                     self._json(200, console.runner.logs(self._after(url)))
                 elif url.path == "/api/settings":
                     self._json(200, console.store.view())
+                elif url.path == "/api/models":
+                    self._json(200, console.models().view())
                 elif url.path == "/api/inner":
                     self._json(*console.inner(parse_qs(url.query).get("source", ["dango"])[0]))
                 elif url.path == "/api/sandbox/info":
@@ -898,7 +889,8 @@ class ConsoleServer:
                 path = urlparse(self.path).path
                 routes = {
                     "/api/settings": console.save_settings,
-                    "/api/settings/test": console.test_settings,
+                    "/api/models": lambda body: console.models().save(body),
+                    "/api/models/test": lambda body: console.models().test(body),
                     "/api/device": lambda body: console.check_device(),
                     "/api/device/ime": console.ime,
                     "/api/run/start": console.start_run,

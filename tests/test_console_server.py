@@ -163,8 +163,9 @@ def test_post_needs_header_and_json(srv):
 def test_state_and_logs(srv):
     status, state = request(srv.url + "api/state")
     assert status == 200 and state["run"]["state"] == "idle" and state["launch"] == OPTS | {"duration": 0.0}
-    assert [p["text"] for p in state["problems"]] == ["大脑模式要 Claude 令牌：去设置页填", "大脑离线时的备用回复要大模型的 API Key：去设置页填",
-        f"{srv.child_port} 端口被别的程序占着，团子起不来；改 [viewer] port"] and "orphan" not in state
+    texts = [p["text"] for p in state["problems"]]
+    assert len(texts) == 2 and texts[0].startswith("大脑没有能用的模型：deepseek 缺 Key")
+    assert texts[1] == f"{srv.child_port} 端口被别的程序占着，团子起不来；改 [viewer] port" and "orphan" not in state
     assert srv.fake_runner.attached == []  # 假上游占着 child_port，但 /status 没有 run 节：不是团子
     assert request(srv.url + "api/logs?after=1") == (200, {"next": 2, "lines": ["b"]})
 
@@ -231,36 +232,37 @@ def test_orphan_stop_is_sandbox_only(srv, upstream):  # spec 2026-10-04-console-
     assert status == 400 and not res["ok"] and upstream.posts == []
 
 
-def test_settings_round_trip_never_leaks_secret(srv):
-    status, res = request(srv.url + "api/settings", json.dumps({"values": {"secret.llm": "sk-1234567890abcd"}}).encode(), GOOD)
-    assert status == 200 and res["ok"] and "restart" not in res
-    status, view = request(srv.url + "api/settings")
+def test_models_round_trip_never_leaks_secret(srv):
+    status, view = request(srv.url + "api/models")
+    assert status == 200 and [u["name"] for u in view["uses"]][0] == "brain"
+    providers = [{k: p[k] for k in p if k not in ("secret", "secret_source", "source", "used_by")} for p in view["providers"]]
+    uses = {u["name"]: {"main": u["main"], "backup": u["backup"]} for u in view["uses"]}
+    body = json.dumps({"providers": providers, "uses": uses, "secrets": {"deepseek": "sk-1234567890abcd"}}).encode()
+    status, res = request(srv.url + "api/models", body, GOOD)
+    assert status == 200 and res == {"ok": True, "restart": False}
+    status, view = request(srv.url + "api/models")
     assert status == 200 and "1234567890" not in json.dumps(view)
+
+
+def test_models_post_needs_header(srv):
+    assert request(srv.url + "api/models", b"{}", {"Content-Type": "application/json"})[0] == 403
+
+
+def test_models_test_goes_to_probe(srv, monkeypatch):
+    seen = {}
+    monkeypatch.setattr("skydango.console.probes.test_provider",
+                        lambda provider, secret, **kw: seen.update(id=provider.id, base=provider.base_url, secret=secret) or {"ok": True, "text": "通过"})
+    body = json.dumps({"provider": {"id": "gpt", "kind": "openai", "base_url": "https://x", "key_env": "K",
+                                    "models": [{"name": "g", "vision": False}]}, "secret": "sk-page"}).encode()
+    assert request(srv.url + "api/models/test", body, GOOD) == (200, {"ok": True, "text": "通过"})
+    assert seen == {"id": "gpt", "base": "https://x", "secret": "sk-page"}
+    assert request(srv.url + "api/models/test", b'{"provider": {"id": "Bad!"}}', GOOD)[0] == 400
 
 
 def test_settings_save_while_running_says_restart(srv):
     srv.fake_runner.state = "running"
     status, res = request(srv.url + "api/settings", json.dumps({"values": {"device.serial": "x"}}).encode(), GOOD)
     assert status == 200 and res["ok"] and res["restart"] is True
-
-
-def test_settings_test_uses_form_values(srv, monkeypatch):
-    seen = {}
-    monkeypatch.setattr("skydango.console.probes.test_llm", lambda cfg, key: seen.update(model=cfg.model, key=key) or {"ok": True, "text": "成功"})
-    request(srv.url + "api/settings", json.dumps({"values": {"secret.llm": "sk-saved"}}).encode(), GOOD)
-    body = json.dumps({"what": "llm", "values": {"llm.model": "m2", "secret.llm": ""}}).encode()
-    assert request(srv.url + "api/settings/test", body, GOOD) == (200, {"ok": True, "text": "成功"})
-    assert seen == {"model": "m2", "key": "sk-saved"}
-
-
-def test_settings_test_claude(srv, monkeypatch):
-    seen = {}
-    monkeypatch.setattr("skydango.console.probes.test_claude",
-                        lambda path, config_dir, token: seen.update(path=path, dir=config_dir, token=token) or {"ok": False, "text": "x"})
-    body = json.dumps({"what": "claude", "values": {"secret.claude": "tok2", "brain.claude_path": "/opt/claude"}}).encode()
-    assert request(srv.url + "api/settings/test", body, GOOD)[0] == 200
-    assert seen == {"path": "/opt/claude", "dir": ".brain-claude", "token": "tok2"}
-    assert request(srv.url + "api/settings/test", b'{"what": "nope"}', GOOD)[0] == 400
 
 
 def test_unknown_routes_404(srv):
@@ -353,9 +355,9 @@ def test_live_proxy_timeout_is_503(srv):
     assert request(srv.url + "live/hang") == (503, {"ok": False, "text": "团子没在运行"})
 
 
-def test_sandbox_info_has_problems(srv):  # 没有 Claude 令牌
+def test_sandbox_info_has_problems(srv):  # 没有 Claude 令牌、也没有 DeepSeek Key：大脑没有能用的模型
     info = request(srv.url + "api/sandbox/info")[1]
-    assert any(p["setting"] == "secret.claude" for p in info["problems"])
+    assert any(p["setting"] == "models.brain" for p in info["problems"])
     assert all(set(p) == {"text", "setting"} for p in info["problems"])
 
 

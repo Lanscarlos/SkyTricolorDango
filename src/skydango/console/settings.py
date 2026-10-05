@@ -19,11 +19,11 @@ from .tomlfile import dumps, read, write_atomic
 
 @dataclass(frozen=True)
 class Field:
-    key: str  # 点路径（device.serial）；secret.llm / secret.claude 是密钥；owner 同时写两处主人昵称
+    key: str  # 点路径（device.serial）；owner 同时写两处主人昵称（模型和密钥在「模型」页：console/models_view.py）
     label: str
     help: str
-    kind: str  # bool / int / float / str / choice / exe / file / secret
-    group: str  # launch / connect / llm / brain / features / identity
+    kind: str  # bool / int / float / str / choice / exe / file
+    group: str  # launch / connect / brain / features / identity
     choices: tuple[str, ...] = ()
 
 
@@ -36,21 +36,11 @@ FIELDS: tuple[Field, ...] = (
     Field("device.serial", "设备名", "比如 emulator-5554；设备页能列出实际看到的设备", "str", "connect"),
     Field("device.switch_ime", "自动切输入法", "启动时切到 ADBKeyboard（团子打中文靠它）、停下时切回搜狗；设备页也能手动切", "bool", "connect"),
     Field("device.capture", "截图方式", "auto：有 MuMu 原生截图就用（约 9 ms），否则 adb screencap", "choice", "connect", ("auto", "mumu", "adb")),
-    Field("llm.provider", "接口类型", "openai = OpenAI 兼容接口（DeepSeek 等）；echo 不调模型、原样回显", "choice", "llm",
-          ("openai", "anthropic", "echo")),
-    Field("llm.base_url", "接口地址", "比如 https://api.deepseek.com", "str", "llm"),
-    Field("llm.model", "模型", "比如 deepseek-chat", "str", "llm"),
-    Field("secret.llm", "API Key", "普通模式的聊天回复、记忆整理、大脑离线时的备用回复都用它", "secret", "llm"),
-    Field("secret.claude", "Claude 令牌", "运行一次 claude setup-token 生成；大脑和眼睛用它（订阅）", "secret", "brain"),
-    Field("brain.claude_path", "claude 路径", "命令行里 claude 能用就不用改", "exe", "brain"),
-    Field("brain.model", "大脑模型", "默认 sonnet", "str", "brain"),
-    Field("brain.eyes_model", "眼睛模型", "把画面写成文字的模型，默认 haiku", "str", "brain"),
-    Field("brain.memory_model", "记忆整理模型", "随手记 inbox.md、整理 notes.md 用的模型（live 时），默认 sonnet", "str", "brain"),
     Field("proactive.enabled", "看场合主动开口", "关掉就回到只接话、不主动的老样子", "bool", "brain"),
     Field("proactive.quota_busy", "热闹时主动额度", "每个时间窗口（proactive.quota_window，默认 600 秒）里最多主动说几句（好友在身边、聊得热闹）", "int", "brain"),
     Field("proactive.quota_quiet", "安静时主动额度", "每个时间窗口（proactive.quota_window，默认 600 秒）里最多主动说几句（好友在身边、没怎么说话）", "int", "brain"),
     Field("proactive.min_gap", "主动开口间隔（秒）", "两句主动的话之间至少隔多久", "float", "brain"),
-    Field("proactive.auto_look_busy", "好友在身边时多久看一次（秒）", "眼睛（Haiku）最久多久看一次画面；越短越费订阅额度", "float", "brain"),
+    Field("proactive.auto_look_busy", "好友在身边时多久看一次（秒）", "眼睛（识图模型）最久多久看一次画面；越短越费额度", "float", "brain"),
     Field("reflex.enabled", "身体反射", "有人叫团子马上冒输入气泡、回礼、闲着做小动作；关掉就回到老样子", "bool", "brain"),
     Field("reflex.bubble", "替大脑冒输入气泡", "有人跟团子说话时马上打开输入框，头顶显示正在输入", "bool", "brain"),
     Field("inner.enabled", "内心账本", "给好友记关系卡（见过几次、上次什么时候）和每次上线的日子；关掉就回到老样子", "bool", "brain"),
@@ -73,7 +63,7 @@ FIELDS: tuple[Field, ...] = (
     Field("inbox.retrain_min", "攒够几张提示重训", "收件箱里核对过的难例攒到这么多张才提示可以重训", "int", "features"),
     Field("places.enabled", "认地图", "要配合 YOLO 感知层和 places/ 图库", "bool", "features"),
     Field("appearance.enabled", "认装扮", "按外观接回没读到名字的好友、认回来的陌生人；要配合 YOLO 感知层", "bool", "features"),
-    Field("appearance.describe", "描述装扮", "让 Haiku 把团子和身边人的装扮写成一句话（花额度）", "bool", "features"),
+    Field("appearance.describe", "描述装扮", "让识图模型把团子和身边人的装扮写成一句话（花额度）", "bool", "features"),
     Field("catalog.enabled", "收集装扮图鉴", "近处的人清楚的整身裁图存进 catalog/inbox/（只存图、不发输入）；要配合 YOLO 感知层", "bool", "features"),
     Field("icons.enabled", "认地图交互图标", "YOLO 框出的图标认出种类、写进状态和画面（只认不点）；要配合 YOLO 感知层", "bool", "features"),
     Field("friend_check.enabled", "好友树核对", "大脑的 check_friend：点人物打开好友树（未在真机核对）", "bool", "features"),
@@ -168,9 +158,6 @@ class SettingsStore:
             except ValueError:
                 return Config()
 
-    def _env_name(self, which: str, cfg: Config) -> str:
-        return cfg.llm.api_key_env if which == "llm" else cfg.brain.token_env
-
     def _secrets(self) -> dict[str, str]:
         try:
             return read_secrets(self.secrets_path)
@@ -186,9 +173,23 @@ class SettingsStore:
         found = self.environ.get(name, "") or _user_env(name)
         return (found, "env") if found else ("", "none")
 
-    def secret(self, which: str) -> str:
-        """llm / claude 现在能用的密钥：secrets.toml → 环境变量 → Windows 用户环境变量；没有返回空串。"""
-        return self._secret_source(self._env_name(which, self._fallback()))[0]
+    def secret_env(self, name: str) -> str:
+        """按环境变量名取现在能用的密钥：secrets.toml → 环境变量 → Windows 用户环境变量；没有（或名字为空）返回空串。"""
+        return self._secret_source(name)[0] if name else ""
+
+    def write_secrets(self, changes: Mapping[str, str | None]) -> None:
+        """改 secrets.toml 的 [env]：值为 None 或空 = 删掉；env 空了整张表去掉。secrets.toml 坏了抛 ValueError、什么都不写。"""
+        data = read(self.secrets_path)
+        read_secrets(self.secrets_path)  # env 不是表、值不是字符串：先报出来，别写坏
+        env = data.setdefault("env", {})
+        for name, value in changes.items():
+            if value:
+                env[name] = value
+            else:
+                env.pop(name, None)
+        if not env:
+            data.pop("env")
+        write_atomic(self.secrets_path, dumps(data))
 
     def _path_warning(self, f: Field, value: Any) -> str | None:
         if not isinstance(value, str) or not value:
@@ -222,31 +223,25 @@ class SettingsStore:
         for f in FIELDS:
             item = {"key": f.key, "label": f.label, "help": f.help, "kind": f.kind, "group": f.group,
                     "choices": list(f.choices), "warning": None}
-            if f.kind == "secret":
-                value, source = self._secret_source(self._env_name(f.key.split(".")[1], cfg))
-                item.update(value=mask(value), source=source)
-            else:
-                dotted = OWNER_KEYS[0] if f.key == "owner" else f.key
-                value = _get(cfg, dotted)
-                source = "console" if _has(console_data, dotted) else "config" if _has(config_data, dotted) else "default"
-                item.update(value=value, source=source, warning=self._path_warning(f, value))
-                if f.key == "owner" and cfg.reply.owner_name != cfg.brain.owner_name:
-                    item["warning"] = (f"config.toml 里两处主人昵称不一样：普通模式「{cfg.reply.owner_name}」、"
-                                       f"大脑「{cfg.brain.owner_name}」，保存会统一")
+            dotted = OWNER_KEYS[0] if f.key == "owner" else f.key
+            value = _get(cfg, dotted)
+            source = "console" if _has(console_data, dotted) else "config" if _has(config_data, dotted) else "default"
+            item.update(value=value, source=source, warning=self._path_warning(f, value))
+            if f.key == "owner" and cfg.reply.owner_name != cfg.brain.owner_name:
+                item["warning"] = (f"config.toml 里两处主人昵称不一样：普通模式「{cfg.reply.owner_name}」、"
+                                   f"大脑「{cfg.brain.owner_name}」，保存会统一")
             fields.append(item)
         return {"fields": fields, "error": error}
 
     # ---- 写 ----
     def save(self, values: Mapping[str, Any], revert: list[str] | tuple[str, ...] = ()) -> dict:
-        """values：键 → 新值（密钥空串 = 不改）；revert：用回 config.toml 的值（密钥 = 清除）。有一个错就什么都不写。"""
+        """values：键 → 新值；revert：用回 config.toml 的值。有一个错就什么都不写。"""
         try:
             console_data = read(self.console_path)
-            secrets_data = read(self.secrets_path)
-            read_secrets(self.secrets_path)  # env 不是表、值不是字符串：先报出来，别写坏
-            cfg = self.effective()
+            read_secrets(self.secrets_path)  # 坏了先报出来（面板别的地方要读它）
+            self.effective()
         except ValueError as exc:
             return {"ok": False, "errors": {"_file": str(exc)}, "warnings": {}}
-        secrets_env = secrets_data.setdefault("env", {})
         errors: dict[str, str] = {}
         warnings: dict[str, str] = {}
         touched = set()
@@ -254,13 +249,6 @@ class SettingsStore:
             f = KNOWN.get(key)
             if f is None:
                 errors[key] = "没有这一项"
-                continue
-            if f.kind == "secret":
-                if not isinstance(value, str):
-                    errors[key] = "要是文字"
-                elif value := value.strip():  # 粘贴时常带空格、换行；只有空白 = 不改
-                    secrets_env[self._env_name(key.split(".")[1], cfg)] = value
-                    touched.add("secrets")
                 continue
             error, value = _check(f, value)
             if error:
@@ -276,9 +264,6 @@ class SettingsStore:
             f = KNOWN.get(key)
             if f is None:
                 errors[key] = "没有这一项"
-            elif f.kind == "secret":
-                secrets_env.pop(self._env_name(key.split(".")[1], cfg), None)
-                touched.add("secrets")
             else:
                 for dotted in OWNER_KEYS if key == "owner" else (key,):
                     _delete(console_data, dotted)
@@ -287,8 +272,4 @@ class SettingsStore:
             return {"ok": False, "errors": errors, "warnings": warnings}
         if "console" in touched:
             write_atomic(self.console_path, dumps(console_data))
-        if "secrets" in touched:
-            if not secrets_env:
-                secrets_data.pop("env")
-            write_atomic(self.secrets_path, dumps(secrets_data))
         return {"ok": True, "errors": {}, "warnings": warnings}

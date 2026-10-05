@@ -25,8 +25,7 @@ def no_registry(monkeypatch):
 def test_every_spec_field_is_listed():
     assert [f.key for f in FIELDS] == [
         "console.brain", "console.live", "console.emotes", "console.duration",
-        "device.adb_path", "device.serial", "device.switch_ime", "device.capture", "llm.provider", "llm.base_url", "llm.model", "secret.llm",
-        "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model",
+        "device.adb_path", "device.serial", "device.switch_ime", "device.capture",
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
         "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "addressee.enabled", "backstage.enabled", "vision.source", "env.enabled",
         "perception.enabled",
@@ -49,7 +48,7 @@ def test_console_has_appearance_switches():
         "认装扮", "按外观接回没读到名字的好友、认回来的陌生人；要配合 YOLO 感知层", "bool", "features")
     desc = KNOWN["appearance.describe"]
     assert (desc.label, desc.help, desc.kind, desc.group) == (
-        "描述装扮", "让 Haiku 把团子和身边人的装扮写成一句话（花额度）", "bool", "features")
+        "描述装扮", "让识图模型把团子和身边人的装扮写成一句话（花额度）", "bool", "features")
 
 
 def test_console_has_attrs_switch():
@@ -71,43 +70,21 @@ def test_mask():
 
 
 def test_sources(tmp_path):
-    v = store(tmp_path, config='[device]\nserial = "a"\n', console='[llm]\nmodel = "m"\n').view()
-    assert (field(v, "device.serial")["source"], field(v, "llm.model")["source"], field(v, "llm.base_url")["source"]) == (
+    v = store(tmp_path, config='[device]\nserial = "a"\n', console='[device]\ncapture = "adb"\n').view()
+    assert (field(v, "device.serial")["source"], field(v, "device.capture")["source"], field(v, "device.adb_path")["source"]) == (
         "config", "console", "default")
-    assert field(v, "llm.model")["value"] == "m" and v["error"] is None
-
-
-def test_secret_is_masked_and_sourced(tmp_path):
-    v = store(tmp_path, secrets='[env]\nDEEPSEEK_API_KEY = "sk-1234567890abcd"\n', environ={"SKYDANGO_CLAUDE_TOKEN": "short"}).view()
-    assert field(v, "secret.llm").items() >= {"value": "已设置（sk-…abcd）", "source": "secrets"}.items()
-    assert (field(v, "secret.claude")["value"], field(v, "secret.claude")["source"]) == ("已设置", "env")
-    assert "1234567890" not in json.dumps(v, ensure_ascii=False)
+    assert field(v, "device.capture")["value"] == "adb" and v["error"] is None
 
 
 def test_save_writes_console_and_secrets_but_never_config(tmp_path):
     s = store(tmp_path, config='[device]\nserial = "a"  # 手写注释\n')
     before = (tmp_path / "config.toml").read_text(encoding="utf-8")
-    r = s.save({"device.serial": "b", "secret.llm": "sk-x", "owner": "卡洛", "console.duration": 30})
+    r = s.save({"device.serial": "b", "owner": "卡洛", "console.duration": 30})
     assert r["ok"], r
     assert (tmp_path / "config.toml").read_text(encoding="utf-8") == before
     assert tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8")) == {
         "device": {"serial": "b"}, "reply": {"owner_name": "卡洛"}, "brain": {"owner_name": "卡洛"}, "console": {"duration": 30.0}}
-    assert tomllib.loads((tmp_path / "secrets.toml").read_text(encoding="utf-8")) == {"env": {"DEEPSEEK_API_KEY": "sk-x"}}
-
-
-def test_secret_goes_to_configured_env_name(tmp_path):
-    s = store(tmp_path, config='[brain]\ntoken_env = "MY_TOKEN"\n')
-    assert s.save({"secret.claude": "tok"})["ok"]
-    assert s.secret("claude") == "tok"
-    assert tomllib.loads((tmp_path / "secrets.toml").read_text(encoding="utf-8")) == {"env": {"MY_TOKEN": "tok"}}
-
-
-def test_empty_secret_keeps_old_and_revert_clears(tmp_path):
-    s = store(tmp_path, secrets='[env]\nDEEPSEEK_API_KEY = "sk-old"\n')
-    s.save({"secret.llm": ""})
-    assert s.secret("llm") == "sk-old"
-    s.save({}, revert=["secret.llm"])
-    assert s.secret("llm") == ""
+    assert not (tmp_path / "secrets.toml").exists()
 
 
 def test_revert_removes_key_from_console_toml(tmp_path):
@@ -154,16 +131,9 @@ def test_unknown_key_in_console_toml_is_reported(tmp_path):
 def test_broken_secrets_structure_is_reported(tmp_path):
     s = store(tmp_path, secrets='env = "x"\n')
     assert "secrets.toml" in s.view()["error"]
-    r = s.save({"secret.llm": "sk-x"})
+    r = s.save({"device.serial": "b"})
     assert not r["ok"] and "secrets.toml" in r["errors"]["_file"]
     assert (tmp_path / "secrets.toml").read_text(encoding="utf-8") == 'env = "x"\n'
-
-
-def test_pasted_secret_is_stripped(tmp_path):
-    s = store(tmp_path)
-    assert s.save({"secret.llm": "  sk-x\n"})["ok"]
-    assert s.secret("llm") == "sk-x"
-    assert s.save({"secret.llm": "   "})["ok"] and s.secret("llm") == "sk-x"  # 只有空白 = 不改
 
 
 def test_quota_help_does_not_hardcode_window():
@@ -207,3 +177,27 @@ def test_example_toml_inbox_matches_defaults():
     p = Path(__file__).resolve().parent.parent / "config.example.toml"
     cfg, dflt = load_config(p), load_config(None)
     assert cfg.inbox == dflt.inbox and cfg.retrain == dflt.retrain
+
+
+def test_secret_env_lookup_order(tmp_path):
+    s = store(tmp_path, secrets='[env]\nA = "from-secrets"\n', environ={"A": "from-env", "B": "env-b"})
+    assert (s.secret_env("A"), s.secret_env("B"), s.secret_env("C"), s.secret_env("")) == ("from-secrets", "env-b", "", "")
+
+
+def test_write_secrets_sets_and_clears(tmp_path):
+    s = store(tmp_path, secrets='[env]\nA = "1"\n')
+    s.write_secrets({"B": "2", "A": None})
+    assert tomllib.loads((tmp_path / "secrets.toml").read_text(encoding="utf-8")) == {"env": {"B": "2"}}
+    s.write_secrets({"B": None})
+    assert tomllib.loads((tmp_path / "secrets.toml").read_text(encoding="utf-8")) == {}
+
+
+def test_settings_page_points_to_models_page():
+    from skydango.console.settings import FIELDS
+
+    keys = {f.key for f in FIELDS}
+    assert not keys & {"llm.provider", "llm.base_url", "llm.model", "secret.llm", "secret.claude", "brain.claude_path",
+                       "brain.model", "brain.eyes_model", "brain.memory_model"}
+    assert "llm" not in {f.group for f in FIELDS}
+    assert "识图模型" in next(f.help for f in FIELDS if f.key == "proactive.auto_look_busy")
+    assert "识图模型" in next(f.help for f in FIELDS if f.key == "appearance.describe")
