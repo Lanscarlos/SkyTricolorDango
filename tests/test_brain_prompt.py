@@ -230,6 +230,16 @@ def test_temper_off_identical_to_phase2():  # Review Focus 5
         ReplyConfig(), None, inner=True, mind=True, temper=False, persona_text="")
 
 
+def test_say_rules_against_ai_flavor():
+    """10-05 看真机 history：句句「啦 / 呀」结尾、一轮两句里第二句复读第一句、贺卡式安慰、给好友讲身体怎么运作、每次都「卡洛来啦」。"""
+    text = static_prompt(ReplyConfig())
+    assert "一轮最多说两句" not in text and "一轮一般只说一句" in text and "换个说法再说一遍" in text
+    for s in ("语气有起伏", "别给好友讲你的身体怎么运作", "贺卡", "不用每次都打招呼"):
+        assert s in text
+    say = text[text.index("## 说话"): text.index("\n## ", text.index("## 说话") + 1)]
+    assert "语气有起伏" in say  # 在「说话」一节里，不是别处
+
+
 def test_bottom_lines_untouched():
     on = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True)
     off = brain_prompt(ReplyConfig(), None, inner=True, mind=True)

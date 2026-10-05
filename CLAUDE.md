@@ -145,6 +145,11 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 **改了回复规则后要注意 history**：模型会模仿读回来的旧回复，盖过新规则（实测加了"动不了、别答应跑图"之后，
 历史里"行，我跟着你们跑"那几句让它照样答应；清掉历史后立刻生效）。规则大改时把 `history.jsonl` 挪到 `memory/archive/`，
 要点已经在 notes.md 里，不会失忆。
+
+**去 AI 味**（10-05，看了 09-27 ~ 10-03 的 443 轮真机 history）：句句「啦 / 呀」结尾、一轮两句里第二句复读第一句、贺卡式安慰、给好友讲身体怎么运作、每次都「卡洛来啦」。
+- 提示词「说话」一节：一轮一般只说一句、语气有起伏、做不到的随口推掉别讲运作、别说贺卡话、别每次都打招呼；第一句 say 的工具结果附 `tools.SAY_ENOUGH` 提醒（还能说第二句时）
+- 同一轮接着说的句子（上一句记下后 `FOLLOWUP_GAP` 20 秒内、中间没人说话）history 里记成「（没人接话，你接着上一句又说）」，不再冒充「主动开口」
+- 私有仓库：`profile.md` 的说话习惯改成描述 + 真聊天例句（像她的 / 不像她的）；`tools/curate_history.py` 挪走旧的复读、招呼、点名的 AI 味回合（先备份进 `archive/`，默认只列出、`--apply` 才改），**在本机推完新记录、团子下线后跑**
 `memory init` 用配置生成 profile / friends，`memory show` 查看，`memory update` 立刻整理。
 随手记和整理（`NotesKeeper`）在大脑模式和 `memory update` 里走 Claude Code（`[brain] memory_model`，默认 sonnet，一次性 `claude -p`、令牌同大脑、不给工具，`brain/claude.py` 的 `ClaudeLlm`）；
 只有 `run --no-brain` 的普通 Agent 还用 `[llm]`（DeepSeek）。

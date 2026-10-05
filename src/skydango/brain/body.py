@@ -66,6 +66,9 @@ log = logging.getLogger(__name__)
 REQUEST_KINDS = ("hand", "hug", "highfive", "piggyback", "candle", "light", "*")
 REPEAT_WINDOW = 600.0  # say：这么久内说过几乎一样的话就拦下（10-03 晚 DeepSeek 备用大脑重复说）
 REPEAT_SIMILAR = 0.85  # ……"几乎一样"：chat.tracker.similar 的门槛
+FOLLOWUP_GAP = 20.0  # 写聊天历史：上一句记下后这么久内、中间没人说话又说的一句，是接着上一句说的（10-03 晚一轮里的第二句隔 6~16 秒）
+FOLLOWUP_LABEL = "（没人接话，你接着上一句又说）"
+PROACTIVE_LABEL = "（没人说话，你主动开口）"
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
 LIGHT_HOLD_MAX = 6.0  # light 请求挂着、身体还没举（刚做完动作 min_gap 4 秒、鞠躬排着、输入框开着……）：最多为它让面板先别动这么久
 SCENE_EVENT_COOLDOWN = 10.0
@@ -199,6 +202,7 @@ class Body:
         self._camera_moved_at = float("-inf")  # 别人（大脑工具、技能、换角度、环顾）最近一次动镜头
         self._attn_seen_move = float("-inf")  # 注意力已经知道的那次
         self._said_at = float("-inf")  # 团子上次说话（clock）：“刚说完好友就接话”算在跟团子说
+        self._history_at = float("-inf")  # 上一句写进聊天历史的墙钟：没人说话又说的一句是接着说还是主动开口
         # 分清好友在跟谁说话（spec 2026-10-05-addressee）：每句判一次，反射 / 账本 / 事件 / 接话共用
         self.addressee = Addressee(cfg.addressee, cfg.proactive.self_names, followup_window(cfg))
         self.verdicts: deque[tuple[float, str, str, Verdict]] = deque(maxlen=200)  # (墙钟, 说话人, 内容, 判断)
@@ -2152,8 +2156,9 @@ class Body:
             self.run_dir.record_reply(heard, full, sent=sent)
         if not sent or self.store is None:  # dry-run 的话没真的说出去，不记
             return
-        user = format_incoming(heard) if heard else "（没人说话，你主动开口）"
         now = self.wall()
+        user = format_incoming(heard) if heard else FOLLOWUP_LABEL if now - self._history_at <= FOLLOWUP_GAP else PROACTIVE_LABEL
+        self._history_at = now
         try:
             self.store.history.append(user, body, now)
         except OSError:

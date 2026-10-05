@@ -4,7 +4,7 @@ import time
 import pytest
 
 from skydango.brain.body import ToolError
-from skydango.brain.tools import ACTIONS, TOOL_NAMES, ToolBox
+from skydango.brain.tools import ACTIONS, SAY_ENOUGH, TOOL_NAMES, ToolBox
 from skydango.config import Config
 
 
@@ -168,6 +168,17 @@ def test_per_turn_limits():
     assert err and content.startswith("这一轮做的事够多了")
     tb.begin_turn()
     assert tb.run("say", {"text": "c"}) == ("说了c", False)
+
+
+def test_first_say_of_turn_reminds_one_is_enough():
+    """10-03 晚一轮两句，第二句常是把第一句换个说法再说一遍（「不要啦我才不叫」→「要让他睡饱呀」）：
+    第一句说完就在结果里提醒，第二句不再提醒；名额只剩一句时不提醒。"""
+    tb = ToolBox(FakeBody(), max_says=2)
+    first, err = tb.run("say", {"text": "a"})
+    assert not err and first.startswith("说了a") and SAY_ENOUGH in first
+    assert tb.run("say", {"text": "b"}) == ("说了b", False)
+    tb = ToolBox(FakeBody(), max_says=1)
+    assert tb.run("say", {"text": "a"}) == ("说了a", False)
 
 
 def test_failed_say_does_not_use_quota():
