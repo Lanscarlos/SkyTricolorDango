@@ -204,6 +204,18 @@ def _labels(attrs):
     return [json.loads(x) for x in (attrs / "_labels.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
+def test_edit_redo_frame_crops_named_after_dataset_frame(tmp_path):
+    """回炉帧上新画的人：裁图按数据集里的原帧名命名（同整理时），不按收件箱帧名。"""
+    api, inbox, attrs, ds = make(tmp_path)
+    fr = ib.load_frames(inbox, "r1")
+    fr[FRAME]["redo"] = {"name": "a", "split": "train"}
+    ib.save_frames(inbox, "r1", fr)
+    put_crop(attrs, "form/lit", "c1.jpg")
+    boxes = [{"cls": 0, "box": [20, 10, 40, 60]}, {"cls": 4, "box": [120, 10, 40, 60]}]
+    assert api.act({"frame": FRAME, "do": "pass", "boxes": boxes})[0] == 200
+    assert [p.name for p in (attrs / "form" / "unlit").iterdir()] == ["a__120_10_40_60.jpg"]
+
+
 def test_edit_moves_existing_crop_when_class_changes(tmp_path):
     name = f"{FRAME}__20_10_40_60.jpg"
     boxes = [{"cls": "player", "box": [20, 10, 40, 60], "score": 0.9, "crop": name, "auto": "agree"}]

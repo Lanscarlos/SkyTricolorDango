@@ -292,11 +292,12 @@ class FramesApi:
                 img = imread(self.inbox / run / entry["file"])
                 image = (self.inbox / run / entry["file"]).resolve().as_posix()
                 writer = _Writer(self.attrs_root, CROP_SIZE, attrs.CROP_PAD, _WRITER_KEYS)
+                stem = (entry.get("redo") or {}).get("name") or frame  # 回炉帧按数据集里的原帧名命名（同整理时）
                 try:
                     for name, r in fresh:
-                        form, crop = PAIR[name], crop_name(frame, r)
+                        form, crop = PAIR[name], crop_name(stem, r)
                         is_new = crop not in writer.done
-                        writer.add(img, frame, r, f"form/{form}", {"image": image, "score": 1.0, "yolo_cls": name, "source": "inbox",
+                        writer.add(img, stem, r, f"form/{form}", {"image": image, "score": 1.0, "yolo_cls": name, "source": "inbox",
                                                                    "split": entry.get("split"), "group": run, "known": False})
                         if is_new:
                             labels.write(json.dumps({"t": time.time(), "crop": crop, "from": "_unlabeled", "to": form, "by": "frame-edit"},

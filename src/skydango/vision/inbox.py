@@ -153,7 +153,8 @@ def add_dataset(dataset: Path, inbox: Path, splits=("train", "val")) -> int:
 
 
 def _redo_labels(path: Path, width: int, height: int, classes: list[str]) -> list[tuple[str, Rect]]:
-    """回炉帧的原标注（YOLO 格式）→ [(类别名, 框)]；没有文件是空，编号不在 classes 里的行跳过。"""
+    """回炉帧的原标注（YOLO 格式）→ [(类别名, 框)]；没有文件是空，读不了的行、编号不在 classes 里的行跳过。
+    像素框的换算和 attrs_data._label_boxes 一样（crops 从数据集导裁图用它）：同一个人的裁图名才对得上、不重复裁。"""
     if not path.is_file():
         return []
     out = []
@@ -165,8 +166,10 @@ def _redo_labels(path: Path, width: int, height: int, classes: list[str]) -> lis
             continue
         if not 0 <= cls < len(classes):
             continue
-        bw, bh = round(w * width), round(h * height)
-        out.append((classes[cls], Rect(round(cx * width - bw / 2), round(cy * height - bh / 2), bw, bh)))
+        x1, y1 = max(0, round((cx - w / 2) * width)), max(0, round((cy - h / 2) * height))
+        x2, y2 = min(width, round((cx + w / 2) * width)), min(height, round((cy + h / 2) * height))
+        if x2 > x1 and y2 > y1:
+            out.append((classes[cls], Rect(x1, y1, x2 - x1, y2 - y1)))
     return out
 
 
@@ -523,7 +526,8 @@ def _other_boxes(dets: list, pre: list[tuple[str, Rect]]) -> list[dict]:
 
 
 def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) -> tuple[list[dict], int, int]:
-    """一帧：检测 + 弱标注 → 人物框裁图、外形头判、分流。返回 (boxes, 自动一致几个, 给人判几个)。"""
+    """一帧：检测 + 弱标注 → 人物框裁图、外形头判、分流。返回 (boxes, 自动一致几个, 给人判几个)。
+    回炉帧（ctx["crop_stem"] = 数据集里的原帧名）的裁图按原帧名命名：crops 从数据集导过的同一个人不再裁第二张。"""
     from .attrs_data import FORM_PROMPT_VERSION, crop_name
     from .perception import merge_people
     from .track import iou
@@ -532,6 +536,7 @@ def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) 
     from .weaklabel import merge_labels
 
     cfg, writer = ctx["cfg"], ctx["writer"]
+    stem = ctx.get("crop_stem") or name
     orig = ctx.get("orig") or []  # 回炉帧的原标注：按 merge_labels 合并，同类重叠时留原标注，其余预标照加
     dets = [d for d in ctx["detect"](img) if d.score >= cfg.perception.low_conf]
     sure = [d for d in dets if d.score >= cfg.perception.conf]
@@ -559,10 +564,10 @@ def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) 
         boxes.append(entry)
         if r.auto == "drop_low":
             continue
-        entry["crop"] = crop = crop_name(name, d.box)
+        entry["crop"] = crop = crop_name(stem, d.box)
         fresh = crop not in writer.done
         row = {"image": image, "score": float(d.score), "yolo_cls": d.cls, "source": "inbox", "split": split, "group": run, "known": False}
-        writer.add(img, name, d.box, f"form/{r.form}" if r.auto == "agree" else "_unlabeled", row)
+        writer.add(img, stem, d.box, f"form/{r.form}" if r.auto == "agree" else "_unlabeled", row)
         if r.auto == "agree":
             auto += 1
             if fresh:
@@ -642,7 +647,8 @@ def process(
                         orig = (_redo_labels(inbox / run / "labels" / f"{name}.txt", img.shape[1], img.shape[0],
                                              cfg.perception.classes) if again else [])
                         ctx = {"cfg": cfg, "writer": writer, "detect": detect, "weak": weak, "judge": judge,
-                               "labels_fh": labels_fh, "guesses": _json_dict(guess_path), "orig": orig}
+                               "labels_fh": labels_fh, "guesses": _json_dict(guess_path), "orig": orig,
+                               "crop_stem": again["name"] if again else None}
                         image = (inbox / run / "raw" / file).resolve().as_posix()
                         boxes, auto, human = _process_frame(img, image, name, run, split, ctx)
                         frames[name] = {**base, "boxes": boxes}

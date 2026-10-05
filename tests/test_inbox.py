@@ -816,3 +816,32 @@ def test_cli_inbox_add(tmp_path, capsys):
     assert "导入了 1 张" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "add", str(src), "--redo"])  # 不是数据集
+
+
+def test_process_redo_reuses_dataset_crop_name(tmp_path):
+    """回炉帧的人物裁图按原帧名命名：datasets/sky 导进 datasets/attrs 的同一个人已经有裁图，就不再出第二张。
+    标注是任意小数（手标的），两边换算成像素框要一致，裁图名才对得上。"""
+    from skydango.vision import attrs_data
+    from skydango.vision.attrs_data import crop_name
+
+    ds, inbox, attrs_root = tmp_path / "sky", tmp_path / "inbox", tmp_path / "attrs"
+    line = "0 0.326553 0.777606 0.013120 0.284935"  # 两种换算差一个像素的框
+    _write_dataset(ds, [("train", "a", _img(40), [line])])
+
+    class NoDet:
+        def detect(self, img):
+            return []
+
+    attrs_data.crops_from_dataset(ds, NoDet(), attrs_root, 0.5)
+    before = [r["crop"] for r in attrs_data._read_rows(attrs_root)]
+    assert len(before) == 1 and before[0].startswith("a__")
+    _inbox.add_dataset(ds, inbox)
+    run = next(p.name for p in inbox.iterdir() if p.is_dir())
+    judge = lambda f, boxes: [{"lit": 0.95, "not_person": 0.05} for _ in boxes]
+    _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: [], lambda f, d: [], judge, progress=lambda s: None)
+    after = [r["crop"] for r in attrs_data._read_rows(attrs_root)]
+    assert after == before  # 没有第二张
+    a = _inbox.load_frames(inbox, run)[frame_name(run, "a.jpg")]
+    person = next(x for x in a["boxes"] if x["cls"] == "player")
+    box = attrs_data._label_boxes(ds / "labels" / "train" / "a.txt", 1920, 1080)[0][1]
+    assert person["crop"] == before[0] == crop_name("a", box)
