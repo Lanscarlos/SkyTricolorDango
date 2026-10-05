@@ -110,9 +110,12 @@ def make_embedder(cfg: AppearanceConfig):
 class DinoGuard:
     """DINOv2 特征模型的保险：推理出错返回 None 并计数，连续 max_errors 次后关掉这一路（颜色特征不受影响）。"""
 
-    def __init__(self, embedder, max_errors: int = 10) -> None:
+    def __init__(self, embedder, max_errors: int = 10, *, what: str = "DINOv2 特征", fallback: str = "只用颜色特征") -> None:
+        """what / fallback 只用在跳闸那条警告里："{what}连续出错 N 次，这一路关掉，{fallback}"（认图标用的写自己的）。"""
         self._embedder = embedder
         self.max_errors = max_errors
+        self.what = what
+        self.fallback = fallback
         self.errors = 0
         self.enabled = True
 
@@ -130,7 +133,7 @@ class DinoGuard:
             log.debug("DINOv2 特征出错（连续第 %d 次）", self.errors, exc_info=True)
             if self.errors >= self.max_errors:
                 self.enabled = False
-                log.warning("DINOv2 特征连续出错 %d 次，这一路关掉，只用颜色特征", self.errors)
+                log.warning("%s连续出错 %d 次，这一路关掉，%s", self.what, self.errors, self.fallback)
             return None
         self.errors = 0
         return feat

@@ -445,6 +445,22 @@ def test_dino_errors_disable_only_dino(caplog):
     assert s is not None and s.dino is None  # 颜色照旧
 
 
+def test_dino_guard_trip_message(caplog):
+    """跳闸警告：认装扮的照旧一字不差；别的地方（认图标）用 what / fallback 写自己的。"""
+    img = np.zeros((10, 10, 3), np.uint8)
+    with caplog.at_level("WARNING"):
+        dino = DinoGuard(FakeDino(fail=True), max_errors=2)
+        dino.embed(img), dino.embed(img)
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
+        "DINOv2 特征连续出错 2 次，这一路关掉，只用颜色特征"]
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        dino = DinoGuard(FakeDino(fail=True), max_errors=2, what="认图标的 DINOv2 特征", fallback="退回模板")
+        dino.embed(img), dino.embed(img)
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
+        "认图标的 DINOv2 特征连续出错 2 次，这一路关掉，退回模板"]
+
+
 def test_dino_success_resets_error_count():
     class Flaky(FakeDino):
         def embed(self, img):

@@ -2215,7 +2215,7 @@ def test_scene_watcher_passes_icons_cfg_and_map_icons(monkeypatch, tmp_path):
     w = cli._scene_watcher(cfg, icons="TPL", run=SimpleNamespace(path=tmp_path, hard=tmp_path / "hard"))
     assert w.map_icons is not None and w.map_icons.template == "TPL" and w.map_icons.gallery is None
     assert w.map_icons.save_dir == tmp_path / "icons"
-    assert cli._map_icons(cfg, None, None, None).save_dir is None
+    assert cli._map_icons(cfg, "TPL", None, None).save_dir is None
 
 
 def test_scene_watcher_map_icons_falls_back_to_template(monkeypatch, tmp_path, caplog):
@@ -2225,10 +2225,42 @@ def test_scene_watcher_map_icons_falls_back_to_template(monkeypatch, tmp_path, c
     cfg.icons.enabled = True
     cfg.icons.classifier = "dino"
     cfg.icons.dino = str(tmp_path / "missing.onnx")
-    with caplog.at_level("WARNING"):
-        w = cli._scene_watcher(cfg)
+    with caplog.at_level("INFO"):
+        w = cli._scene_watcher(cfg, icons="TPL")
     assert w.map_icons is not None and w.map_icons.gallery is None
     assert "退回模板" in caplog.text
+    assert "认图标：DINOv2 用不了，退回模板" in caplog.text  # 启动日志照实写
+
+
+def test_map_icons_none_without_template_or_gallery(monkeypatch, tmp_path, caplog):
+    """没有模板（[social] 关着 / 模板目录空）也没有 DINOv2 底库：不建 MapIcons（icons() 为空），警告说清楚，不说"认图标：模板"。"""
+    from skydango import cli
+
+    cfg = _icons_cfg(monkeypatch)
+    cfg.icons.enabled = True
+    with caplog.at_level("INFO"):
+        assert cli._map_icons(cfg, None, None, None) is None
+    assert "没有模板" in caplog.text and cfg.social.icons_dir in caplog.text and "地图图标不认" in caplog.text
+    assert "认图标：模板" not in caplog.text
+    caplog.clear()
+    cfg.icons.classifier = "dino"
+    cfg.icons.dino = str(tmp_path / "missing.onnx")
+    with caplog.at_level("INFO"):
+        assert cli._map_icons(cfg, None, None, None) is None  # DINOv2 也建不起来
+    assert "地图图标不认" in caplog.text
+    with caplog.at_level("INFO"):
+        w = cli._scene_watcher(cfg)
+    assert w.map_icons is None and w.icons(0.0) == []
+
+
+def test_map_icons_startup_log_says_what_is_used(monkeypatch, tmp_path, caplog):
+    from skydango import cli
+
+    cfg = _icons_cfg(monkeypatch)
+    cfg.icons.enabled = True
+    with caplog.at_level("INFO"):
+        cli._map_icons(cfg, "TPL", None, None)
+    assert "认图标：模板" in caplog.text
 
 
 def test_map_icons_gallery_errors_fall_back_to_template(monkeypatch, tmp_path, caplog):
@@ -2246,7 +2278,7 @@ def test_map_icons_gallery_errors_fall_back_to_template(monkeypatch, tmp_path, c
 
     monkeypatch.setattr(icons_map.IconGallery, "load", classmethod(lambda cls, *a, **k: boom()))
     with caplog.at_level("WARNING"):
-        m = cli._map_icons(cfg, None, object(), None)
+        m = cli._map_icons(cfg, "TPL", object(), None)
     assert m is not None and m.gallery is None
     assert "读不了图片" in caplog.text and "退回模板" in caplog.text
 
@@ -2265,13 +2297,15 @@ def test_map_icons_shares_appearance_dino_and_needs_refs(monkeypatch, tmp_path, 
     cfg.icons.dino = cfg.appearance.dino = str(tmp_path / "dino.onnx")
     cfg.icons.refs = str(tmp_path / "refs")
     with caplog.at_level("WARNING"):
-        assert cli._map_icons(cfg, None, Emb(), None).gallery is None  # 参考图一张都没有
+        assert cli._map_icons(cfg, "TPL", Emb(), None).gallery is None  # 参考图一张都没有
     assert "退回模板" in caplog.text
     (tmp_path / "refs" / "sit").mkdir(parents=True)
     cv2.imwrite(str(tmp_path / "refs" / "sit" / "a.jpg"), np.full((40, 40, 3), 128, np.uint8))
     emb = Emb()
-    m = cli._map_icons(cfg, None, emb, None)
+    with caplog.at_level("INFO"):
+        m = cli._map_icons(cfg, None, emb, None)  # 没有模板但有底库：照样建
     assert m.gallery is not None and m.gallery.kinds == ["sit"]
+    assert "认图标：DINOv2 底库（sit）" in caplog.text
     assert isinstance(m.gallery.embedder, DinoGuard) and m.gallery.embedder._embedder is emb
 
 

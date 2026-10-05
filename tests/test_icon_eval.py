@@ -74,3 +74,25 @@ def test_cut_numbering(tmp_path):
     assert (tpl / "sit-2.png").exists() and (tmp_path / "refs" / "sit").is_dir()
     made2 = cut(shot, "sit", Rect(300, 200, 80, 80), tmp_path / "refs", tpl)
     assert any(p.name == "sit-3.png" for p in made2)
+
+
+def test_icon_eval_cli_refuses_without_template_and_gallery(monkeypatch, tmp_path):
+    """没有模板也没有 DINOv2 底库：直接退出说清楚，不出一份全是不认识的报告。"""
+    import argparse
+
+    import pytest
+
+    import skydango.vision.detect as detect
+    from skydango import cli
+    from skydango.config import Config
+
+    monkeypatch.setattr(detect, "make_detector", lambda *a, **k: object())
+    _frame(tmp_path)
+    cfg = Config()
+    cfg.social.enabled = False
+    cfg.icons.dino = str(tmp_path / "missing.onnx")
+    args = argparse.Namespace(source=str(tmp_path / "images"), labels=None, model=None, output=str(tmp_path / "out"))
+    with pytest.raises(SystemExit) as exc:
+        cli._perception_icon_eval(cfg, args)
+    assert "没有模板" in str(exc.value) and "DINOv2" in str(exc.value)
+    assert not (tmp_path / "out").exists()

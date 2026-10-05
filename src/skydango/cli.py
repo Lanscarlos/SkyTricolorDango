@@ -440,7 +440,8 @@ def _catalog_collector(cfg: Config, run: RunDir | None):
 def _map_icons(cfg: Config, icons, dino, run: RunDir | None):
     """认地图交互图标（spec 2026-10-05-icon-detection §3.2）：[icons] 开着才建 MapIcons。
     icons = 圆圈的模板分类器（IconClassifier，可能是 None）；dino = 认装扮建好的 DINOv2（可能是 None），和 [icons] dino 是同一个文件就共用会话。
-    classifier = "dino" 时模型建不起来、参考图读不了或一张都没有：警告、退回模板（不拖垮 _scene_watcher）。"""
+    classifier = "dino" 时模型建不起来、参考图读不了或一张都没有：警告、退回模板（不拖垮 _scene_watcher）。
+    模板和底库都没有：警告、返回 None（等于没开，icons() 为空），免得每个圈都当"不认识的图标"、白存裁图。"""
     c = cfg.icons
     if not c.enabled:
         return None
@@ -451,19 +452,26 @@ def _map_icons(cfg: Config, icons, dino, run: RunDir | None):
     if c.classifier == "dino":
         try:
             if dino is not None and cfg.appearance.dino and Path(cfg.appearance.dino).resolve() == Path(c.dino).resolve():
-                embedder = DinoGuard(dino)  # 和认装扮同一个文件：共用一个推理会话
+                embedder = DinoGuard(dino, what="认图标的 DINOv2 特征", fallback="退回模板")  # 和认装扮同一个文件：共用一个推理会话
             else:
                 from .vision.embed import OnnxEmbedder
 
-                embedder = DinoGuard(OnnxEmbedder(c.dino, norm="imagenet", device=cfg.perception.device, what="icons.dino"))
+                embedder = DinoGuard(OnnxEmbedder(c.dino, norm="imagenet", device=cfg.perception.device, what="icons.dino"),
+                                     what="认图标的 DINOv2 特征", fallback="退回模板")
             gallery = IconGallery.load(c.refs, embedder, c.dino_match, c.dino_margin)
             if not gallery.kinds:
                 raise FileNotFoundError(f"{c.refs}/ 里一张参考图都没有")
         except Exception as exc:
             log.warning("认图标：DINOv2 用不了（%s），退回模板", exc)
             gallery = None
+    if icons is None and gallery is None:
+        log.warning("认图标：没有模板（[social] 关着或 %s 为空）也没有 DINOv2 底库，地图图标不认", cfg.social.icons_dir)
+        return None
     save_dir = run.path / "icons" if run is not None else None
-    how = f"DINOv2 底库（{'、'.join(gallery.kinds)}）" if gallery is not None else "模板"
+    if gallery is not None:
+        how = f"DINOv2 底库（{'、'.join(gallery.kinds)}）"
+    else:
+        how = "DINOv2 用不了，退回模板" if c.classifier == "dino" else "模板"
     log.info("认图标：%s%s", how, f"，拿不准的裁图存进 {save_dir}" if save_dir is not None and c.save else "")
     return MapIcons(c, icons, gallery, save_dir)
 
@@ -1578,6 +1586,8 @@ def _perception_icon_eval(cfg: Config, args) -> None:
         print(f"DINOv2 用不了（{exc}），只跑模板")
         gallery = None
     template = _icon_classifier(cfg)
+    if template is None and gallery is None:
+        raise SystemExit(f"没有模板（[social] 关着或 {cfg.social.icons_dir} 为空）也没有 DINOv2 底库，没法认图标，不出报告")
     out = Path(args.output or f"tmp/icon-eval/{time.strftime('%Y%m%d-%H%M%S')}")
     res = icon_eval.evaluate(images, detector.detect, template, gallery, c, out, labels, p.classes)
     rec = "" if res["recall"] is None else f"，social_ring 召回 {res['recall']:.1%}"
