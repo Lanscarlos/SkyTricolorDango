@@ -74,13 +74,50 @@ persona = """
 # 开启后主人发的 #friend/#remember/#pause/#resume/#status 会被当命令执行，不转发给大模型（只有 vision.mode = "log" 时生效）。
 # owner_name = "懒洋洋大王"
 
-[llm]
-# 大脑离线时的备用回复、run --no-brain 的普通 Agent（回复和记忆整理）用它；大脑模式的记忆整理用 [brain] memory_model
-provider = "anthropic"
-base_url = ""
-model = "claude-sonnet-5"
-api_key_env = "ANTHROPIC_API_KEY"   # 从这个环境变量读 Key，不要把 Key 写进文件
-# 也可以用 OpenAI 兼容接口（DeepSeek / 通义千问 / Kimi / 本地 Ollama）：
+# ---- 模型：供应商 + 每个用处选哪个（spec docs/superpowers/specs/2026-10-05-model-providers-design.md）----
+# 一般在管理面板「模型」页改（写进 console.toml）；这里都不写就是下面这些默认值：除了识图，全走 DeepSeek。
+# 只要写了任何一家 [providers.*]，就只用写了的（config.toml 和 console.toml 按 id 合并）。Key / 令牌只写环境变量名，值放 secrets.toml 或环境变量。
+#
+# [providers.claude]
+# kind = "claude-code"                  # claude -p（订阅）；先运行一次 claude setup-token
+# path = "claude"
+# token_env = "SKYDANGO_CLAUDE_TOKEN"
+# config_dir = ".brain-claude"          # 和你自己的 Claude Code 隔开
+# models = ["sonnet", "haiku", "opus"]
+# vision = ["sonnet", "haiku", "opus"]  # 能看图的（必须是 models 里的）
+#
+# [providers.deepseek]
+# kind = "openai"                       # OpenAI 兼容：DeepSeek / ChatGPT / 通义 / Kimi / Ollama
+# base_url = "https://api.deepseek.com"
+# key_env = "DEEPSEEK_API_KEY"
+# timeout = 30.0
+# max_retries = 2
+# models = ["deepseek-chat", "deepseek-reasoner"]
+# vision = []
+#
+# 用处：brain 大脑 / memory 随手记和整理 / reflect 反思 / reply 普通 Agent 和备用回复 / text_label 文字标注 /
+#       eyes 眼睛和代看 / wardrobe 装扮描述 / image_label 看图标注（后三个只能选能看图的）。模型写成「供应商id/模型名」，按第一个 / 拆。
+# backup：主那家额度 / 余额用完或认证出错，这次运行里改用它；空 = 没有备用。temperature / max_tokens 只对 openai 那种生效
+# [models.brain]
+# main = "deepseek/deepseek-chat"
+# backup = "claude/sonnet"
+# [models.memory]
+# main = "deepseek/deepseek-chat"
+# backup = "claude/sonnet"
+# [models.reflect]
+# main = "deepseek/deepseek-chat"
+# backup = "claude/sonnet"
+# [models.reply]
+# main = "deepseek/deepseek-chat"
+# max_tokens = 200
+# [models.eyes]
+# main = "claude/haiku"
+# [models.wardrobe]
+# main = "claude/haiku"
+# [models.image_label]
+# main = "claude/sonnet"
+
+# [llm]：旧写法，还能读（换算成 deepseek 供应商和 [models.reply]，启动时警告一行），换算见上面 spec §1.3
 # provider = "openai"
 # base_url = "https://api.deepseek.com"
 # model = "deepseek-chat"
@@ -181,7 +218,7 @@ outfit_change = false           # 判不判换装：颜色特征下同一身衣�
 changed = 0.40                  # outfit_change 开着时：低于它算换了装
 stranger_forget = 1800.0        # 陌生人编号这么久没出现就忘掉（秒）
 describe = true                 # 关掉就只认人、不调模型
-describe_model = "haiku"
+# describe_model = "haiku"      # 旧写法：现在是 [models.wardrobe]
 describe_min_height = 0.18      # 送去描述的框高
 describe_max = 20               # 每小时最多描述几次
 redescribe_max = 3              # 同一个人一次上线最多重新描述几次
@@ -267,7 +304,7 @@ save_max = 200                  # 每次运行最多存几张
 
 [assist]
 # Claude 辅助标注：python -m skydango perception label <录像目录> --assist
-# 检测器出人物候选框 → 隔离的 claude -p 核对（令牌、配置目录同 [brain]）→ 和名字标签 / 圆圈弱标注合并写进数据集
+# 检测器出人物候选框 → [models.image_label] 的模型核对（默认 claude/sonnet）→ 和名字标签 / 圆圈弱标注合并写进数据集
 min_change = 30.0               # 挑帧：和上一张留下的帧差这么多才留（--all-frames 不挑）
 max_gap = 20                    # 最多隔这么多帧强制留一张
 proposal_models = ["models/yolo11n.pt", "models/yolo11x.pt"]  # 没给 --model 时的候选框模型（COCO person 类）
@@ -276,7 +313,7 @@ proposal_imgsz = 1280
 batch = 5                       # 每次 claude -p 核对几帧
 jobs = 3                        # 同时跑几个 claude -p
 timeout = 300.0
-model = "sonnet"
+# model = "sonnet"              # 旧写法：现在是 [models.image_label]
 self_hint = "白色头发、橙色护目镜、橙粉色袍子、背蓝紫色圆背包、头顶没有名字标签"  # 团子长相，换装后改
 
 [gesture]
@@ -356,13 +393,14 @@ width = 1280                    # 发给管理面板的图缩到这么宽
 quality = 70                    # JPEG 质量
 
 [brain]
-# 统管大脑：常驻的 Claude Code（订阅）看眼睛写的场景描述、调身体的工具。`run --brain` 打开
-# 先运行一次 claude setup-token，把生成的令牌放进用户环境变量：setx SKYDANGO_CLAUDE_TOKEN "<令牌>"
+# 统管大脑：看眼睛写的场景描述、调身体的工具（run 默认就是大脑模式）。用哪个模型见上面的 [models.brain]（默认 DeepSeek，备用 Claude）
+# 用到 Claude 的用处才要令牌：运行一次 claude setup-token，把生成的令牌放进用户环境变量：setx SKYDANGO_CLAUDE_TOKEN "<令牌>"
 enabled = false
-model = "sonnet"
-effort = "low"
-eyes_model = "haiku"           # 眼睛：把截图写成文字
-memory_model = "sonnet"        # 记忆整理：随手记 inbox.md、整理 notes.md（live 时；memory update 也用它）
+effort = "low"                 # 只对 claude-code 生效
+history = 8                    # OpenAI 兼容的大脑每轮带最近几轮（它不是常驻会话）；0 = 不带
+# model = "sonnet"             # 旧写法：现在是 [models.brain]
+# eyes_model = "haiku"         # 旧写法：现在是 [models.eyes]
+# memory_model = "sonnet"      # 旧写法：现在是 [models.memory]
 history_turns = 20             # 启动时带上最近几轮聊天原话（重启后接得上话），0 不带
 heartbeat = [45, 90, 180]      # 没事件时多久醒一次（身边有好友从第一档起），闲着就退到下一档
 background_wait = 20.0         # 背景事件（陌生人来去、好友走开、已处理的互动请求…）不马上叫醒大脑，攒了这么久还没醒才叫醒一次
@@ -470,7 +508,7 @@ save_every = 60.0              # live 时每隔多少秒存一次（被强杀时
 max_step = 5.0                 # 算在一起待了多久时，单圈最多算几秒
 # 第 2 期：反思（心情、精力、闹别扭、惦记的事，下线写日记代替大脑写的经过）。数字都是估的，没在真机验证
 reflect = true                 # false = 只记账（第 1 期原样）
-reflect_model = "sonnet"       # 反思用的模型（一次性 claude -p，令牌同大脑）
+# reflect_model = "sonnet"     # 旧写法：现在是 [models.reflect]
 reflect_every = 1200.0         # 有动静（有人说话 / 好友来去）时多久反思一次
 reflect_after_quiet = 180.0    # 好友说够 reflect_min_lines 句后安静这么久也反思一次
 reflect_min_lines = 6
