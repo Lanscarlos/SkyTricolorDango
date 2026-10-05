@@ -945,6 +945,9 @@ class Config:
     backstage: BackstageConfig = field(default_factory=BackstageConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    providers: dict[str, dict] = field(default_factory=dict)  # 模型供应商：[providers.<id>]，原样的表（models/config.py 解析）
+    models: dict[str, dict] = field(default_factory=dict)  # 每个用处选哪个模型：[models.<用处>]
+    sources: dict[str, str] = field(default_factory=dict)  # 配置文件里写了的叶子键 → "config" / "console"
 
 
 # 删掉的配置项：旧的 config.toml / console.toml 里还写着时跳过、提醒一句（别的未知键照旧报错）
@@ -975,7 +978,13 @@ def _merge(obj: Any, data: dict[str, Any], path: str = "") -> Any:
                 continue
             raise ValueError(f"未知配置项: {path}{key}")
         current = getattr(obj, key)
-        if dataclasses.is_dataclass(current):
+        if not path and key in ("providers", "models"):
+            if not isinstance(value, dict) or not all(isinstance(v, dict) for v in value.values()):
+                one = "每家一个 [providers.<id>]" if key == "providers" else "每个用处一个 [models.<用处>]"
+                raise ValueError(f"配置项 {key} 应该是一个表，{one}")
+            for name, table in value.items():
+                current.setdefault(name, {}).update(table)
+        elif dataclasses.is_dataclass(current):
             if not isinstance(value, dict):
                 raise ValueError(f"配置项 {path}{key} 应该是一个表")
             _merge(current, value, f"{path}{key}.")
@@ -989,6 +998,16 @@ def _read_toml(path: Path) -> dict[str, Any]:
         return tomllib.load(fh)
 
 
+def _leaves(data: dict[str, Any], prefix: str = "") -> list[str]:
+    out: list[str] = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            out += _leaves(value, f"{prefix}{key}.")
+        else:
+            out.append(f"{prefix}{key}")
+    return out
+
+
 def load_config(path: str | Path | None, overlay: str | Path | None = None) -> Config:
     """默认值 → path（config.toml）→ overlay（面板写的 console.toml）。"""
     config = Config()
@@ -996,13 +1015,17 @@ def load_config(path: str | Path | None, overlay: str | Path | None = None) -> C
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"找不到配置文件: {p}")
-        _merge(config, _read_toml(p))
+        data = _read_toml(p)
+        _merge(config, data)
+        config.sources.update(dict.fromkeys(_leaves(data), "config"))
     if overlay is not None:
         o = Path(overlay)
         try:
-            _merge(config, _read_toml(o))
+            data = _read_toml(o)
+            _merge(config, data)
         except (ValueError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"{o.name}：{exc}") from exc
+        config.sources.update(dict.fromkeys(_leaves(data), "console"))
     config.icons.check()
     return config
 

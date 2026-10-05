@@ -345,3 +345,30 @@ def test_reflex_followup_window_moved(tmp_path, caplog):
     assert followup_window(cfg) == 12
     p.write_text("[reflex]\nfollowup_window = 12\n[addressee]\nfollowup_window = 40\n", encoding="utf-8")
     assert followup_window(load_config(p)) == 40
+
+
+def test_providers_and_models_merge_by_id(tmp_path):
+    base = tmp_path / "config.toml"; over = tmp_path / "console.toml"
+    base.write_text('[providers.deepseek]\nkind = "openai"\nbase_url = "https://a"\n[models.brain]\nmain = "deepseek/deepseek-chat"\n', encoding="utf-8")
+    over.write_text('[providers.deepseek]\nbase_url = "https://b"\n[providers.gpt]\nkind = "openai"\n[models.brain]\nbackup = ""\n', encoding="utf-8")
+    cfg = load_config(base, over)
+    assert cfg.providers["deepseek"] == {"kind": "openai", "base_url": "https://b"}
+    assert cfg.providers["gpt"] == {"kind": "openai"}
+    assert cfg.models["brain"] == {"main": "deepseek/deepseek-chat", "backup": ""}
+    assert cfg.sources["providers.deepseek.base_url"] == "console"
+    assert cfg.sources["providers.deepseek.kind"] == "config"
+
+
+def test_sources_record_legacy_keys(tmp_path):
+    base = tmp_path / "config.toml"
+    base.write_text('[llm]\nmodel = "deepseek-chat"\n[brain]\nmodel = "opus"\n', encoding="utf-8")
+    cfg = load_config(base)
+    assert cfg.sources["llm.model"] == "config" and cfg.sources["brain.model"] == "config"
+    assert "brain.eyes_model" not in cfg.sources
+
+
+def test_providers_must_be_tables(tmp_path):
+    base = tmp_path / "config.toml"
+    base.write_text('providers = 1\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="providers"):
+        load_config(base)
