@@ -540,6 +540,8 @@ class IconsConfig:
     dino_margin: float = 0.05  # 领先第二像的种类至少多少
     vote: int = 5  # 每条轨迹多数表决看最近几次
     min_hits: int = 3  # 连续几帧都在才算
+    every: float = 0.5  # 同一个圈最多每几秒认一次（票攒满 vote 次以后放慢到 2 倍；0 = 每帧都认）
+    max_per_frame: int = 4  # 一帧最多认几个圈（DINOv2 在 CPU 上一张约 30 ms；没轮到的沿用上次的结果；0 = 不限）
     under_x: float = 0.25  # 圈算在某个框头顶：横着放宽几倍框宽
     under_up: float = 1.0  # 圈算在某个框头顶：往上最多几倍框高
     crop_scale: float = 1.3  # 图标裁图放大几倍

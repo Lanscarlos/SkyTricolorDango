@@ -304,7 +304,9 @@ dir = "private/sandbox"
 设计见 `docs/superpowers/specs/2026-10-05-icon-detection-design.md`，计划 `docs/superpowers/plans/2026-10-05-icon-detection.md`（路线图 ②b）。
 目标：画面里所有可点的圆圈 / 图标（互动请求、地图上的交互点）YOLO 都框成 `social_ring`，再认出是什么，写进状态和画面——**只认、不点**。**代码默认关；代码完成，还没有地图图标的模板 / 参考图、标好的数据和新 YOLO，真机验证见 spec §8**。
 - **三步**（`vision/icons_map.py`）：① 归属 `owner_of`：圈在谁头顶（`under_x` / `under_up`）→ 人 / 先祖 / 物件 / 地图；② 认种类：`classifier = "template"`（`classify_template`，模板按框缩放匹配）或 `"dino"`（DINOv2 最近邻 `IconGallery`，`dino_match` / `dino_margin`，参考图在 `assets/icons`）；
-  ③ 每条轨迹多数表决（`vote`、`min_hits` 连续帧）后才进 `PerceptionWatcher.icons(now)`；归属是地图的叫法走 `map_label`
+  ③ 每条轨迹多数表决（`vote`、`min_hits` 连续帧）后才进 `PerceptionWatcher.icons(now)`；归属是地图的叫法走 `map_label`。
+  认种类按轨迹节流：同一个圈最多每 `every`（0.5 秒，票攒满后 2 倍）认一次、一帧最多 `max_per_frame`（4）个，没轮到的沿用上次的结果；底库的 DINOv2 连续出错跳闸后退回模板；
+  没有模板（`[social]` 关着 / 模板目录空）也没有底库时不开（启动警告，`icons()` 为空）
 - **防误点（不受 `[icons] enabled` 管，关着也生效）**：没名字的圆圈只有「下面是人」（owner = person）才可能成为陌生人请求；先祖 / 物件 / 地图上的圈永远不进 requests。
   第二层没放行的低分人物框不算人、YOLO 漏一帧人请求立刻撤——**偏安全，真机可能少接一点陌生人点火**
 - **看得到的地方**（`enabled` 时）：status「画面里的图标：…」、眼睛的位置说明（scene_note）、系统提示词一句、管理面板画面 kind `icon`（认不出画虚线）；认不出 / 低分的图标裁图存 `runs/<…>/icons/`，难例原因 `icon_unknown`。管理面板有 `icons.enabled`

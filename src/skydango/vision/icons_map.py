@@ -38,7 +38,7 @@ class Icon:
     owner: str  # person / spirit / 物件类别名 / map
     label: str
     box: Rect
-    side: str  # 左边 / 中间 / 右边……
+    side: str  # 左边 / 前面 / 右边（side_of）
 
 
 def under_gap(ring: Rect, box: Rect, under_x: float, under_up: float) -> float | None:
@@ -210,9 +210,10 @@ class IconGallery:
 
 
 class MapIcons:
-    """运行时：先祖 / 物件 / 地图上的圈每帧认一次种类，按轨迹投票（spec §3.2、§3.5）；拿不准 / 认不出的裁图存盘攒参考图。
+    """运行时：先祖 / 物件 / 地图上的圈认种类，按轨迹投票（spec §3.2、§3.5）；拿不准 / 认不出的裁图存盘攒参考图。
 
-    classifier = "dino" 且有底库用底库，否则模板；两个都没有一律 UNKNOWN。分类出错只记 DEBUG、当 UNKNOWN（不拖垮感知线程）。"""
+    节流：同一条轨迹最多每 every 秒认一次（票攒满后 2 × every），一帧最多认 max_per_frame 个，没轮到的沿用上次的票和结果。
+    classifier = "dino" 且有底库、底库的 DINOv2 没跳闸用底库，否则模板；两个都没有一律 UNKNOWN。分类出错只记 DEBUG、当 UNKNOWN（不拖垮感知线程）。"""
 
     def __init__(self, cfg: IconsConfig, template: IconClassifier | None, gallery: IconGallery | None,
                  save_dir: Path | None) -> None:
@@ -221,10 +222,13 @@ class MapIcons:
         self.gallery = gallery
         self.save_dir = save_dir
         self.saved = 0  # 这次运行存了几张
+        self._frame_at: float | None = None  # 这一帧的时间（observe 的 now 变了算新的一帧）
+        self._frame_n = 0  # 这一帧认了几个
 
     @property
     def classifier(self) -> str:
-        if self.cfg.classifier == "dino" and self.gallery is not None:
+        if (self.cfg.classifier == "dino" and self.gallery is not None
+                and getattr(getattr(self.gallery, "embedder", None), "enabled", True)):  # DINOv2 跳闸了就退回模板
             return "dino"
         return "template" if self.template is not None else "none"
 
@@ -245,20 +249,37 @@ class MapIcons:
             log.debug("认图标出错（%s）", how, exc_info=True)
         return UNKNOWN, 0.0
 
+    def _due(self, ring: Track, now: float) -> bool:
+        """这一帧该不该认这个圈：离它上次认过 every 秒（票攒满了 2 × every），且这一帧还没认满 max_per_frame 个。"""
+        if now != self._frame_at:
+            self._frame_at, self._frame_n = now, 0
+        cap = self.cfg.max_per_frame
+        if cap > 0 and self._frame_n >= cap:
+            return False
+        last = ring.data.get("icon_at")
+        if last is not None and last <= now:
+            settled = len(ring.data.get("votes", ())) >= max(1, self.cfg.vote)
+            if now - last < self.cfg.every * (2 if settled else 1):
+                return False
+        self._frame_n += 1
+        ring.data["icon_at"] = now
+        return True
+
     def observe(self, frame: np.ndarray, ring: Track, owner: str, now: float) -> bool:
-        """认这一帧、投票，结果写进 ring.data（votes / icon / icon_score）；
+        """轮到了就认这一帧、投票，结果写进 ring.data（votes / icon / icon_score / icon_at）；没轮到沿用上次的。
         返回 True = 这条轨迹第一次投出 UNKNOWN 且已经连续 min_hits 帧（调用方报难例）。"""
-        crop = icon_crop(frame, ring.box, self.cfg.crop_scale)
-        how = self.classifier
-        kind, score = self._classify(crop, ring.box, how)
-        votes = ring.data.setdefault("votes", [])
-        votes.append(kind)
-        del votes[: max(0, len(votes) - max(1, self.cfg.vote))]
-        ring.data["icon"] = vote(votes)
-        ring.data["icon_score"] = score
-        if kind == UNKNOWN or score < self._threshold(how) + SAVE_UNSURE:
-            self._save(crop, ring, kind, score, how, owner, now)
-        if ring.data["icon"] == UNKNOWN and ring.hits >= self.cfg.min_hits and not ring.data.get("icon_unknown_told"):
+        if self._due(ring, now):
+            crop = icon_crop(frame, ring.box, self.cfg.crop_scale)
+            how = self.classifier
+            kind, score = self._classify(crop, ring.box, how)
+            votes = ring.data.setdefault("votes", [])
+            votes.append(kind)
+            del votes[: max(0, len(votes) - max(1, self.cfg.vote))]
+            ring.data["icon"] = vote(votes)
+            ring.data["icon_score"] = score
+            if kind == UNKNOWN or score < self._threshold(how) + SAVE_UNSURE:
+                self._save(crop, ring, kind, score, how, owner, now)
+        if ring.data.get("icon") == UNKNOWN and ring.hits >= self.cfg.min_hits and not ring.data.get("icon_unknown_told"):
             ring.data["icon_unknown_told"] = True
             return True
         return False

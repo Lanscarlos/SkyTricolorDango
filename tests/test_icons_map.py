@@ -278,6 +278,67 @@ def test_map_icons_save_uses_dino_threshold(tmp_path):
     assert not (tmp_path / "x").exists()
 
 
+def test_map_icons_throttled_per_track():
+    """同一条轨迹最多每 every 秒认一次；没认的帧沿用上次的票和结果。"""
+    tpl = FakeTemplate(("bench", 0.9))
+    m = MapIcons(IconsConfig(enabled=True, save=False, every=0.5), tpl, None, None)
+    ring = _ring_track()
+    for t in (0.0, 0.2, 0.4, 0.6, 0.8):
+        m.observe(_frame(), ring, "map", t)
+        assert ring.data["icon"] == "bench"
+    assert tpl.calls == 2 and ring.data["votes"] == ["bench", "bench"]  # 0.0、0.6
+
+
+def test_map_icons_settled_vote_slower():
+    """票攒满（len == vote）以后最多每 2 × every 秒认一次。"""
+    tpl = FakeTemplate(("bench", 0.9))
+    m = MapIcons(IconsConfig(enabled=True, save=False, every=0.5, vote=2), tpl, None, None)
+    ring = _ring_track()
+    for t in (0.0, 0.5, 0.9, 1.4, 1.5):  # 0.0、0.5 认（攒满）；0.9 / 1.4 离上次不到 1 秒不认；1.5 认
+        m.observe(_frame(), ring, "map", t)
+    assert tpl.calls == 3
+
+
+def test_map_icons_per_frame_cap():
+    """一帧最多认 max_per_frame 个圈，没轮到的下一帧再认。"""
+    tpl = FakeTemplate(("bench", 0.9))
+    m = MapIcons(IconsConfig(enabled=True, save=False, every=0.5, max_per_frame=2), tpl, None, None)
+    rings = [_ring_track(tid=i) for i in range(3)]
+    for r in rings:
+        m.observe(_frame(), r, "map", 0.0)
+    assert tpl.calls == 2 and "icon" not in rings[2].data
+    for r in rings:
+        m.observe(_frame(), r, "map", 0.1)  # 前两个还在节流里，第三个轮到了
+    assert tpl.calls == 3 and rings[2].data["icon"] == "bench"
+
+
+def test_map_icons_unknown_reported_on_skipped_frame():
+    """认不出的圈：min_hits 到了那一帧就算没轮到认，也照上次的结果报一次难例。"""
+    m = MapIcons(IconsConfig(enabled=True, save=False, every=0.5, min_hits=3), FakeTemplate((None, 0.2)), None, None)
+    ring = _ring_track()
+    got = []
+    for i, t in enumerate((0.0, 0.1, 0.2, 0.3)):
+        ring.hits = i + 1
+        got.append(m.observe(_frame(), ring, "map", t))
+    assert got == [False, False, True, False]
+
+
+def test_map_icons_guard_tripped_falls_back_to_template():
+    """底库的 DINOv2 跳闸关掉以后退回模板，不是一直 UNKNOWN。"""
+    from types import SimpleNamespace
+
+    tpl, gal = FakeTemplate(("hand", 0.9)), FakeGallery("bench", 0.8)
+    gal.embedder = SimpleNamespace(enabled=True)
+    m = MapIcons(IconsConfig(enabled=True, classifier="dino", save=False), tpl, gal, None)
+    assert m.classifier == "dino"
+    gal.embedder.enabled = False
+    assert m.classifier == "template"
+    ring = _ring_track()
+    m.observe(_frame(), ring, "map", 0.0)
+    assert ring.data["icon"] == "hand" and gal.calls == 0 and tpl.calls == 1
+    assert MapIcons(IconsConfig(enabled=True, classifier="dino", save=False), None, gal, None).classifier == "none"
+
+
 # ---- Task 7：整图火焰预标 ----
 from skydango.vision.candle import load_flame
 from skydango.vision.icons_map import flame_rings
