@@ -916,6 +916,10 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_unknown_names(cfg, args)
     elif args.action == "inbox":
         _perception_inbox(cfg, args)
+    elif args.action == "icon-eval":
+        _perception_icon_eval(cfg, args)
+    elif args.action == "icon-cut":
+        _perception_icon_cut(cfg, args)
     elif args.action == "clips":
         _perception_clips(cfg, args)
     elif args.action == "gesture-eval":
@@ -1514,6 +1518,62 @@ def _inbox_process(cfg: Config, args) -> None:
     )
     print(f"整理完了：{res['runs']} 次运行 / {res['frames']} 帧（重复 {res['dups']}），"
           f"外形头自动确认 {res['auto']} 个、{res['to_judge']} 个裁图等你在标注页判，{res['glance']} 帧可以直接过目")
+
+
+def _perception_icon_eval(cfg: Config, args) -> None:
+    """icon-eval：模板法 vs DINOv2 最近邻（vision/icon_eval.py）。DINOv2 建不起来 / 底库空就只跑模板，报告里写明。"""
+    from .vision import icon_eval
+    from .vision.appearance import DinoGuard
+    from .vision.detect import make_detector
+    from .vision.embed import OnnxEmbedder
+    from .vision.icons_map import IconGallery
+
+    root = Path(args.source)
+    labels = Path(args.labels) if args.labels else None
+    if (root / "images" / "val").is_dir():
+        if labels is None and (root / "labels" / "val").is_dir():
+            labels = root / "labels" / "val"
+        root = root / "images" / "val"
+    try:
+        images = _images(str(root))
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from None
+    p, c = cfg.perception, cfg.icons
+    try:
+        detector = make_detector(args.model or p.model, p.classes, p.imgsz, p.low_conf, p.iou, p.device)
+    except Exception as exc:
+        raise SystemExit(f"YOLO 模型加载失败：{exc}") from None
+    gallery = None
+    try:
+        embedder = DinoGuard(OnnxEmbedder(c.dino, norm="imagenet", device=p.device, what="icons.dino"))
+        gallery = IconGallery.load(c.refs, embedder, c.dino_match, c.dino_margin)
+        if not gallery.kinds:
+            raise FileNotFoundError(f"{c.refs}/ 里一张参考图都没有")
+    except Exception as exc:
+        print(f"DINOv2 用不了（{exc}），只跑模板")
+        gallery = None
+    template = _icon_classifier(cfg)
+    out = Path(args.output or f"tmp/icon-eval/{time.strftime('%Y%m%d-%H%M%S')}")
+    res = icon_eval.evaluate(images, detector.detect, template, gallery, c, out, labels, p.classes)
+    rec = "" if res["recall"] is None else f"，social_ring 召回 {res['recall']:.1%}"
+    print(f"{len(images)} 张图：圈 {res['rings']} 个、地图 / 先祖 / 物件上 {res['map']} 个、两种一致 {res['agree']} 个{rec} → {out}/report.md")
+
+
+def _perception_icon_cut(cfg: Config, args) -> None:
+    from .vision import icon_eval
+    from .vision.track import Rect
+
+    try:
+        x, y, w, h = (int(float(v)) for v in args.box.split(","))
+    except ValueError:
+        raise SystemExit("--box 要写成 x,y,w,h，比如 --box 900,300,100,100") from None
+    try:
+        made = icon_eval.cut(Path(args.image), args.kind, Rect(x, y, w, h), Path(cfg.icons.refs),
+                             Path(cfg.social.icons_dir) if args.template else None)
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from None
+    for path in made:
+        print(path)
 
 
 def _perception_unknown_names(cfg: Config, args) -> None:
@@ -3352,6 +3412,16 @@ def main(argv: list[str] | None = None) -> None:
     qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
     qi = isub.add_parser("status", help="收件箱各次运行各状态的帧数")
     qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
+    q = psub.add_parser("icon-eval", help="地图交互图标：同一批截图上比较模板法和 DINOv2 最近邻，写报告和分类拼图 → tmp/icon-eval/<时间>/")
+    q.add_argument("source", help="截图目录（有 images/val 的数据集取它和 labels/val）")
+    q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
+    q.add_argument("--labels", help="标注目录（算 social_ring 召回；数据集目录自动取 labels/val）")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/icon-eval/<时间>）")
+    q = psub.add_parser("icon-cut", help="从截图里裁一个图标存进 [icons] refs/<种类>/，--template 再存一份模板到 [social] icons_dir")
+    q.add_argument("image", help="截图")
+    q.add_argument("kind", help="图标种类（目录 / 模板文件名）")
+    q.add_argument("--box", required=True, help="图标框 x,y,w,h（整张截图坐标）")
+    q.add_argument("--template", action="store_true", help="同时把裁图缩到 RING_PX 存成模板")
     q = psub.add_parser("clips", help="动作识别的数据：录像按人物轨迹切成 16 帧的片段（人工再分到 <动作>/ 目录）")
     q.add_argument("source", help="record 录的目录（record --fps 8，文件名里带时间）")
     q.add_argument("-o", "--output", help="输出目录（默认 <[gesture] dataset>/_unlabeled）")
