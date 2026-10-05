@@ -59,7 +59,7 @@ class EnvWatcher:
         self.names = names  # 好友名单（游戏昵称），每次扫描时现取，用户改了 friends.md 马上生效
         self.log_roi = log_roi  # 聊天记录面板的位置：面板开着时这块被挡住，不扫
         self.background = background
-        self.icons = icons
+        self.ring_icons = icons
         self.icon_offset = icon_offset
         self.requests: dict = {}  # 好友名 → game.social.Request（圆圈里是牵手 / 拥抱 / 击掌等图标）
         self.labels: dict[str, tuple[int, int, int, int, float]] = {}  # 好友名 → 名字标签在整张截图里的 (x, y, w, h, 看到的时间)
@@ -128,12 +128,12 @@ class EnvWatcher:
 
     def _check_request(self, region: np.ndarray, box, name: str, now: float, offset: tuple[int, int]) -> None:
         """名字标签正下方的圆圈：平时是 ✦，有人发起牵手 / 拥抱 / 击掌时换成对应图标。"""
-        if self.icons is None:
+        if self.ring_icons is None:
             return
         from ..game.social import Request, is_request
 
         cx, cy = box.x + box.w // 2, box.y + round(self.icon_offset * box.h)
-        kind, _ = self.icons.classify(region[max(0, cy - 56) : cy + 56, max(0, cx - 56) : cx + 56])
+        kind, _ = self.ring_icons.classify(region[max(0, cy - 56) : cy + 56, max(0, cx - 56) : cx + 56])
         self.circles[name] = (kind, now)
         if is_request(kind):
             if name not in self.requests or self.requests[name].kind != kind:
@@ -153,7 +153,7 @@ class EnvWatcher:
                 continue
             out.append({"x": x, "y": y, "w": w, "h": h, "kind": "name", "label": name})
             kind, seen = self.circles.get(name, (None, float("-inf")))
-            if self.icons is not None and now - seen <= fresh:
+            if self.ring_icons is not None and now - seen <= fresh:
                 cx, cy = x + w // 2, y + round(self.icon_offset * h)
                 label = KIND_NAMES.get(kind, "✦" if kind == IDLE else "?")
                 out.append({"x": cx - 50, "y": cy - 50, "w": 100, "h": 100,

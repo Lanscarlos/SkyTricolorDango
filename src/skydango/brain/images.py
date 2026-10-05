@@ -106,4 +106,9 @@ def scene_note(env, now: float, scale: float) -> str:
             f"- {OBJECT_NAMES.get(t.kind, t.kind)}：({round((t.box.x + t.box.w / 2) * scale)}, {round((t.box.y + t.box.h / 2) * scale)}) 附近"
             for t in things
         ) + "\n没列出的东西按你自己看到的说。"
+    icons = env.icons(now) if hasattr(env, "icons") else []
+    if icons:  # 地图交互图标：只说明那里能互动
+        text += "\n画面里认出的图标（坐标按这张图）：\n" + "\n".join(
+            f"- {i.label}：({round((i.box.x + i.box.w / 2) * scale)}, {round((i.box.y + i.box.h / 2) * scale)}) 附近" for i in icons
+        ) + "\n图标只说明那里能互动。"
     return text

@@ -37,6 +37,7 @@ from ..vision.halo import HaloWatch
 from ..vision.perception import same_body
 from ..vision.track import iou
 from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
+from ..vision.icons_map import describe_icons
 from ..vision.people import describe_people, describe_things, side_of
 from .calling import CallResult, call_available, event_text as call_event_text, status_text as call_status_text
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
@@ -1893,6 +1894,9 @@ class Body:
         things = describe_things(self.env.objects(now)) if hasattr(self.env, "objects") else ""
         if things:
             parts.append("画面里的东西：" + things)
+        icons = self.env.icons(now) if hasattr(self.env, "icons") else []
+        if icons:
+            parts.append("画面里的图标：" + describe_icons(icons))
         if self._raised is not None:
             parts.append("正在举蜡烛给陌生人点火")
         elif now - self._lit_at <= self.cfg.social.remember:

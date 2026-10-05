@@ -57,7 +57,7 @@ def test_env_overlay_draws_recent_friend_labels_and_rings():
     assert boxes[0] == {"x": 1320, "y": 300, "w": 160, "h": 44, "kind": "name", "label": "懒洋洋大王"}
     assert boxes[1]["kind"] == "request" and boxes[1]["label"] == "牵手"
     assert boxes[1]["x"] + 50 == 1400 and boxes[1]["y"] + 50 == 300 + round(2.23 * 44)
-    env.icons.kind = IDLE
+    env.ring_icons.kind = IDLE
     env.observe(frame(), 14.0, panel_visible=False)
     assert [(b["kind"], b["label"]) for b in env.overlay(14.0)] == [("name", "懒洋洋大王"), ("ring", "✦")]
     assert env.overlay(14.0 + 3.0 * 2 + 2) == []  # 两次扫描都没再看到：不画了
@@ -654,3 +654,9 @@ def test_snapshot_and_brain_check_host():  # 终审 Important 4：接口每次 r
         assert request(url + "brain?after=0")[0] == 200
     finally:
         v.stop()
+
+
+def test_stage_knows_icon_kind():
+    # 中文名在 Windows 上 node 输出按 GBK 解码，只核对颜色和名字存在
+    out = _node(f"const S=require({json.dumps(str(_stage_path()))});console.log(JSON.stringify([S.COLORS.icon,typeof S.NAMES.icon]));")
+    assert json.loads(out) == ["#a3e635", "string"]

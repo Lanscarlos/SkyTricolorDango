@@ -2386,3 +2386,34 @@ def test_stranger_line_not_pending(clock):
     b.step()
     b.say("你好")
     assert b.spoken[-1].proactive is True
+
+
+def test_status_lists_icons(clock):
+    from skydango.vision.icons_map import Icon
+
+    class IconEnv(FakeEnv):
+        icon_list = []
+
+        def icons(self, now):
+            return list(self.icon_list)
+
+    env = IconEnv()
+    b, _, _, _ = body(clock, env=env)
+    assert "画面里的图标" not in b.status()
+    env.icon_list = [Icon(1, "sit", "bench", "坐下", Rect(0, 0, 1, 1), "右边"), Icon(2, "unknown", "map", "", Rect(0, 0, 1, 1), "左边")]
+    assert "画面里的图标：坐下（右边）、不认识的图标 1 个" in b.status()
+    plain, _, _, _ = body(clock, env=FakeEnv())
+    assert "画面里的图标" not in plain.status()
+
+
+def test_status_and_scene_note_with_real_envwatcher(clock):
+    # 真 EnvWatcher（非 YOLO 退路）没有 icons() 方法：状态和 scene_note 不报错、也没有图标行
+    from skydango.brain.images import scene_note
+    from skydango.config import EnvConfig
+    from skydango.vision.env import EnvWatcher
+
+    env = EnvWatcher(None, EnvConfig(interval=3.0), lambda: [], [0.0, 0.0, 0.335, 0.855], background=False, icons=object())
+    assert not hasattr(env, "icons")
+    b, _, _, _ = body(clock, env=env)
+    assert "画面里的图标" not in b.status()
+    assert "图标" not in scene_note(env, 0.0, 1.0)

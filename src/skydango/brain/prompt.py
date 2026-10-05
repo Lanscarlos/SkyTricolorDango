@@ -108,7 +108,8 @@ BRAIN_RULES = """
 - 状态里的“画面里的东西”是认出来的座位、篝火、乐器、先祖（带方位和远近）；想过去可以用 move 小步走、边走边看；坐下、弹琴还不会，别答应。
 """.strip()
 
-EVENTS_LIST = "（聊天、谁来了谁走了、互动请求、画面变化）"  # 「你在做什么」里列举的事件
+ICONS_RULE = "图标只说明那里能互动，你现在不会去点它，别答应去坐下或者去点。"
+EVENTS_LIST ="（聊天、谁来了谁走了、互动请求、画面变化）"  # 「你在做什么」里列举的事件
 QUIET_RULE = "没人理你的时候别自言自语。"
 NO_NEW_TOPIC = "对方没问就别硬找话题。"  # 和“安静时偶尔抛个话头”矛盾：主动开口时换掉
 PROACTIVE_POINTER = "要不要主动开口，看下面“主动开口”一节。"
@@ -239,6 +240,7 @@ def brain_prompt(
     backstage: str = "",
     lull: bool = False,
     call: bool = False,
+    icons: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -252,8 +254,11 @@ def brain_prompt(
     appearance：认装扮开着（[appearance] enabled，加装扮的规矩）。
     backstage：「幕后」整节（[backstage] enabled，brain/backstage.py 拼好的）；非空时换掉「身份」一节。
     lull：冷场时的心理活动（[lull] enabled，加「冷场的时候」）。
-    call：有 call 工具（按 Q 喊一声），「视角」一节加一句什么时候喊。"""
+    call：有 call 工具（按 Q 喊一声），「视角」一节加一句什么时候喊。
+    icons：认地图交互图标开着（[icons] enabled），「光遇常识」加一句图标只说明能互动。"""
     rules = static_prompt(reply, proactive)
+    if icons:
+        rules = rules.replace("坐下、弹琴还不会，别答应。", "坐下、弹琴还不会，别答应。 " + ICONS_RULE, 1)
     if lull:  # 插在「身份」之前；幕后再换「身份」整节时不会碰到它
         rules = rules.replace(LULL_ANCHOR, LULL_POINTER, 1).replace("## 身份", LULL_RULES + "\n\n## 身份", 1)
     if backstage:  # 在主动开口插进来之后换：主动开口还在它前面

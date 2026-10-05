@@ -2741,6 +2741,7 @@ def _run_brain(
         persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
         appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
         lull=cfg.lull.enabled, call=_call_enabled(cfg, env),
+        icons=cfg.perception.enabled and cfg.icons.enabled,
     )
     session = BrainSession(
         base, claude_vars, work / "session", server.url, prompt,

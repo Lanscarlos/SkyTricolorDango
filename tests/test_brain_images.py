@@ -113,3 +113,18 @@ def test_scene_note_lists_objects():
     assert note.endswith("没列出的东西按你自己看到的说。")
     empty = scene_note(ThingEnv([], []), 0.0, 0.5)
     assert "认出的东西" not in empty and "没列出的东西" not in empty
+
+
+def test_scene_note_lists_icons():
+    from skydango.brain.images import scene_note
+    from skydango.vision.icons_map import Icon
+    from skydango.vision.track import Rect
+
+    class IconEnv(OverlayEnv):
+        def icons(self, now):
+            return [Icon(1, "sit", "bench", "坐下", Rect(1000, 500, 100, 100), "右边")]
+
+    plain = scene_note(OverlayEnv([]), 0.0, 0.5)
+    text = scene_note(IconEnv([]), 0.0, 0.5)
+    assert text.startswith(plain)
+    assert text[len(plain):] == "\n画面里认出的图标（坐标按这张图）：\n- 坐下：(525, 275) 附近\n图标只说明那里能互动。"

@@ -329,3 +329,14 @@ def test_brain_prompt_backstage_replaces_identity():
 
 def test_brain_prompt_without_backstage_unchanged():
     assert brain_prompt(ReplyConfig(), None, backstage="") == brain_prompt(ReplyConfig(), None)
+
+
+def test_prompt_icons_rule():
+    from skydango.brain.prompt import ICONS_RULE
+
+    base = brain_prompt(ReplyConfig(), None)
+    assert ICONS_RULE not in base
+    assert brain_prompt(ReplyConfig(), None, icons=False) == base
+    text = brain_prompt(ReplyConfig(), None, icons=True)
+    assert "坐下、弹琴还不会，别答应。 " + ICONS_RULE in text
+    assert text.replace(" " + ICONS_RULE, "") == base
