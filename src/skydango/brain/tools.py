@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 
 from ..chat.recall import recall
+from ..models.errors import ModelError
 from .body import OWNER_NOTE, REQUEST_KINDS, ToolError
 from .calling import CallResult, tool_text, wait_result
 from .camera import KEYS
@@ -92,6 +93,8 @@ ACTIONS = {
 }  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
 # 这一轮第一句说完附在结果后面（还能再说时）：10-03 晚第二句常是把第一句换个说法再说一遍
+PROXY_PREFIX = "（眼睛代看）"  # 大脑看不了图时，看图工具返回的是眼睛替它看的文字
+
 SAY_ENOUGH = "（这一轮说这一句一般就够了；真要再说只说新的内容，别把这句换个说法再说一遍）"
 PEEK_TIMEOUT = 30.0  # look_person 被挡住时边转边看：最多 [peek] max_seconds（8 s）+ 最后一下等画面停稳、截图裁图
 RESET_TIMEOUT = 60.0  # 镜头闭环复位：粗转 + 细调最多 60 下、每下等 0.4 s 画面停稳，最坏三十多秒（一般几秒）
@@ -141,8 +144,11 @@ class ToolBox:
     def __init__(
         self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None, text_only: bool = False, sandbox: bool = False,
         backstage: bool = False, call: bool = False,
+        proxy: Callable[[list[dict], str], str] | None = None, sees: Callable[[], bool] = lambda: True,
     ) -> None:
         self.body = body
+        self.proxy = proxy  # 大脑看不了图时把图交给眼睛代看：(内容块, 想看清什么) → 文字（Eyes.proxy）
+        self.sees = sees  # 大脑现在用的模型看不看得了图
         self.backstage = backstage  # 幕后：有 introspect 工具
         self.calling = call  # 按 Q 喊一声：有 call 工具
         self.sleep = time.sleep  # 等呼喊窗口时用；测试换掉
@@ -183,10 +189,14 @@ class ToolBox:
                 self.says += 1  # 先占上名额：并行调 say 也不会超；没说成再还回去
         try:
             out = self._exec(name, args or {})
+            if isinstance(out, list) and self.proxy is not None and not self.sees():
+                out = PROXY_PREFIX + self.proxy(out, str((args or {}).get("question") or ""))
         except Exception as exc:
             if name == "say":
                 with self._lock:
                     self.says -= 1
+            if isinstance(exc, ModelError):
+                return f"现在看不了图：{exc}", True
             if not isinstance(exc, ToolError):
                 log.exception("工具 %s 出错", name)
                 return f"出错了：{exc}", True
@@ -209,9 +219,12 @@ class ToolBox:
             image = _bool(a, "image", False) and not self.text_only
             if self.text_only and self.eyes is None:
                 raise ToolError("沙盒里没开眼睛")
+            now = b.clock()
+            if image and self.eyes is not None and self.proxy is not None and not self.sees() \
+                    and self.eyes.latest is not None and now - self.eyes.last_look < b.cfg.brain.look_min_interval:
+                return self.eyes.summary(now)  # 看不了图、眼睛刚看过：不再起一次代看
             if image or self.eyes is None:
                 return b.call(b.look)
-            now = b.clock()
             if self.eyes.latest is not None and now - self.eyes.last_look < b.cfg.brain.look_min_interval:
                 return self.eyes.summary(now)
             return self.eyes.describe_frame(b.call(b.fresh_frame), now)

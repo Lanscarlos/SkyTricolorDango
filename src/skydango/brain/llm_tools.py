@@ -1,4 +1,4 @@
-"""OpenAI function-calling 的工具 schema 单一来源（DeepSeek 备用大脑用）。
+"""OpenAI function-calling 的工具 schema 单一来源（OpenAI 兼容的大脑 ToolLoopBrain 用）。
 
 参数表 PARAMETERS 要和 tools.py 的 `_bind`、mcp_server.py 的 `@srv.tool` 签名三处保持同步：
 改参数时一起改。
@@ -6,7 +6,9 @@
 
 from .tools import CALL_DESCRIPTION, INTROSPECT_DESCRIPTION, descriptions
 
-BLIND_EXCLUDE = {"look", "look_at", "look_person", "look_around", "check_friend"}
+# 会返回图的工具：OpenAI 兼容的大脑看不了图，这几个交给眼睛代看，多一个可选参数 question（想看清什么）
+QUESTION_TOOLS = ("look", "look_at", "look_person", "check_friend", "panel_read")
+QUESTION = ("question", "string", "")
 
 # name -> [(参数名, JSON 类型, 默认值)]；默认值 None 表示必填（进 required）
 PARAMETERS = {
@@ -56,17 +58,13 @@ def _function(name: str, description: str, params: list[tuple[str, str, object]]
     }
 
 
-def openai_tools(toolbox, *, blind: bool = True) -> list[dict]:
-    """DeepSeek 备用大脑的工具 schema。blind=True 时去掉视觉 / 点人工具，panel_read 不带 image。"""
+def openai_tools(toolbox) -> list[dict]:
+    """OpenAI 兼容大脑的工具 schema：工具全给，会返回图的几个多一个 question（眼睛代看时问什么）。"""
     sweep = hasattr(toolbox.body.env, "sweep")
     desc = descriptions(sweep)
     tools = []
     for name in desc:  # descriptions() 的顺序就是注册顺序
-        if blind and name in BLIND_EXCLUDE:
-            continue
-        params = PARAMETERS[name]
-        if blind and name == "panel_read":
-            params = [p for p in params if p[0] != "image"]
+        params = PARAMETERS[name] + ([QUESTION] if name in QUESTION_TOOLS else [])
         tools.append(_function(name, desc[name], params))
     if toolbox.calling:
         tools.append(_function("call", CALL_DESCRIPTION, PARAMETERS["call"]))

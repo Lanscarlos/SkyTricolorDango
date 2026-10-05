@@ -89,6 +89,9 @@ def eyes_command(base: list[str], cfg: BrainConfig) -> list[str]:
     ]
 
 
+PROXY_REQUEST = "大脑看不到图，请你替它看：{question}\n只说图里看得到的，名字只用上面位置说明里给的，别编；两三句话。"
+
+
 class Eyes:
     def __init__(
         self,
@@ -103,7 +106,7 @@ class Eyes:
         proactive: ProactiveConfig | None = None,  # 看场合主动开口；None 或 enabled = false 时照旧
         busy: Callable[[float], bool] = lambda now: False,  # 好友在不在身边：在就看得勤一点
         on_news: Callable[[str], None] = lambda text: None,  # 自动看时挑出了新鲜事（在眼睛线程里调）
-        available: Callable[[], bool] | None = None,  # Claude 总闸开着吗（gate.ok）；为假时自动看直接跳过（spec 2026-10-04-claude-gate §3.3）
+        available: Callable[[], bool] | None = None,  # 眼睛那个用处现在能用吗（GatedCall.available）；为假时自动看直接跳过
     ) -> None:
         self.cfg = cfg
         self.describe = describe
@@ -122,6 +125,19 @@ class Eyes:
         self.look_request = LOOK_REQUEST
         self._poked = False
         self._lock = threading.Lock()  # 自动看和大脑要看可能撞上：同一时间只看一次
+
+    def proxy(self, blocks: list[dict], question: str) -> str:
+        """给看不了图的大脑代看：工具原来返回的图 + 文字块（位置说明就在里面）再加一句要求，返回文字。
+        眼睛用不了（停用 / 闸关了 / 出错）抛 ModelUnavailable。"""
+        from ..models.errors import ModelError, ModelUnavailable
+
+        if self.available is not None and not self.available():
+            raise ModelUnavailable("现在看不了图")
+        ask = PROXY_REQUEST.format(question=question.strip() or "描述一下这张图里有什么")
+        try:
+            return self.describe([*blocks, {"type": "text", "text": ask}])
+        except ModelError as exc:
+            raise ModelUnavailable(f"现在看不了图（{exc}）") from exc
 
     def notice(self, kind: str) -> None:
         if kind in AUTO_LOOK_KINDS:

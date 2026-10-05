@@ -357,3 +357,48 @@ def test_tools_find_passes_args():
     assert body.calls == [("find", "小明", 20), ("find", "阿白", 30)]
     out, err = ToolBox(B(), FakeEyes(), max_steps=50, sandbox=True).run("find", {"name": "小明"})
     assert err and "沙盒里没有这个" in out
+
+
+# ---- 代看：大脑看不了图时看图工具交给眼睛（spec 2026-10-05-model-providers §2.4）----
+def _image_body():
+    import numpy as np
+
+    from skydango.brain.images import image_block
+
+    body = FakeBody()
+    blocks = [image_block(np.zeros((8, 8, 3), np.uint8)), {"type": "text", "text": "小明在 (300,200)"}]
+    body.look_person = lambda name: blocks
+    return body, blocks
+
+
+def test_proxy_replaces_image():
+    body, _ = _image_body()
+    tb = ToolBox(body, proxy=lambda b, q: f"{len(b)}|{q}", sees=lambda: False)
+    assert tb.run("look_person", {"name": "小明", "question": "衣服"}) == ("（眼睛代看）2|衣服", False)
+
+
+def test_sees_keeps_image():
+    body, blocks = _image_body()
+    tb = ToolBox(body, proxy=lambda b, q: "不该调", sees=lambda: True)
+    assert tb.run("look_person", {"name": "小明"}) == (blocks, False)
+
+
+def test_proxy_when_eyes_unavailable():  # Review Focus 5
+    from skydango.models.errors import ModelUnavailable
+
+    body, _ = _image_body()
+
+    def proxy(b, q):
+        raise ModelUnavailable("现在看不了图")
+
+    out, is_error = ToolBox(body, proxy=proxy, sees=lambda: False).run("look_person", {"name": "小明"})
+    assert is_error is True and "看不了图" in out
+
+
+def test_look_image_when_blind_reuses_recent_eyes():  # 刚看过：不再起代看，直接给眼睛的描述
+    from types import SimpleNamespace
+
+    body = FakeBody()
+    eyes = SimpleNamespace(latest=("在雨林", 99.0), last_look=99.0, summary=lambda now: "场景：在雨林")
+    tb = ToolBox(body, eyes=eyes, proxy=lambda b, q: "不该调", sees=lambda: False)
+    assert tb.run("look", {"image": True}) == ("场景：在雨林", False)

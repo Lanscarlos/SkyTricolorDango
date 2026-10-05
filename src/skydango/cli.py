@@ -2738,7 +2738,7 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
         log.warning("备用大脑没开（%s）", exc)
         return None
     return ToolLoopBrain(
-        client, prompt + "\n\n" + BLIND_NOTE + (ASIDE_NOTE if cfg.addressee.enabled else ""), toolbox, openai_tools(toolbox, blind=True),
+        client, prompt + "\n\n" + BLIND_NOTE + (ASIDE_NOTE if cfg.addressee.enabled else ""), toolbox, openai_tools(toolbox),
         model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=4096,
         max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout, on_message=on_message,
         history=cfg.brain.history, provider="deepseek",

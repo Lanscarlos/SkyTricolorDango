@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from skydango.brain.events import EventQueue
 from skydango.brain.eyes import AROUND_REQUEST, Eyes, eyes_command, parse_news
@@ -224,3 +225,29 @@ def test_eyes_available_true_looks(clock):
     d = Describer()
     e = Eyes(BrainConfig(), d, frame, lambda: {}, lambda: False, clock=clock, available=lambda: True)
     assert e.tick(clock()) is True and len(d.calls) == 1
+
+
+def test_eyes_proxy_builds_request():
+    from skydango.config import BrainConfig
+
+    got = []
+    e = Eyes(BrainConfig(), lambda content: got.append(content) or "看到一个人", lambda: None, lambda: {}, lambda: False)
+    blk = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}
+    assert e.proxy([blk], "") == "看到一个人"
+    assert got[0][0] is blk and "描述一下这张图里有什么" in got[0][-1]["text"]
+
+
+def test_eyes_proxy_unavailable():
+    from skydango.config import BrainConfig
+    from skydango.models.errors import ModelError, ModelUnavailable
+
+    e = Eyes(BrainConfig(), lambda c: "x", lambda: None, lambda: {}, lambda: False, available=lambda: False)
+    with pytest.raises(ModelUnavailable):
+        e.proxy([], "衣服")
+
+    def boom(c):
+        raise ModelError("超时")
+
+    e = Eyes(BrainConfig(), boom, lambda: None, lambda: {}, lambda: False)
+    with pytest.raises(ModelUnavailable):
+        e.proxy([], "衣服")
