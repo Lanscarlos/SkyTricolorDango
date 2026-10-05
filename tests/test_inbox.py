@@ -742,6 +742,49 @@ def test_pass_redo_overwrites_with_backup_and_undo_restores(tmp_path):
     assert (ds / "labels" / "val" / "a.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
 
 
+def test_pass_redo_rewrites_augmented_label_copies_and_undo_restores(tmp_path):
+    inbox, run, frame, attrs_root, ds = _setup_redo(tmp_path)
+    labels = ds / "labels" / "val"
+    for s in ("_blur", "_dark"):
+        (labels / f"a{s}.txt").write_text("0 0.5 0.5 0.1 0.1\n", encoding="utf-8")
+    (labels / "a_blur_x.txt").write_text("keep\n", encoding="utf-8")  # 只认 <帧>_blur / _dark
+    bak = ds / "_backup" / "redo-20261005-200000" / "val"
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)
+    new = yolo_line(6, Rect(100, 50, 50, 20), 200, 100) + "\n"
+    for s in ("", "_blur", "_dark"):
+        assert (labels / f"a{s}.txt").read_text(encoding="utf-8") == new
+        assert (bak / f"a{s}.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+    assert (labels / "a_blur_x.txt").read_text(encoding="utf-8") == "keep\n"
+    assert _inbox.load_frames(inbox, run)[frame]["decision"]["aug"] == ["_blur", "_dark"]
+    _inbox.undo_frame(inbox, run, frame, ds)
+    for s in ("", "_blur", "_dark"):
+        assert (labels / f"a{s}.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES, boxes=[(3, Rect(0, 0, 100, 50))])
+    assert (bak / "a_dark.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"  # 备份已有：不覆盖
+    _inbox.undo_frame(inbox, run, frame, ds)
+    assert (labels / "a_dark.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+
+
+def test_pass_redo_without_augmented_copies_creates_none(tmp_path):
+    inbox, run, frame, attrs_root, ds = _setup_redo(tmp_path)
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)
+    labels = ds / "labels" / "val"
+    assert sorted(p.name for p in labels.iterdir()) == ["a.txt"]
+    assert sorted(p.name for p in (ds / "_backup" / "redo-20261005-200000" / "val").iterdir()) == ["a.txt"]
+    assert _inbox.load_frames(inbox, run)[frame]["decision"]["aug"] == []
+    _inbox.undo_frame(inbox, run, frame, ds)
+    assert sorted(p.name for p in labels.iterdir()) == ["a.txt"]
+
+
+def test_pass_normal_frame_ignores_augmented_names(tmp_path):
+    inbox, run, frame, attrs_root, ds = _setup_frame(tmp_path)
+    (ds / "labels" / "train").mkdir(parents=True)
+    (ds / "labels" / "train" / f"{frame}_blur.txt").write_text("old\n", encoding="utf-8")
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)
+    assert (ds / "labels" / "train" / f"{frame}_blur.txt").read_text(encoding="utf-8") == "old\n"
+    assert "aug" not in _inbox.load_frames(inbox, run)[frame]["decision"] and not (ds / "_backup").exists()
+
+
 def test_undo_redo_without_original_label_removes_label(tmp_path):
     inbox, run, frame, attrs_root, ds = _setup_redo(tmp_path, old=None)
     _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)

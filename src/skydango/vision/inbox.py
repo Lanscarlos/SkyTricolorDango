@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from . import attrs
+from .augment import SUFFIXES
 from .bubbles import Rect
 
 INDEX = "_index.jsonl"
@@ -124,8 +125,6 @@ def add_dataset(dataset: Path, inbox: Path, splits=("train", "val")) -> int:
     """老帧回炉（spec §2.3）：dataset/images/<split>/*.jpg 复制进 inbox/_redo-<时间>/raw/（文件名 = 原帧名），
     原标注复制进 labels/<收件箱帧名>.txt，redo.json 记每帧原来的帧名和 split（不预写 frames.json：process 跳过已有条目）。
     增强图（_blur / _dark）不回炉；同一个帧名在两边都有的只取第一个。返回帧数。"""
-    from .augment import SUFFIXES
-
     dataset, inbox = Path(dataset), Path(inbox)
     run = REDO_PREFIX + time.strftime("%Y%m%d-%H%M%S")
     while (inbox / run).exists():  # 同一秒回炉两次
@@ -357,21 +356,27 @@ def pass_frame(
     label.write_text(text, encoding="utf-8")
     dst_img.parent.mkdir(parents=True, exist_ok=True)
     dst_lbl.parent.mkdir(parents=True, exist_ok=True)
-    had_img, backup = dst_img.exists(), None
+    had_img = dst_img.exists()
     old_label = dst_lbl.read_bytes() if redo and dst_lbl.exists() else None
+    # 回炉帧的增强图（<帧>_blur / _dark，标注是原图的副本，同 attrs_data.writeback 的找法）：在的一起改，免得同一画面两份标注打架
+    augs = [s for s in SUFFIXES if (dst_lbl.parent / f"{target}{s}.txt").is_file()] if redo else []
+    old_augs = {s: (dst_lbl.parent / f"{target}{s}.txt").read_bytes() for s in augs}
     try:
-        if old_label is not None:
-            backup = redo_backup(dataset, run, split, target)
-            if not backup.exists():  # 同一次回炉的备份已有：那是最早的原标注，不覆盖
+        for name, old in [(target, old_label), *((f"{target}{s}", old_augs[s]) for s in augs)]:
+            backup = redo_backup(dataset, run, split, name)
+            if old is not None and not backup.exists():  # 同一次回炉的备份已有：那是最早的原标注，不覆盖
                 backup.parent.mkdir(parents=True, exist_ok=True)
-                backup.write_bytes(old_label)
+                backup.write_bytes(old)
         if not (redo and had_img):  # 回炉帧的原图就是数据集里那张：在就不再复制
             shutil.copyfile(src_img, dst_img)
         shutil.copyfile(label, dst_lbl)
+        for s in augs:
+            shutil.copyfile(label, dst_lbl.parent / f"{target}{s}.txt")
         entry["decision"] = {"what": "pass", "edited": edited, "t": time.time(), "dataset": f"{split}/{target}",
                              "boxes": [{"cls": int(c), "box": [b.x, b.y, b.w, b.h]} for c, b in boxes]}
         if redo:
-            entry["decision"]["backup"] = backup is not None
+            entry["decision"]["backup"] = old_label is not None
+            entry["decision"]["aug"] = augs  # 一起改了的增强图后缀（撤销时从备份还原）
         entry["editing"] = False
         entry.pop("last_boxes", None)
         save_frames(inbox, run, frames)
@@ -382,6 +387,8 @@ def pass_frame(
             dst_lbl.write_bytes(old_label)
         else:
             dst_lbl.unlink(missing_ok=True)
+        for s, old in old_augs.items():
+            (dst_lbl.parent / f"{target}{s}.txt").write_bytes(old)
         if not label_existed:
             label.unlink(missing_ok=True)
         raise
@@ -410,14 +417,17 @@ def undo_frame(inbox: Path, run: str, frame: str, dataset: Path) -> None:
         split = decision["dataset"].split("/")[0]
         if isinstance(entry.get("redo"), dict):  # 回炉帧：把备份的原标注拷回去（原来没标注就删掉写进去的），不删图
             target = decision["dataset"].split("/", 1)[1]
-            dst = Path(dataset) / "labels" / split / f"{target}.txt"
-            if decision.get("backup"):
-                backup = redo_backup(dataset, run, split, target)
-                if not backup.is_file():
-                    raise FileNotFoundError(f"找不到回炉前的标注备份 {backup}")
-                shutil.copyfile(backup, dst)
-            else:
-                dst.unlink(missing_ok=True)
+            labels = Path(dataset) / "labels" / split
+            augs = [s for s in decision.get("aug") or [] if s in SUFFIXES]  # 一起改过的增强图标注也还原
+            restore = ([target] if decision.get("backup") else []) + [f"{target}{s}" for s in augs]
+            backups = {name: redo_backup(dataset, run, split, name) for name in restore}
+            missing = [str(b) for b in backups.values() if not b.is_file()]
+            if missing:  # 先查齐再动：缺一个都不改
+                raise FileNotFoundError(f"找不到回炉前的标注备份 {'、'.join(missing)}")
+            for name, backup in backups.items():
+                shutil.copyfile(backup, labels / f"{name}.txt")
+            if not decision.get("backup"):
+                (labels / f"{target}.txt").unlink(missing_ok=True)
         else:
             (Path(dataset) / "images" / split / f"{frame}.jpg").unlink(missing_ok=True)
             (Path(dataset) / "labels" / split / f"{frame}.txt").unlink(missing_ok=True)
