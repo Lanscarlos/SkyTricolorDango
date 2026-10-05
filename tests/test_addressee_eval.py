@@ -153,13 +153,18 @@ def test_review_bad_value(tmp_path):
     assert "r#7" in str(e.value)
 
 
-def _eval(n_me_wrong, n_unsure=0, total_other=20):
+def _eval(n_me_wrong, n_unsure=0, total_other=20, with_me=True):
     lines, rule, human = [], {}, {}
     for i in range(total_other):
         l = _line(i, i * 10, "小明")
         lines.append(l)
         rule[l.id] = Verdict("me" if i < n_me_wrong else "other", "")
         human[l.id] = "跟别人"
+    for k in range(2 if with_me else 0):  # 「跟团子」的标准答案，规则判对
+        l = _line(500 + k, 5000 + k * 10, "小明")
+        lines.append(l)
+        rule[l.id] = Verdict("me", "")
+        human[l.id] = "跟团子"
     for k in range(n_unsure):
         l = _line(1000 + k, 9000 + k, "小明")
         lines.append(l)
@@ -172,8 +177,8 @@ def test_evaluate_thresholds():
     r = _eval(2)  # 10% > 5%
     assert not r.passed
     assert "跟别人" in r.markdown()
-    assert not _eval(0, n_unsure=14).passed  # 14/34 = 41%
-    assert _eval(0, n_unsure=10).passed  # 10/30 = 33%
+    assert not _eval(0, n_unsure=16).passed  # 16/38 = 42%
+    assert _eval(0, n_unsure=10).passed  # 10/32 = 31%
 
 
 def test_evaluate_gold_from_agreement_and_unreviewed():
@@ -184,3 +189,27 @@ def test_evaluate_gold_from_agreement_and_unreviewed():
     assert "没核对" in r.markdown()
     assert r.confusion["跟团子"]["me"] == 1  # 只有 a 两边一致（b 不一致没核对，c 是看不出）
     assert sum(sum(v.values()) for v in r.confusion.values()) == 1
+
+
+def test_evaluate_no_gold_not_passed():
+    r = ev.evaluate([], [], {}, {}, {})
+    assert not r.passed and "样本不足" in r.markdown()
+    r2 = _eval(0, with_me=False)  # 只有「跟别人」的标准答案，没有「跟团子」的
+    assert not r2.passed and "样本不足" in r2.markdown()
+
+
+def test_review_keeps_filled_without_claude_label(tmp_path):
+    lines = [_line(i, i * 10, "小明", f"句{i}") for i in range(4)]
+    rule = {l.id: Verdict("me", "") for l in lines}
+    cl = {l.id: "跟别人" for l in lines}
+    path = tmp_path / "review.md"
+    ev.write_review(path, lines, lines, rule, cl)
+    text = path.read_text(encoding="utf-8")
+    for i in ("r#1", "r#2"):
+        j = text.index("标：", text.index(f"### {i}\n"))
+        text = text[: j + 2] + "大家" + text[j + 2 :]
+    path.write_text(text, encoding="utf-8")
+    # r#1 的 Claude 标签没了，r#2 这次根本不在 items 里
+    ev.write_review(path, [lines[0], lines[1]], lines, rule, {"r#0": "跟别人"})
+    assert ev.read_review(path) == {"r#1": "大家", "r#2": "大家"}
+    assert "Claude：没标" in path.read_text(encoding="utf-8")

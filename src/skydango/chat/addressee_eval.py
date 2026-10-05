@@ -260,28 +260,51 @@ def write_review(
     """规则和 Claude 不一致的全写，一致的抽 20%；已填过的 `标：` 保留（即使这次没被选中）。返回写了几句。"""
     path = Path(path)
     filled = read_review(path)
+    old = _old_blocks(path)
     rng = random.Random(seed)
     index = _context_map(context)
     chosen: list[Line] = []
     for l in items:
         c = claude_l.get(l.id)
-        if c is None:
-            continue
-        agree = _rule_human(rule.get(l.id)) == c
-        if not agree or rng.random() < AGREE_SAMPLE or l.id in filled:
+        if l.id in filled:  # 人填过的一定写回（Claude 的标签丢了也一样）
+            chosen.append(l)
+        elif c is not None and (_rule_human(rule.get(l.id)) != c or rng.random() < AGREE_SAMPLE):
             chosen.append(l)
     body = ["# 谁在跟谁说：待核对", "", "在每句的 `标：` 后面填 " + " / ".join(HUMAN) + "（留空 = 没核对）。", ""]
     for l in chosen:
         v = rule.get(l.id)
         body.append(f"### {l.id}")
-        body.append(context_text(context, index[l.id]).replace("\n", "\n> ").join(["> ", ""]))
+        body.append("> " + context_text(context, index[l.id]).replace("\n", "\n> "))
         reason = f"（{v.reason}）" if v and v.reason else ""
         body.append(f"规则：{_rule_human(v)}{reason} · Claude：{claude_l.get(l.id, '没标')}")
         body.append(f"标：{filled.get(l.id, '')}")
         body.append("")
+    shown = {l.id for l in chosen}
+    for i, val in filled.items():  # 这次不在 items 里的已填句子：原块照搬，没有原块就只留 id 和值
+        if i not in shown:
+            body += old.get(i) or [f"### {i}", f"标：{val}", ""]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(body), encoding="utf-8")
-    return len(chosen)
+    return len(chosen) + len(filled.keys() - shown)
+
+
+def _old_blocks(path: Path) -> dict[str, list[str]]:
+    """旧 review.md 里每句的原文块（`### id` 起到下一个之前，末尾补空行）。"""
+    blocks: dict[str, list[str]] = {}
+    if not path.is_file():
+        return blocks
+    cur = None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if raw.startswith("### "):
+            cur = raw[4:].strip()
+            blocks[cur] = [raw]
+        elif cur:
+            blocks[cur].append(raw)
+    for v in blocks.values():
+        while v and not v[-1].strip():
+            v.pop()
+        v.append("")
+    return blocks
 
 
 # ---- 评估 ----
@@ -298,20 +321,35 @@ class Report:
     wrong: list[tuple[str, str, str, str]] = field(default_factory=list)  # (id, 标准答案, 规则判的, 上下文)
 
     @property
+    def other_gold(self) -> int:
+        return sum(self.confusion["跟别人"].values())
+
+    @property
+    def me_gold(self) -> int:
+        return sum(self.confusion["跟团子"].values())
+
+    @property
+    def enough(self) -> bool:
+        """两条门槛都要有标准答案才算数（一句都没有时两个比例都是 0，不能当成过线）。"""
+        return self.other_gold > 0 and self.me_gold > 0
+
+    @property
     def passed(self) -> bool:
-        return (
+        return self.enough and (
             self.other_as_me <= OTHER_AS_ME_MAX and self.me_as_other <= ME_AS_OTHER_MAX and self.unsure_rate <= UNSURE_MAX
         )
 
     def markdown(self) -> str:
-        def ok(b: bool) -> str:
+        def ok(b: bool, n: int = 1) -> str:
+            if n == 0:
+                return "样本不足，没通过"
             return "过线" if b else "不过线"
 
         preds = list(LABEL_NAMES)
         out = [
             "# 谁在跟谁说：离线评估", "",
-            f"- 跟别人被判成跟你说：{self.other_as_me:.1%}（上限 {OTHER_AS_ME_MAX:.0%}）→ {ok(self.other_as_me <= OTHER_AS_ME_MAX)}",
-            f"- 跟团子被判成跟别人说：{self.me_as_other:.1%}（上限 {ME_AS_OTHER_MAX:.0%}）→ {ok(self.me_as_other <= ME_AS_OTHER_MAX)}",
+            f"- 跟别人被判成跟你说：{self.other_as_me:.1%}（上限 {OTHER_AS_ME_MAX:.0%}）→ {ok(self.other_as_me <= OTHER_AS_ME_MAX, self.other_gold)}",
+            f"- 跟团子被判成跟别人说：{self.me_as_other:.1%}（上限 {ME_AS_OTHER_MAX:.0%}）→ {ok(self.me_as_other <= ME_AS_OTHER_MAX, self.me_gold)}",
             f"- 拿不准占全部：{self.unsure_rate:.1%}（上限 {UNSURE_MAX:.0%}，共 {self.total} 句）→ {ok(self.unsure_rate <= UNSURE_MAX)}",
             f"- 有标准答案的 {self.gold_total} 句；规则改了以后新出现的不一致 {self.unreviewed} 句没核对",
             f"- 结论：{'通过' if self.passed else '没通过'}", "",
