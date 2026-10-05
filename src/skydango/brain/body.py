@@ -28,7 +28,7 @@ from ..chat.panel import PanelManager
 from ..chat.reader import Message, with_speaker_hint
 from ..chat.responder import clean_reply, format_incoming
 from ..chat.tracker import similar
-from ..config import Config
+from ..config import Config, followup_window
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, PASSIVE, Request
 from ..imageio import imwrite
 from ..device.base import LINUX_KEY_Q
@@ -45,7 +45,7 @@ from .find import FindSkill
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
-from .addressee import legacy_addressed
+from .addressee import LABEL_NAMES, Addressee, Verdict, legacy_addressed, parse_aliases
 from .reflex import Reflexes
 from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
 from ..inner.energy import Energy, awake_minutes, energy as inner_energy, energy_parts, format_parts
@@ -199,6 +199,9 @@ class Body:
         self._camera_moved_at = float("-inf")  # 别人（大脑工具、技能、换角度、环顾）最近一次动镜头
         self._attn_seen_move = float("-inf")  # 注意力已经知道的那次
         self._said_at = float("-inf")  # 团子上次说话（clock）：“刚说完好友就接话”算在跟团子说
+        # 分清好友在跟谁说话（spec 2026-10-05-addressee）：每句判一次，反射 / 账本 / 事件 / 接话共用
+        self.addressee = Addressee(cfg.addressee, cfg.proactive.self_names, followup_window(cfg))
+        self.verdicts: deque[tuple[float, str, str, Verdict]] = deque(maxlen=200)  # (墙钟, 说话人, 内容, 判断)
         self.brain_busy: Callable[[], bool] = lambda: False  # 大脑正在回聊天（取走了聊天的那一轮还没结束）：聊天面板别因为安静关掉
         self.chat: deque[tuple[float, str, str]] = deque(maxlen=50)  # (时间, 说话人, 内容)；自己说的说话人是“我”
         self.heard: list[Message] = []  # 上次说话以后听到的，记聊天记录用
@@ -269,7 +272,7 @@ class Body:
 
     def step(self) -> None:
         now = self.clock()
-        if self.events.has("chat") or self.events.has("owner_command") or self.brain_busy():
+        if self._chat_waiting():
             self.panel.busy(now)  # 还有没回的话 / 大脑在想：聊天面板不算安静
         frame = None
         try:
@@ -473,13 +476,10 @@ class Body:
         for m in fresh:
             log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             self.chat.append((self.wall(), m.speaker, m.text))
+        verdicts = self._judge_batch(fresh, now)
         if self.ledger is not None:
-            for m in fresh:
-                try:
-                    to_me = self._addressed(m, now)
-                except Exception:  # 好友名单读不了之类：账少记一点，这批聊天照样变成事件
-                    log.exception("判断是不是在跟团子说话出错")
-                    to_me = False
+            for m, v in zip(fresh, verdicts):
+                to_me = v.label == "me"
                 self._ledger_call("heard", m.speaker, m.text, to_me, self.wall())
                 if to_me:
                     self._cheered_at = self.wall()
@@ -497,8 +497,9 @@ class Body:
         if self.persona is not None:
             self._inner_call(lambda: self._watch_upset(fresh))
         self.heard = (self.heard + fresh)[-20:]
-        for m in fresh:
-            self._line("heard", m.text, m.speaker or "（看不出是谁）")
+        tagged = self.cfg.addressee.enabled
+        for m, v in zip(fresh, verdicts):
+            self._line("heard", m.text, m.speaker or "（看不出是谁）", why=v.tag() if tagged else "")
         if self.run_dir is not None:
             self.run_dir.save_frame(frame, [m.box for m in fresh])
         notes = [self._lull_call(lambda m=m: self.lulls.heard(self.wall(), m.speaker, m.text), "") or "" for m in fresh]
@@ -507,32 +508,88 @@ class Body:
             self._fallback_last_new = now
             return
         owner = self.cfg.brain.owner_name
-        for m, note in zip(fresh, notes):  # note：这句结束了冷场时附上的“你刚才在想”
+        for m, v, note in zip(fresh, verdicts, notes):  # note：这句结束了冷场时附上的“你刚才在想”
             if owner and m.speaker == owner and m.text.startswith("#"):
                 self._owner_window_until = now + self.cfg.brain.owner_window
                 if m.text.startswith("#允许") and m.text[3:].strip():  # 放行一个面板按钮（panel_press 用）
                     self._permits.append((m.text[3:].strip(), now + self.cfg.panels.permit_window))
                 self.events.put("owner_command", f"卡洛的命令：{m.text}{note}")
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
-            else:
+            elif not tagged:
                 self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」{note}")
+            else:  # 带上「跟谁说」的标注；跟别人说的，插话额度还有才叫醒，否则攒着
+                kind = "chat"
+                if v.label == "other":
+                    kind = "aside" if self._aside_quota() else "aside_bg"
+                self.events.put(kind, f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」（{v.tag()}）{note}")
         if self.cfg.reflex.enabled:
-            self._on_heard(fresh, now)
+            self._on_heard(fresh, verdicts, now)
+
+    def _judge_batch(self, fresh: list[Message], now: float) -> list[Verdict]:
+        """这一批聊天每句判一次「在跟谁说」：卡洛的 # 命令不判；addressee 关着时用老规则（只分 me / unsure）。"""
+        cfg = self.cfg
+        owner = cfg.brain.owner_name
+        enabled = cfg.addressee.enabled
+        nearby: list[str] = []
+        friends: dict[str, list[str]] | None = None
+        try:
+            nearby = list(self.env.nearby(now)) if self.env is not None else []
+            names = self.friend_names()
+            if enabled:
+                friends = parse_aliases(self.friends_text() or "", names)
+            is_friend = is_friend_fn(names)
+        except Exception:  # 好友名单读不了之类：这批都当拿不准，聊天照样变成事件
+            log.exception("取好友名单 / 身边的人出错")
+            is_friend = lambda _n: False  # noqa: E731
+        since = now - self._said_at if self._said_at > float("-inf") else None
+        out: list[Verdict] = []
+        for m in fresh:
+            if owner and m.speaker == owner and m.text.startswith("#"):
+                v = Verdict("unsure", "主人命令")
+            elif not enabled:
+                try:
+                    to_me = legacy_addressed(
+                        m.speaker, m.text, is_friend=is_friend, self_names=cfg.proactive.self_names, nearby=nearby,
+                        since_said=since, followup_window=followup_window(cfg), owner=owner,
+                    )
+                except Exception:
+                    log.exception("判断是不是在跟团子说话出错")
+                    to_me = False
+                v = Verdict("me" if to_me else "unsure", "")
+            elif friends is None:
+                v = Verdict("unsure", "判断出错")
+            else:
+                try:
+                    v = self.addressee.judge(now, m.speaker, m.text, friends=friends, nearby=nearby)
+                except Exception:
+                    log.exception("判断好友在跟谁说话出错")
+                    v = Verdict("unsure", "判断出错")
+                log.info("跟谁说 %s「%s」→ %s（%s）· 身边：%s", m.speaker, m.text, LABEL_NAMES[v.label], v.reason,
+                         "、".join(nearby) or "没人")
+            out.append(v)
+            self.verdicts.append((self.wall(), m.speaker, m.text, v))
+        return out
+
+    def _aside_quota(self) -> bool:
+        """插话（跟别人说的话）还有额度：主动开口开着、场合里还能说。"""
+        if not self.cfg.proactive.enabled:
+            return False
+        try:
+            return self.occasion().left > 0
+        except Exception:
+            log.exception("算场合出错")
+            return False
+
+    def _chat_waiting(self) -> bool:
+        """还有没回的聊天 / 大脑在想：聊天面板别当成安静关掉、注意力别转走（好友在聊天，跟谁说的都算）。"""
+        ev = self.events
+        return any(ev.has(k) for k in ("chat", "aside", "aside_bg", "owner_command")) or self.brain_busy()
 
     # ---- 身体反射（spec 2026-09-30-body-reflex）----
-    def _addressed(self, m: Message, now: float) -> bool:
-        """这句是不是在跟团子说（叫名字 / 团子刚说完 / 身边只有他一个好友）。"""
-        nearby = self.env.nearby(now) if self.env is not None else []
-        since = now - self._said_at if self._said_at > float("-inf") else None
-        return legacy_addressed(
-            m.speaker, m.text, is_friend=is_friend_fn(self.friend_names()), self_names=self.cfg.proactive.self_names,
-            nearby=nearby, since_said=since, followup_window=self.cfg.reflex.followup_window, owner=self.cfg.brain.owner_name,
-        )
-
-    def _on_heard(self, fresh: list[Message], now: float) -> None:
+    def _on_heard(self, fresh: list[Message], verdicts: list[Verdict], now: float) -> None:
         """有人在跟团子说话：偶尔先做个小动作，再马上冒输入气泡，大脑想好了用这个框发。一批最多一次。"""
         self.reflexes.stir(now, scale=self.effects().idle)
-        if not any(self._addressed(m, now) for m in fresh):
+        if not any(v.label == "me" for v in verdicts):
             return
         if self._all_from_grudge(fresh):  # 在跟他闹别扭：故意晚点接（不冒气泡、不做小动作），大脑照常收到消息
             log.debug("在跟 %s 闹别扭，不冒输入气泡", self.mind.grudge.who)
@@ -838,7 +895,7 @@ class Body:
         if self._raised is not None or (self._bow is not None and self._bow[2] is not None):
             # 举着蜡烛等他亮 / 点亮了等鞠躬（light 请求举起时就拿掉了，上一条挡不住）：转镜头会让他的火焰在画面里跳走
             return "举着蜡烛"
-        if self.events.has("chat") or self.events.has("owner_command") or self.brain_busy():
+        if self._chat_waiting():
             return "在聊天"
         if self.blackout:
             return "画面黑着"
@@ -1916,12 +1973,20 @@ class Body:
             parts.append("互动规则：" + self.social.describe_policy())
         if self.said:
             parts.append("刚说过：" + " | ".join(self.said[-3:]))
+        thread = ""
+        if self.cfg.addressee.enabled:
+            try:
+                thread = self.addressee.thread_note(self.clock())
+            except Exception:
+                log.exception("算对话走向出错")
         if self.cfg.proactive.enabled:
             try:
-                parts.append("场合：" + self.occasion().line(self.wall()))
+                parts.append("场合：" + self.occasion().line(self.wall()) + (f"；{thread}" if thread else ""))
             except Exception:
                 log.exception("算场合出错")
                 parts.append("场合：算不出来（详见日志）")
+        elif thread:
+            parts.append("聊天：" + thread)
         lull = self._lull_call(lambda: self.lulls.status(self.wall()), "")
         if lull:
             parts.append(lull)
@@ -1990,10 +2055,13 @@ class Body:
         """有还没接的好友聊天（reply_window 内、团子在那之后还没说过）：这时说的话是接话，不算主动开口。
         被别的事件（来人、走开……）叫醒的一轮里接上一句也算（spec 2026-10-01-lull-musing §4 修复 1）。"""
         is_friend = is_friend_fn(self.friend_names())
-        for t, who, _ in reversed(self.chat):
+        for t, who, text in reversed(self.chat):
             if who == "我":
                 return False
             if is_friend(who):
+                # 跟别人说的不用接（spec 2026-10-05-addressee §4）：跳过，接着往前找
+                if any(w == who and tx == text and v.label == "other" and abs(vt - t) < 5 for vt, w, tx, v in self.verdicts):
+                    continue
                 return wall - t <= self.cfg.proactive.reply_window
         return False
 
@@ -2027,6 +2095,7 @@ class Body:
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
         self._said_at = now
+        self.addressee.said(now)  # 被护栏拦下的不算说过，所以放在这里
         self.reflexes.stir(now, scale=self.effects().idle)
         self.said.append(full)
         self._ledger_call("said", self.wall())

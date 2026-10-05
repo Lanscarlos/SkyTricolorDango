@@ -14,14 +14,15 @@ log = logging.getLogger(__name__)
 # 背景事件：身体已经处理了 / 只是周围在变，自己不叫醒大脑，攒着等下一次醒来一起给（最多等 brain.background_wait 秒）。
 # 2026-09-29 真机 dry-run 5 分钟醒了 42 次，41 次是这些（陌生人数量来回跳、好友走出画面又回来、没接的互动请求反复报）
 BACKGROUND = frozenset({"stranger", "leave", "return", "request", "accepted", "holding", "released", "scene_change", "dropped", "reflex",
-                        "stranger_back", "outfit", "call", "search"})
+                        "stranger_back", "outfit", "call", "search",
+                        "aside_bg"})  # aside_bg：好友之间的聊天（跟别人说的），插话额度用完 / 没开主动开口时攒着
 LATEST = frozenset({"stranger", "search"})  # 攒着时只留最新一条（陌生人数量来回跳、找的结果只看最近的）
 CANCELS = {"leave": "return", "return": "leave"}  # 同一个人攒着的"走开"和"回来"互相抵消：大脑不用知道他离开过
 
 
 @dataclass(frozen=True)
 class Event:
-    kind: str  # chat / owner_command / arrive / return / leave / stranger / approach / gesture / request / accepted / holding / released / scene_change / panel / error / fallback / dropped / task_done / task_failed / notice / stranger_back / outfit / lull / call / search
+    kind: str  # chat / aside / aside_bg / owner_command / arrive / return / leave / stranger / approach / gesture / request / accepted / holding / released / scene_change / panel / error / fallback / dropped / task_done / task_failed / notice / stranger_back / outfit / lull / call / search
     text: str  # 给大脑看的一行
     t: float
     count: int = 1  # 重复了几次（同一种错误连续出现只占一行；背景事件不挨着也合并）

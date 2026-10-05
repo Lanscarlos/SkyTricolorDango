@@ -330,6 +330,20 @@ def test_chat_turn_only_while_answering_chat(clock):  # I4：只有取走了聊�
     assert seen == [False, False, True] and brain.chat_turn is False
 
 
+def test_aside_turn_not_chat_turn(clock):  # 整批都是好友之间的聊天（aside）：say 是主动开口，不算在回话
+    seen = []
+
+    class Watching(FakeSession):
+        def send(self, text):
+            seen.append(brain.chat_turn)
+            return super().send(text)
+
+    brain, events, _, _ = make(clock, Watching(ok()))
+    events.put("aside", "聊天  小明：「阿花你看」（跟别人说：叫了阿花）")
+    brain.wake(clock(), "events")
+    assert seen == [False]
+
+
 # ---- 背景事件（events.BACKGROUND）：自己不叫醒，攒够 background_wait 秒兜底叫醒一次 ----
 
 
