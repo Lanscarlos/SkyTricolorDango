@@ -543,7 +543,7 @@ class IconsConfig:
     under_x: float = 0.25  # 圈算在某个框头顶：横着放宽几倍框宽
     under_up: float = 1.0  # 圈算在某个框头顶：往上最多几倍框高
     crop_scale: float = 1.3  # 图标裁图放大几倍
-    flame_ring: float = 2.0  # 火焰圈判断用的倍数（Task 7 量了再改）
+    flame_ring: float = 1.82  # 收件箱整图火焰预标：圆圈框半径 = 火焰半高 × 这么多（10-05 在 datasets/sky 的 1 个火焰圆圈上量的中位数；数据集里只有这 1 个，有火焰录像后再量）
     save: bool = True  # 认不出的图标存盘
     save_max: int = 200  # 每次运行最多存几张
 

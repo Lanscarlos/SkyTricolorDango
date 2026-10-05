@@ -276,3 +276,54 @@ def test_map_icons_save_uses_dino_threshold(tmp_path):
     lines = (tmp_path / "icons.jsonl").read_text("utf-8").splitlines()
     assert len(lines) == 1 and json.loads(lines[0])["classifier"] == "dino"
     assert not (tmp_path / "x").exists()
+
+
+# ---- Task 7：整图火焰预标 ----
+from skydango.vision.candle import load_flame
+from skydango.vision.icons_map import flame_rings
+from skydango.vision.track import iou
+
+_FLAME = load_flame()
+
+
+def _flame_frame(centers):
+    f = np.full((1080, 1920, 3), (60, 90, 40), np.uint8)
+    h, w = _FLAME.shape
+    for cx, cy in centers:
+        region = f[cy - h // 2: cy - h // 2 + h, cx - w // 2: cx - w // 2 + w]
+        region[_FLAME > 0] = (235, 245, 245)
+    return f
+
+
+def test_flame_rings_square_around_flame():
+    out = flame_rings(_flame_frame([(1000, 500)]), _FLAME, 0.85, 2.0, [])
+    assert len(out) == 1
+    r = out[0]
+    cx, cy = r.x + r.w / 2, r.y + r.h / 2
+    assert abs(cx - 1000) <= 6 and abs(cy - 500) <= 6 and r.w == r.h
+    assert abs(r.w - 2 * 2.0 * _FLAME.shape[0] / 2) <= 16  # 半径 = 火焰半高 × ring_k
+
+
+def test_flame_rings_skip_and_existing():
+    frame = _flame_frame([(300, 500), (1000, 500), (1500, 700)])
+    skip = [Rect(0, 0, 640, 1080)]  # 面板区域里不找
+    first = flame_rings(frame, _FLAME, 0.85, 2.0, skip)
+    assert sorted(round(r.x + r.w / 2, -2) for r in first) == [1000, 1500]
+    existing = [next(r for r in first if r.x > 1200)]
+    again = flame_rings(frame, _FLAME, 0.85, 2.0, skip, existing=existing)
+    assert len(again) == 1 and iou(again[0], existing[0]) < 0.5
+
+
+def test_flame_rings_min_score():
+    assert flame_rings(_flame_frame([]), _FLAME, 0.85, 2.0, []) == []
+
+
+def test_cli_flame_prelabel_adds_rings_and_skips_without_template():
+    from skydango import cli
+    from skydango.config import Config
+
+    frame, cfg = _flame_frame([(1000, 500)]), Config()
+    got = cli._flame_prelabel(cfg, frame, [("player", Rect(900, 520, 200, 400))], _FLAME)
+    assert [c for c, _ in got] == ["social_ring"]
+    assert cli._flame_prelabel(cfg, frame, [("social_ring", got[0][1])], _FLAME) == []  # 已有圆圈：不重复
+    assert cli._flame_prelabel(cfg, frame, [], None) == []  # 读不到模板：这一步跳过

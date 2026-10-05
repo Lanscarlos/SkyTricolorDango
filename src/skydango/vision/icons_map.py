@@ -130,6 +130,39 @@ def classify_template(icons: IconClassifier, crop: np.ndarray, box: Rect) -> tup
     return (kind if kind is not None else UNKNOWN), score
 
 
+FLAME_LIMIT = 16  # 整图预标最多补几团火焰
+RING_SAME = 0.5  # 和已有圆圈框 IoU 到这么多算同一个圈，不重复加
+
+
+def flame_rings(frame: np.ndarray, flame_tpl: np.ndarray, min_score: float, ring_k: float, skip: list[Rect],
+                *, existing: list[Rect] | tuple[Rect, ...] = ()) -> list[Rect]:
+    """整图火焰预标（spec 2026-10-05-icon-detection §2.4）：`find_flames` 扫整张图（skip 里的区域涂黑、不找，
+    比如开着的聊天面板），分数 ≥ min_score 的每团火焰补成以圆心为中心、半径 = 火焰半高 × ring_k 的正方形（裁到画面里）；
+    和 existing（已有的 social_ring 框）IoU ≥ 0.5 的不加。只给收件箱预标用。"""
+    from .candle import find_flames
+    from .track import iou
+
+    height, width = frame.shape[:2]
+    if skip:
+        frame = frame.copy()
+        for s in skip:
+            frame[max(0, s.y):max(0, s.y2), max(0, s.x):max(0, s.x2)] = 0
+    out: list[Rect] = []
+    for d in find_flames(frame, Rect(0, 0, width, height), flame_tpl, min_score, limit=FLAME_LIMIT):
+        if any(s.x <= d.x < s.x2 and s.y <= d.y < s.y2 for s in skip):
+            continue
+        half = d.r * ring_k
+        x1, y1 = max(0, round(d.x - half)), max(0, round(d.y - half))
+        x2, y2 = min(width, round(d.x + half)), min(height, round(d.y + half))
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            continue
+        ring = Rect(x1, y1, x2 - x1, y2 - y1)
+        if any(iou(ring, b) >= RING_SAME for b in [*existing, *out]):
+            continue
+        out.append(ring)
+    return out
+
+
 class IconGallery:
     """DINOv2 最近邻底库：每种图标若干参考图，认图标取和参考图余弦最大的那一种。"""
 

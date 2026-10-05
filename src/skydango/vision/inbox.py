@@ -82,6 +82,95 @@ def collect(run_dir: Path, inbox: Path) -> int:
     return copied
 
 
+def _add_index(inbox: Path, run: str, frames: int, source: str) -> None:
+    if not any(r["run"] == run for r in _index_rows(inbox)):
+        row = {"run": run, "collected_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "frames": frames, "source": source}
+        with (Path(inbox) / INDEX).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def add_images(src: Path, inbox: Path, every: int = 1) -> int:
+    """导入录像（spec 2026-10-05-icon-detection §2.3）：src/*.jpg|*.png 按文件名排序、隔 every 张取一张，
+    复制进 inbox/<src 目录名>/raw/（png 转 jpg），当成一次「运行」；已有的跳过，去重交给 process。返回新复制张数。"""
+    from ..imageio import imread, imwrite
+
+    src, inbox = Path(src), Path(inbox)
+    files = sorted((p for p in src.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".png")), key=lambda p: p.name)
+    picked = files[:: max(1, int(every))]
+    if not picked:
+        return 0
+    run = src.name
+    raw = inbox / run / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for p in picked:
+        dst = raw / f"{p.stem}.jpg"
+        if dst.exists():
+            continue
+        if p.suffix.lower() == ".jpg":
+            shutil.copy2(p, dst)
+        else:
+            imwrite(dst, imread(p))
+        copied += 1
+    _add_index(inbox, run, len(picked), "import")
+    return copied
+
+
+REDO_PREFIX = "_redo-"  # 回炉的「运行」目录名前缀：帧名 = _redo-<时间>_<原帧名>，和 runs/ 的运行目录撞不上
+REDO_MAP = "redo.json"  # inbox/<回炉运行>/redo.json：收件箱帧名 → {"name": 原帧名, "split": 原 split}
+
+
+def add_dataset(dataset: Path, inbox: Path, splits=("train", "val")) -> int:
+    """老帧回炉（spec §2.3）：dataset/images/<split>/*.jpg 复制进 inbox/_redo-<时间>/raw/（文件名 = 原帧名），
+    原标注复制进 labels/<收件箱帧名>.txt，redo.json 记每帧原来的帧名和 split（不预写 frames.json：process 跳过已有条目）。
+    增强图（_blur / _dark）不回炉；同一个帧名在两边都有的只取第一个。返回帧数。"""
+    from .augment import SUFFIXES
+
+    dataset, inbox = Path(dataset), Path(inbox)
+    run = REDO_PREFIX + time.strftime("%Y%m%d-%H%M%S")
+    while (inbox / run).exists():  # 同一秒回炉两次
+        time.sleep(1)
+        run = REDO_PREFIX + time.strftime("%Y%m%d-%H%M%S")
+    raw, labels = inbox / run / "raw", inbox / run / "labels"
+    redo: dict[str, dict] = {}
+    for split in splits:
+        images = dataset / "images" / split
+        for img in sorted(images.glob("*.jpg")) if images.is_dir() else []:
+            if img.stem.endswith(SUFFIXES) or (raw / img.name).exists():
+                continue
+            raw.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(img, raw / img.name)
+            name = frame_name(run, img.name)
+            label = dataset / "labels" / split / f"{img.stem}.txt"
+            if label.is_file():
+                labels.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(label, labels / f"{name}.txt")
+            redo[name] = {"name": img.stem, "split": split}
+    if not redo:
+        return 0
+    _write_json(inbox / run / REDO_MAP, redo)
+    _add_index(inbox, run, len(redo), "redo")
+    return len(redo)
+
+
+def _redo_labels(path: Path, width: int, height: int, classes: list[str]) -> list[tuple[str, Rect]]:
+    """回炉帧的原标注（YOLO 格式）→ [(类别名, 框)]；没有文件是空，编号不在 classes 里的行跳过。"""
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        try:
+            cls, cx, cy, w, h = int(parts[0]), *(float(v) for v in parts[1:5])
+        except (IndexError, ValueError):
+            continue
+        if not 0 <= cls < len(classes):
+            continue
+        bw, bh = round(w * width), round(h * height)
+        out.append((classes[cls], Rect(round(cx * width - bw / 2), round(cy * height - bh / 2), bw, bh)))
+    return out
+
+
 def collect_all(runs: Path, inbox: Path) -> list[str]:
     """对 runs/*/ 逐个收，返回有新复制的运行名。"""
     runs = Path(runs)
@@ -243,12 +332,16 @@ def pass_frame(
     inbox, dataset = Path(inbox), Path(dataset)
     frames = load_frames(inbox, run)
     entry = frames[frame]
-    split = entry["split"]
-    dst_img = dataset / "images" / split / f"{frame}.jpg"
-    dst_lbl = dataset / "labels" / split / f"{frame}.txt"
+    redo = entry.get("redo") if isinstance(entry.get("redo"), dict) else None
+    # 回炉帧（spec 2026-10-05-icon-detection §2.3）：写回原帧名、原 split，允许覆盖那一边的同名帧（覆盖前备份原标注）
+    target, split = (redo["name"], redo["split"]) if redo else (frame, entry["split"])
+    dst_img = dataset / "images" / split / f"{target}.jpg"
+    dst_lbl = dataset / "labels" / split / f"{target}.txt"
     for side in ("train", "val"):
-        if (dataset / "images" / side / f"{frame}.jpg").exists() or (dataset / "labels" / side / f"{frame}.txt").exists():
-            raise FileExistsError(f"{side}/{frame} 已在数据集里")
+        if redo and side == split:
+            continue
+        if (dataset / "images" / side / f"{target}.jpg").exists() or (dataset / "labels" / side / f"{target}.txt").exists():
+            raise FileExistsError(f"{side}/{target} 已在数据集里")
     edited = boxes is not None
     if boxes is None and entry.get("last_boxes") is not None:
         boxes = [(int(b["cls"]), Rect(*(int(v) for v in b["box"]))) for b in entry["last_boxes"]]
@@ -264,21 +357,41 @@ def pass_frame(
     label.write_text(text, encoding="utf-8")
     dst_img.parent.mkdir(parents=True, exist_ok=True)
     dst_lbl.parent.mkdir(parents=True, exist_ok=True)
+    had_img, backup = dst_img.exists(), None
+    old_label = dst_lbl.read_bytes() if redo and dst_lbl.exists() else None
     try:
-        shutil.copyfile(src_img, dst_img)
+        if old_label is not None:
+            backup = redo_backup(dataset, run, split, target)
+            if not backup.exists():  # 同一次回炉的备份已有：那是最早的原标注，不覆盖
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                backup.write_bytes(old_label)
+        if not (redo and had_img):  # 回炉帧的原图就是数据集里那张：在就不再复制
+            shutil.copyfile(src_img, dst_img)
         shutil.copyfile(label, dst_lbl)
-        entry["decision"] = {"what": "pass", "edited": edited, "t": time.time(), "dataset": f"{split}/{frame}",
+        entry["decision"] = {"what": "pass", "edited": edited, "t": time.time(), "dataset": f"{split}/{target}",
                              "boxes": [{"cls": int(c), "box": [b.x, b.y, b.w, b.h]} for c, b in boxes]}
+        if redo:
+            entry["decision"]["backup"] = backup is not None
         entry["editing"] = False
         entry.pop("last_boxes", None)
         save_frames(inbox, run, frames)
     except BaseException:
-        dst_img.unlink(missing_ok=True)
-        dst_lbl.unlink(missing_ok=True)
+        if not had_img:  # 普通帧查过同名，这里一定是新复制的；回炉帧原图在时没复制
+            dst_img.unlink(missing_ok=True)
+        if old_label is not None:
+            dst_lbl.write_bytes(old_label)
+        else:
+            dst_lbl.unlink(missing_ok=True)
         if not label_existed:
             label.unlink(missing_ok=True)
         raise
-    return f"{split}/{frame}"
+    return f"{split}/{target}"
+
+
+def redo_backup(dataset: Path, run: str, split: str, name: str) -> Path:
+    """回炉帧覆盖前的原标注备份：dataset/_backup/redo-<时间>/<split>/<帧>.txt（<时间> = 回炉运行名去掉 _redo- 前缀；一次回炉一个目录）。"""
+    stamp = run[len(REDO_PREFIX):] if run.startswith(REDO_PREFIX) else run
+    return Path(dataset) / "_backup" / f"redo-{stamp}" / split / f"{name}.txt"
 
 
 def discard_frame(inbox: Path, run: str, frame: str) -> None:
@@ -295,8 +408,19 @@ def undo_frame(inbox: Path, run: str, frame: str, dataset: Path) -> None:
     decision = entry.get("decision") or {}
     if decision.get("what") == "pass":
         split = decision["dataset"].split("/")[0]
-        (Path(dataset) / "images" / split / f"{frame}.jpg").unlink(missing_ok=True)
-        (Path(dataset) / "labels" / split / f"{frame}.txt").unlink(missing_ok=True)
+        if isinstance(entry.get("redo"), dict):  # 回炉帧：把备份的原标注拷回去（原来没标注就删掉写进去的），不删图
+            target = decision["dataset"].split("/", 1)[1]
+            dst = Path(dataset) / "labels" / split / f"{target}.txt"
+            if decision.get("backup"):
+                backup = redo_backup(dataset, run, split, target)
+                if not backup.is_file():
+                    raise FileNotFoundError(f"找不到回炉前的标注备份 {backup}")
+                shutil.copyfile(backup, dst)
+            else:
+                dst.unlink(missing_ok=True)
+        else:
+            (Path(dataset) / "images" / split / f"{frame}.jpg").unlink(missing_ok=True)
+            (Path(dataset) / "labels" / split / f"{frame}.txt").unlink(missing_ok=True)
         if decision.get("edited") and isinstance(decision.get("boxes"), list):
             entry["last_boxes"] = decision["boxes"]
     entry["decision"] = None
@@ -394,11 +518,25 @@ def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) 
     from .perception import merge_people
     from .track import iou
 
+    from .detect import Detection
+    from .weaklabel import merge_labels
+
     cfg, writer = ctx["cfg"], ctx["writer"]
+    orig = ctx.get("orig") or []  # 回炉帧的原标注：按 merge_labels 合并，同类重叠时留原标注，其余预标照加
     dets = [d for d in ctx["detect"](img) if d.score >= cfg.perception.low_conf]
     sure = [d for d in dets if d.score >= cfg.perception.conf]
-    boxes = _other_boxes(sure, ctx["weak"](img, sure))
-    selfs = [d for d in sure if d.cls == "self"]
+    pre = ctx["weak"](img, sure)
+    if orig:
+        pre = merge_labels([(c, b) for c, b in orig if c not in PAIR], [Detection(c, b, 1.0) for c, b in pre])
+    boxes = _other_boxes(sure, pre)
+    for b in boxes:
+        if any(c == b["cls"] and [r.x, r.y, r.w, r.h] == b["box"] for c, r in orig):
+            b["score"], b["src"] = 1.0, "label"
+    selfs = [d for d in sure if d.cls == "self"] + [Detection(c, r, 1.0) for c, r in orig if c == "self"]
+    mine = [Detection(c, r, 1.0) for c, r in orig if c in PAIR]  # 原标注的人当成分数 1 的检测，照样裁图、过外形头复核
+    if mine:
+        dets = mine + [d for d in dets if not any(m.cls == d.cls and iou(m.box, d.box) > 0.5 for m in mine)]
+    labelled = {id(m) for m in mine}
     # 团子身上常同时出 self 和 player 两个框：和 self 框重合的人物框是团子的重复框，不裁、不判、不写
     people = [d for d in merge_people([d for d in dets if d.cls in PAIR])[0]
               if not any(iou(d.box, s.box) >= 0.5 for s in selfs)]
@@ -406,8 +544,8 @@ def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) 
     auto = human = 0
     for d, p in zip(people, probs):
         r = route(d.cls, d.score, p, cfg.perception.conf, cfg.inbox.agree)
-        entry = {"cls": d.cls, "box": [d.box.x, d.box.y, d.box.w, d.box.h], "score": float(d.score), "src": "yolo",
-                 "crop": None, "auto": r.auto}
+        entry = {"cls": d.cls, "box": [d.box.x, d.box.y, d.box.w, d.box.h], "score": float(d.score),
+                 "src": "label" if id(d) in labelled else "yolo", "crop": None, "auto": r.auto}
         boxes.append(entry)
         if r.auto == "drop_low":
             continue
@@ -461,6 +599,8 @@ def process(
         for run in sorted(pending_runs(inbox)):
             frames = load_frames(inbox, run)
             reasons = _hard_reasons(inbox, run)
+            imported = not reasons and any(r["run"] == run and r.get("source") == "import" for r in _index_rows(inbox))
+            redo = _json_dict(inbox / run / REDO_MAP)
             files = sorted(p.name for p in (inbox / run / "raw").glob("*.jpg"))
             prev: tuple[str, np.ndarray, float | None] | None = None
             for name, e in frames.items():  # 续跑：上一张保留帧
@@ -472,21 +612,27 @@ def process(
                 if name in frames:
                     continue
                 started = time.time()
-                split = split_of(run, cfg.inbox.val_every)
-                base = {"file": f"raw/{file}", "reason": reasons.get(file), "split": split, "dup_of": None, "boxes": [],
+                again = redo.get(name) if isinstance(redo.get(name), dict) else None  # 回炉帧：分边沿用原来的
+                split = again["split"] if again else split_of(run, cfg.inbox.val_every)
+                reason = "redo" if again else reasons.get(file, "import" if imported else None)
+                base = {"file": f"raw/{file}", "reason": reason, "split": split, "dup_of": None, "boxes": [],
                         "editing": False, "error": None, "decision": None}
+                if again:
+                    base["redo"] = {"name": again["name"], "split": again["split"]}
                 try:
                     img = imread(inbox / run / "raw" / file)
                     t = frame_time(file)
-                    if prev is not None and prev[1] is None:  # 续跑后第一次要比较：现读上一张
+                    if not again and prev is not None and prev[1] is None:  # 续跑后第一次要比较：现读上一张
                         prev = (prev[0], imread(inbox / run / frames[prev[0]]["file"]), prev[2])
-                    if (prev is not None and similar(prev[1], img, cfg.inbox.dup_diff)
+                    if (not again and prev is not None and similar(prev[1], img, cfg.inbox.dup_diff)  # 回炉帧都在数据集里了：不去重
                             and (t is None or prev[2] is None or abs(t - prev[2]) <= cfg.inbox.dup_gap)):
                         frames[name] = {**base, "dup_of": prev[0]}
                         total["dups"] += 1
                     else:
+                        orig = (_redo_labels(inbox / run / "labels" / f"{name}.txt", img.shape[1], img.shape[0],
+                                             cfg.perception.classes) if again else [])
                         ctx = {"cfg": cfg, "writer": writer, "detect": detect, "weak": weak, "judge": judge,
-                               "labels_fh": labels_fh, "guesses": _json_dict(guess_path)}
+                               "labels_fh": labels_fh, "guesses": _json_dict(guess_path), "orig": orig}
                         image = (inbox / run / "raw" / file).resolve().as_posix()
                         boxes, auto, human = _process_frame(img, image, name, run, split, ctx)
                         frames[name] = {**base, "boxes": boxes}

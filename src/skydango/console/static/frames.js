@@ -110,6 +110,7 @@ const SRC = {auto: "自动", judged: "你判的", yolo: "YOLO 预标", drawn: "�
 const REASONS = {
   attrs_reject: "外形头撤下了 YOLO 的高分框", attrs_disagree: "YOLO 和外形头对点没点火意见相反", low_conf: "置信度低",
   flicker: "框一闪一闪", unlit_vs_player: "点没点火来回变", ocr_only: "整图 OCR 读到好友、YOLO 没认出", appearance: "按外观认的人和名字标签对不上",
+  import: "导入", redo: "回炉（数据集里的老帧，通过时覆盖原帧）",
 };
 const KEYS = {
   glance: [["Enter", "通过"], ["E", "编辑"], ["0", "整帧不要"], ["Z", "撤销上一步"], ["← →", "翻帧"], ["H / 按住空格", "隐藏框"],

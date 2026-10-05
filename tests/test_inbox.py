@@ -623,3 +623,153 @@ def test_process_keeps_decisions_made_during_run(tmp_path):
     _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), detect, lambda f, d: [], lambda f, b: [], progress=lambda s: None)
     frames = _inbox.load_frames(inbox, "r1")
     assert frames["r1_192000_a"]["decision"]["what"] == "discard" and "r1_192100_b" in frames
+
+
+# ---- 认交互图标 Task 7：导入录像、老帧回炉 ----
+
+
+def _write_dataset(ds, frames):
+    """frames: [(split, 帧名, 图, 标注行或 None)]。"""
+    for split, stem, im, lines in frames:
+        (ds / "images" / split).mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(ds / "images" / split / f"{stem}.jpg"), im)
+        if lines is not None:
+            (ds / "labels" / split).mkdir(parents=True, exist_ok=True)
+            (ds / "labels" / split / f"{stem}.txt").write_text("".join(x + "\n" for x in lines), encoding="utf-8")
+
+
+def test_add_images_every_and_idempotent(tmp_path):
+    src, inbox = tmp_path / "icons-yunye-1005", tmp_path / "inbox"
+    src.mkdir()
+    for i in range(5):
+        cv2.imwrite(str(src / f"{i:03d}.jpg"), _img(40 + 30 * i))
+    cv2.imwrite(str(src / "005.png"), _img(250))
+    (src / "notes.txt").write_text("x", encoding="utf-8")
+    assert _inbox.add_images(src, inbox, every=2) == 3  # 000 / 002 / 004（按文件名排序隔 2 取 1）
+    raw = inbox / src.name / "raw"
+    assert sorted(p.name for p in raw.iterdir()) == ["000.jpg", "002.jpg", "004.jpg"]
+    assert _inbox.add_images(src, inbox, every=1) == 3  # 再导一次：已有的跳过，补上 001 / 003 / 005（png 转 jpg）
+    assert sorted(p.name for p in raw.iterdir()) == ["000.jpg", "001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg"]
+    assert cv2.imread(str(raw / "005.jpg")) is not None
+    assert _inbox.add_images(src, inbox) == 0
+    rows = [json.loads(x) for x in (inbox / "_index.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1 and rows[0]["run"] == src.name and rows[0]["source"] == "import"
+    assert pending_runs(inbox) == [src.name]
+
+
+def test_process_marks_imported_reason(tmp_path):
+    src, inbox = tmp_path / "rec", tmp_path / "inbox"
+    src.mkdir()
+    cv2.imwrite(str(src / "a.jpg"), _img(40))
+    _inbox.add_images(src, inbox)
+    _setup_run(inbox, "r1", {"192000_x.jpg": _img(90)})  # 普通运行没有 hard.jsonl：原因照旧是 None
+    _inbox.process(inbox, tmp_path / "attrs", tmp_path / "runs", _cfg(), lambda f: [], lambda f, d: [], lambda f, b: [], progress=lambda s: None)
+    assert _inbox.load_frames(inbox, "rec")["rec_a"]["reason"] == "import"
+    assert _inbox.load_frames(inbox, "r1")["r1_192000_x"]["reason"] is None
+
+
+def test_add_dataset_copies_frames_labels_and_redo_map(tmp_path):
+    ds, inbox = tmp_path / "sky", tmp_path / "inbox"
+    _write_dataset(ds, [("train", "a", _img(40), [yolo_line(0, Rect(100, 200, 120, 260), 1920, 1080)]),
+                        ("train", "a_blur", _img(41), []),  # 增强图不回炉
+                        ("val", "b", _img(200), None)])
+    assert _inbox.add_dataset(ds, inbox) == 2
+    runs = [p.name for p in inbox.iterdir() if p.is_dir()]
+    assert len(runs) == 1 and runs[0].startswith("_redo-")
+    run = runs[0]
+    assert sorted(p.name for p in (inbox / run / "raw").iterdir()) == ["a.jpg", "b.jpg"]
+    fa, fb = frame_name(run, "a.jpg"), frame_name(run, "b.jpg")
+    assert (inbox / run / "labels" / f"{fa}.txt").read_text(encoding="utf-8") == (ds / "labels" / "train" / "a.txt").read_text(encoding="utf-8")
+    assert not (inbox / run / "labels" / f"{fb}.txt").exists()
+    redo = json.loads((inbox / run / "redo.json").read_text(encoding="utf-8"))
+    assert redo == {fa: {"name": "a", "split": "train"}, fb: {"name": "b", "split": "val"}}
+    assert not (inbox / run / "frames.json").exists()  # 不预写 frames.json：process 会跳过已有条目
+    assert pending_runs(inbox) == [run]
+
+
+def test_process_redo_keeps_split_and_merges_original_labels(tmp_path):
+    ds, inbox, attrs_root = tmp_path / "sky", tmp_path / "inbox", tmp_path / "attrs"
+    orig = [yolo_line(0, Rect(100, 200, 120, 260), 1920, 1080), yolo_line(1, Rect(90, 150, 140, 30), 1920, 1080)]
+    _write_dataset(ds, [("train", "a", _img(40), orig), ("val", "b", _img(40), None)])  # 两张一模一样：回炉帧不去重
+    _inbox.add_dataset(ds, inbox)
+    run = next(p.name for p in inbox.iterdir() if p.is_dir())
+    dets = [_Det("player", Rect(104, 204, 120, 260), 0.9), _Det("player", Rect(900, 300, 100, 240), 0.8)]
+    weak = [("social_ring", Rect(1000, 100, 100, 100))]
+    judge = lambda f, boxes: [{"lit": 0.95, "not_person": 0.05} for _ in boxes]
+    _inbox.process(inbox, attrs_root, tmp_path / "runs", _cfg(), lambda f: dets, lambda f, d: weak, judge, progress=lambda s: None)
+    frames = _inbox.load_frames(inbox, run)
+    a, b = frames[frame_name(run, "a.jpg")], frames[frame_name(run, "b.jpg")]
+    assert a["redo"] == {"name": "a", "split": "train"} and a["split"] == "train" and a["reason"] == "redo"
+    assert b["redo"] == {"name": "b", "split": "val"} and b["split"] == "val" and not b["dup_of"]
+    got = sorted((x["cls"], tuple(x["box"])) for x in a["boxes"])
+    assert got == [("name_tag", (90, 150, 140, 30)), ("player", (100, 200, 120, 260)), ("player", (900, 300, 100, 240)),
+                   ("social_ring", (1000, 100, 100, 100))]  # 原标注的人留着（同类重叠的 YOLO 框不再加）
+    kept = next(x for x in a["boxes"] if x["box"] == [100, 200, 120, 260])
+    assert kept["score"] == 1.0 and kept["src"] == "label" and kept["crop"]  # 原标注的人也过外形头复核
+    assert sorted(x["cls"] for x in b["boxes"]) == ["player", "player", "social_ring"]
+
+
+def _setup_redo(tmp_path, old="0 0.5 0.5 0.1 0.1\n"):
+    inbox, ds, attrs_root = tmp_path / "inbox", tmp_path / "sky", tmp_path / "attrs"
+    run, frame = "_redo-20261005-200000", "_redo-20261005-200000_a"
+    (inbox / run / "raw").mkdir(parents=True)
+    im = np.zeros((100, 200, 3), np.uint8)
+    cv2.imwrite(str(inbox / run / "raw" / "a.jpg"), im)
+    _write_dataset(ds, [("val", "a", im, None)])
+    if old is not None:
+        (ds / "labels" / "val").mkdir(parents=True, exist_ok=True)
+        (ds / "labels" / "val" / "a.txt").write_text(old, encoding="utf-8")
+    entry = {"file": "raw/a.jpg", "split": "val", "redo": {"name": "a", "split": "val"}, "editing": False, "error": None,
+             "dup_of": None, "decision": None, "boxes": [{"cls": "bench", "box": [100, 50, 50, 20]}]}
+    _inbox.save_frames(inbox, run, {frame: entry})
+    return inbox, run, frame, attrs_root, ds
+
+
+def test_pass_redo_overwrites_with_backup_and_undo_restores(tmp_path):
+    inbox, run, frame, attrs_root, ds = _setup_redo(tmp_path)
+    bak = ds / "_backup" / "redo-20261005-200000" / "val" / "a.txt"
+    assert _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES) == "val/a"
+    assert (ds / "labels" / "val" / "a.txt").read_text(encoding="utf-8") == yolo_line(6, Rect(100, 50, 50, 20), 200, 100) + "\n"
+    assert bak.read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+    assert not (ds / "images" / "val" / f"{frame}.jpg").exists()  # 写回原帧名，不按收件箱帧名另存一份
+    assert _inbox.load_frames(inbox, run)[frame]["decision"]["dataset"] == "val/a"
+    _inbox.undo_frame(inbox, run, frame, ds)
+    assert (ds / "labels" / "val" / "a.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+    assert (ds / "images" / "val" / "a.jpg").is_file()  # 不删图
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES, boxes=[(3, Rect(0, 0, 100, 50))])
+    assert bak.read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"  # 同一次回炉的备份已有：不覆盖
+    _inbox.undo_frame(inbox, run, frame, ds)
+    assert (ds / "labels" / "val" / "a.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+
+
+def test_undo_redo_without_original_label_removes_label(tmp_path):
+    inbox, run, frame, attrs_root, ds = _setup_redo(tmp_path, old=None)
+    _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)
+    assert (ds / "labels" / "val" / "a.txt").is_file()
+    _inbox.undo_frame(inbox, run, frame, ds)
+    assert not (ds / "labels" / "val" / "a.txt").exists() and (ds / "images" / "val" / "a.jpg").is_file()
+
+
+def test_pass_redo_still_refuses_clash_in_other_split(tmp_path):
+    inbox, run, frame, attrs_root, ds = _setup_redo(tmp_path)
+    _write_dataset(ds, [("train", "a", np.zeros((100, 200, 3), np.uint8), None)])
+    with pytest.raises(FileExistsError):
+        _inbox.pass_frame(inbox, run, frame, attrs_root, ds, _CLASSES)
+    assert (ds / "labels" / "val" / "a.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+
+
+def test_cli_inbox_add(tmp_path, capsys):
+    src = tmp_path / "rec"
+    src.mkdir()
+    for i in range(4):
+        cv2.imwrite(str(src / f"{i}.jpg"), _img(40 + i))
+    (tmp_path / "config.toml").write_text(f'[inbox]\ndir = "{(tmp_path / "inbox").as_posix()}"\n', encoding="utf-8")
+    cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "add", str(src), "--every", "2"])
+    out = capsys.readouterr().out
+    assert "导入了 2 张" in out and "perception inbox process" in out
+    ds = tmp_path / "sky"
+    _write_dataset(ds, [("train", "a", _img(40), [])])
+    cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "add", str(ds), "--redo"])
+    assert "导入了 1 张" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["-c", str(tmp_path / "config.toml"), "perception", "inbox", "add", str(src), "--redo"])  # 不是数据集

@@ -1454,6 +1454,21 @@ def _perception_inbox(cfg: Config, args) -> None:
         print(f"收了 {len(runs)} 次运行 / 共 {frames} 张 → {cfg.inbox.dir}")
     elif args.inbox_action == "process":
         _inbox_process(cfg, args)
+    elif args.inbox_action == "add":
+        inbox, src = Path(cfg.inbox.dir), Path(args.source)
+        if not src.is_dir():
+            raise SystemExit(f"找不到目录 {src}")
+        before = {p.name for p in inbox.iterdir() if p.is_dir()} if inbox.is_dir() else set()
+        if args.redo:
+            if not ((src / "images").is_dir() and (src / "labels").is_dir()):
+                raise SystemExit(f"{src} 不是数据集（--redo 要含 images/ 和 labels/ 的目录）")
+            n = hardcase_inbox.add_dataset(src, inbox)
+            new = sorted(p.name for p in inbox.iterdir() if p.is_dir() and p.name not in before) if inbox.is_dir() else []
+            run = new[0] if new else "（没有可回炉的帧）"
+        else:
+            n = hardcase_inbox.add_images(src, inbox, args.every)
+            run = src.name
+        print(f"导入了 {n} 张 → {inbox / run}，接着跑 perception inbox process")
     elif args.inbox_action == "status":
         st = hardcase_inbox.status(Path(cfg.inbox.dir), Path(args.attrs_data))
         for run, counts in st["runs"].items():
@@ -1511,10 +1526,20 @@ def _inbox_process(cfg: Config, args) -> None:
     names = _friend_names(cfg)()
     weak_args = SimpleNamespace(all_text=False, min_score=0.9)  # 同 perception label --min-score 的默认
     judge = _form_judge(model)
+    try:
+        from .vision.candle import load_flame
+
+        flame = load_flame(cfg.social.flame)
+    except Exception as exc:
+        flame = None
+        print(f"读不到火焰模板 {cfg.social.flame}（{type(exc).__name__}: {exc}），整图火焰预标这一步跳过")
+
+    def weak(frame, dets):
+        boxes = _prelabel(frame, _weak_boxes(cfg, weak_args, frame, ocr, icons, names), dets, icons)
+        return boxes + _flame_prelabel(cfg, frame, boxes, flame)
 
     res = hardcase_inbox.process(
-        Path(cfg.inbox.dir), Path(args.attrs_data), Path(args.runs), cfg, detector.detect,
-        lambda frame, dets: _prelabel(frame, _weak_boxes(cfg, weak_args, frame, ocr, icons, names), dets, icons), judge,
+        Path(cfg.inbox.dir), Path(args.attrs_data), Path(args.runs), cfg, detector.detect, weak, judge,
     )
     print(f"整理完了：{res['runs']} 次运行 / {res['frames']} 帧（重复 {res['dups']}），"
           f"外形头自动确认 {res['auto']} 个、{res['to_judge']} 个裁图等你在标注页判，{res['glance']} 帧可以直接过目")
@@ -1906,11 +1931,30 @@ def _weak_boxes(cfg: Config, args, frame, ocr, icons, names: list[str]) -> list:
     from .vision.weaklabel import weak_labels
 
     height, width = frame.shape[:2]
-    skip = [roi_rect(cfg.vision.log_roi, width, height)] if _panel_open(cfg, frame) else []
     return weak_labels(
-        frame, ocr.recognize(frame), names, icons, cfg.social.icon_offset, skip=skip,
+        frame, ocr.recognize(frame), names, icons, cfg.social.icon_offset, skip=_panel_skip(cfg, frame),
         keep=roi_rect(cfg.env.roi, width, height), all_text=args.all_text, min_score=args.min_score,
     )
+
+
+def _panel_skip(cfg: Config, frame) -> list:
+    """聊天面板开着时要跳过的区域（面板区域一块），关着是空。"""
+    from .vision.bubbles import roi_rect
+
+    height, width = frame.shape[:2]
+    return [roi_rect(cfg.vision.log_roi, width, height)] if _panel_open(cfg, frame) else []
+
+
+def _flame_prelabel(cfg: Config, frame, boxes: list, flame) -> list:
+    """收件箱预标的最后一步（spec 2026-10-05-icon-detection §2.4）：整图找火焰、补 social_ring 框（和已有圆圈框不重复）；
+    flame（火焰模板）是 None 时什么都不加。"""
+    if flame is None:
+        return []
+    from .vision.icons_map import flame_rings
+
+    rings = [b for c, b in boxes if c == "social_ring"]
+    found = flame_rings(frame, flame, cfg.social.disk_sure, cfg.icons.flame_ring, _panel_skip(cfg, frame), existing=rings)
+    return [("social_ring", r) for r in found]
 
 
 _ASSIST_CHUNK = 50  # --assist 每段多少帧：检测 → 核对 → 写盘，原图用完就放掉
@@ -3410,6 +3454,10 @@ def main(argv: list[str] | None = None) -> None:
     qi = isub.add_parser("process", help="整理收件箱：去重、YOLO 预标注、外形头分流（可续跑）")
     qi.add_argument("runs", nargs="?", help="运行目录的上级（默认 [run] dir；整理前先补收）")
     qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
+    qi = isub.add_parser("add", help="导入录像目录当成一次运行（--redo：数据集的老帧回炉，带原标注、通过时覆盖原帧）")
+    qi.add_argument("source", help="录像目录（*.jpg / *.png）；--redo 时是含 images/ labels/ 的数据集")
+    qi.add_argument("--every", type=int, default=1, help="隔几张取一张（默认 1；--redo 时不用）")
+    qi.add_argument("--redo", action="store_true", help="老帧回炉：分边沿用原来的，通过时覆盖数据集里的同名帧（先备份原标注）")
     qi = isub.add_parser("status", help="收件箱各次运行各状态的帧数")
     qi.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（默认 datasets/attrs）")
     q = psub.add_parser("icon-eval", help="地图交互图标：同一批截图上比较模板法和 DINOv2 最近邻，写报告和分类拼图 → tmp/icon-eval/<时间>/")
