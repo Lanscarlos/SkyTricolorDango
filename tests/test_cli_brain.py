@@ -753,9 +753,19 @@ def test_fallback_brain_built(tmp_path, monkeypatch):
     made = {}
     monkeypatch.setattr(ds, "build_client", lambda llm, key=None: made.update(key=key) or object())
     brain = cli._fallback_brain(cfg, _fake_tb(), "prompt")
-    assert isinstance(brain, ds.DeepSeekBrain) and brain.system == "prompt\n\n" + ds.FALLBACK_NOTE
+    assert isinstance(brain, ds.DeepSeekBrain) and brain.system == "prompt\n\n" + ds.FALLBACK_NOTE + ds.ASIDE_NOTE  # [addressee] 默认开
     assert brain.model == cfg.llm.model and brain.max_tokens == cfg.brain.fallback_max_tokens
     assert brain.history == cfg.brain.fallback_history == 8  # 10-04：带最近 8 轮短期记忆
+
+
+def test_fallback_brain_addressee_off(tmp_path, monkeypatch):
+    import skydango.brain.deepseek as ds
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    cfg.addressee.enabled = False
+    monkeypatch.setattr(ds, "build_client", lambda llm, key=None: object())
+    brain = cli._fallback_brain(cfg, _fake_tb(), "prompt")
+    assert brain.system == "prompt\n\n" + ds.FALLBACK_NOTE
 
 
 def test_run_brain_passes_fallback_session(tmp_path, monkeypatch):

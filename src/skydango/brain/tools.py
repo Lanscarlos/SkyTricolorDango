@@ -91,6 +91,8 @@ ACTIONS = {
     "panel_close",
 }  # 算“做了事”的工具（心跳退档用）
 AROUND_TIMEOUT = 30.0  # 环顾一圈要关面板、转四次，比一般命令慢
+# 这一轮第一句说完附在结果后面（还能再说时）：10-03 晚第二句常是把第一句换个说法再说一遍
+SAY_ENOUGH = "（这一轮说这一句一般就够了；真要再说只说新的内容，别把这句换个说法再说一遍）"
 PEEK_TIMEOUT = 30.0  # look_person 被挡住时边转边看：最多 [peek] max_seconds（8 s）+ 最后一下等画面停稳、截图裁图
 RESET_TIMEOUT = 60.0  # 镜头闭环复位：粗转 + 细调最多 60 下、每下等 0.4 s 画面停稳，最坏三十多秒（一般几秒）
 
@@ -189,6 +191,11 @@ class ToolBox:
                 log.exception("工具 %s 出错", name)
                 return f"出错了：{exc}", True
             return str(exc), True
+        if name == "say" and isinstance(out, str):
+            with self._lock:
+                first = self.says == 1 and self.max_says > 1
+            if first:
+                out += SAY_ENOUGH
         if name in ACTIONS:
             self.acted = True
         log.info("工具 %s %s → %s", name, json.dumps(args or {}, ensure_ascii=False), out if isinstance(out, str) else "[图片]")

@@ -17,6 +17,7 @@ function chatLine(r) {
   if (k === "act") { const d = el("div", "sb-act", r.text || ""); d.title = dayTime(r.t); return d; }
   const d = el("div", "sb-" + k.split(" ").join(" sb-")), who = el("div", "who");
   who.append(r.kind === "heard" ? r.who || "（不知道是谁）" : r.kind === "said" ? "团子" : r.who === "团子" ? "团子（没说出去）" : "（被拦下）", " ", time);
+  if (r.kind === "heard" && r.why) who.append(" ", el("span", "tag", r.why));  // 跟谁说的（身体判的）
   d.append(who, el("div", "b", r.text || ""));
   if (r.kind === "blocked" && r.why) d.append(el("div", "why", r.why));
   return d;

@@ -332,3 +332,16 @@ def test_icons_config_defaults_and_classifier_check(tmp_path):
         load_config(p)
     p.write_text('[icons]\nclassifier = "dino"\n', encoding="utf-8")
     assert load_config(p).icons.classifier == "dino"
+
+
+def test_reflex_followup_window_moved(tmp_path, caplog):
+    from skydango.config import followup_window
+
+    p = tmp_path / "config.toml"
+    p.write_text("[reflex]\nfollowup_window = 12\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(p)
+    assert "挪到了" in caplog.text
+    assert followup_window(cfg) == 12
+    p.write_text("[reflex]\nfollowup_window = 12\n[addressee]\nfollowup_window = 40\n", encoding="utf-8")
+    assert followup_window(load_config(p)) == 40

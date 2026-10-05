@@ -28,10 +28,17 @@ def test_every_spec_field_is_listed():
         "device.adb_path", "device.serial", "device.switch_ime", "device.capture", "llm.provider", "llm.base_url", "llm.model", "secret.llm",
         "secret.claude", "brain.claude_path", "brain.model", "brain.eyes_model", "brain.memory_model",
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
-        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "backstage.enabled", "vision.source", "env.enabled",
+        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "addressee.enabled", "backstage.enabled", "vision.source", "env.enabled",
         "perception.enabled",
         "perception.model", "attrs.enabled", "attrs.model", "inbox.enabled", "inbox.ask", "inbox.retrain_min", "places.enabled", "appearance.enabled", "appearance.describe", "catalog.enabled", "icons.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
+
+
+def test_addressee_field():
+    from skydango.console.settings import KNOWN
+
+    f = KNOWN["addressee.enabled"]
+    assert (f.label, f.kind, f.group) == ("分清在跟谁说话", "bool", "brain")
 
 
 def test_console_has_appearance_switches():

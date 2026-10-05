@@ -230,6 +230,16 @@ def test_temper_off_identical_to_phase2():  # Review Focus 5
         ReplyConfig(), None, inner=True, mind=True, temper=False, persona_text="")
 
 
+def test_say_rules_against_ai_flavor():
+    """10-05 看真机 history：句句「啦 / 呀」结尾、一轮两句里第二句复读第一句、贺卡式安慰、给好友讲身体怎么运作、每次都「卡洛来啦」。"""
+    text = static_prompt(ReplyConfig())
+    assert "一轮最多说两句" not in text and "一轮一般只说一句" in text and "换个说法再说一遍" in text
+    for s in ("语气有起伏", "别给好友讲你的身体怎么运作", "贺卡", "不用每次都打招呼"):
+        assert s in text
+    say = text[text.index("## 说话"): text.index("\n## ", text.index("## 说话") + 1)]
+    assert "语气有起伏" in say  # 在「说话」一节里，不是别处
+
+
 def test_bottom_lines_untouched():
     on = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True)
     off = brain_prompt(ReplyConfig(), None, inner=True, mind=True)
@@ -340,3 +350,34 @@ def test_prompt_icons_rule():
     text = brain_prompt(ReplyConfig(), None, icons=True)
     assert "坐下、弹琴还不会，别答应。 " + ICONS_RULE in text
     assert text.replace(" " + ICONS_RULE, "") == base
+
+
+def test_addressee_off_unchanged():
+    from skydango.brain.prompt import ADDRESSEE_ANCHOR
+
+    base = brain_prompt(ReplyConfig(), None)
+    assert base == brain_prompt(ReplyConfig(), None, addressee=False)
+    assert ADDRESSEE_ANCHOR in base
+
+
+def test_addressee_rules():
+    text = brain_prompt(ReplyConfig(), None, addressee=True)
+    assert "明显不是跟你说的" not in text
+    for s in ("乱码、纯表情、刷屏，不用回。", "跟别人说：默认不接", "算主动开口", "拿不准时宁可不接", "有人让你先别回", "不说：他们在聊"):
+        assert s in text
+    section = text.split("## 主动开口", 1)[1].split("\n## ", 1)[0]
+    assert "插话的规矩看“说话”一节" in section
+
+
+def test_prompt_no_proactive_variant():
+    text = brain_prompt(ReplyConfig(), None, proactive=False, addressee=True)
+    assert "跟别人说：不接" in text
+    assert "插一句" not in text and "算主动开口" not in text
+
+
+def test_addressee_with_temper():
+    from skydango.brain.prompt import GO_ON_NEW
+
+    text = brain_prompt(ReplyConfig(), None, addressee=True, temper=True, inner=True)
+    assert GO_ON_NEW in text
+    assert text.count("跟别人说：默认不接") == 1

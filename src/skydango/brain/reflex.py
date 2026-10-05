@@ -8,36 +8,9 @@ from __future__ import annotations
 
 import random
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
-from ..chat.tracker import similar
 from ..config import ReflexConfig
-from .occasion import ME
-
-
-def addressed(
-    speaker: str,
-    text: str,
-    *,
-    is_friend: Callable[[str], bool],
-    self_names: Sequence[str],
-    nearby: Sequence[str],
-    since_said: float | None,
-    followup_window: float,
-    owner: str = "",
-) -> bool:
-    """好友这句是不是在跟团子说：叫了名字、团子刚说完不久、或身边只有他一个好友。先从严。"""
-    if not speaker or speaker == ME:
-        return False
-    if owner and speaker == owner and text.startswith("#"):  # 主人命令另有处理
-        return False
-    if not is_friend(speaker):
-        return False
-    if any(name in text for name in self_names):
-        return True
-    if since_said is not None and since_said <= followup_window:
-        return True
-    return len(nearby) == 1 and similar(nearby[0], speaker, 0.75)
 
 
 class Reflexes:

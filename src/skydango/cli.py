@@ -284,8 +284,8 @@ def cmd_memory(cfg: Config, args) -> None:
         files = {
             "profile.md": PROFILE_TEMPLATE.format(persona=cfg.reply.persona.strip()),
             "friends.md": FRIENDS_TEMPLATE.format(
-                friends="\n\n".join(f"## {name}\n- {note}" for name, note in cfg.reply.friends.items())
-                or "## 好友昵称\n- 本名 / 怎么称呼 / 什么关系"
+                friends="\n\n".join(f"## {name}\n- {note}\n- 叫法：" for name, note in cfg.reply.friends.items())
+                or "## 好友昵称\n- 本名 / 怎么称呼 / 什么关系\n- 叫法："
             ),
         }
         for name, content in files.items():
@@ -641,6 +641,73 @@ def cmd_places(cfg: Config, args) -> None:
             print(f"{name}  → {verdict}  第二像的别的地方 {m.second:.2f}")
     elif args.action == "bench":
         _places_bench(cfg, args.model or [cfg.places.model])
+
+
+def _addressee_setup(cfg: Config):
+    """addressee 两个命令共用：好友名单 + 叫法、自称、接话窗口。"""
+    from .chat.memory import MemoryStore
+    from .config import followup_window
+    from .brain.addressee import parse_aliases
+
+    names = _friend_names(cfg)()
+    md = MemoryStore(cfg.reply.memory_dir).friends() if cfg.reply.memory_dir else ""
+    return names, parse_aliases(md, names), cfg.proactive.self_names, followup_window(cfg)
+
+
+def cmd_addressee(cfg: Config, args) -> None:
+    """离线评估「好友在跟谁说话」（spec 2026-10-05-addressee-design §8）：label = 读旧日志、挑句子、Claude 初标、写 review.md；eval = 用当前规则重放、算三条门槛。"""
+    from datetime import datetime
+
+    from .brain import claude
+    from .chat import addressee_eval as ae
+    from .vision import assist
+
+    names, aliases, self_names, followup = _addressee_setup(cfg)
+    if not names:
+        raise SystemExit("没有好友名单：先配 reply.memory_dir（friends.md）或 reply.friends")
+    if args.action == "eval":
+        d = Path(args.dir)
+        lines, picked = ae.load_lines(d / "lines.jsonl")
+        rule = ae.replay(lines, cfg.addressee, self_names, followup, aliases)
+        try:
+            human = ae.read_review(d / "review.md")
+        except ValueError as exc:
+            raise SystemExit(f"review.md 里有填错的：{exc}") from None
+        report = ae.evaluate(lines, picked, rule, ae.load_claude(d / "claude.jsonl"), human)
+        text = report.markdown()
+        (d / "report.md").write_text(text, encoding="utf-8")
+        print(text)
+        print(f"\n报告：{d / 'report.md'}")
+        if not report.passed:
+            raise SystemExit(1)
+        return
+
+    logs: list[Path] = []
+    for src in args.runs:
+        p = Path(src)
+        found = [p / "agent.log"] if (p / "agent.log").is_file() else sorted(p.glob("*/agent.log"))
+        logs += found
+    if not logs:
+        raise SystemExit("没找到 agent.log：参数给单次运行目录，或者 runs/")
+    lines: list[ae.Line] = []
+    for lg in logs:
+        lines += ae.read_log(lg, lg.parent.name)
+    picked = ae.pick(lines, names)
+    out = Path(args.out) if args.out else Path("datasets/addressee") / datetime.now().strftime("%Y%m%d-%H%M%S")
+    ae.save_lines(out / "lines.jsonl", lines, picked)
+    print(f"读了 {len(logs)} 份日志、{len(lines)} 句，选了 {len(picked)} 句 → {out / 'lines.jsonl'}")
+    base, env = _brain_env(cfg)
+    a = cfg.assist
+    cmd = assist.assist_command(base, a, system=ae.SYSTEM)
+    work = assist.assist_workdir()
+    work.mkdir(parents=True, exist_ok=True)
+    by_id = {l.id: l for l in lines}
+    items = [by_id[i] for i in picked]
+    got = ae.claude_labels(items, lines, lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), out / "claude.jsonl")
+    print(f"Claude 标了 {len(got)} / {len(items)} 句 → {out / 'claude.jsonl'}")
+    rule = ae.replay(lines, cfg.addressee, self_names, followup, aliases)
+    n = ae.write_review(out / "review.md", items, lines, rule, got)
+    print(f"review.md 写了 {n} 句 → {out / 'review.md'}（在 `标：` 后面填，填完跑 addressee eval {out}）")
 
 
 def cmd_catalog(cfg: Config, args) -> None:
@@ -2659,7 +2726,7 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
 
     没开 / 没 Key 返回 None（退化成现在的纯文字备用回复）。on_message 和 BrainSession 同款：
     把工具调用喂回大脑时间线（trace.chain(log_brain_message)）。"""
-    from .brain.deepseek import FALLBACK_NOTE, DeepSeekBrain, build_client
+    from .brain.deepseek import ASIDE_NOTE, FALLBACK_NOTE, DeepSeekBrain, build_client
     from .brain.llm_tools import openai_tools
 
     if not cfg.brain.fallback:
@@ -2670,7 +2737,7 @@ def _fallback_brain(cfg: Config, toolbox, prompt: str, on_message=None):
         log.warning("备用大脑没开（%s）", exc)
         return None
     return DeepSeekBrain(
-        client, prompt + "\n\n" + FALLBACK_NOTE, toolbox, openai_tools(toolbox, blind=True),
+        client, prompt + "\n\n" + FALLBACK_NOTE + (ASIDE_NOTE if cfg.addressee.enabled else ""), toolbox, openai_tools(toolbox, blind=True),
         model=cfg.llm.model, temperature=cfg.llm.temperature, max_tokens=cfg.brain.fallback_max_tokens,
         max_steps=cfg.brain.max_steps, turn_timeout=cfg.brain.turn_timeout, on_message=on_message,
         history=cfg.brain.fallback_history,
@@ -2854,7 +2921,7 @@ def _run_brain(
         days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
         persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
         appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store),
-        lull=cfg.lull.enabled, call=_call_enabled(cfg, env),
+        lull=cfg.lull.enabled, call=_call_enabled(cfg, env), addressee=cfg.addressee.enabled,
         icons=cfg.perception.enabled and cfg.icons.enabled,
     )
     session = BrainSession(
@@ -3544,6 +3611,15 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("bench", help="图库上留一法：每个模型认对 / 认错 / 不说多少、多快")
     q.add_argument("--model", action="append", help="特征模型，可以给多个（默认 places.model）")
     p.set_defaults(func=cmd_places)
+
+    p = sub.add_parser("addressee", help="好友在跟谁说话：离线评估（label 初标 + 写 review.md，eval 算门槛）")
+    psub = p.add_subparsers(dest="action", required=True)
+    q = psub.add_parser("label", help="读旧运行的 agent.log、挑句子、请 Claude 初标（花额度）、写 review.md 给人核对")
+    q.add_argument("runs", nargs="+", help="单次运行目录，或 runs/（取其中每个 */agent.log）")
+    q.add_argument("--out", help="输出目录（默认 datasets/addressee/<时间>）")
+    q = psub.add_parser("eval", help="用当前规则重放，对着标准答案算三条门槛，写 report.md；没过线退出码 1")
+    q.add_argument("dir", help="label 写出的目录")
+    p.set_defaults(func=cmd_addressee)
 
     p = sub.add_parser("catalog", help="装扮图鉴：在录像上试跑收集（定门槛用）")
     psub = p.add_subparsers(dest="action", required=True)

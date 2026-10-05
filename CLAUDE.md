@@ -124,6 +124,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、整理 / 重训的任务槽（`jobs.py`）、整帧页后端（`frames.py`）、重训报告和换上 / 回退（`retrain_view.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`、标注页的整帧页 `frames.js`、重训区 `retrain.js`），左侧栏 + 七页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
+| `src/skydango/brain/addressee.py` | 分清好友在跟谁说话（见「分清在跟谁说话」）：`Addressee.judge` 每句判一次（`Verdict`：跟你说 / 跟别人说 / 说给大家 / 拿不准）、`said`、`parse_aliases`（friends.md 的 `- 叫法：`）、`legacy_addressed`（`enabled = false` 时反射用的旧规则）；纯规则、不调模型 |
+| `src/skydango/chat/addressee_eval.py` | 上面规则的离线评估：从 `agent.log` 取多人聊天、Claude 初标、规则重放、`review.md` 给人核对、`report.md` 三条门槛（`addressee label` / `eval`） |
 | `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；聊天记录 `brain/transcript.py`（沙盒和真机共用，带长轮询 `wait_since` 和事件分隔线 `event_line`）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、操作和状态 `control.py`、JSON 接口 `server.py` |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
@@ -144,6 +146,11 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 **改了回复规则后要注意 history**：模型会模仿读回来的旧回复，盖过新规则（实测加了"动不了、别答应跑图"之后，
 历史里"行，我跟着你们跑"那几句让它照样答应；清掉历史后立刻生效）。规则大改时把 `history.jsonl` 挪到 `memory/archive/`，
 要点已经在 notes.md 里，不会失忆。
+
+**去 AI 味**（10-05，看了 09-27 ~ 10-03 的 443 轮真机 history）：句句「啦 / 呀」结尾、一轮两句里第二句复读第一句、贺卡式安慰、给好友讲身体怎么运作、每次都「卡洛来啦」。
+- 提示词「说话」一节：一轮一般只说一句、语气有起伏、做不到的随口推掉别讲运作、别说贺卡话、别每次都打招呼；第一句 say 的工具结果附 `tools.SAY_ENOUGH` 提醒（还能说第二句时）
+- 同一轮接着说的句子（上一句记下后 `FOLLOWUP_GAP` 20 秒内、中间没人说话）history 里记成「（没人接话，你接着上一句又说）」，不再冒充「主动开口」
+- 私有仓库：`profile.md` 的说话习惯改成描述 + 真聊天例句（像她的 / 不像她的）；`tools/curate_history.py` 挪走旧的复读、招呼、点名的 AI 味回合（先备份进 `archive/`，默认只列出、`--apply` 才改），**在本机推完新记录、团子下线后跑**
 `memory init` 用配置生成 profile / friends，`memory show` 查看，`memory update` 立刻整理。
 随手记和整理（`NotesKeeper`）在大脑模式和 `memory update` 里走 Claude Code（`[brain] memory_model`，默认 sonnet，一次性 `claude -p`、令牌同大脑、不给工具，`brain/claude.py` 的 `ClaudeLlm`）；
 只有 `run --no-brain` 的普通 Agent 还用 `[llm]`（DeepSeek）。
@@ -511,12 +518,33 @@ dir = "private/sandbox"
 - **喜好**：`memory init` 的人设模板多了「喜好和看法」；已有的 `memory/profile.md` 要自己把这一节加进去。随手记会记下团子说过的评价，下次态度一致
 - `enabled = false` 完全照旧（旧提示词、不发 `notice`、不拦）。history.jsonl 先不清（旧回合只是没主动，不冲突），太保守再按「记忆」一节挪走
 
+## 分清在跟谁说话（`[addressee]`，大脑模式）
+
+设计见 `docs/superpowers/specs/2026-10-05-addressee-design.md`，计划 `docs/superpowers/plans/2026-10-05-addressee.md`，路线图 ③。起因：好友之间聊天团子句句都接（10-03 / 10-04 真机）。
+**代码 10-05 做完，还没在真机验证；离线评估（`addressee label` / `eval`）也还没在真实数据上跑过，三条门槛过没过不知道，数字都是估的。旧日志（没有「跟谁说」行）上算出的门槛只作参考（团子当时句句都接，「在接你的话」窗口几乎一直开着，`report.md` 按规则理由分列）；正式门槛用合并后录下的新日志算。代码带着 `enabled` 默认开合并，不合适可在管理面板设置页关掉。**
+- **每句好友聊天判一次**（`brain/addressee.py`，纯规则、不调模型；身体 `_heard` 里调）：`me` 跟你说 / `other` 跟别人说 / `all` 说给大家 / `unsure` 拿不准。
+  规则从上往下命中即停：不是好友 → unsure；叫了 `[proactive] self_names` → me；叫了别的好友 → other；`group_words`、或身边 ≥ 2 个好友时开头是 `greet_words` → all；
+  接团子的话（团子 `followup_window` 内说过、他之后头 `followup_lines` 句、中间没有跟别人的来往）→ me；`thread_window` 内还在跟别人一来一回（团子没插进来）→ other；身边只有他 → me；其余 unsure。
+  卡洛的 `#` 命令、陌生人的聊天不进这套判断（陌生人一律 unsure）。判断出错记日志、按 unsure
+- **叫法**：friends.md 每个好友那一节加一行 `- 叫法：卡洛、老登`（顿号 / 逗号 / 空格分开，加上游戏昵称）；≥ 3 个字的叫法允许错一个字（OCR），1~2 个字只认原样。没写就只认昵称，改了不用重启。已有的 friends.md 自己加
+- **事件**：`me` / `all` / `unsure` → `chat`（立刻叫醒）；`other` → 主动开口额度还有放 `aside`（叫醒）、用完放 `aside_bg`（`BACKGROUND`，攒着）。正文末尾带标注「（跟别人说：在回小明）」。
+  `[proactive] enabled = false` 时 `other` 一律 `aside_bg`。日志（INFO）一行 `跟谁说 …`，评估能原样回放
+- **插话走主动开口的护栏**：`Brain.chat_turn` 只看 `chat` / `owner_command`，整批都是 aside 的那一轮 `say` 算主动开口（额度、`min_gap`、连着没人接就停、没熟人不说）；有一句 `me` / `all` / `unsure` 就算接话、不拦
+- **别的地方跟着改**：反射（输入气泡、被叫到的小动作）、关系卡「跟团子说的几句」、`_cheered_at` 只认 `me`；status 「场合」后多一行「小明 和 阿花 在聊（1 分钟内 6 句）」；聊天记录（真机 / 沙盒共用）行尾带标注，沙盒的 heard 行改由身体写
+- **提示词**（`brain/prompt.py`「说话」一节）：按标注写接不接的规矩（跟别人说默认不接、可以插一句；拿不准宁可不接；有人说先别回就照做；不接就心里写“不说：…”）；DeepSeek 备用大脑的 `ASIDE_NOTE` 再提醒一次
+- **`enabled = false` 逐字照旧**（不判、没有 aside、提示词和事件正文不变、反射用 `legacy_addressed`）；管理面板设置页有 `addressee.enabled`
+- **离线评估**（数据在 `datasets/addressee/<时间>/`，不进 git，里面是好友原话）：
+  `python -m skydango addressee label <runs…> [--out 目录]` 取各次运行 `agent.log` 的聊天、挑多人聊天段落 + 约 20% 单人对照 → `lines.jsonl`，Claude 初标（花额度，额度用完可续跑）→ `claude.jsonl`，规则重放，写 `review.md`（不一致的全列、一致的抽 20%，在 `标：` 后填 跟团子 / 跟别人 / 大家 / 看不出；重跑保留已填的标）；
+  `python -m skydango addressee eval <目录>` 读回人标 → `report.md`（混淆矩阵 + 判错的句子）；三条门槛：跟别人说被判 me ≤ 5%、跟团子被判 other ≤ 10%、unsure ≤ 40%；没有足够人工核对的标准答案、或没过线退出码 1。
+  改了规则不用重标，eval 用当前规则重放。数据来源建议 10-03 21:02、23:04、23:25、10-04 21:27 那几次多人聊天
+- 沙盒剧本 `docs/sandbox-scenarios/两个好友互相聊.toml`（占位名，换成 friends.md 里的好友名）；真机验收：两个以上好友在的一晚，抽查「跟谁说」行、数只有 aside 的那几轮团子开了几次口、问好友「怎么什么都接」没有；另外数一数「在接你的话」→ 团子回 → 又「在接你的话」的连锁（规则 4 会自己续命，`occasion.reply_state` 又把它当「有人接」，插话护栏不触发；要收紧可选：插话那一轮之后不开规则 4 窗口 / 规则 4 只给团子上一句回应的那个人 / `reply_state` 跳过判成 other 的句子）
+
 ## 身体反射（`[reflex]`，大脑模式）
 
 设计见 `docs/superpowers/specs/2026-09-30-body-reflex-design.md`，计划 `docs/superpowers/plans/2026-09-30-body-reflex.md`。
 "让团子活着"四个子项目的第一个（反射 → 关系账 → 情绪 → 性格语气，见 spec 开头）。大脑一轮要几秒到十几秒，常见时刻由身体按规则当场反应，大脑再补上说什么。
 **已在真机 live 里默认开着跑过（9-30 起），spec「真机验证」清单没逐条走，数字都是估的**（spec「真机验证」四步）。
-- **判断在跟团子说话**（`brain/reflex.py` 的 `addressed()`，先从严）：好友说的，且叫了 `[proactive] self_names`、或团子说完 `followup_window`（30 秒）内、或身边只有他一个好友；陌生人、`#` 命令不算
+- **判断在跟团子说话**：10-05 起和「分清在跟谁说话」共用同一个判断，只对 `跟你说`（`me`）冒气泡 / 做小动作；`followup_window` 挪到了 `[addressee]`（`[reflex]` 里写着还生效、启动时警告）。`[addressee] enabled = false` 时才用原来的 `legacy_addressed()`（`brain/addressee.py`，原 `reflex.py` 的 `addressed()`，先从严）：好友说的，且叫了 `[proactive] self_names`、或团子说完 `followup_window`（30 秒）内、或身边只有他一个好友；陌生人、`#` 命令不算
 - **输入气泡**：身体读到这样的消息当圈就 `sender.open()`（先 `panel.before_speak()`），头顶冒"正在输入"；大脑 `say` 直接用这个框发。
   关框：大脑"开框之后才开始的那一轮"结束了没说话（`Brain.last_turn` → `body.brain_turn`）、开了 `bubble_max`（45 秒）、**任何按键 / 点屏幕之前**（`clear_view` 里统一关，`say` 除外；`panel_press` / `panel_close` 也关）、有互动请求要接（`clear_view("social")`）。
   只关自己开的框（`sender.opened`）；技能（track）在跑、大脑离线、dry-run 时不开；status 里"输入框：开着（身体替你开的…）"
@@ -699,6 +727,8 @@ python -m skydango perception attrs-train [datasets/attrs] [--out 路径] [--for
 python -m skydango perception attrs-eval datasets/sky --model models/attrs-<日期>.npz [--attrs-data datasets/attrs]  # 外形头在 YOLO 数据集验证集上的评估（答案按标注页确认过的修正）
 python -m skydango perception bench --attrs [--model …]  # 测速时再测一遍加第二层后的 fps
 python -m skydango perception unknown-names [--last 5]  # 最近几次运行里读到、但不在好友名单里的名字（只列出）
+python -m skydango addressee label <runs目录...> [--out datasets/addressee/<时间>]  # 分清在跟谁说话的离线评估：取 agent.log 的多人聊天、Claude 初标（花额度）、规则重放，写 lines.jsonl / claude.jsonl / review.md；去 review.md 的 `标：` 后填人工答案
+python -m skydango addressee eval <datasets/addressee/时间>  # 读回人标，出 report.md（混淆矩阵 + 三条门槛）；没过线或标准答案不够退出码 1
 python -m skydango perception appearance-eval <录像目录> [--model YOLO模型] [--embed color|模型.onnx]  # 认装扮离线标定：同一个人 / 不同人的相似度、建议的 match / changed、藏标签重放 → tmp/appearance-eval/<时间>/report.md
 python -m skydango perception appearance-eval <录像目录> --gallery  # 底库模式：前一半挂标签的当底库、后一半当查询，开头 20 秒的团子框当团子底库，给 match / unsure / dango_match 的建议值和三档人数分布（还没在录像上跑过，先跑 tmp/record/walkaway-1002-1）
 python -m skydango catalog collect <录像目录> [--model 模型] [--fps 6.5]  # 装扮图鉴：录像上试跑收集 → tmp/catalog/<时间>/（sheet.jpg、candidates.jsonl），定 min_height / sharp_min

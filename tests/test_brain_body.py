@@ -112,6 +112,7 @@ def body(clock, live=False, frames=None, panel_mode=None, **kw):
     cfg.sender.open_chat_key = 28
     cfg.proactive.enabled = False  # 旧行为的测试：不管主动开口；pro_body 打开
     cfg.lull.enabled = kw.pop("lull", False)  # 旧行为的测试：不认冷场；test_brain_lull_body 打开
+    cfg.addressee.enabled = kw.pop("addressee", False)  # 旧行为的测试：不分跟谁说；test_brain_addressee_body 打开
     cfg.panel.mode = "always"  # 旧行为的测试：面板常开（2026-09-30 起默认 auto）；按需打开的用 panel_mode="auto"
     device = kw.pop("device_override", None) or FakeDevice(frames or [scene()])
     reader = FakeReader()
@@ -465,6 +466,24 @@ def test_say_writes_memory_when_live(clock, tmp_path):
     b.say("在呢")
     (turn,) = store.history.all()
     assert "懒洋洋大王：「在吗」" in turn.user and turn.reply == "在呢"
+
+
+def test_followup_say_is_not_recorded_as_proactive(clock, tmp_path):
+    """10-03 晚：一轮里接着说的第二句（隔 6~16 秒、中间没人说话）被记成「（没人说话，你主动开口）」，
+    读回「上次聊到哪」像团子一直在主动找话、换个说法复读自己。隔得久的才算主动开口。"""
+    from skydango.brain.body import FOLLOWUP_LABEL
+    from skydango.chat.memory import MemoryStore
+
+    store = MemoryStore(tmp_path)
+    b, _, reader, _ = body(clock, live=True, store=store, wall=clock)
+    reader.batches = [[msg("你去把他叫起来")]]
+    b.step()
+    b.say("不要啦我才不叫")
+    clock.advance(8)
+    b.say("让他睡饱嘛")
+    clock.advance(120)
+    b.say("这边好安静")
+    assert [t.user for t in store.history.all()][1:] == [FOLLOWUP_LABEL, "（没人说话，你主动开口）"]
 
 
 def test_manual_say_is_marked_and_kept_out_of_memory(clock, tmp_path):

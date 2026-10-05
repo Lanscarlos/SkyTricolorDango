@@ -298,3 +298,9 @@ def test_failed_turn_is_not_remembered():
 
 def test_fallback_note_rules_from_10_03_night():
     assert "查不到" in FALLBACK_NOTE and "emote" in FALLBACK_NOTE and "刚说过" in FALLBACK_NOTE
+
+
+def test_aside_note():
+    from skydango.brain.deepseek import ASIDE_NOTE
+
+    assert "跟别人说" in ASIDE_NOTE and ASIDE_NOTE == "\n- 标着“跟别人说”的话默认不接"
