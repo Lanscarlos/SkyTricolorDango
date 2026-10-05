@@ -602,6 +602,73 @@ def cmd_places(cfg: Config, args) -> None:
         _places_bench(cfg, args.model or [cfg.places.model])
 
 
+def _addressee_setup(cfg: Config):
+    """addressee 两个命令共用：好友名单 + 叫法、自称、接话窗口。"""
+    from .chat.memory import MemoryStore
+    from .config import followup_window
+    from .brain.addressee import parse_aliases
+
+    names = _friend_names(cfg)()
+    md = MemoryStore(cfg.reply.memory_dir).friends() if cfg.reply.memory_dir else ""
+    return names, parse_aliases(md, names), cfg.proactive.self_names, followup_window(cfg)
+
+
+def cmd_addressee(cfg: Config, args) -> None:
+    """离线评估「好友在跟谁说话」（spec 2026-10-05-addressee-design §8）：label = 读旧日志、挑句子、Claude 初标、写 review.md；eval = 用当前规则重放、算三条门槛。"""
+    from datetime import datetime
+
+    from .brain import claude
+    from .chat import addressee_eval as ae
+    from .vision import assist
+
+    names, aliases, self_names, followup = _addressee_setup(cfg)
+    if not names:
+        raise SystemExit("没有好友名单：先配 reply.memory_dir（friends.md）或 reply.friends")
+    if args.action == "eval":
+        d = Path(args.dir)
+        lines, picked = ae.load_lines(d / "lines.jsonl")
+        rule = ae.replay(lines, cfg.addressee, self_names, followup, aliases)
+        try:
+            human = ae.read_review(d / "review.md")
+        except ValueError as exc:
+            raise SystemExit(f"review.md 里有填错的：{exc}") from None
+        report = ae.evaluate(lines, picked, rule, ae.load_claude(d / "claude.jsonl"), human)
+        text = report.markdown()
+        (d / "report.md").write_text(text, encoding="utf-8")
+        print(text)
+        print(f"\n报告：{d / 'report.md'}")
+        if not report.passed:
+            raise SystemExit(1)
+        return
+
+    logs: list[Path] = []
+    for src in args.runs:
+        p = Path(src)
+        found = [p / "agent.log"] if (p / "agent.log").is_file() else sorted(p.glob("*/agent.log"))
+        logs += found
+    if not logs:
+        raise SystemExit("没找到 agent.log：参数给单次运行目录，或者 runs/")
+    lines: list[ae.Line] = []
+    for lg in logs:
+        lines += ae.read_log(lg, lg.parent.name)
+    picked = ae.pick(lines, names)
+    out = Path(args.out) if args.out else Path("datasets/addressee") / datetime.now().strftime("%Y%m%d-%H%M%S")
+    ae.save_lines(out / "lines.jsonl", lines, picked)
+    print(f"读了 {len(logs)} 份日志、{len(lines)} 句，选了 {len(picked)} 句 → {out / 'lines.jsonl'}")
+    base, env = _brain_env(cfg)
+    a = cfg.assist
+    cmd = assist.assist_command(base, a, system=ae.SYSTEM)
+    work = assist.assist_workdir()
+    work.mkdir(parents=True, exist_ok=True)
+    by_id = {l.id: l for l in lines}
+    items = [by_id[i] for i in picked]
+    got = ae.claude_labels(items, lines, lambda content: claude.one_shot_message(cmd, env, work, content, a.timeout), out / "claude.jsonl")
+    print(f"Claude 标了 {len(got)} / {len(items)} 句 → {out / 'claude.jsonl'}")
+    rule = ae.replay(lines, cfg.addressee, self_names, followup, aliases)
+    n = ae.write_review(out / "review.md", items, lines, rule, got)
+    print(f"review.md 写了 {n} 句 → {out / 'review.md'}（在 `标：` 后面填，填完跑 addressee eval {out}）")
+
+
 def cmd_catalog(cfg: Config, args) -> None:
     """图鉴收集的离线工具（spec 2026-10-02-catalog-collect §6）：录像上跑感知层 + 收集器（录像时间当时钟），
     存下的图和运行时同样的结构，另写 candidates.jsonl（每个看过的候选过没过门槛）和 sheet.jpg，用来定 min_height / sharp_min。"""
@@ -3250,6 +3317,15 @@ def main(argv: list[str] | None = None) -> None:
     q = psub.add_parser("bench", help="图库上留一法：每个模型认对 / 认错 / 不说多少、多快")
     q.add_argument("--model", action="append", help="特征模型，可以给多个（默认 places.model）")
     p.set_defaults(func=cmd_places)
+
+    p = sub.add_parser("addressee", help="好友在跟谁说话：离线评估（label 初标 + 写 review.md，eval 算门槛）")
+    psub = p.add_subparsers(dest="action", required=True)
+    q = psub.add_parser("label", help="读旧运行的 agent.log、挑句子、请 Claude 初标（花额度）、写 review.md 给人核对")
+    q.add_argument("runs", nargs="+", help="单次运行目录，或 runs/（取其中每个 */agent.log）")
+    q.add_argument("--out", help="输出目录（默认 datasets/addressee/<时间>）")
+    q = psub.add_parser("eval", help="用当前规则重放，对着标准答案算三条门槛，写 report.md；没过线退出码 1")
+    q.add_argument("dir", help="label 写出的目录")
+    p.set_defaults(func=cmd_addressee)
 
     p = sub.add_parser("catalog", help="装扮图鉴：在录像上试跑收集（定门槛用）")
     psub = p.add_subparsers(dest="action", required=True)
