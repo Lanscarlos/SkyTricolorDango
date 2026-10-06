@@ -132,7 +132,7 @@ def evaluate(items: Iterable[tuple], watcher, keep: float | None = None) -> dict
                     segs[-1] = (segs[-1][0], t, motion)
                 else:
                     segs.append((t, t, motion))
-        near = set(watcher.nearby(t))
+        near = set(watcher.in_view(t) if hasattr(watcher, "in_view") else watcher.nearby(t))  # 画面里的（presence 开着时 nearby 还含看不到的）
         for name in near:
             friends.setdefault(name, _friend())  # 出现过的好友都列出来（没出事的也是结果）
         for name in near_prev - near:

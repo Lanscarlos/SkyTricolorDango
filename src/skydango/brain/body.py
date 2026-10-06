@@ -838,7 +838,17 @@ class Body:
         while self._call_times and now - self._call_times[0] > cfg.auto_window:
             self._call_times.popleft()
         why = ""
-        if self._pending_auto is not None:
+        r = self._pending_auto
+        if r is not None and r.reason == "presence" and not self._search_call_pending:
+            self._search_call_pending = True  # 确认在场的那一声刚按：找人这一步等它的结果，不另喊
+            s.call_sent(now)
+            return
+        last = self.last_call
+        if (r is None and last is not None and last.reason == "presence" and last.seen is not None
+                and now - last.at < cfg.min_gap):
+            s.called(last.seen, now)  # 刚喊过、结果也有了：直接拿去用
+            return
+        if r is not None:
             why = "上一声还没结果"
         elif now - self._call_at < cfg.min_gap:
             why = "刚喊过"

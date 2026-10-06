@@ -135,3 +135,18 @@ def test_relink_refuted_by_tag_elsewhere_counts_wrong():
     w.detector.detect = lambda img: scene2(round(int(img[0, 0, 0]) * STEP, 3))
     out = evaluate(items(40), w, keep=5.0)
     assert out["friends"][NAME]["relinks"]["错"] == 1
+
+
+class GapDetector:
+    """好友带标签 → 6 秒什么都没有 → 又带标签：老规矩下算一次假走开。"""
+
+    def detect(self, img):
+        t = round(int(img[0, 0, 0]) * STEP, 3)
+        return [] if 1.0 <= t < 7.0 else [player(800), tag(800)]
+
+
+def test_false_leave_keeps_its_old_meaning_with_presence_on():
+    w = watcher()  # presence 默认开着：nearby() 包括找不到的；假走开还是按画面里 keep 秒没看到算
+    w.detector = GapDetector()
+    res = evaluate(items(n=100), w, keep=10.0)
+    assert res["friends"][NAME]["false_leaves"] == 1

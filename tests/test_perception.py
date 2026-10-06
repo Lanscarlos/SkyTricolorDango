@@ -3064,15 +3064,19 @@ def test_edge_tag_counts_as_present():
     det.frames = [[tag(1810, 100, y=500)]]  # 名字贴在屏幕右边、下面没人
     w = watcher(det, FakeOcr({100: "懒洋洋大王"}))
     w.process(frame(), 0.1, panel_visible=False)
-    assert w.nearby(0.1) == ["懒洋洋大王"]
-    assert w.in_view(0.1) == []
-    assert w.around(0.1) == [("懒洋洋大王", "画面外·右边")]
+    assert w.nearby(0.1) == []  # 这次运行还没在画面里见过他：光贴边不算来了
+    w.last_seen["懒洋洋大王"] = 0.0
+    w.process(frame(), 0.2, panel_visible=False)
+    assert w.nearby(0.2) == ["懒洋洋大王"]
+    assert w.in_view(5.1) == []
+    assert w.around(5.1) == [("懒洋洋大王", "画面外·右边")]
 
 
 def test_edge_tag_top():
     det = FakeDetector()
     det.frames = [[tag(900, 100, y=10)]]  # 名字贴在屏幕最上边、下面没人
     w = watcher(det, FakeOcr({100: "懒洋洋大王"}))
+    w.last_seen["懒洋洋大王"] = -10.0  # 之前在画面里见过
     w.process(frame(), 0.1, panel_visible=False)
     assert "懒洋洋大王" in w.labels
     assert w.in_view(0.1) == [] and w.nearby(0.1) == ["懒洋洋大王"]
@@ -3110,7 +3114,8 @@ def test_call_window_feeds_presence():
     w.process(frame(), 0.1, panel_visible=False)
     assert w.in_view(0.1) == ["懒洋洋大王"]
     w.process(frame(), 6.0, panel_visible=False)
-    assert w.nearby(6.0) == [] and w.need_call(6.0) == ["懒洋洋大王"]
+    assert w.nearby(6.0) == ["懒洋洋大王"] and w.in_view(6.0) == []  # 找不到还不算走开
+    assert w.need_call(6.0) == ["懒洋洋大王"]
     w.called(6.0)
     w.process(frame(), 9.0, panel_visible=False)
     w.process(frame(), 12.1, panel_visible=False)  # 窗口结束：没亮出他
@@ -3125,9 +3130,10 @@ def test_presence_pauses_with_hold():
     det = FakeDetector()
     det.frames = [[tag(1810, 100, y=500)], []]
     w = watcher(det, FakeOcr({100: "懒洋洋大王"}), clock=clock)
+    w.last_seen["懒洋洋大王"] = -10.0
     w.process(frame(), 0.0, panel_visible=False)
     clock.t = 1.0
     w.hold("x")
     clock.t = 100.0
     w.release("x")
-    assert w.nearby(101.0) == ["懒洋洋大王"]  # 暂停的 99 秒不算：贴边 1 秒前才"看到"
+    assert w.presence.state("懒洋洋大王", 101.0) == "near"  # 暂停的 99 秒不算：贴边 1 秒前才"看到"

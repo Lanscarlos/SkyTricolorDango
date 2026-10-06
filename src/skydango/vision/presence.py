@@ -6,6 +6,7 @@
 - 附近（near）：名字贴在屏幕边上（keep 内），或者 recheck 内按 Q 喊到过
 - 找不到（lost）：都没有，开始计时
 - 走开（left）：找不到满 leave_after 且之后喊过一声也没亮出他；一直喊不成满 confirm_max；不能喊时满 leave_after
+在场 = 身边 + 附近 + 找不到（找不到还不算走开）。只认这次运行里在画面里见过的好友：光贴边 / 喊到不算"来了"。
 
 只存时间戳，查询时现算；"画面里看到"直接读感知层的 last_seen 字典（同一个对象，只读）。
 """
@@ -60,7 +61,8 @@ class Presence:
         return "lost"
 
     def present(self, names: list[str], now: float) -> list[str]:
-        return [n for n in names if self.state(n, now) in ("view", "near")]
+        """在场：还没走开的（身边 + 附近 + 找不到）。"""
+        return [n for n in names if self.state(n, now) in ("view", "near", "lost")]
 
     def in_view(self, names: list[str], now: float) -> list[str]:
         return [n for n in names if self.state(n, now) == "view"]
@@ -72,16 +74,20 @@ class Presence:
         return [n for n in names if self.state(n, now) == "lost" and not self._was_tried(n)]
 
     def around(self, names: list[str], now: float) -> list[tuple[str, str]]:
-        """附近的人和怎么知道的：贴边优先，否则喊到的那次（"远处，刚喊到"）。"""
+        """画面里看不到、还在场的人和怎么知道的：贴边优先，否则喊到的那次（"远处，刚喊到"）；找不到的写"看不到了，在确认"。"""
         out = []
         for n in names:
-            if self.state(n, now) != "near":
+            st = self.state(n, now)
+            if st == "lost":
+                out.append((n, f"看不到了，在确认（{now - self._lost_at(n):.0f} 秒）"))
+                continue
+            if st != "near":
                 continue
             t, side = self._edge.get(n, (NEVER, ""))
             if now - t <= self.cfg.keep:
                 out.append((n, f"画面外·{side}"))
                 continue
-            at, where = self._confirmed[n]
+            at, where = self._confirmed[n]  # near 又不贴边：一定是 _fresh_confirm 那条
             ago = now - at
             out.append((n, f"{where}，{'刚' if ago < 60 else f'{int(ago // 60)} 分钟前'}喊到"))
         return out
@@ -101,16 +107,22 @@ class Presence:
 
     # ---- 内部 ----
     def _names(self) -> set[str]:
-        return set(self.seen) | set(self._edge) | set(self._confirmed)
+        """只认这次运行里在画面里见过的：光贴边 / 喊到不算"来了"（不然一喊就冒出一串"来到身边"）。"""
+        return set(self.seen)
+
+    def _fresh_confirm(self, name: str) -> float:
+        """喊到他的时间；喊的时候（或之后）他还在画面里的不算：那次"喊到"说明不了他走出画面后还在。"""
+        at = self._confirmed.get(name, (NEVER, ""))[0]
+        return at if at > self.seen.get(name, NEVER) else NEVER
 
     def _near(self, name: str, now: float) -> bool:
         return (now - self._edge.get(name, (NEVER, ""))[0] <= self.cfg.keep
-                or now - self._confirmed.get(name, (NEVER, ""))[0] <= self.cfg.recheck)
+                or now - self._fresh_confirm(name) <= self.cfg.recheck)
 
     def _lost_at(self, name: str) -> float:
         """找不到的起点：最后一条证据的时间（喊到的证据过期那一刻也算）。"""
         return max(self.seen.get(name, NEVER), self._edge.get(name, (NEVER, ""))[0],
-                   self._confirmed.get(name, (NEVER, ""))[0] + self.cfg.recheck)
+                   self._fresh_confirm(name) + self.cfg.recheck)
 
     def _was_tried(self, name: str) -> bool:
         return self._tried.get(name, NEVER) >= self._lost_at(name)

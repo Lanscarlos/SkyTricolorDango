@@ -36,13 +36,15 @@ def test_lost_needs_call_then_left_after_failed_call():
     seen["小明"] = 0.0
     assert pr.state("小明", 6) == "lost"
     assert pr.need_call(["小明"], 6) == ["小明"]
-    assert pr.present(["小明"], 6) == []
+    assert pr.present(["小明"], 6) == ["小明"]  # 找不到还不算走开
+    assert pr.around(["小明"], 6) == [("小明", "看不到了，在确认（6 秒）")]
     pr.call_done(6, {})
     assert pr.need_call(["小明"], 7) == []
     assert pr.state("小明", 14) == "lost"
     assert pr.state("小明", 15) == "left"
     assert pr.left_note("小明", 15) == "喊了一声也没看到，15 秒了"
     assert pr.need_call(["小明"], 15) == []
+    assert pr.present(["小明"], 15) == []
 
 
 def test_no_call_waits_confirm_max():
@@ -120,3 +122,23 @@ def test_unknown_name_is_empty():
 def test_config_defaults():
     p = PerceptionConfig()
     assert (p.presence, p.leave_after, p.recheck, p.confirm_max, p.keep) == (True, 15.0, 90.0, 60.0, 5.0)
+
+
+def test_edge_or_call_alone_does_not_start_tracking():
+    pr, seen = make()
+    pr.edge("小明", "右边", 1)  # 这次运行还没在画面里见过他：不算来了
+    pr.call_done(2, {"阿花": OUT})
+    assert pr.present(["小明", "阿花"], 3) == []
+    seen["小明"] = 5.0
+    pr.edge("小明", "右边", 10)
+    assert pr.state("小明", 12) == "near"
+
+
+def test_call_found_while_in_view_does_not_extend_near():
+    pr, seen = make()
+    seen["小明"] = 0.0
+    pr.call_done(0, {"小明": Seen("前面", "近")})  # 喊的时候他就在画面里
+    seen["小明"] = 3.0  # 窗口里还看得到
+    assert pr.state("小明", 9) == "lost"  # 走出画面后不靠这次"喊到"多挂 90 秒
+    assert pr.need_call(["小明"], 9) == ["小明"]
+
