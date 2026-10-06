@@ -156,6 +156,20 @@ class BrainTrace:
         except Exception:
             log.debug("大脑记录出错（fail）", exc_info=True)
 
+    def note(self, text: str) -> None:
+        """大脑会话自己的一件事（OpenAI 兼容大脑的历史压缩换上 / 失败）：当前轮里多一步，没有当前轮记进「轮外」。"""
+        try:
+            with self._cond:
+                turn = self._current
+                if turn is None:
+                    if self._outside is None:
+                        self._outside = self._new(0, "outside", "")
+                    turn = self._outside
+                turn["steps"].append({"kind": "compact", "text": _clip(str(text))})
+                self._touch(turn)
+        except Exception:
+            log.debug("大脑记录出错（note）", exc_info=True)
+
     def chain(self, fn: Callable[[dict], None]) -> Callable[[dict], None]:
         """BrainSession.on_message 用：先交给 fn（打日志），再记下来；fn 出错也照样记，且不往上抛（别打断大脑这一轮）。"""
 

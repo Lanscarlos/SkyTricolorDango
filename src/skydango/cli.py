@@ -2812,15 +2812,16 @@ def _brain_sessions(registry, build):
     from .models.errors import ModelError
 
     u = registry.setup.uses["brain"]
-    first, rest = (u.main, u.backup) if u.main is not None and registry.gates.ok(u.main.provider) else (u.backup, None)
+    main_ok = u.main is not None and registry.gates.ok(u.main.provider)
+    first, rest = (u.main, u.backup) if main_ok else (u.backup, None)
     try:
-        session = build(first)
+        session = build(first, backup=not main_ok)  # backup：用量那一笔记主还是备（压缩）
     except ModelError as exc:
         if rest is None:
             raise RuntimeError(f"大脑没有能用的模型：{exc}") from exc
         log.warning("大脑的主模型 %s 用不了（%s），改用 %s", first, exc, rest)
-        return build(rest), None
-    return session, (functools.partial(build, rest) if rest is not None else None)
+        return build(rest, backup=True), None
+    return session, (functools.partial(build, rest, backup=True) if rest is not None else None)
 
 
 def _models_line(brain, registry) -> str:
@@ -3017,7 +3018,8 @@ def _run_brain(
     )
     on_message = trace.chain(log_brain_message) if trace is not None else log_brain_message
     build = functools.partial(make_session, registry, prompt=prompt, toolbox=toolbox, mcp_url=server.url, workdir=work,
-                              cfg=cfg.brain, addressee=cfg.addressee.enabled, on_message=on_message)
+                              cfg=cfg.brain, addressee=cfg.addressee.enabled, on_message=on_message,
+                              inbox=store.inbox if store is not None else None, trace=trace)
     session, backup = _brain_sessions(registry, build)
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),

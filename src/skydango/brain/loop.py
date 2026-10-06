@@ -317,6 +317,8 @@ class Brain:
                 "model": result.get("model") or getattr(self.session, "model", self.cfg.model),
                 "tools": list(self.toolbox.used),
                 "text": text,
+                # OpenAI 兼容大脑的历史（spec 2026-10-06-brain-compact §6）：append / sliding、压过几次
+                **{k: result[k] for k in ("history_mode", "recap") if k in result},
             })
         except Exception:
             log.exception("记大脑日志出错")

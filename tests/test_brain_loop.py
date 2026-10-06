@@ -623,3 +623,13 @@ def test_brain_records_backup_after_fallback(clock):
     r = _rows(m)
     assert r[("brain", "claude/sonnet", False)]["fails"] == 1
     assert r[("brain", "deepseek/deepseek-flash", True)]["calls"] == 1
+
+
+def test_brain_jsonl_history_mode(clock):   # spec 2026-10-06-brain-compact §6
+    run = FakeRun()
+    session = ProviderSession("deepseek", "deepseek-flash", {**ok(), "history_mode": "sliding", "recap": 2}, ok())
+    brain, _, _, _ = make(clock, session, run=run)
+    brain.wake(clock(), "heartbeat")
+    brain.wake(clock(), "heartbeat")
+    assert run.entries[0]["history_mode"] == "sliding" and run.entries[0]["recap"] == 2
+    assert "history_mode" not in run.entries[1] and "recap" not in run.entries[1]

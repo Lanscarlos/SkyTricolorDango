@@ -491,3 +491,8 @@ def test_problem_links_to_models_page():
 def test_models_js_follows_row():   # spec 2026-10-06-brain-compact §5：压缩这一行只写「跟着大脑」，不进提交的 uses
     js = (STATIC / "models.js").read_text(encoding="utf-8")
     assert "view.uses.filter(u => !u.follows)" in js and "跟着大脑" in js
+
+
+def test_brainlog_compact_step():   # spec 2026-10-06-brain-compact §6：压缩那一步总是折起来，摘要是第一行
+    got = _brainlog_js('B.stepLine({kind: "compact", text: "── 压缩：第 1 次 ──\\n正文"})')
+    assert got == {"cls": "dim", "mark": "─", "text": "── 压缩：第 1 次 ──\n正文", "fold": True}
