@@ -167,6 +167,7 @@ class Body:
         self.profile_text: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
         self.memory_notes: Callable[[], str] = lambda: ""  # 反思用的笔记（cli 设成 notes.md + inbox.md）
         self.friends_text: Callable[[], str] = lambda: ""  # 反思用的好友名单（cli 设成 friends.md）：日记里称呼、性别照它
+        self.recap_text: Callable[[], str] = lambda: ""  # 大脑这次上线的前情提要（OpenAI 兼容大脑压过历史才有，cli 设），下线反思用
         self.recent_changes: Callable[[], list[str]] | None = None  # introspect(改动)：最近几天的提交（cli 在幕后开着时设）
         self._energy: Energy | None = None  # 这一圈的精力（每圈算一次）
         self._born_wall = wall()
@@ -2938,6 +2939,7 @@ class Body:
         return reflect_materials_text(
             wall, self._energy.note if self._energy is not None else "", mind_line, list(chat), list(comings), cards, notes,
             self.profile_text() or "", final, self._traits(), friend_sections(self.friends_text() or "", names),
+            recap=(self._inner_call(self.recap_text, default="") or "") if final else "",
         )
 
     def _traits(self) -> str | None:

@@ -3027,6 +3027,7 @@ def _run_brain(
         fallback=backup, gates=registry.gates, meter=registry.meter,
     )
     brain_box.append(brain)
+    body.recap_text = lambda: getattr(brain.session, "recap", "") or ""  # 下线反思带上前情提要（spec 2026-10-06-brain-compact §7）
     body.models_line = lambda: _models_line(brain, registry)
     if viewer is not None:
         viewer.usage = registry.meter.snapshot  # 管理面板的「模型用量」（spec 2026-10-06-model-usage §6.1）
