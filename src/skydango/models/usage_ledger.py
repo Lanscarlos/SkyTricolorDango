@@ -22,6 +22,12 @@ LOCK_STALE = 30.0  # 超过这么久的锁当成上次崩掉留下的
 VERSION = 1
 
 
+def ledger_for(cfg) -> "Ledger | None":
+    """[usage] ledger 的账本；环境变量 SKYDANGO_USAGE_LEDGER 盖过配置（测试设成空 = 不记账本）。"""
+    path = os.environ.get("SKYDANGO_USAGE_LEDGER", cfg.usage.ledger)
+    return Ledger(Path(path), cfg.usage.keep_days) if path else None
+
+
 class Ledger:
     def __init__(self, path: Path, keep_days: int = 7) -> None:
         self.path = Path(path)

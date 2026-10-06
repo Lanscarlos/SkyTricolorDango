@@ -486,3 +486,16 @@ def test_state_problems_report_foreign_port_owner(tmp_path, upstream):  # spec �
         assert any("被别的程序占着" in t for t in texts)
     finally:
         s.stop()
+
+
+
+def test_console_api_usage_forwards_and_falls_back(srv, upstream, monkeypatch, tmp_path):   # Review Focus 5
+    monkeypatch.setenv("SKYDANGO_USAGE_LEDGER", str(tmp_path / "usage.json"))
+    code, body = request(srv.url + "api/usage")
+    assert code == 200 and body["run"] is None and body["source"] is None   # 没在跑：读账本
+    srv.fake_runner.state = "running"
+    assert request(srv.url + "api/usage") == (200, {"path": "/usage", "query": ""})   # 在跑：转发团子
+    upstream.shutdown()
+    upstream.server_close()   # 子进程刚退出：回落到账本
+    code, body = request(srv.url + "api/usage")
+    assert code == 200 and body["run"] is None

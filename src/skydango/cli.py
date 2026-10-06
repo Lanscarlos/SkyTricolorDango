@@ -2542,6 +2542,7 @@ def cmd_sandbox(cfg: Config, args) -> None:
         server.inner = lambda: body.call(body.inner_snapshot, timeout=3)
         server.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
         server.control = SandboxControl(parts, world, sim, transcript, scene)
+        server.usage = parts.usage
 
     try:
         _run_brain(cfg, run, world, getattr(args, "duration", 0.0) or 0.0, None, on_ready=ready, trace=server.trace)
@@ -2630,6 +2631,8 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             viewer=viewer, camera=_camera(cfg, dev, panel), panel=panel,
         )
         ime = _ime_switch(cfg, dev)
+        if viewer is not None:
+            viewer.usage = registry.meter.snapshot  # 管理面板的「模型用量」（spec 2026-10-06-model-usage §6.1）
     except BaseException:  # 建到一半出错 / Ctrl+C / 面板点停止：别把设备上的无障碍客户端漏在那儿
         _stop_reader(reader)
         if registry is not None:
@@ -2689,16 +2692,6 @@ def cmd_camera(cfg: Config, args) -> None:
             print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}")
 
 
-def _usage_ledger(cfg: Config):
-    """用量账本（spec 2026-10-06-model-usage §4）。环境变量 SKYDANGO_USAGE_LEDGER 盖过配置（测试设成空 = 不记账本）。"""
-    import os
-
-    from .models.usage_ledger import Ledger
-
-    path = os.environ.get("SKYDANGO_USAGE_LEDGER", cfg.usage.ledger)
-    return Ledger(Path(path), cfg.usage.keep_days) if path else None
-
-
 def _start_balance(cfg: Config, registry):
     """后台每 [usage] balance_every 秒查 DeepSeek 余额（spec 2026-10-06-model-usage §5.1）；出错只记日志。"""
     from .models.balance import BalanceWatcher
@@ -2730,9 +2723,10 @@ def _registry(cfg: Config, workdir: Path, environ=None, source: str = "offline")
     from .models.gate import ProviderGates
     from .models.registry import Registry
     from .models.usage import UsageMeter
+    from .models.usage_ledger import ledger_for
 
     setup, gates = resolve(cfg), ProviderGates()
-    meter = UsageMeter(setup, gates, source=source, ledger=_usage_ledger(cfg))
+    meter = UsageMeter(setup, gates, source=source, ledger=ledger_for(cfg))
     registry = Registry(setup, gates, workdir, os.environ if environ is None else environ, meter=meter)
     registry.log_summary()
     if source == "offline" and meter.ledger is not None:
@@ -3011,6 +3005,7 @@ def _run_brain(
     brain_box.append(brain)
     body.models_line = lambda: _models_line(brain, registry)
     if viewer is not None:
+        viewer.usage = registry.meter.snapshot  # 管理面板的「模型用量」（spec 2026-10-06-model-usage §6.1）
         viewer.brain = trace
         from .brain.manual import ManualControl
 
@@ -3055,7 +3050,7 @@ def _run_brain(
         try:
             on_ready(BrainParts(
                 body=body, eyes=eyes, events=events, brain=brain, trace=trace, reflector=reflector, ledger=ledger, store=store,
-                mind_log=mind_log,
+                mind_log=mind_log, usage=registry.meter.snapshot,
             ))
         except Exception:
             log.exception("on_ready 出错")

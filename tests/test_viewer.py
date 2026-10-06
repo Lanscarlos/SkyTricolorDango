@@ -660,3 +660,20 @@ def test_stage_knows_icon_kind():
     # 中文名在 Windows 上 node 输出按 GBK 解码，只核对颜色和名字存在
     out = _node(f"const S=require({json.dumps(str(_stage_path()))});console.log(JSON.stringify([S.COLORS.icon,typeof S.NAMES.icon]));")
     assert json.loads(out) == ["#a3e635", "string"]
+
+
+def test_usage_endpoint():   # spec 2026-10-06-model-usage §6.1
+    v = viewer()
+    url = v.start()
+    try:
+        assert request(url + "usage")[0] == 404
+        v.usage = lambda: {"source": "live", "run": {"rows": []}}
+        assert request(url + "usage") == (200, {"ok": True, "source": "live", "run": {"rows": []}})
+        req = urllib.request.Request(url + "usage", headers={"Host": "evil.example"})
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(req, timeout=5)
+        assert err.value.code == 403
+        v.usage = lambda: 1 / 0
+        assert request(url + "usage")[0] == 500
+    finally:
+        v.stop()

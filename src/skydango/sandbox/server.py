@@ -7,6 +7,7 @@
 | POST /op | 冒充发言、来去、快进……（SandboxControl.op）；参数不对 400 |
 | GET /brain?after= | 大脑时间线（和 viewer 同一个处理函数） |
 | GET /inner、POST /inner/forget | 内心页（和 viewer 同一个处理函数） |
+| GET /usage | 模型用量（spec 2026-10-06-model-usage §6.1，和 viewer 同一个处理函数） |
 | POST /shutdown | 下线（写日记）：走 watchdog.once 的只中断一次钩子 |
 
 GET / POST 都校验 Host（防 DNS 重绑定），POST 走 post_guard（X-Skydango: 1、JSON、≤ 64 KB）。
@@ -21,7 +22,7 @@ from collections.abc import Callable
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from ..vision.viewer import JsonHandler, _Server, brain_body, forget_response, inner_response, post_guard
+from ..vision.viewer import JsonHandler, _Server, brain_body, forget_response, inner_response, post_guard, usage_response
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class SandboxServer:
         self.port = port
         self.on_shutdown = on_shutdown
         self.control = None  # sandbox.control.SandboxControl：身体建好后挂上
+        self.usage = None  # UsageMeter.snapshot：大脑组装好后挂上（BrainParts.usage）
         self.trace = None  # brain.trace.BrainTrace
         self.inner: Callable[[], dict] | None = None
         self.forget: Callable[[str, str, str, str], str] | None = None
@@ -69,6 +71,11 @@ class SandboxServer:
                         self._json(503, NOT_READY)
                         return
                     self._json(*inner_response(box.inner))
+                elif url.path == "/usage":
+                    if box.usage is None:
+                        self._json(503, NOT_READY)
+                        return
+                    self._json(*usage_response(box.usage))
                 else:
                     self._send(404, "text/plain; charset=utf-8", b"not found")
 

@@ -52,3 +52,4 @@ class BrainParts:
     ledger: Any  # inner.ledger.Ledger | None
     store: Any  # chat.memory.MemoryStore | None
     mind_log: Any  # inner.log.MindLog | None
+    usage: Any = None  # UsageMeter.snapshot：沙盒挂到 /usage（spec 2026-10-06-model-usage §6.1）
