@@ -310,7 +310,7 @@ class PerceptionConfig:
     capture: str = "body"
     track_buffer: float = 1.0  # 轨迹这么久没匹配上就删（秒）
     track_iou: float = 0.3
-    keep: float = 5.0  # 好友这么久没看到才算走开（15fps 下偶尔被挡一下骗不到它，比 env.keep 短）
+    keep: float = 5.0  # 好友这么久没在画面里看到就不算"身边"（presence 关时就算走开）；15fps 下偶尔被挡一下骗不到它，比 env.keep 短
     stranger_after: float = 1.0  # 人物这么久都没有名字标签才算陌生人
     stranger_min_height: float = 0.08  # 点过火的人物框至少这么高（相对截图高度）才判陌生人：太远的好友名字标签可能看不清
     ocr_retry: float = 1.0  # 名字标签还没认出是谁时，隔多久再 OCR 一次
@@ -343,7 +343,12 @@ class PerceptionConfig:
     object_near: float = 0.85  # 远近按框底边：底边 ≥ 画面高 × 这个算近（待标定）
     object_far: float = 0.65  # ≥ 这个算中，再高算远（待标定）
     # 按 Q 喊一声（spec 2026-10-01-q-call §1）
-    edge_band: float = 0.06  # 名字标签中心在最左 / 最右这么宽（屏宽比例）里、又没挂上人 = 好友在画面外（不算在身边）；0 = 关
+    edge_band: float = 0.06  # 名字标签中心在最左 / 最右（按屏宽）或最上 / 最下（按屏高）这么宽里、又没挂上人 = 好友在画面外；0 = 关
+    # 好友在不在场（spec 2026-10-06-friend-presence；数字都是估的）：走出画面不算走开，贴边 / 按 Q 喊到算"附近"
+    presence: bool = True  # false：nearby() 照旧只看画面里（keep 秒没看到名字就算走开）
+    leave_after: float = 15.0  # 找不到（画面里、边上都没有）满这么久、并且喊过一声也没亮出名字才算走开
+    recheck: float = 90.0  # 喊到一次管多久：过期了还看不到就再喊一声（好友在远处时大约这么久喊一声，60~120）
+    confirm_max: float = 60.0  # 一直喊不成（被拦、额度用完）最多等这么久，到了直接算走开
     # 追踪和接回（spec 2026-10-01-tracking-relink-motion；数字都没标定，perception track-eval 定完再上真机）。
     # 下面的开关全关 = 原来的行为
     sticky_names: bool = True  # 挂过名字标签的轨迹只要不断就一直算在身边（好友稍远标签就淡掉）；false = 照旧只靠标签

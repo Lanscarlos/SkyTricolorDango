@@ -55,6 +55,7 @@ from .gesture import ClipBuffer, eligible, person_crop
 from .icons_map import MAP_OWNERS, UNKNOWN, Icon, map_label, owner_of
 from .lighting import DISK_EVERY, DISK_GAP, GONE_RETRY, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
 from .ocr import OcrEngine, join_lines
+from .presence import Presence
 from .people import OBJECT_NAMES, OTHERS, WHO, CallSeen, Person, Seen, Thing, object_distance, side_of
 from .sweep import STRANGER_WHO, UNKNOWN_WHO, UNLIT_WHO, Sighting, SweepResult, bearing, distance, find_self, merge
 from .track import PAN_MIN_RESPONSE, PAN_RECHECK_RESPONSE, Track, Tracker, estimate_shift, iou
@@ -351,6 +352,7 @@ class PerceptionWatcher:
         enroll_dir: Path | None = None,  # 启动登记团子时取到的裁图存这里（<序号>.jpg，None = 不存）
         icons_cfg: IconsConfig | None = None,  # 认地图交互图标（spec 2026-10-05-icon-detection）；圈的归属判断不受 enabled 管
         map_icons=None,  # vision.icons_map.MapIcons：先祖 / 物件 / 地图上的圈认种类（None = 不认，icons() 为空）
+        presence_call: bool = False,  # 好友找不到时身体会不会喊一声确认（大脑模式、[call] auto、不是 dry-run）；不会就满 leave_after 直接算走开
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -429,6 +431,8 @@ class PerceptionWatcher:
         self.labels: dict[str, tuple[int, int, int, int, float]] = {}
         self.circles: dict[str, tuple[str | None, float]] = {}
         self.last_seen: dict[str, float] = {}
+        # 好友在不在场（spec 2026-10-06-friend-presence）：贴边 / 喊到算"附近"；共用 last_seen 这个字典
+        self.presence = Presence(cfg, self.last_seen, presence_call) if cfg.presence else None
         self.place = ""  # 认地图认出的地方（三期 §2，没挂 places 时一直空）；和 EnvWatcher 同名
         self.place_at = float("-inf")
         self.last_dets: list[Detection] = []  # 最近一帧的检测（调试画框用）
@@ -526,6 +530,8 @@ class PerceptionWatcher:
             return
         for name, t in list(self.last_seen.items()):
             self.last_seen[name] = min(t + d, now)
+        if self.presence is not None:
+            self.presence.shift(d, now)
         for lost in list(self._lost.values()):
             lost.last = min(lost.last + d, now)
         for track in list(self.tracker.tracks.values()):
@@ -807,12 +813,14 @@ class PerceptionWatcher:
             if not name:
                 continue
             b = tag.box
-            edge = self._offscreen(tag, width) if tag.id not in assigned else None
+            edge = self._offscreen(tag, width, height) if tag.id not in assigned else None
             if edge:
                 # 名字贴在屏幕边上 = 好友在画面外（spec 2026-10-01-q-call §1.3）：不算在身边（不然一喊就冒出一串假的"来到身边"），
                 # 位置照记（盯人 track 靠它往画面外转），呼喊窗口里记进结果
                 self.labels[name] = (b.x, b.y, b.w, b.h, now)
                 self._call_note(name, Seen(edge, None, on_screen=False), now)
+                if self.presence is not None:
+                    self.presence.edge(name, edge, now)
                 continue
             self.last_seen[name] = now
             self.labels[name] = (b.x, b.y, b.w, b.h, now)
@@ -1145,13 +1153,21 @@ class PerceptionWatcher:
         d = t.data
         return bool(d.get("dango")) or now - d.get("dango_look", float("-inf")) <= DANGO_LOOK_HOLD
 
-    def _offscreen(self, tag: Track, width: int) -> str | None:
-        """名字标签中心在最左 / 最右 edge_band 里：好友在画面外，返回在哪边。"""
-        band = self.cfg.edge_band * width
-        if band <= 0:
+    def _offscreen(self, tag: Track, width: int, height: int) -> str | None:
+        """名字标签中心在最左 / 最右（edge_band × 屏宽）或最上 / 最下（edge_band × 屏高）里：好友在画面外，返回在哪边。
+        离得远的好友按 Q 后标签可能贴在四条边的任意一条上（spec 2026-10-06-friend-presence §2.1）；左右优先。
+        最下边那一条在 [env] roi 排除的底部输入栏里，_filter 已经丢掉了，现在实际上认不到"下边"（等真机核对）。"""
+        if self.cfg.edge_band <= 0:
             return None
-        cx = tag.box.x + tag.box.w / 2
-        return "左边" if cx < band else ("右边" if cx > width - band else None)
+        band_x, band_y = self.cfg.edge_band * width, self.cfg.edge_band * height
+        cx, cy = tag.box.x + tag.box.w / 2, tag.box.y + tag.box.h / 2
+        if cx < band_x:
+            return "左边"
+        if cx > width - band_x:
+            return "右边"
+        if cy < band_y:
+            return "上边"
+        return "下边" if cy > height - band_y else None
 
     def _calling(self, now: float) -> bool:
         c = self._call
@@ -1173,6 +1189,8 @@ class PerceptionWatcher:
                 c.unnamed = self._count_unnamed(players, now)
                 c.ended = True
             log.debug("呼喊窗口结束：%s；没挂名字 %d 个", "、".join(c.friends) or "没看到名字", c.unnamed)
+            if self.presence is not None:
+                self.presence.call_done(c.at, dict(c.friends))
             for p in players:  # 为"可能是"喊的这一声：窗口里头上没亮名字（标签挂到别人头上也一样）就是认错了
                 if p.data.get("unsure_called") == c.at and not p.data.get("name"):
                     log.info("喊了一声，轨迹 %d 头上没亮名字", p.id)
@@ -1181,7 +1199,7 @@ class PerceptionWatcher:
             return
         for tag in tags:  # 只看到名字、下面没框到人（贴边的在上面已经记过）
             name = tag.data.get("name")
-            if name and tag.id not in assigned and self._offscreen(tag, width) is None:
+            if name and tag.id not in assigned and self._offscreen(tag, width, height) is None:
                 self._call_note(name, Seen(side_of(tag.box.x + tag.box.w / 2, width), None), now)
         ref = self._ref_height(height)
         for p in players:
@@ -2030,7 +2048,7 @@ class PerceptionWatcher:
             maybe = p.data.get("maybe") if p.data.get("maybe_by") != "relink" else None  # 按位置接回的不报走近（可能接错）
             who = (
                 p.data.get("name")
-                or (maybe if maybe and maybe in self.nearby(now) else None)  # 按外观认的：他还在身边才算（同 last_seen 的规矩）
+                or (maybe if maybe and now - self.last_seen.get(maybe, float("-inf")) <= self.cfg.keep else None)  # 按外观认的：他还在画面里才算
                 or (STRANGER if p.data.get("stranger") else None)
             )
             if who is None or (who == STRANGER and not self.cfg.approach_strangers):
@@ -2633,8 +2651,35 @@ class PerceptionWatcher:
 
     # ---- 给身体 / 提示词用的（和 EnvWatcher 一样） ----
     def nearby(self, now: float) -> list[str]:
+        """在场的好友：presence 开着时 = 身边 + 附近（贴边 / 喊到），关着时 = 画面里 keep 秒内看到过。"""
         now = self._frozen(now)
+        if self.presence is not None:
+            return self.presence.present(self.names(), now)
         return [n for n in self.names() if now - self.last_seen.get(n, float("-inf")) <= self.cfg.keep]
+
+    def in_view(self, now: float) -> list[str]:
+        """身边（画面里看得到）的好友；presence 关时同 nearby()。"""
+        if self.presence is None:
+            return self.nearby(now)
+        return self.presence.in_view(self.names(), self._frozen(now))
+
+    def around(self, now: float) -> list[tuple[str, str]]:
+        """附近（画面里看不到、还在这个场景）的好友和怎么知道的："画面外·右边" / "远处，刚喊到"。"""
+        if self.presence is None:
+            return []
+        return self.presence.around(self.names(), self._frozen(now))
+
+    def need_call(self, now: float) -> list[str]:
+        """找不到、还没为这次喊过的好友：身体喊一声确认还在不在。"""
+        if self.presence is None:
+            return []
+        return self.presence.need_call(self.names(), self._frozen(now))
+
+    def left_note(self, name: str, now: float) -> str:
+        """走开的原因（leave 事件的括号里）；presence 关时为空，身体用原来的文字。"""
+        if self.presence is None:
+            return ""
+        return self.presence.left_note(name, self._frozen(now))
 
     def strangers(self, now: float) -> int:
         """最近 keep 秒里同一帧最多看到几个陌生人（轨迹会断，所以不数轨迹条数）。"""
@@ -2654,9 +2699,12 @@ class PerceptionWatcher:
         parts = []
         if self.place and self._frozen(now) - self.place_at <= self.env_cfg.place_keep:
             parts.append(f"- 看起来在：{self.place}（按画面认的，可能不准）")
-        people = self.nearby(now)
+        people = self.in_view(now)
         if people:
             parts.append(f"- 你身边现在有：{'、'.join(people)}（画面上能看到他们头顶的名字）")
+        around = self.around(now)
+        if around:
+            parts.append("- 附近（画面里看不到）：" + "、".join(f"{n}（{why}）" for n, why in around))
         n = self.strangers(now)
         if n:
             dark = self.unlit(now)

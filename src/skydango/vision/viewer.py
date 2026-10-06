@@ -416,7 +416,10 @@ def describe_env(env, now: float) -> dict:
     interval = getattr(getattr(env, "cfg", None), "interval", None)
     ocr = f"整图 OCR（每 {interval:g} 秒一次）" if isinstance(interval, (int, float)) else "整图 OCR"
     out: dict = {"识别": "YOLO 感知层" if yolo else ocr}
-    out["身边的好友"] = env.nearby(now) or "没看到"
+    out["身边的好友"] = (env.in_view(now) if hasattr(env, "in_view") else env.nearby(now)) or "没看到"
+    around = env.around(now) if hasattr(env, "around") else []
+    if around:  # 好友在不在场：画面里看不到、还在这个场景的
+        out["附近"] = [f"{n}（{why}）" for n, why in around]
     look = env.my_look() if hasattr(env, "my_look") else ""
     if look:
         out["团子穿着"] = look

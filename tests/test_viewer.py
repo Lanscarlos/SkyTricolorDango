@@ -677,3 +677,13 @@ def test_usage_endpoint():   # spec 2026-10-06-model-usage §6.1
         assert request(url + "usage")[0] == 500
     finally:
         v.stop()
+
+
+def test_describe_env_splits_view_and_around():
+    w = PerceptionWatcher(ScriptDetector([Detection("name_tag", Rect(1810, 500, 100, 44), 0.9)]), WidthOcr({100: "懒洋洋大王"}),
+                          PerceptionConfig(), EnvConfig(), lambda: ["懒洋洋大王"], [0.0, 0.0, 0.3, 0.8], background=False)
+    w.last_seen["懒洋洋大王"] = -10.0  # 之前在画面里见过
+    w.process(frame(), 0.0, panel_visible=False)  # 名字贴在右边：在附近、画面里没有
+    info = describe_env(w, 0.0)
+    assert info["身边的好友"] == "没看到"
+    assert info["附近"] == ["懒洋洋大王（画面外·右边）"]

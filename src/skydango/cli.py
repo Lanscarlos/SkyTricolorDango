@@ -511,6 +511,10 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         from .vision.unknownnames import UnknownNames
 
         unknown = UnknownNames(run.path / "unknown_names", _friend_names(cfg))
+    # 好友在不在场（spec 2026-10-06-friend-presence）：只有大脑模式的身体会自动喊一声确认
+    can_call = light and cfg.call.enabled and cfg.call.auto and not cfg.reply.dry_run
+    if p.presence:
+        log.info("好友在不在场：走出画面不算走开，找不到满 %.0f 秒%s才算", p.leave_after, "、喊过一声也没亮出名字" if can_call else "")
     flame = None
     if want_light:
         from .vision.candle import load_flame
@@ -526,6 +530,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run, dino),
         call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
         catalog=_catalog_collector(cfg, run), icons_cfg=cfg.icons, map_icons=_map_icons(cfg, icons, dino, run),
+        presence_call=can_call,
     )
 
 

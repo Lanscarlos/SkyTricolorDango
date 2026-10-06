@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import cv2
 import numpy as np
 import pytest
@@ -171,7 +173,7 @@ def test_friend_is_recognized_by_reading_the_name_tag_once():
 def test_identity_follows_the_name_not_the_track():
     det = FakeDetector()
     ocr = FakeOcr({110: "懒洋洋大王"})
-    w = watcher(det, ocr, track_buffer=0.5, keep=5.0)
+    w = watcher(det, ocr, track_buffer=0.5, keep=5.0, presence=False)
     det.frames = [[tag(990, 110)]]
     w.process(frame(), 0.0, panel_visible=False)
     det.frames = [[]]  # 转视角：看不到了
@@ -431,7 +433,7 @@ def test_hold_freezes_nearby_and_shifts_last_seen():
     clock = Clock()
     det = FakeDetector()
     det.frames = [[tag(990, 110)]]
-    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), clock=clock, keep=5.0)
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), clock=clock, keep=5.0, presence=False)
     w.process(frame(), 0.0, panel_visible=False)
     clock.t = 1.0
     w.hold("blackout")
@@ -2735,15 +2737,15 @@ def test_sticky_stops_when_track_breaks():
     det.frames = [[]]  # 人也不见了：从这里开始算 keep
     for i in range(31, 100):
         w.process(frame(), i * 0.1, panel_visible=False)
-    assert w.nearby(7.9) == ["懒洋洋大王"]
-    assert w.nearby(8.1) == []
+    assert w.in_view(7.9) == ["懒洋洋大王"]
+    assert w.in_view(8.1) == []
 
 
 def test_sticky_names_off_is_old_behavior():
     det, w = _faded(sticky=False)
     for i in range(1, 60):
         w.process(frame(), i * 0.1, panel_visible=False)
-    assert w.nearby(5.1) == []
+    assert w.in_view(5.1) == []
 
 
 def test_sticky_ignores_maybe_and_unlit():
@@ -2796,7 +2798,7 @@ def test_new_call_replaces_old_window():
 def test_edge_tag_not_nearby_but_in_call_result():
     det = FakeDetector()
     det.frames = [[tag(1810, 100, y=500)]]  # 名字贴在屏幕右边（中心 1860）、下面没人：好友在画面外
-    w = watcher(det, FakeOcr({100: "懒洋洋大王"}))
+    w = watcher(det, FakeOcr({100: "懒洋洋大王"}), presence=False)  # 老规矩：贴边不算在身边
     w.called(0.0)
     w.process(frame(), 0.1, panel_visible=False)
     assert w.nearby(0.1) == []
@@ -3054,3 +3056,84 @@ def test_light_busy_false_during_cooldown_unless_retry_possible(monkeypatch):
     w2.light_done("gone")
     run_frames(w2, clock2, 3.2, 4.0)
     assert w2.light_busy(clock2.t) is True  # 判走开后可能重试：拦着
+
+
+# ---- 好友在不在场（spec 2026-10-06-friend-presence §2） ----
+def test_edge_tag_counts_as_present():
+    det = FakeDetector()
+    det.frames = [[tag(1810, 100, y=500)]]  # 名字贴在屏幕右边、下面没人
+    w = watcher(det, FakeOcr({100: "懒洋洋大王"}))
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.nearby(0.1) == []  # 这次运行还没在画面里见过他：光贴边不算来了
+    w.last_seen["懒洋洋大王"] = 0.0
+    w.process(frame(), 0.2, panel_visible=False)
+    assert w.nearby(0.2) == ["懒洋洋大王"]
+    assert w.in_view(5.1) == []
+    assert w.around(5.1) == [("懒洋洋大王", "画面外·右边")]
+
+
+def test_edge_tag_top():
+    det = FakeDetector()
+    det.frames = [[tag(900, 100, y=10)]]  # 名字贴在屏幕最上边、下面没人
+    w = watcher(det, FakeOcr({100: "懒洋洋大王"}))
+    w.last_seen["懒洋洋大王"] = -10.0  # 之前在画面里见过
+    w.process(frame(), 0.1, panel_visible=False)
+    assert "懒洋洋大王" in w.labels
+    assert w.in_view(0.1) == [] and w.nearby(0.1) == ["懒洋洋大王"]
+    assert w.around(0.1) == [("懒洋洋大王", "画面外·上边")]
+
+
+def test_offscreen_sides():
+    w = watcher(FakeDetector())
+    on = lambda x, y: w._offscreen(SimpleNamespace(box=Rect(x, y, 100, 44)), 1920, 1080)  # noqa: E731
+    assert (on(10, 500), on(1810, 500), on(900, 10), on(900, 1030), on(900, 500)) == ("左边", "右边", "上边", "下边", None)
+
+
+def test_presence_off_is_old_behavior():
+    det = FakeDetector()
+    det.frames = [[tag(1810, 100, y=500)]]
+    w = watcher(det, FakeOcr({100: "懒洋洋大王"}), presence=False)
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.presence is None
+    assert w.nearby(0.1) == [] and w.in_view(0.1) == []
+    assert w.need_call(0.1) == [] and w.around(0.1) == [] and w.left_note("懒洋洋大王", 0.1) == ""
+
+
+def test_presence_call_false_by_default():
+    w = watcher(FakeDetector())
+    assert w.presence is not None and w.presence.can_call is False
+
+
+def test_call_window_feeds_presence():
+    det = FakeDetector()
+    det.frames = [[player(900), tag(890, 100)], []]
+    w = PerceptionWatcher(
+        det, FakeOcr({100: "懒洋洋大王"}), PerceptionConfig(stranger_after=1.0), EnvConfig(), lambda: list(FRIENDS),
+        log_roi=[0.0, 0.0, 0.335, 0.855], background=False, presence_call=True,
+    )
+    w.process(frame(), 0.1, panel_visible=False)
+    assert w.in_view(0.1) == ["懒洋洋大王"]
+    w.process(frame(), 6.0, panel_visible=False)
+    assert w.nearby(6.0) == ["懒洋洋大王"] and w.in_view(6.0) == []  # 找不到还不算走开
+    assert w.need_call(6.0) == ["懒洋洋大王"]
+    w.called(6.0)
+    w.process(frame(), 9.0, panel_visible=False)
+    w.process(frame(), 12.1, panel_visible=False)  # 窗口结束：没亮出他
+    assert w.need_call(12.1) == []
+    assert w.nearby(15.2) == []
+    assert w.presence.state("懒洋洋大王", 15.2) == "left"
+    assert w.left_note("懒洋洋大王", 15.2).startswith("喊了一声也没看到")
+
+
+def test_presence_pauses_with_hold():
+    clock = Clock(0.0)
+    det = FakeDetector()
+    det.frames = [[tag(1810, 100, y=500)], []]
+    w = watcher(det, FakeOcr({100: "懒洋洋大王"}), clock=clock)
+    w.last_seen["懒洋洋大王"] = -10.0
+    w.process(frame(), 0.0, panel_visible=False)
+    clock.t = 1.0
+    w.hold("x")
+    clock.t = 100.0
+    w.release("x")
+    assert w.presence.state("懒洋洋大王", 101.0) == "near"  # 暂停的 99 秒不算：贴边 1 秒前才"看到"
