@@ -158,6 +158,11 @@ class UsageMeter:
         self._delta: dict[str, dict[str, dict[str, dict]]] = {}  # 日期 → 来源 → key → 行（还没写进账本的）
         self._rates: dict[str, dict] = {}
         self._balances: dict[str, dict] = {}
+        self._base: tuple[str, dict] = ("", {})  # (日期, 账本里那天已经写盘的 {key: 行})：snapshot 的「今天」= 它 + 增量
+        self._flush_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._saver: threading.Thread | None = None
+        self._refresh_base(time.strftime("%Y-%m-%d", time.localtime(self.started)))
 
     # ---- 记 ----
     def record(self, use: str, provider: str, model: str, *, backup: bool, usage: dict | None, ok: bool,
@@ -215,11 +220,61 @@ class UsageMeter:
                         add_row(into.setdefault(key, _empty()), row)
 
     def _today_rows(self, day: str) -> dict:
-        """今天：这个进程还没写进账本的（所有来源）；有账本时 Task 4 再加上账本里的。"""
-        rows: dict = {}
+        """今天 = 账本里已经写盘的（所有来源、之前几次运行）+ 这个进程还没写盘的（调用方拿着 _lock）。"""
+        base_day, base = self._base
+        rows: dict = dict(base) if base_day == day else {}
         for source_rows in self._delta.get(day, {}).values():
             rows = merge_rows(rows, source_rows)
         return rows
+
+    def _refresh_base(self, day: str) -> None:
+        if self.ledger is None:
+            return
+        try:
+            rows = self.ledger.day_rows(day)
+        except Exception:  # noqa: BLE001 账本读不出来不影响记账
+            log.debug("读用量账本出错", exc_info=True)
+            return
+        with self._lock:
+            self._base = (day, rows)
+
+    def flush(self) -> bool:
+        """把增量加进账本；失败增量放回去、返回 False。没有账本返回 False。"""
+        if self.ledger is None:
+            return False
+        with self._flush_lock:
+            delta = self.take_delta()
+            today = time.strftime("%Y-%m-%d", time.localtime(self.wall()))
+            ok = False
+            if delta:
+                try:
+                    ok = self.ledger.add(delta, today)
+                except Exception:  # noqa: BLE001
+                    log.warning("写用量账本出错", exc_info=True)
+                if not ok:
+                    self.restore_delta(delta)
+                    return False
+            self._refresh_base(today)
+            return True
+
+    def start_saver(self, every: float) -> None:
+        """每 every 秒写一次账本（守护线程）。"""
+        if self.ledger is None or self._saver is not None:
+            return
+
+        def loop() -> None:
+            while not self._stop.wait(every):
+                self.flush()
+
+        self._saver = threading.Thread(target=loop, name="usage-saver", daemon=True)
+        self._saver.start()
+
+    def close(self) -> None:
+        """停保存线程、最后写一次。"""
+        self._stop.set()
+        if self._saver is not None:
+            self._saver.join(timeout=5)
+        self.flush()
 
     # ---- 给 /usage ----
     def current(self, use: str) -> tuple[str | None, bool]:

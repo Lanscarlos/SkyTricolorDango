@@ -889,6 +889,16 @@ class ConsoleConfig:
 
 
 @dataclass
+class UsageConfig:
+    """模型用量和额度（spec 2026-10-06-model-usage §4 §5）。管理面板设置清单不加（很少改）。"""
+
+    ledger: str = "runs/usage.json"  # 今天累计的账本（不进 git、不进私有仓库，每台电脑各记各的）
+    keep_days: int = 7  # 账本只留最近几天
+    save_every: float = 60.0  # 每隔几秒把这次的用量加进账本（退出时再写一次）
+    balance_every: float = 300.0  # 每隔几秒查一次 DeepSeek 余额
+
+
+@dataclass
 class SandboxConfig:
     """大脑沙盒（`sandbox`，见 docs/superpowers/specs/2026-09-30-brain-sandbox-design.md §7）。管理面板设置清单不加（很少改）。"""
 
@@ -941,6 +951,7 @@ class Config:
     backstage: BackstageConfig = field(default_factory=BackstageConfig)
     console: ConsoleConfig = field(default_factory=ConsoleConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    usage: UsageConfig = field(default_factory=UsageConfig)
     providers: dict[str, dict] = field(default_factory=dict)  # 模型供应商：[providers.<id>]，原样的表（models/config.py 解析）
     models: dict[str, dict] = field(default_factory=dict)  # 每个用处选哪个模型：[models.<用处>]
     sources: dict[str, str] = field(default_factory=dict)  # 配置文件里写了的叶子键 → "config" / "console"
