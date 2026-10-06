@@ -160,7 +160,7 @@ def _dataset(tmp_path, monkeypatch):
                                                         encoding="utf-8")
     sent = []
 
-    def run(cmd, env, cwd, content, timeout):
+    def run(cmd, env, cwd, content, timeout, on_message=None):
         texts = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("帧 ")]
         sent.append(cmd[cmd.index("--system-prompt") + 1])
         out = {}

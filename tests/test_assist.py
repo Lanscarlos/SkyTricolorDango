@@ -220,7 +220,7 @@ def _cli_env(tmp_path, monkeypatch, n=2, runs=False, reply=None, limit=False):
 
     sent = []
 
-    def run(cmd, env, cwd, content, timeout):
+    def run(cmd, env, cwd, content, timeout, on_message=None):
         stems = [b["text"].split()[1].split("：")[0] for b in content if b["type"] == "text" and b["text"].startswith("帧 ")]
         sent.append(stems)
         if limit:

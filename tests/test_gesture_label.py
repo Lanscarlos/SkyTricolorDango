@@ -76,7 +76,7 @@ def _cli_env(tmp_path, monkeypatch):
 
     sent = []
 
-    def run(cmd, env, cwd, content, timeout):
+    def run(cmd, env, cwd, content, timeout, on_message=None):
         stems = [b["text"].split()[1].rstrip("：") for b in content if b["type"] == "text" and b["text"].startswith("片段 ")]
         sent.append(stems)
         return {"result": json.dumps({s: {"label": "wave", "confidence": 0.9, "reason": "r"} for s in stems}),
@@ -124,7 +124,7 @@ def test_clip_labeled_in_page_while_running_is_skipped(tmp_path, monkeypatch, ca
     a, b = _clip(un, "r__0001_track1_t0.00s"), _clip(un, "r__0002_track1_t1.00s")
     inner = claude_code.one_shot_message  # _cli_env 换上的假的
 
-    def run(cmd, env, cwd, content, timeout):
+    def run(cmd, env, cwd, content, timeout, on_message=None):
         out = inner(cmd, env, cwd, content, timeout)
         (tmp_path / "ds" / "wave").mkdir(exist_ok=True)
         a.rename(tmp_path / "ds" / "wave" / a.name)  # Claude 还在看的时候，网页上标走了

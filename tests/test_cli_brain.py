@@ -490,7 +490,7 @@ def _final_parts(tmp_path, monkeypatch, reply="{}", claude_exc=None):
     seen = {"claude": [], "deepseek": []}
     fake_claude(monkeypatch, ["claude"])
 
-    def one_shot_message(cmd, env, cwd, content, timeout):
+    def one_shot_message(cmd, env, cwd, content, timeout, on_message=None):
         seen["claude"].append(timeout)
         if claude_exc is not None:
             raise claude_exc
