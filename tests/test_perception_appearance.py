@@ -119,7 +119,7 @@ def test_friend_survives_tag_loss_via_appearance():
 
 
 def test_maybe_does_not_bring_back_a_friend_who_left():
-    w, det = make()
+    w, det = make(presence=False)
     friend_then_gone(w, det)
     run(w, det, [], 1.1, 6.9)
     t = run(w, det, [(player(400), PINK)], 7.0, 8.5)
@@ -822,7 +822,7 @@ def test_unsure_holds_stranger_then_gives_up():
     assert (person.kind, person.name, person.sure, person.unsure) == ("friend", XIAOMING, False, True)
     (box,) = [b for b in w.overlay(t) if b["kind"] == "unsure"]
     assert box["label"] == f"可能是{XIAOMING}?"
-    assert XIAOMING not in w.nearby(t)  # 可能是：不刷新在场
+    assert XIAOMING not in w.in_view(t)  # 可能是：不刷新"在画面里"
     t = run_img(w, det, [body], striped(body), t + 0.1, since + wait + 0.5)
     assert players(w)[0].id == p.id
     assert p.data.get("unsure_miss") is True and "unsure" not in p.data

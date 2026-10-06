@@ -269,14 +269,14 @@ def test_sticky_keeps_friend_nearby_while_track_alive():
 
 
 def test_sticky_off_drops_after_keep():
-    w, det = make(sticky_names=False)
+    w, det = make(sticky_names=False, presence=False)
     run(w, det, [player(800), tag(800)], 0.0, 1.0)
     t = run(w, det, [player(800)], 1.0, 7.0)
     assert NAME not in w.nearby(t)
 
 
 def test_sticky_ends_after_track_dropped():
-    w, det = make(relink=False)
+    w, det = make(relink=False, presence=False)
     run(w, det, [player(800), tag(800)], 0.0, 1.0)
     run(w, det, [player(800)], 1.0, 3.0)  # 最后看到 2.9
     run(w, det, [], 3.0, 7.5)
@@ -515,7 +515,7 @@ def test_relinked_maybe_does_not_report_approach():
 
 
 def test_sticky_stops_on_low_only_track():
-    w, det = make(relink=False)
+    w, det = make(relink=False, presence=False)
     run(w, det, [player(800), tag(800)], 0.0, 1.0)
     t = run(w, det, [player(800, s=0.3)], 1.0, 12.0)  # 只有低分框续着：最多续 LOW_ONLY_MAX 秒
     assert body(w).weak_hits > 0

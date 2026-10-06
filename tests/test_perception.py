@@ -173,7 +173,7 @@ def test_friend_is_recognized_by_reading_the_name_tag_once():
 def test_identity_follows_the_name_not_the_track():
     det = FakeDetector()
     ocr = FakeOcr({110: "懒洋洋大王"})
-    w = watcher(det, ocr, track_buffer=0.5, keep=5.0)
+    w = watcher(det, ocr, track_buffer=0.5, keep=5.0, presence=False)
     det.frames = [[tag(990, 110)]]
     w.process(frame(), 0.0, panel_visible=False)
     det.frames = [[]]  # 转视角：看不到了
@@ -433,7 +433,7 @@ def test_hold_freezes_nearby_and_shifts_last_seen():
     clock = Clock()
     det = FakeDetector()
     det.frames = [[tag(990, 110)]]
-    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), clock=clock, keep=5.0)
+    w = watcher(det, FakeOcr({110: "懒洋洋大王"}), clock=clock, keep=5.0, presence=False)
     w.process(frame(), 0.0, panel_visible=False)
     clock.t = 1.0
     w.hold("blackout")
@@ -2737,15 +2737,15 @@ def test_sticky_stops_when_track_breaks():
     det.frames = [[]]  # 人也不见了：从这里开始算 keep
     for i in range(31, 100):
         w.process(frame(), i * 0.1, panel_visible=False)
-    assert w.nearby(7.9) == ["懒洋洋大王"]
-    assert w.nearby(8.1) == []
+    assert w.in_view(7.9) == ["懒洋洋大王"]
+    assert w.in_view(8.1) == []
 
 
 def test_sticky_names_off_is_old_behavior():
     det, w = _faded(sticky=False)
     for i in range(1, 60):
         w.process(frame(), i * 0.1, panel_visible=False)
-    assert w.nearby(5.1) == []
+    assert w.in_view(5.1) == []
 
 
 def test_sticky_ignores_maybe_and_unlit():
