@@ -87,6 +87,7 @@ def materials(
     final: bool,
     traits: str | None = None,  # 第 3 期：已经攒下的性格（Persona.section()）；None = 不写这一段，"" = 还没有
     profiles: list[str] | None = None,  # friends.md 里相关好友那一节（friend_sections）；None = 不写这一段
+    recap: str = "",  # 大脑这次上线的前情提要（只给下线那次，spec 2026-10-06-brain-compact §7）；空 = 不写这一段
 ) -> str:
     """拼给反思的材料（一条 user 消息）。"""
     d = time.localtime(now)
@@ -95,6 +96,7 @@ def materials(
         f"精力：{energy_note or '（不知道）'}",
         f"你现在心里：{mind_line or '平常'}",
         _block("人设：", [persona.strip()] if persona.strip() else []),
+        *([f"## 这次上线早些时候（前情提要，大脑自己写的）\n{recap.strip()}"] if recap.strip() else []),
         _block("这段时间的聊天（“我”是你自己说的）：", [f"{who or '（看不出是谁）'}：{text}" for _, who, text in chat[-MAX_CHAT:]]),
         _block("这段时间谁来了谁走了：", comings),
     ]

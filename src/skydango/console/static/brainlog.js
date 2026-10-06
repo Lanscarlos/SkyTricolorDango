@@ -22,6 +22,7 @@ function splitPrompt(p) {  // "[时间] 事件：\n- 一条\n- 一条\n状态：
 function stepLine(s) {
   if (s.kind === "thinking") return {cls: "think", mark: "…", text: s.text || ""};
   if (s.kind === "text") return {cls: "note", mark: "»", text: s.text || ""};
+  if (s.kind === "compact") return {cls: "dim", mark: "─", text: s.text || "", fold: true};  // 压缩：第一行是摘要，点开看前情提要全文
   if (s.kind === "tool") {
     const input = s.input || {};
     if (s.name === "say" && typeof input.text === "string") return {cls: "say", mark: "▶", text: `say “${input.text}”`};
@@ -57,9 +58,9 @@ function copyText(t) {
 
 /* ---- 画 ---- */
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
-function line(cls, mark, text) {
+function line(cls, mark, text, fold) {
   const rows = text.split("\n");
-  if (rows.length <= FOLD) { const d = el("div", "bc-line " + cls); d.append(el("span", "m", mark), el("span", "x", text)); return d; }
+  if (rows.length <= (fold ? 1 : FOLD)) { const d = el("div", "bc-line " + cls); d.append(el("span", "m", mark), el("span", "x", text)); return d; }
   const det = el("details", "bc-fold bc-line " + cls), sm = el("summary");
   sm.append(el("span", "m", mark), el("span", "x", `${rows[0]}  …（共 ${rows.length} 行）`));
   det.append(sm, el("pre", "", text)); return det;
@@ -78,7 +79,7 @@ function turnEl(t, onCopy) {
       det.append(sm, el("pre", "", p.rest)); d.append(det);
     }
   }
-  for (const s of t.steps || []) { const l = stepLine(s); d.append(line(l.cls, l.mark, l.text)); }
+  for (const s of t.steps || []) { const l = stepLine(s); d.append(line(l.cls, l.mark, l.text, l.fold)); }
   if (t.error) d.append(line("fail", "✗", `失败：${t.error}`));
   return d;
 }

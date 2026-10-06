@@ -2787,7 +2787,7 @@ def _brain_env(cfg: Config) -> None:
 
 def _check_brain_models(registry) -> None:
     """大脑的主和备都用不了（缺 Key / 令牌 / claude 命令、没配好）才拦；别的用处的问题只警告，用到时那一处停用。"""
-    from .models.config import USE_NAMES
+    from .models.config import USE_BY_NAME, USE_NAMES
 
     u = registry.setup.uses["brain"]
     refs = [r for r in (u.main, u.backup) if r is not None]
@@ -2798,7 +2798,7 @@ def _check_brain_models(registry) -> None:
         raise RuntimeError("大脑没有能用的模型：" + why + "；不想接大脑可以用 --no-brain（调试用的普通模式）")
     missing: dict[str, list[str]] = {}  # 问题 → 受影响的用处
     for name in USE_NAMES:
-        if name != "brain":
+        if name != "brain" and not USE_BY_NAME[name].follows:
             for p in registry.requirements([name]):
                 missing.setdefault(p.text, []).append(name)
     for text, names in missing.items():
@@ -2812,15 +2812,16 @@ def _brain_sessions(registry, build):
     from .models.errors import ModelError
 
     u = registry.setup.uses["brain"]
-    first, rest = (u.main, u.backup) if u.main is not None and registry.gates.ok(u.main.provider) else (u.backup, None)
+    main_ok = u.main is not None and registry.gates.ok(u.main.provider)
+    first, rest = (u.main, u.backup) if main_ok else (u.backup, None)
     try:
-        session = build(first)
+        session = build(first, backup=not main_ok)  # backup：用量那一笔记主还是备（压缩）
     except ModelError as exc:
         if rest is None:
             raise RuntimeError(f"大脑没有能用的模型：{exc}") from exc
         log.warning("大脑的主模型 %s 用不了（%s），改用 %s", first, exc, rest)
-        return build(rest), None
-    return session, (functools.partial(build, rest) if rest is not None else None)
+        return build(rest, backup=True), None
+    return session, (functools.partial(build, rest, backup=True) if rest is not None else None)
 
 
 def _models_line(brain, registry) -> str:
@@ -2832,6 +2833,8 @@ def _models_line(brain, registry) -> str:
     text = f"大脑已切到 {now}（{'；'.join(f'{p} {r}' for p, r in closed.items())}）" if brain.on_fallback else f"大脑 {now}"
     off = []
     for name, u in registry.setup.uses.items():
+        if USE_BY_NAME[name].follows:
+            continue
         label = USE_BY_NAME[name].label
         if u.disabled:
             off.append(f"{label}停用：{u.disabled}")
@@ -3015,7 +3018,8 @@ def _run_brain(
     )
     on_message = trace.chain(log_brain_message) if trace is not None else log_brain_message
     build = functools.partial(make_session, registry, prompt=prompt, toolbox=toolbox, mcp_url=server.url, workdir=work,
-                              cfg=cfg.brain, addressee=cfg.addressee.enabled, on_message=on_message)
+                              cfg=cfg.brain, addressee=cfg.addressee.enabled, on_message=on_message,
+                              inbox=store.inbox if store is not None else None, trace=trace)
     session, backup = _brain_sessions(registry, build)
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
@@ -3023,6 +3027,7 @@ def _run_brain(
         fallback=backup, gates=registry.gates, meter=registry.meter,
     )
     brain_box.append(brain)
+    body.recap_text = lambda: getattr(brain.session, "recap", "") or ""  # 下线反思带上前情提要（spec 2026-10-06-brain-compact §7）
     body.models_line = lambda: _models_line(brain, registry)
     if viewer is not None:
         viewer.usage = registry.meter.snapshot  # 管理面板的「模型用量」（spec 2026-10-06-model-usage §6.1）

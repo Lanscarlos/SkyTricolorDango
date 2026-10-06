@@ -216,3 +216,14 @@ def test_boot_marks_each_instance():
     a, b = BrainTrace(), BrainTrace()
     assert a.since(0, 0.0)["boot"] == a.since(0, 0.0)["boot"]
     assert a.since(0, 0.0)["boot"] != b.since(0, 0.0)["boot"]  # 程序重启过：网页据此清空重来
+
+
+def test_note_step_in_current_turn_or_outside():   # spec 2026-10-06-brain-compact §6：压缩换上 / 失败
+    t = BrainTrace(wall=lambda: 100.0)
+    t.note("── 压缩：第 1 次 ──\n正文")
+    t.begin("events", "[..] 事件")
+    t.note("── 压缩失败：坏了 ──")
+    out = turns(t)
+    outside, turn = out[0], out[1]
+    assert outside["reason"] == "outside" and outside["steps"] == [{"kind": "compact", "text": "── 压缩：第 1 次 ──\n正文"}]
+    assert turn["steps"] == [{"kind": "compact", "text": "── 压缩失败：坏了 ──"}] and turn["tools"] == []

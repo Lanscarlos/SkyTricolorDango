@@ -122,7 +122,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/lighting.py` | 点亮陌生人的纯计算（`FlameWatch`）：每处火焰一条线索、认出不动的假火焰（灯笼）、出请求的那条、举蜡烛后火焰怎么没的 → 点亮 / 走开 / 接着等（spec `2026-10-03-light-flame-vanish-design.md`；10-02 晚 6 次存图的回放在 `tests/test_light_replay.py`） |
 | `src/skydango/vision/candle.py` | 火焰：`find_flames` / `find_flame` 在调用方给的范围（团子周围）里找火焰，`black()` 量人物框有多黑（判点亮用），`white_ring` 分孤儿圆圈是举蜡烛请求（有白圈）还是圆盘；火焰圆盘**绝不点** |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
-| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`toolloop.py` OpenAI 兼容的大脑（`ToolLoopBrain`，function-calling 循环）、`sessions.py` 按供应商建大脑会话（`make_session`）、`claude.py` 旧名字的转引（进程、命令都搬到了 `models/claude_code.py`）、`llm_tools.py` OpenAI 兼容大脑的工具 schema（唯一来源）、`trace.py` 大脑时间线（给管理面板）、`manual.py` 手动控制、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `search.py` 有意识地找 / `find.py` 找人技能 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
+| `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`toolloop.py` OpenAI 兼容的大脑（`ToolLoopBrain`，function-calling 循环）、`compact.py` 它的历史压缩（压缩指令、前情提要格式、中途新记的 inbox，见「统管大脑」的历史压缩）、`sessions.py` 按供应商建大脑会话（`make_session`）、`claude.py` 旧名字的转引（进程、命令都搬到了 `models/claude_code.py`）、`llm_tools.py` OpenAI 兼容大脑的工具 schema（唯一来源）、`trace.py` 大脑时间线（给管理面板）、`manual.py` 手动控制、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `search.py` 有意识地找 / `find.py` 找人技能 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
 | `src/skydango/models/` | 模型供应商和按用处选模型（见「模型供应商」）：`config.py` 解析 `[providers.*]` / `[models.*]`、旧字段换算、校验；`claude_code.py`（`claude -p`）/ `openai_compat.py`（DeepSeek 等）两种接入方式；`errors.py` `ModelError`（`down` = limit / auth）；`gate.py` 按供应商的闸；`registry.py` `Registry` / `GatedCall`（主 → 备）；`usage.py` `UsageMeter` 用量 / 钱 / 限额、`usage_ledger.py` 今天累计的账本、`balance.py` DeepSeek 余额（见「模型供应商」的用量和额度）。**代码只从这里拿模型** |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、「模型」页后端（`models_view.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、整理 / 重训的任务槽（`jobs.py`）、整帧页后端（`frames.py`）、重训报告和换上 / 回退（`retrain_view.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`、标注页的整帧页 `frames.js`、重训区 `retrain.js`），左侧栏 + 八页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 模型 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
@@ -202,7 +202,7 @@ dir = "private/sandbox"
 | `icons/` | 认交互图标时认不出 / 低分的图标裁图 + `icons.jsonl`（`[icons] save`，每条轨迹 2 秒一张、每次最多 200 张）；难例原因 `icon_unknown` |
 | `appearance/` | 认装扮攒的训练数据：`crops/<身份>/*.jpg`（好友名，或 `t<轨迹>`）+ `appearance.jsonl`（`[appearance] save`，每条轨迹 2 秒一张、每次最多 2000 张） |
 | `../usage.json` | `runs/` 根目录（不随运行目录轮换）：模型用量今天累计的账本，最近 7 天（见「模型供应商」的用量和额度） |
-| `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有大脑模式，`--no-brain` 没有）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
+| `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有大脑模式，`--no-brain` 没有）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md）；OpenAI 兼容的大脑多 `history_mode`（append / sliding）和 `recap`（压过几次）；`brain/recap.jsonl` 是它的历史压缩：每次换上 / 失败一行（第几次、压掉几轮、字数、用时、用量、前情提要全文） |
 
 ## 聊天面板（`[panel]`，`chat/panel.py`）
 
@@ -456,6 +456,11 @@ dir = "private/sandbox"
   今天累计记在 `runs/usage.json`（`models/usage_ledger.py`，每 `save_every` 秒和退出时把增量加进去、带锁、只留 `keep_days` 天；真机、沙盒、离线命令都算；不进 git / 私有仓库，两台电脑各记各的）。
   团子 / 沙盒接口 `GET /usage`，面板 `GET /api/usage`（在跑转发，停着读账本 + 面板自己查余额，`console/usage_view.py`）；页面组件 `console/static/usage.js`：真机页、沙盒页左栏「模型用量」卡片（每 5 秒）、模型页顶上一行，模型页每个模型能填单价。
   测试里 `SKYDANGO_USAGE_LEDGER` 设成空（conftest），不往本机账本记假用量；`cli._start_balance` 也被换成空的
+- **OpenAI 兼容大脑的历史压缩**（`[brain.compact]`，spec `docs/superpowers/specs/2026-10-06-brain-compact-design.md`，计划 `docs/superpowers/plans/2026-10-06-brain-compact.md`；**代码 10-06 做完，还没在沙盒 / 真机验证，spec §10 六步没走，预算是粗算的**）：
+  一次上线内历史**只往后接**（两次压缩之间每个请求都是上一个的前缀，DeepSeek 前缀缓存一路命中），不再按 `[brain] history` 截；这一轮最后一次请求的 `prompt_tokens` 到 `budget`（64000）就在后台接着同一份前缀发一次压缩（`tool_choice = "none"`、温度 0.3），把老的部分连同上一份前情提要写成「这次上线到现在的前情提要」（最多 `recap_max` 1500 字），最近 `keep_turns`（6）轮留原话；结果在**下一轮开头**换上，放在历史开头（系统提示词不动，免得它没命中）。
+  压缩失败（撞墙、超时、空的、调了工具）或卡着到 2 × `budget`：退回滑动（system + 前情提要 + 最近 `history` 轮），`retry`（300 秒）后再试（滑动里不看 `prompt_tokens`），成功回到只往后接。中途新记的 inbox 行接在下一轮唤醒消息的事件后面、「状态：」前面（「你刚记下：」，按行内容记、只带一次；接在末尾会被历史截掉）。
+  用量记在跟着大脑的用处 `recap`（「压缩」，模型页只显示「跟着大脑」，`[models.recap]` 写了只警告）；时间线一步「── 压缩：… ──」（点开看全文）；下线那次反思材料多一节「这次上线早些时候（前情提要，大脑自己写的）」。前情提要**不写进任何记忆文件**。
+  `enabled = false` 逐字照旧（有基准测试 `tests/data/toolloop_baseline.json`）；管理面板设置页有 `brain.compact.enabled` / `budget` / `keep_turns`。Claude 大脑不受影响
 - 注意：大脑换了模型，`history.jsonl` 里 Claude 的旧回复会被 DeepSeek 模仿（想要的接续感）；要清照「记忆」一节挪进 `archive/`
 
 ## 统管大脑（`[brain]`，`run` 默认）

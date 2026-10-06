@@ -192,3 +192,12 @@ def test_backend_passes_rate_limit_to_meter(tmp_path, monkeypatch):
     b = reg.backend(ModelRef("claude", "haiku"), "eyes", tmp_path)
     b.on_event({"status": "rejected"})
     assert next(p for p in reg.meter.snapshot()["providers"] if p["id"] == "claude")["rate"]["status"] == "rejected"
+
+
+def test_log_summary_skips_follows(tmp_path, caplog):   # spec 2026-10-06-brain-compact §5：recap 跟着大脑，不单独报
+    import logging
+
+    reg, _ = _registry(tmp_path)
+    with caplog.at_level(logging.INFO):
+        reg.log_summary()
+    assert "模型：brain" in caplog.text and "模型：recap" not in caplog.text

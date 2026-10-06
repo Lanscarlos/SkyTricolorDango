@@ -418,6 +418,14 @@ move_min_interval = 3.0        # 两次 move 调用最小间隔（秒）
 owner_name = ""                # 卡洛的游戏昵称，精确匹配；留空 = 主人命令模式关闭
 owner_window = 30.0            # 收到卡洛一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
 
+[brain.compact]
+# OpenAI 兼容大脑（DeepSeek 等）的历史：一次上线内只往后接（前缀缓存一路命中），太长时在后台压成前情提要；Claude 大脑不受影响
+enabled = true                 # false = 照旧只带最近 [brain] history 轮
+budget = 64000                 # 上一次请求的输入到这么多 token 就压
+keep_turns = 6                 # 压完留几轮原话
+recap_max = 1500               # 前情提要最多多少字
+retry = 300                    # 压缩失败后隔多久再试（秒），这期间退回只带最近几轮
+
 [proactive]
 # 看场合主动开口（大脑模式）：眼睛挑新鲜事叫醒大脑、状态里给“场合”、主动开口有护栏。数字都是估的，没在真机验证
 enabled = true                 # false = 完全照旧（只接话、不主动）

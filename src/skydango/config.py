@@ -690,6 +690,18 @@ class CallConfig:
 
 
 @dataclass
+class CompactConfig:
+    """OpenAI 兼容大脑的历史（docs/superpowers/specs/2026-10-06-brain-compact-design.md）：一次上线内只往后接（DeepSeek 前缀缓存一路命中），
+    上一次请求的 prompt_tokens 到 budget 就在后台把老的部分压成前情提要。数字是粗算的，沙盒实测后再调；enabled = false 逐字照旧（滑动 history 轮）。"""
+
+    enabled: bool = True
+    budget: int = 64000  # 上一次请求的 prompt_tokens 到这个数就压
+    keep_turns: int = 6  # 压完留几轮原话
+    recap_max: int = 1500  # 前情提要最多多少字
+    retry: float = 300.0  # 压缩失败后隔多久再试（秒）
+
+
+@dataclass
 class BrainConfig:
     """统管大脑（brain/）：常驻的 Claude Code（订阅）收事件、调身体的工具；眼睛（Haiku）把画面写成文字。`run --brain` 打开。
 
@@ -729,6 +741,7 @@ class BrainConfig:
     owner_name: str = ""  # 卡洛的游戏昵称，精确匹配；留空 = 主人命令模式关闭
     owner_window: float = 30.0  # 收到一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
     history: int = 8  # OpenAI 兼容的大脑带最近几轮（它每轮重发、不是常驻会话；不带就不记得刚说过什么，10-03 晚重复说）；0 = 不带
+    compact: CompactConfig = field(default_factory=CompactConfig)  # [brain.compact]：开着时 history 只在压缩失败的滑动模式里用
 
 
 @dataclass

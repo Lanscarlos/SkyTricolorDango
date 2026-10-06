@@ -203,3 +203,17 @@ def test_final_materials_cover_friends_from_whole_session(clock, tmp_path):  # �
     b.step()  # 后台反思开始：这一段的材料清空
     b.step()
     assert "阿花：女生" in b.reflect_materials(True)
+
+
+def test_final_materials_recap(clock, tmp_path):   # spec 2026-10-06-brain-compact §7：只给下线那次
+    b, env, reader, _ = make(clock, tmp_path)
+    assert "前情提要" not in b.reflect_materials(True)          # 默认没有
+    b.recap_text = lambda: "小明说下周三考物理"
+    assert "## 这次上线早些时候（前情提要，大脑自己写的）\n小明说下周三考物理" in b.reflect_materials(True)
+    assert "前情提要" not in b.reflect_materials(False)
+
+    def boom():
+        raise RuntimeError("坏了")
+
+    b.recap_text = boom
+    assert "前情提要" not in b.reflect_materials(True)           # 出错当空

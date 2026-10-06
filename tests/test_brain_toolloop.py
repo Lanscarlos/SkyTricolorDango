@@ -444,3 +444,60 @@ def test_toolloop_cache_hit_tokens():   # spec 2026-10-06-model-usage §2.2：De
     script = [msg(content=None, tool_calls=[tool_call("say", '{"text":"你好"}')], usage=(100, 5, 80)), msg(content="好", usage=(100, 5, 80))]
     out = ToolLoopBrain(client(script), "sys", toolbox(), [say_schema()], model="deepseek-flash", temperature=0.8, max_tokens=4096).send("x")
     assert out["usage"] == {"input_tokens": 200, "output_tokens": 10, "cache_read_input_tokens": 160}
+
+
+def test_make_session_compact_wiring(tmp_path):   # spec 2026-10-06-brain-compact
+    from skydango.brain.sessions import make_session
+    from skydango.brain.trace import BrainTrace
+    from skydango.config import BrainConfig, Config
+    from skydango.models.config import ModelRef, resolve
+    from skydango.models.gate import ProviderGates
+    from skydango.models.registry import Registry
+
+    reg = Registry(resolve(Config()), ProviderGates(), tmp_path, environ={"DEEPSEEK_API_KEY": "k"})
+    trace = BrainTrace()
+    s = make_session(reg, ModelRef("deepseek", "deepseek-flash"), prompt="prompt", toolbox=_full_toolbox(), mcp_url="http://x",
+                     workdir=tmp_path, cfg=BrainConfig(), addressee=False, on_message=None,
+                     inbox=lambda: "- 旧的\n", trace=trace, backup=True)
+    assert s.compact == BrainConfig().compact and s.backup is True and s.meter is reg.meter
+    assert s.recap_path == tmp_path / "recap.jsonl" and s.on_note == trace.note and s._inbox is not None
+    off = BrainConfig()
+    off.compact.enabled = False
+    s2 = make_session(reg, ModelRef("deepseek", "deepseek-flash"), prompt="prompt", toolbox=_full_toolbox(), mcp_url="http://x",
+                      workdir=tmp_path, cfg=off, addressee=False, on_message=None)
+    assert s2.compact is None and s2.backup is False and s2.on_note is None
+
+
+def test_brain_sessions_backup_flag(tmp_path):
+    from skydango import cli
+    from skydango.config import Config
+    from skydango.models.config import resolve
+    from skydango.models.gate import ProviderGates
+    from skydango.models.registry import Registry
+    from skydango.models.errors import ModelError
+
+    reg = Registry(resolve(Config()), ProviderGates(), tmp_path, environ={})
+    calls = []
+
+    def build(ref, backup=False):
+        calls.append((str(ref), backup))
+        return object()
+
+    _, later = cli._brain_sessions(reg, build)
+    later()
+    assert calls == [("deepseek/deepseek-flash", False), ("claude/sonnet", True)]
+
+    calls.clear()
+
+    def build_bad_main(ref, backup=False):
+        calls.append((str(ref), backup))
+        if not backup:
+            raise ModelError("没 Key", down="auth")
+        return object()
+
+    assert cli._brain_sessions(reg, build_bad_main)[1] is None
+    assert calls == [("deepseek/deepseek-flash", False), ("claude/sonnet", True)]
+    reg.gates.trip("deepseek", "limit", "余额用完")
+    calls.clear()
+    cli._brain_sessions(reg, build)
+    assert calls == [("claude/sonnet", True)]

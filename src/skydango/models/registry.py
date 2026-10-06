@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 from ..chat import llm as chat_llm
-from .config import ModelRef, ModelSetup, Problem, ProviderConfig, UseConfig
+from .config import USE_BY_NAME, ModelRef, ModelSetup, Problem, ProviderConfig, UseConfig
 from .errors import ModelError, ModelUnavailable, down_kind
 from .gate import ProviderGates
 
@@ -141,7 +141,8 @@ class Registry:
 
     def log_summary(self) -> None:
         for name, u in self.setup.uses.items():
-            log.info("模型：%s = %s", name, self.describe(name))
+            if not USE_BY_NAME[name].follows:  # 跟着大脑的（压缩）不单独报
+                log.info("模型：%s = %s", name, self.describe(name))
         for line in self.setup.legacy:
             log.warning("配置：%s", line)
         for p in self.setup.problems:

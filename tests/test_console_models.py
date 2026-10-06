@@ -208,3 +208,24 @@ def test_console_models_roundtrip_prices(tmp_path):   # spec 2026-10-06-model-us
     assert effective(store).providers["deepseek"].price("deepseek-flash").hit == 0.03
     next(r for r in rows if r["id"] == "deepseek")["prices"]["deepseek-flash"] = [-1, 1, 4]
     assert submit(v, providers=rows)[0] == 400
+
+
+def test_recap_row_follows_brain(tmp_path):   # spec 2026-10-06-brain-compact §5
+    v, store = view_of(tmp_path)
+    data = v.view()
+    row = next(u for u in data["uses"] if u["name"] == "recap")
+    assert row["follows"] == "brain"
+    assert "recap" not in next(p for p in data["providers"] if p["id"] == "deepseek")["used_by"]
+    assert all(not u["follows"] for u in data["uses"] if u["name"] != "recap")
+    # 页面带上了 recap（哪怕值和大脑不同）也不写 [models.recap]
+    assert submit(v, uses={"recap": {"main": "claude/haiku", "backup": ""},
+                           "brain": {"main": "claude/sonnet", "backup": ""}})[0] == 200
+    models = tomllib.loads((tmp_path / "console.toml").read_text("utf-8")).get("models", {})
+    assert "recap" not in models and models["brain"]["main"] == "claude/sonnet"
+    assert str(effective(store).uses["recap"].main) == "claude/sonnet"
+
+
+def test_console_recap_table_dropped(tmp_path):   # 旧 console.toml 里手写的 [models.recap]：保存时删掉
+    v, _ = view_of(tmp_path, console='[models.recap]\nmain = "claude/haiku"\n')
+    assert submit(v)[0] == 200
+    assert "recap" not in tomllib.loads((tmp_path / "console.toml").read_text("utf-8")).get("models", {})

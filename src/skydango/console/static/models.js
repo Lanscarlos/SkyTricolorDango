@@ -16,7 +16,7 @@ function reset(view) {
   ST.view = view;
   ST.providers = view.providers.map(p => ({...p, models: p.models.map(m => ({...m})),
     prices: Object.fromEntries(Object.entries(p.prices || {}).map(([k, v]) => [k, [...v]]))}));
-  ST.uses = Object.fromEntries(view.uses.map(u => [u.name, {main: u.main, backup: u.backup}]));
+  ST.uses = Object.fromEntries(view.uses.filter(u => !u.follows).map(u => [u.name, {main: u.main, backup: u.backup}]));
   ST.secrets = {}; ST.dirty = false; ST.results = {};
 }
 async function load() {
@@ -181,7 +181,16 @@ function modelSelect(use, which, allowNone) {
   return s;
 }
 
+function followRow(use) {  // 跟着别的用处走（压缩跟着大脑）：不单独选，只看
+  const row = el("div", "row"); row.id = useRowId(use.name);
+  const left = el("div"); left.append(el("label", "", use.label), el("div", "help", use.help));
+  const ctl = el("div", "control"); ctl.append(el("div", "line", "跟着大脑"));
+  row.append(left, ctl);
+  return row;
+}
+
 function useRow(use) {
+  if (use.follows) return followRow(use);
   const row = el("div", "row"); row.id = useRowId(use.name);
   const sel = ST.uses[use.name], orig = ST.view.uses.find(u => u.name === use.name);
   const changed = sel.main !== orig.main || sel.backup !== orig.backup;

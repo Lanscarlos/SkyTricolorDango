@@ -198,3 +198,12 @@ def test_persona_system_cheeky():  # 贱兮兮：攒带贱味的口头禅 / 老�
     text = persona_system(True)
     assert "损人的、" not in text and "外貌" in text and "贱" in text
     assert text.endswith('"persona_used": ["..."]')  # JSON 说明照旧在最后
+
+
+def test_materials_recap_block():   # spec 2026-10-06-brain-compact §7
+    chat = [(T0, "小明", "在吗")]
+    base = materials(T0, "", "", chat, [], [], [], "人设", True)
+    assert materials(T0, "", "", chat, [], [], [], "人设", True, recap="") == base   # 逐字照旧
+    text = materials(T0, "", "", chat, [], [], [], "人设", True, recap="小明说下周三考物理")
+    head = "## 这次上线早些时候（前情提要，大脑自己写的）\n小明说下周三考物理"
+    assert head in text and text.index(head) < text.index("这段时间的聊天")
