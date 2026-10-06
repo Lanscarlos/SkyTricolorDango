@@ -28,8 +28,10 @@ class EchoBackend:
 
 class Registry:
     def __init__(self, setup: ModelSetup, gates: ProviderGates, workdir: Path, environ: Mapping[str, str] = os.environ,
-                 backends: Callable[[ProviderConfig, str, UseConfig, Path], object] | None = None) -> None:
+                 backends: Callable[[ProviderConfig, str, UseConfig, Path], object] | None = None,
+                 meter=None) -> None:
         self.setup = setup
+        self.meter = meter  # models.usage.UsageMeter：记用量（None = 不记：预检、面板测试按钮）
         self.gates = gates
         self.workdir = Path(workdir)
         self.environ = environ
@@ -58,11 +60,36 @@ class Registry:
         if provider.kind == "claude-code":
             from .claude_code import ClaudeCodeBackend
 
-            return ClaudeCodeBackend(provider, ref.model, cwd, environ=self.environ, persist=use != "image_label")
+            return ClaudeCodeBackend(provider, ref.model, cwd, environ=self.environ, persist=use != "image_label",
+                                     on_event=self._rate_hook(provider.id))
         from .openai_compat import OpenAIBackend
 
         return OpenAIBackend(provider, ref.model, temperature=usecfg.temperature, max_tokens=usecfg.max_tokens,
                              max_retries=max_retries, environ=self.environ)
+
+    def _rate_hook(self, provider: str) -> Callable[[dict], None] | None:
+        """Claude Code 的限额事件交给 meter（spec 2026-10-06-model-usage §5.2）。"""
+        if self.meter is None:
+            return None
+        meter = self.meter
+
+        def hook(info: dict) -> None:
+            try:
+                meter.rate_limit(provider, info)
+            except Exception:  # noqa: BLE001 记账出错不影响调用
+                log.debug("记限额事件出错", exc_info=True)
+
+        return hook
+
+    def record(self, use: str, ref: ModelRef, *, backup: bool, result: dict | None, ok: bool) -> None:
+        """一笔用量交给 meter；没有 meter / 出错都不影响调用。"""
+        if self.meter is None:
+            return
+        try:
+            self.meter.record(use, ref.provider, ref.model, backup=backup,
+                              usage=(result or {}).get("usage") if ok else None, ok=ok)
+        except Exception:  # noqa: BLE001
+            log.debug("记用量出错", exc_info=True)
 
     def current(self, use: str) -> ModelRef | None:
         """这个用处现在实际走哪个：主那家闸开着走主，否则备（备那家也开着）；都不行 None。"""
@@ -160,7 +187,13 @@ class GatedCall:
         kw = {"history": history, "max_tokens": max_tokens or self.registry.setup.uses[self.use].max_tokens}
         if self._timeout is not None:
             kw["timeout"] = self._timeout
-        return self._backend(ref, backup).message(system, content, **kw)
+        try:
+            out = self._backend(ref, backup).message(system, content, **kw)
+        except Exception:
+            self.registry.record(self.use, ref, backup=backup, result=None, ok=False)
+            raise
+        self.registry.record(self.use, ref, backup=backup, result=out, ok=True)
+        return out
 
     def message(self, system: str, content: str | list[dict], *, history: list[dict] | None = None,
                 max_tokens: int | None = None) -> dict:

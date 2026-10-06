@@ -53,3 +53,12 @@ def test_missing_token_is_auth_down(monkeypatch):
     with pytest.raises(ModelError) as e:
         claude_base(PROVIDER, environ={})
     assert e.value.down == "auth" and e.value.provider == "claude" and "setup-token" in str(e.value)
+
+
+def test_one_shot_rate_limit_event(tmp_path):   # spec 2026-10-06-model-usage §5.2
+    got = []
+    env = claude_env("tok", tmp_path / "cfg")
+    env.update(FAKE_CLAUDE_MODE="ok", FAKE_CLAUDE_RATE="1")
+    b = ClaudeCodeBackend(PROVIDER, "haiku", tmp_path / "w", base=FAKE, env=env, on_event=got.append)
+    assert b.message("S", "看")["result"] == "收到：看"
+    assert got == [{"status": "allowed_warning", "rateLimitType": "five_hour", "utilization": 0.5, "resetsAt": 1700000000}]

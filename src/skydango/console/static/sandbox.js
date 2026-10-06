@@ -284,14 +284,16 @@ function sandboxSummary() {
 function sandboxClock() { return SB.running && SB.state ? sbNow() : Math.max(Date.now() / 1000, (SB.info && SB.info.floor) || 0); }
 
 Object.assign(globalThis, {Sandbox: {summaryText}, sandboxSummary, sandboxClock, onReplay, pullReplay});
+let usage = null;  // 「模型用量」卡片（usage.js）
 Pages.sandbox = {
   init() {
     bind(); renderSbNow();
+    usage = Usage.mountUsage($("sb-usage-body"), "api/usage", {visible: () => pageOn("sandbox")});
     setInterval(pullSbNow, 5000);
     setInterval(() => { if (pageOn("sandbox") || pageOn("scenarios") || replaying()) pullReplay(); }, 1500);
   },
   show() {  // 可能被重复调用（点当前导航项）：只重拉，定时器不重复建
-    sbLoadInfo(); pullReplay();
+    sbLoadInfo(); pullReplay(); usage.tick();
     if (!infoTimer) infoTimer = setInterval(() => { if (pageOn("sandbox") && !SB.running && !BUSY.includes((sbRun() || {}).state)) sbLoadInfo(); }, 10000);
   },
   hide() { if (infoTimer) { clearInterval(infoTimer); infoTimer = null; } },

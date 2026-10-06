@@ -116,3 +116,9 @@ def test_brain_and_inner(srv):
 def test_unknown_paths(srv):
     assert call(srv.base + "nope")[0] == 404
     assert call(srv.base + "nope", "POST", {})[0] == 404
+
+
+def test_usage_routed(srv):   # spec 2026-10-06-model-usage §6.1
+    assert call(srv.base + "usage") == (503, {"ok": False, "text": "沙盒还在启动"})
+    srv.usage = lambda: {"source": "sandbox"}
+    assert call(srv.base + "usage") == (200, {"ok": True, "source": "sandbox"})

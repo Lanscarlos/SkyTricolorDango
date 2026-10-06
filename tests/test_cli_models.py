@@ -137,3 +137,37 @@ def test_gesture_label_uses_image_label(tmp_path, monkeypatch):
     except SystemExit:
         pass
     assert uses == ["image_label"]
+
+
+
+def test_registry_offline_meter(tmp_path, monkeypatch):   # spec 2026-10-06-model-usage §2.3 §4
+    from skydango.config import Config
+
+    monkeypatch.delenv("SKYDANGO_USAGE_LEDGER")
+    monkeypatch.setattr("atexit.register", lambda fn: None)
+    cfg = Config()
+    cfg.usage.ledger = str(tmp_path / "usage.json")
+    reg = cli._registry(cfg, tmp_path / "w", environ={})
+    assert reg.meter.source == "offline" and reg.meter.ledger.path == tmp_path / "usage.json"
+    reg2 = cli._registry(cfg, tmp_path / "w", environ={}, source="live")
+    assert reg2.meter.source == "live"
+
+
+
+def test_registry_no_ledger_in_tests(tmp_path):
+    from skydango.config import Config
+
+    assert cli._registry(Config(), tmp_path, environ={}).meter.ledger is None
+
+
+def test_start_balance_starts_watcher(monkeypatch, tmp_path):   # spec 2026-10-06-model-usage §5.1
+
+    from skydango.config import Config
+    from skydango.models import balance as bal
+
+    monkeypatch.undo()  # conftest 把 _start_balance 换成了空的：这里测真的
+    started = []
+    monkeypatch.setattr(bal.BalanceWatcher, "start", lambda self: started.append(self.every))
+    reg = cli._registry(Config(), tmp_path, environ={})
+    w = cli._start_balance(Config(), reg)
+    assert started == [300.0] and w.meter is reg.meter

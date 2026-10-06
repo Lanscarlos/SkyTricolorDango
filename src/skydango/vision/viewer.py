@@ -75,6 +75,15 @@ def brain_body(trace, after: int, wait: float = WAIT) -> bytes:
     return json.dumps(trace.since(after, wait), ensure_ascii=False).encode(errors="replace")
 
 
+def usage_response(get: Callable[[], dict]) -> tuple[int, dict]:
+    """/usage：UsageMeter.snapshot()；出错 500（团子 / 沙盒共用）。"""
+    try:
+        return 200, {"ok": True, **get()}
+    except Exception as exc:
+        log.exception("取模型用量出错")
+        return 500, {"ok": False, "text": f"取模型用量出错：{exc}"}
+
+
 def inner_response(inner: Callable[[], dict]) -> tuple[int, dict]:
     """/inner：取内心快照（经身体线程）；身体超时 / 已经停了 → 503。"""
     try:
@@ -188,6 +197,7 @@ class Viewer:
         # 内心页（spec 2026-09-30-inner-viewer §2）：cli 在 run --view 时经 body.call 挂上；None 时 /inner、/inner/forget 回 404
         self.inner: Callable[[], dict] | None = None
         self.forget: Callable[[str, str, str, str], str] | None = None
+        self.usage: Callable[[], dict] | None = None  # 模型用量（spec 2026-10-06-model-usage §6.1）：UsageMeter.snapshot
         self._updated: float | None = None  # 最近一帧记下时的 time.monotonic()，/status 算 age
         # 这次 run 的身份（pid、运行目录、live / dry……，见 cli._run_info）：/status 带上它，管理面板才认得出是团子
         self.run_info: dict | None = None
@@ -321,6 +331,11 @@ class Viewer:
                         self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
                         return
                     self._json(*inner_response(viewer.inner))
+                elif url.path == "/usage" and viewer.usage is not None:
+                    if not self._local_host():
+                        self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
+                        return
+                    self._json(*usage_response(viewer.usage))
                 elif url.path == "/chat" and viewer.chat is not None:
                     if not self._local_host():
                         self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})

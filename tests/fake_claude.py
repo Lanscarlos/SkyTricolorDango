@@ -74,6 +74,9 @@ for line in sys.stdin:
         continue
     if MODE == "say" and "在吗" in text and "--mcp-config" in args:  # 沙盒端到端：像大脑一样经 MCP 调一次 say
         record({"say": say_over_mcp(args[args.index("--mcp-config") + 1], "在呢在呢")})
+    if os.environ.get("FAKE_CLAUDE_RATE"):  # 用量和额度（spec 2026-10-06-model-usage §5.2）
+        emit({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "rateLimitType": "five_hour",
+                                                              "utilization": 0.5, "resetsAt": 1700000000}})
     emit({"type": "assistant", "message": {"content": [{"type": "text", "text": "想：" + text[:20]}]}})
     emit({"type": "result", "subtype": "success", "is_error": False, "result": "收到：" + text, "session_id": session,
           "num_turns": 1, "total_cost_usd": 0.01, "usage": {"input_tokens": 10, "output_tokens": 2}})

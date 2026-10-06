@@ -48,8 +48,8 @@ def test_view_lists_builtin_and_uses(tmp_path):
     assert "brain" in ds["used_by"] and ds["secret"] == "已设置（sk-…abcd）" and ds["secret_source"] == "secrets"
     assert "1234567890" not in str(data)
     assert [u["name"] for u in data["uses"]] == list(USE_NAMES)
-    assert data["uses"][0]["main"] == "deepseek/deepseek-chat" and data["uses"][0]["backup"] == "claude/sonnet"
-    assert (data["uses"][0]["default_main"], data["uses"][0]["default_backup"]) == ("deepseek/deepseek-chat", "claude/sonnet")
+    assert data["uses"][0]["main"] == "deepseek/deepseek-flash" and data["uses"][0]["backup"] == "claude/sonnet"
+    assert (data["uses"][0]["default_main"], data["uses"][0]["default_backup"]) == ("deepseek/deepseek-flash", "claude/sonnet")
     assert data["kinds"] == ["claude-code", "openai"] and data["templates"]
 
 
@@ -67,7 +67,7 @@ def test_save_writes_only_changed_uses(tmp_path):
     data = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
     assert data["models"] == {"brain": {"main": "claude/sonnet", "backup": ""}}
     assert str(effective(store).uses["brain"].main) == "claude/sonnet" and effective(store).uses["brain"].backup is None
-    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-chat", "backup": "claude/sonnet"}})[0] == 200
+    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-flash", "backup": "claude/sonnet"}})[0] == 200
     data = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
     assert "models" not in data
 
@@ -179,9 +179,9 @@ def test_test_provider_claude(monkeypatch):
 def test_restore_default_overrides_legacy_console_fields(tmp_path):  # 终审 I3：console.toml 里旧设置页写的模型字段
     v, store = view_of(tmp_path, console='[brain]\nmodel = "sonnet"\nowner_name = "卡洛"\n[llm]\ntemperature = 0.3\n')
     assert str(effective(store).uses["brain"].main) == "claude/sonnet"
-    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-chat", "backup": "claude/sonnet"}})[0] == 200
+    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-flash", "backup": "claude/sonnet"}})[0] == 200
     s = effective(store)
-    assert str(s.uses["brain"].main) == "deepseek/deepseek-chat" and s.uses["reply"].temperature == 0.3
+    assert str(s.uses["brain"].main) == "deepseek/deepseek-flash" and s.uses["reply"].temperature == 0.3
     data = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
     assert data["brain"] == {"owner_name": "卡洛"} and "llm" not in data  # 旧字段迁走，别的照留
 
@@ -191,3 +191,20 @@ def test_untouched_legacy_console_choice_is_kept(tmp_path):
     assert submit(v)[0] == 200
     assert str(effective(store).uses["brain"].main) == "claude/opus"
     assert "brain" not in tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
+
+
+def test_console_models_roundtrip_prices(tmp_path):   # spec 2026-10-06-model-usage §3.1
+    v, store = view_of(tmp_path)
+    ds = next(p for p in v.view()["providers"] if p["id"] == "deepseek")
+    assert ds["prices"]["deepseek-flash"] == [0.02, 1, 4] and ds["peak"] == 2.0
+    claude = next(p for p in v.view()["providers"] if p["id"] == "claude")
+    assert claude["prices"] == {}
+    data = v.view()
+    rows = [{k: p[k] for k in p if k not in ("secret", "secret_source", "source", "used_by")} for p in data["providers"]]
+    next(r for r in rows if r["id"] == "deepseek")["prices"]["deepseek-flash"] = [0.03, 1, 4]
+    assert submit(v, providers=rows)[0] == 200
+    saved = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))["providers"]["deepseek"]
+    assert saved["prices"]["deepseek-flash"] == [0.03, 1, 4] and saved["peak"] == 2.0
+    assert effective(store).providers["deepseek"].price("deepseek-flash").hit == 0.03
+    next(r for r in rows if r["id"] == "deepseek")["prices"]["deepseek-flash"] = [-1, 1, 4]
+    assert submit(v, providers=rows)[0] == 400

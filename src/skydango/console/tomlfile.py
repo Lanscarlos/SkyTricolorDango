@@ -1,4 +1,4 @@
-"""面板自己的 TOML 读写：标准库 tomllib 只能读，写出器只支持面板用得到的类型（字符串、布尔、数字、字符串列表、表）。"""
+"""面板自己的 TOML 读写：标准库 tomllib 只能读，写出器只支持面板用得到的类型（字符串、布尔、数字、字符串列表、数字列表、表）。"""
 
 from __future__ import annotations
 
@@ -45,6 +45,8 @@ def _value(value) -> str:
         return _string(value)
     if isinstance(value, list) and all(isinstance(v, str) for v in value):
         return "[" + ", ".join(_string(v) for v in value) + "]"
+    if isinstance(value, list) and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+        return "[" + ", ".join(_value(v) for v in value) + "]"  # 单价 [命中, 没命中, 输出]
     raise ValueError(f"TOML 写不了这种值：{value!r}")
 
 

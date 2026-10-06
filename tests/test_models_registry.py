@@ -38,18 +38,18 @@ def test_main_down_switches_and_trips(tmp_path):
     reg, fakes = _registry(tmp_path)
     call = reg.call("memory")
     call.text("S", "x")
-    fakes[("deepseek", "deepseek-chat")].exc = ModelError("402", down="limit", provider="deepseek")
+    fakes[("deepseek", "deepseek-flash")].exc = ModelError("402", down="limit", provider="deepseek")
     assert call.text("S", "y") == "claude:y"
     assert reg.gates.ok("deepseek") is False
     assert call.text("S", "z") == "claude:z"
-    assert len(fakes[("deepseek", "deepseek-chat")].calls) == 2
+    assert len(fakes[("deepseek", "deepseek-flash")].calls) == 2
 
 
 def test_main_other_error_raises(tmp_path):
     reg, fakes = _registry(tmp_path)
     call = reg.call("memory")
     call.text("S", "x")
-    fakes[("deepseek", "deepseek-chat")].exc = ModelError("超时")
+    fakes[("deepseek", "deepseek-flash")].exc = ModelError("超时")
     with pytest.raises(ModelError):
         call.text("S", "y")
     assert reg.gates.ok("deepseek") and ("claude", "sonnet") not in fakes
@@ -60,7 +60,7 @@ def test_no_backup_raises_unavailable_after_trip(tmp_path):
     call = reg.call("reply")
     call.text("S", "x")
     err = ModelError("401", down="auth", provider="deepseek")
-    fakes[("deepseek", "deepseek-chat")].exc = err
+    fakes[("deepseek", "deepseek-flash")].exc = err
     with pytest.raises(ModelError) as e:
         call.text("S", "y")
     assert e.value is err
@@ -82,7 +82,7 @@ def test_complete_passes_history_and_default_max_tokens(tmp_path):
     reg, fakes = _registry(tmp_path)
     reg.call("memory").complete("S", [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"},
                                       {"role": "user", "content": "c"}])
-    got = fakes[("deepseek", "deepseek-chat")].calls[0]
+    got = fakes[("deepseek", "deepseek-flash")].calls[0]
     assert got["content"] == "c" and len(got["history"]) == 2 and got["max_tokens"] == 4096
 
 
@@ -91,12 +91,12 @@ def test_timeout_setter(tmp_path):
     call = reg.call("reflect", timeout=60)
     call.timeout = 7
     call.text("S", "x")
-    assert fakes[("deepseek", "deepseek-chat")].calls[0]["timeout"] == 7
+    assert fakes[("deepseek", "deepseek-flash")].calls[0]["timeout"] == 7
 
 
 def test_describe(tmp_path):
     reg, _ = _registry(tmp_path)
-    assert reg.describe("brain") == "deepseek/deepseek-chat（备 claude/sonnet）"
+    assert reg.describe("brain") == "deepseek/deepseek-flash（备 claude/sonnet）"
     reg.gates.trip("deepseek", "limit", "402")
     assert reg.current("brain") == ModelRef("claude", "sonnet")
 
@@ -136,3 +136,59 @@ def test_shortened_timeout_means_no_retries_on_main_too(tmp_path, monkeypatch): 
     call = reg.call("reflect", timeout=600)
     call.timeout = 35
     assert call.text("S", "x") == "好" and made == [0]
+
+
+# ---- 用量（spec 2026-10-06-model-usage §2.2）----
+from skydango.models.usage import UsageMeter  # noqa: E402
+
+
+def _metered(tmp_path):
+    reg, fakes = _registry(tmp_path)
+    reg.meter = UsageMeter(reg.setup, reg.gates, source="live")
+    return reg, fakes
+
+
+def _rows(reg):
+    return {(r["use"], r["model"], r["backup"]): r for r in reg.meter.snapshot()["run"]["rows"]}
+
+
+def test_gated_call_records_main_and_backup(tmp_path):
+    reg, fakes = _metered(tmp_path)
+    call = reg.call("memory")
+    fakes.setdefault(("deepseek", "deepseek-flash"), FakeBackend(("deepseek", "deepseek-flash")))
+    orig = fakes[("deepseek", "deepseek-flash")].message
+
+    def with_usage(*a, **kw):
+        out = orig(*a, **kw)
+        return {**out, "usage": {"input_tokens": 10, "output_tokens": 2}}
+
+    fakes[("deepseek", "deepseek-flash")].message = with_usage
+    call.message("S", "x")
+    r = _rows(reg)[("memory", "deepseek/deepseek-flash", False)]
+    assert (r["calls"], r["input"], r["output"]) == (1, 10, 2)
+    fakes[("deepseek", "deepseek-flash")].exc = ModelError("402", down="limit", provider="deepseek")
+    call.message("S", "y")
+    r = _rows(reg)
+    assert r[("memory", "deepseek/deepseek-flash", False)]["fails"] == 1
+    assert r[("memory", "claude/sonnet", True)]["calls"] == 1
+
+
+def test_gated_call_meter_error_ignored(tmp_path):
+    reg, _ = _metered(tmp_path)
+
+    def boom(*a, **kw):
+        raise RuntimeError("坏了")
+
+    reg.meter.record = boom
+    assert reg.call("memory").message("S", "x")["result"] == "deepseek:x"
+
+
+def test_backend_passes_rate_limit_to_meter(tmp_path, monkeypatch):
+    from skydango.models import claude_code
+
+    reg = Registry(resolve(Config()), ProviderGates(), tmp_path, environ={})
+    reg.meter = UsageMeter(reg.setup, reg.gates, source="live")
+    monkeypatch.setattr(claude_code, "claude_base", lambda provider, environ=None: (["claude"], {}))
+    b = reg.backend(ModelRef("claude", "haiku"), "eyes", tmp_path)
+    b.on_event({"status": "rejected"})
+    assert next(p for p in reg.meter.snapshot()["providers"] if p["id"] == "claude")["rate"]["status"] == "rejected"

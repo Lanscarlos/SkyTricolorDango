@@ -51,6 +51,7 @@ class Brain:
         slow: Callable[[], bool] | None = None,  # 困了：没事时醒得慢一档（内心层第 2 期）
         fallback: Callable[[], object] | None = None,  # 懒建备用会话（[models.brain] backup；切过去时才起进程 / 建客户端）
         gates: ProviderGates | None = None,  # 按供应商的闸：别处（记忆、反思、眼睛）撞墙关了，下一轮就直接切备用大脑
+        meter=None,  # models.usage.UsageMeter：每轮的用量记一笔 brain（spec 2026-10-06-model-usage §2.2）
     ) -> None:
         self.cfg = cfg
         self.chat = chat
@@ -58,6 +59,7 @@ class Brain:
         self.fallback = fallback
         self.gates = gates
         self.on_fallback = False  # 已经在用备用大脑（切过去就不切回）
+        self.meter = meter
         self.toolbox = toolbox
         self.events = events
         self.nearby = nearby
@@ -160,14 +162,17 @@ class Brain:
             result = self.session.send(text)
         except ModelError as exc:
             self._trace("fail", str(exc), self.clock() - start)
+            self._record(None, exc)
             self._failed(self.clock(), exc)
             return
         except Exception as exc:  # 进程起不来之类：run() 兜住退避；时间线上这一轮也得收尾
             self._trace("fail", f"{type(exc).__name__}: {exc}", self.clock() - start)
+            self._record(None, exc)
             raise
         finally:
             self.chat_turn = False
             self.last_turn = (began, self.clock())
+        self._record(result)
         self._trace("finish", result, self.clock() - start)
         self._ok()
         self._idle = 0 if (reason == "events" or self.toolbox.acted) else self._idle + 1
@@ -190,11 +195,14 @@ class Brain:
             result = self.session.send(SUMMARY_REQUEST)
         except ModelError as exc:
             self._trace("fail", str(exc), self.clock() - start)
+            self._record(None, exc)
             log.warning("退出前写经过失败：%s", exc)
             return ""
         except Exception as exc:
             self._trace("fail", f"{type(exc).__name__}: {exc}", self.clock() - start)
+            self._record(None, exc)
             raise
+        self._record(result)
         self._trace("finish", result, self.clock() - start)
         text = " ".join((result.get("result") or "").split())
         if not text:
@@ -210,6 +218,18 @@ class Brain:
     def model_name(self) -> str:
         """「deepseek/deepseek-chat」：当前会话的供应商 / 模型。"""
         return f"{self.provider()}/{getattr(self.session, 'model', self.cfg.model)}"
+
+    def _record(self, result: dict | None, exc: Exception | None = None) -> None:
+        """这一轮的用量记一笔 brain：主 / 备按现在用的会话算（失败那一轮在切备用之前记）。"""
+        if self.meter is None:
+            return
+        try:
+            r = result or {}
+            provider = r.get("provider") or self.provider()  # 失败的就是现在这个会话（ClaudeError 的 provider 默认是 claude）
+            model = r.get("model") or getattr(self.session, "model", self.cfg.model)
+            self.meter.record("brain", provider, model, backup=self.on_fallback, usage=r.get("usage"), ok=exc is None)
+        except Exception:  # noqa: BLE001 记账出错不影响大脑
+            log.debug("记大脑用量出错", exc_info=True)
 
     # ---- 可视化网页的大脑时间线 ----
     def trace_state(self) -> dict:

@@ -2547,6 +2547,7 @@ def cmd_sandbox(cfg: Config, args) -> None:
         server.inner = lambda: body.call(body.inner_snapshot, timeout=3)
         server.forget = lambda k, t, w, tp: body.call(lambda: body.forget(k, t, w, tp), timeout=3)
         server.control = SandboxControl(parts, world, sim, transcript, scene)
+        server.usage = parts.usage
 
     try:
         _run_brain(cfg, run, world, getattr(args, "duration", 0.0) or 0.0, None, on_ready=ready, trace=server.trace)
@@ -2589,10 +2590,13 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
 
     dev = _device(cfg)
     reader, self_filter = _chat_reader(cfg, dev, run.path / "a11y.jsonl")
+    registry = balance = None
     try:
         reader.trace_path = run.rows_log
         panel = _panel(cfg, dev, reader)
-        registry = _registry(cfg, run.path / "models")
+        registry = _registry(cfg, run.path / "models", source="live")
+        registry.meter.start_saver(cfg.usage.save_every)
+        balance = _start_balance(cfg, registry)
         llm = registry.call("reply")
         if not llm.available():
             raise RuntimeError("回复的模型用不了：" + registry.describe("reply"))
@@ -2632,8 +2636,12 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             viewer=viewer, camera=_camera(cfg, dev, panel), panel=panel,
         )
         ime = _ime_switch(cfg, dev)
+        if viewer is not None:
+            viewer.usage = registry.meter.snapshot  # 管理面板的「模型用量」（spec 2026-10-06-model-usage §6.1）
     except BaseException:  # 建到一半出错 / Ctrl+C / 面板点停止：别把设备上的无障碍客户端漏在那儿
         _stop_reader(reader)
+        if registry is not None:
+            _close_usage(registry, balance)
         raise
     try:
         agent.run(duration)
@@ -2652,6 +2660,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             log.exception("聊天面板没恢复")
         _stop_reader(reader)
         ime.stop()
+        _close_usage(registry, balance)
 
 
 def _camera(cfg: Config, dev, panel):
@@ -2688,17 +2697,45 @@ def cmd_camera(cfg: Config, args) -> None:
             print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}")
 
 
-def _registry(cfg: Config, workdir: Path, environ=None):
+def _start_balance(cfg: Config, registry):
+    """后台每 [usage] balance_every 秒查 DeepSeek 余额（spec 2026-10-06-model-usage §5.1）；出错只记日志。"""
+    from .models.balance import BalanceWatcher
+
+    try:
+        watcher = BalanceWatcher(registry.setup, registry.meter, registry.environ, cfg.usage.balance_every)
+        watcher.start()
+        return watcher
+    except Exception:
+        log.debug("余额线程起不来", exc_info=True)
+        return None
+
+
+def _close_usage(registry, balance) -> None:
+    """停查余额、把这次的用量写进账本。"""
+    if balance is not None:
+        balance.stop()
+    registry.meter.close()
+
+
+def _registry(cfg: Config, workdir: Path, environ=None, source: str = "offline"):
     """按用处给模型（spec 2026-10-05-model-providers §2）：解析 [providers] / [models]（含旧字段换算），每个用处 INFO 一行。
-    一次运行一个（闸是这次运行的）；离线命令各自建一个。"""
+    一次运行一个（闸是这次运行的）；离线命令各自建一个。带一个 UsageMeter 记用量（spec 2026-10-06-model-usage §2.3）：
+    source = live / sandbox 由调用方起保存线程、退出时 close；offline 退出时写一次账本。"""
+    import atexit
     import os
 
     from .models.config import resolve
     from .models.gate import ProviderGates
     from .models.registry import Registry
+    from .models.usage import UsageMeter
+    from .models.usage_ledger import ledger_for
 
-    registry = Registry(resolve(cfg), ProviderGates(), workdir, os.environ if environ is None else environ)
+    setup, gates = resolve(cfg), ProviderGates()
+    meter = UsageMeter(setup, gates, source=source, ledger=ledger_for(cfg))
+    registry = Registry(setup, gates, workdir, os.environ if environ is None else environ, meter=meter)
     registry.log_summary()
+    if source == "offline" and meter.ledger is not None:
+        atexit.register(meter.close)
     return registry
 
 
@@ -2863,10 +2900,16 @@ def _run_brain(
     _brain_env(cfg)  # 先检查 mcp
     # 按用处给模型（spec 2026-10-05-model-providers）：一次运行一个 Registry、一套按供应商的闸，
     # 大脑、记忆、反思、眼睛、装扮描述、备用回复共用；主那家额度 / 认证撞墙就关它的闸、改走备用
-    registry = _registry(cfg, run.path / "brain")
+    registry = _registry(cfg, run.path / "brain", source="live" if world is None else "sandbox")
     _check_brain_models(registry)  # 大脑的主和备都用不了才拦；别的用处的问题只警告（用到时那一处停用）
+    registry.meter.start_saver(cfg.usage.save_every)
+    balance = _start_balance(cfg, registry)
     if world is None:
-        world = _game_world(cfg, run, no_emotes)
+        try:
+            world = _game_world(cfg, run, no_emotes)
+        except BaseException:
+            _close_usage(registry, balance)
+            raise
     wall, clock = world.wall, world.clock
     env = world.env
     try:
@@ -2942,6 +2985,7 @@ def _run_brain(
     except BaseException:
         world.close()
         world.restore()
+        _close_usage(registry, balance)
         raise
     if trace is None and viewer is not None:
         trace = viewer.brain or BrainTrace()  # 网页上的大脑时间线（一般 _viewer 已经挂好）
@@ -2961,11 +3005,12 @@ def _run_brain(
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
         eyes=eyes, clock=clock, wall=wall, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
-        fallback=backup, gates=registry.gates,
+        fallback=backup, gates=registry.gates, meter=registry.meter,
     )
     brain_box.append(brain)
     body.models_line = lambda: _models_line(brain, registry)
     if viewer is not None:
+        viewer.usage = registry.meter.snapshot  # 管理面板的「模型用量」（spec 2026-10-06-model-usage §6.1）
         viewer.brain = trace
         from .brain.manual import ManualControl
 
@@ -3010,7 +3055,7 @@ def _run_brain(
         try:
             on_ready(BrainParts(
                 body=body, eyes=eyes, events=events, brain=brain, trace=trace, reflector=reflector, ledger=ledger, store=store,
-                mind_log=mind_log,
+                mind_log=mind_log, usage=registry.meter.snapshot,
             ))
         except Exception:
             log.exception("on_ready 出错")
@@ -3054,6 +3099,7 @@ def _run_brain(
             except Exception:
                 log.exception("关大脑会话出错")
         server.stop()
+        _close_usage(registry, balance)  # 最后把这次的用量写进账本（下线反思也算在里面）
 
 
 WARDROBE_JOIN = 5.0  # 下线时等描述器手上那一个描述回来最多几秒（不为它拖住下线）

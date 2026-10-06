@@ -490,7 +490,7 @@ def _final_parts(tmp_path, monkeypatch, reply="{}", claude_exc=None):
     seen = {"claude": [], "deepseek": []}
     fake_claude(monkeypatch, ["claude"])
 
-    def one_shot_message(cmd, env, cwd, content, timeout):
+    def one_shot_message(cmd, env, cwd, content, timeout, on_message=None):
         seen["claude"].append(timeout)
         if claude_exc is not None:
             raise claude_exc
@@ -952,3 +952,14 @@ def test_chat_reader_saves_raw_snapshots(monkeypatch, tmp_path):
     on_line(b'{"t":2}')
     cli._stop_reader(reader)
     assert out.read_bytes() == b'{"t":1}\n{"t":2}\n'
+
+
+
+def test_run_brain_exposes_usage(tmp_path, monkeypatch):   # spec 2026-10-06-model-usage §6.1
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    seen = []
+    cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=seen.append)
+    parts = seen[0]
+    snap = parts.usage()
+    assert snap["source"] == "live" and parts.brain.meter is not None
+    assert parts.usage.__self__ is parts.brain.meter

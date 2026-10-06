@@ -14,7 +14,8 @@ const useRowId = name => "mu-" + name;
 
 function reset(view) {
   ST.view = view;
-  ST.providers = view.providers.map(p => ({...p, models: p.models.map(m => ({...m}))}));
+  ST.providers = view.providers.map(p => ({...p, models: p.models.map(m => ({...m})),
+    prices: Object.fromEntries(Object.entries(p.prices || {}).map(([k, v]) => [k, [...v]]))}));
   ST.uses = Object.fromEntries(view.uses.map(u => [u.name, {main: u.main, backup: u.backup}]));
   ST.secrets = {}; ST.dirty = false; ST.results = {};
 }
@@ -60,6 +61,8 @@ function providerCard(p) {
   } else {
     card.append(field("接口地址", textInput(p.base_url, set("base_url"), {label: "接口地址", placeholder: "比如 DeepSeek 的 api.deepseek.com（带上协议头）"})));
     card.append(field("Key 变量名", textInput(p.key_env, set("key_env"), {label: "Key 变量名"})));
+    card.append(field("高峰倍数", textInput(p.peak == null ? 1 : p.peak, v => { p.peak = Number(v) || 1; touch(); }, {type: "number", label: "高峰倍数"}),
+      "高峰价 = 空闲价 × 这个数（DeepSeek 是 2，北京时间工作日 9–12、14–18 点）；1 = 不分时段"));
   }
   const secretLabel = p.kind === "claude-code" ? "令牌" : "Key";
   const pending = p.id in ST.secrets;
@@ -78,11 +81,17 @@ function providerCard(p) {
   const rows = el("div", "mp-model-rows");
   p.models.forEach((m, i) => {
     const r = el("div", "mp-model");
-    const name = textInput(m.name, v => { m.name = v.trim(); touch(); }, {label: "模型名"});
+    const name = textInput(m.name, v => {
+      const old = m.name; m.name = v.trim();
+      if (p.prices && old in p.prices) { p.prices[m.name] = p.prices[old]; delete p.prices[old]; }
+      touch();
+    }, {label: "模型名"});
     const vis = el("label", "mp-vision"), box = el("input"); box.type = "checkbox"; box.checked = !!m.vision;
     box.onchange = () => { m.vision = box.checked; touch(); }; vis.append(box, el("span", "", "能看图"));
     const rm = el("button", "linkish", "去掉"); rm.type = "button"; rm.onclick = () => { p.models.splice(i, 1); touch(); };
-    r.append(name, vis, rm); rows.append(r);
+    r.append(name, vis);
+    if (p.kind === "openai") r.append(priceInputs(p, m));
+    r.append(rm); rows.append(r);
   });
   const add = el("button", "linkish", "+ 模型"); add.type = "button";
   add.onclick = () => { p.models.push({name: "", vision: false}); touch(); };
@@ -94,6 +103,24 @@ function providerCard(p) {
   probe.append(btn, msg, el("span", "note", "发一句「只回复 ok」，勾了能看图的再问一张红图；会花一点额度，用页面上现在填的值"));
   card.append(probe);
   return card;
+}
+
+/* 单价（spec 2026-10-06-model-usage §3.1）：元 / 百万 token 的空闲价，三个都空 = 不填单价 */
+const PRICE_PARTS = ["命中缓存", "没命中", "输出"];
+function priceInputs(p, m) {
+  const box = el("span", "mp-price"), cur = (p.prices || {})[m.name];
+  PRICE_PARTS.forEach((label, k) => {
+    const i = textInput(cur ? cur[k] : "", v => {
+      p.prices = p.prices || {};
+      const row = p.prices[m.name] ? [...p.prices[m.name]] : [null, null, null];
+      row[k] = v === "" ? null : Number(v);
+      if (row.every(x => x == null)) delete p.prices[m.name]; else p.prices[m.name] = row;
+      touch();
+    }, {type: "number", label: `${m.name || "模型"} ${label}单价`, placeholder: label});
+    i.min = "0"; i.step = "any"; box.append(i);
+  });
+  box.append(el("span", "note", "命中缓存 / 没命中 / 输出，元/百万 token（三个都填才算）"));
+  return box;
 }
 
 async function runTest(p, btn, msg) {
@@ -120,6 +147,7 @@ async function addProvider() {
   if (ST.providers.some(x => x.id === id)) { toast(`已经有 ${id} 了`, "bad"); return; }
   const p = {id, kind: t.kind, isNew: true, path: t.path || "claude", token_env: t.token_env || "SKYDANGO_CLAUDE_TOKEN",
     config_dir: t.config_dir || ".brain-claude", base_url: t.base_url || "", key_env: t.key_env || "", secret: "没设置", secret_source: "none",
+    prices: {}, peak: 1, peak_hours: [],
     models: (t.models || []).map(([name, vision]) => ({name, vision}))};
   ST.providers.push(p); touch();
 }
@@ -128,6 +156,8 @@ function clean(p) {
   const out = {};
   for (const k in p) if (!UI_ONLY.includes(k)) out[k] = p[k];
   out.models = p.models.filter(m => m.name).map(m => ({name: m.name, vision: !!m.vision}));
+  const names = new Set(out.models.map(m => m.name));
+  out.prices = Object.fromEntries(Object.entries(p.prices || {}).filter(([k, v]) => names.has(k) && v.every(x => x != null)));
   return out;
 }
 
@@ -215,13 +245,17 @@ async function save() {
   refresh();
 }
 
+let usage = null;  // 顶上一行：今天合计 + 余额（usage.js）
 Pages.models = {
   init() {
+    usage = Usage.mountUsage($("models-usage"), "api/usage", {compact: true, every: 30000,
+      visible: () => !$("page-models").hidden});
     $("models-save").onclick = save;
     $("models-discard").onclick = () => { reset(ST.view); $("models-save-msg").textContent = ""; render(); };
     $("mp-add").onclick = addProvider;
   },
   async show(arg) {
+    usage.tick();
     if (!ST.view) { try { await load(); } catch (e) { toast("读取模型设置失败：" + e, "bad"); return; } }
     if (arg) flash(arg);
   },

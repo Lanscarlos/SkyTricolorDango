@@ -30,6 +30,7 @@ class BrainSession:
         turn_timeout: float,
         on_message: Callable[[dict], None] | None = None,
         provider: str = "claude",
+        on_rate_limit: Callable[[dict], None] | None = None,
     ) -> None:
         self.provider = provider  # 供应商 id（[providers.<id>]）：loop 据此看闸、记 brain.jsonl
         self.base_cmd = base_cmd
@@ -43,6 +44,7 @@ class BrainSession:
         self.effort = effort
         self.turn_timeout = turn_timeout
         self.on_message = on_message  # 每条输出都给它（打日志用）
+        self.on_rate_limit = on_rate_limit  # 限额事件的 rate_limit_info（spec 2026-10-06-model-usage §5.2）
         self.session_id: str | None = None
         self._proc: StreamProcess | None = None
         self._mcp_ok: bool | None = None
@@ -100,5 +102,10 @@ class BrainSession:
                 log.error("大脑的 MCP 服务没连上：%s", servers)
         elif m.get("type") == "system" and m.get("subtype") == "compact_boundary":
             log.info("大脑的对话记录自动压缩了一次")
+        elif m.get("type") == "rate_limit_event" and self.on_rate_limit is not None:
+            try:
+                self.on_rate_limit(m.get("rate_limit_info") or {})
+            except Exception:  # noqa: BLE001 记账出错不影响大脑
+                log.debug("交出限额事件出错", exc_info=True)
         if self.on_message is not None:
             self.on_message(m)

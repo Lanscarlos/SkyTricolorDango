@@ -20,7 +20,7 @@ def make_session(registry: Registry, ref: ModelRef, *, prompt: str, toolbox, mcp
 
         base, env = claude_base(provider, registry.environ)
         return BrainSession(base, env, Path(workdir) / "session", mcp_url, prompt, ref.model, cfg.effort,
-                            cfg.turn_timeout, on_message, provider=ref.provider)
+                            cfg.turn_timeout, on_message, provider=ref.provider, on_rate_limit=registry._rate_hook(ref.provider))
     from ..models.openai_compat import build_client
     from .llm_tools import openai_tools
     from .toolloop import ASIDE_NOTE, BLIND_NOTE, ToolLoopBrain

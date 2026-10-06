@@ -61,7 +61,7 @@ LIVE = ("running", "stopping")
 NOT_RUNNING = {"ok": False, "text": "团子没在运行"}
 SANDBOX_NOT_RUNNING = {"ok": False, "text": "沙盒没在运行"}
 SANDBOX_PROXY_TIMEOUT = 35.0  # /sandbox/state 长轮询最多 25 秒、/sandbox/op 身体线程最多 10 秒 + 余量
-SANDBOX_GET = ("state", "brain", "inner", "status")  # 转发给沙盒的 GET
+SANDBOX_GET = ("state", "brain", "inner", "status", "usage")  # 转发给沙盒的 GET
 _STATIC_NAME = re.compile(r"[A-Za-z0-9_.-]+\.(css|js)")
 _STATIC_TYPES = {"css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
 
@@ -138,6 +138,7 @@ class ConsoleServer:
         port_free: Callable[[int], bool] = port_free,
     ) -> None:
         self.config_path, self.store, self.runner = Path(config_path), store, runner
+        self._usage_view = None  # console.usage_view.UsageView：第一次要时才建（余额缓存在它身上）
         self.port, self.child_port = port, child_port
         self.device_checks, self.make_device, self.find_spec = device_checks, make_device, find_spec
         self.parent_pid = os.getpid() if parent_pid is None else parent_pid
@@ -354,6 +355,24 @@ class ConsoleServer:
         if result["ok"] and self._busy():
             result["restart"] = True
         return 200, result
+
+    def usage(self) -> tuple[int, str, bytes]:
+        """「模型用量」（spec 2026-10-06-model-usage §6.1）：团子 / 沙盒在跑转发它的 /usage，没在跑或转发失败读账本。"""
+        st = self.runner.status()
+        if st["state"] in LIVE:
+            got = self.proxy("GET", "usage", "") if _kind(st) == "dango" else self.sandbox_proxy("GET", "usage", "")
+            if got[0] == 200:
+                return got
+        if self._usage_view is None:
+            from .usage_view import UsageView
+
+            self._usage_view = UsageView(self.store)
+        try:
+            body, code = self._usage_view.get(), 200
+        except Exception as exc:
+            log.exception("读模型用量出错")
+            body, code = {"ok": False, "text": f"读模型用量出错：{exc}"}, 500
+        return code, "application/json; charset=utf-8", json.dumps(body, ensure_ascii=False).encode()
 
     def models(self):
         """「模型」页（spec 2026-10-05-model-providers §3）：团子 / 沙盒在跑时照样保存，提示下次启动生效。"""
@@ -874,6 +893,8 @@ class ConsoleServer:
                     self._json(200, console.list_scenarios())
                 elif url.path == "/api/sandbox/replay":
                     self._json(200, console.replay_state())
+                elif url.path == "/api/usage":
+                    self._send(*console.usage())
                 elif url.path.startswith("/live/"):
                     self._send(*console.proxy("GET", url.path[len("/live/"):], url.query))
                 elif url.path.startswith("/sandbox/"):

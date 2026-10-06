@@ -92,23 +92,27 @@ persona = """
 # key_env = "DEEPSEEK_API_KEY"
 # timeout = 30.0
 # max_retries = 2
-# models = ["deepseek-chat", "deepseek-reasoner", "deepseek-flash"]
+# models = ["deepseek-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"]  # 后两个是旧名，价格页上已经没有
 # vision = ["deepseek-flash"]           # V4.1 Flash 能看图
+# # 单价（元 / 百万 token 的空闲价：[命中缓存的输入, 没命中的输入, 输出]），不写时 api.deepseek.com 用内置的价格页单价
+# prices = { "deepseek-flash" = [0.02, 1, 4], "deepseek-v4-pro" = [0.15, 4.5, 13.5] }
+# peak = 2.0                            # 高峰价 = 空闲价 × peak
+# peak_hours = ["09:00-12:00", "14:00-18:00"]  # 北京时间周一到周五（不认节假日）
 #
 # 用处：brain 大脑 / memory 随手记和整理 / reflect 反思 / reply 普通 Agent 和备用回复 / text_label 文字标注 /
 #       eyes 眼睛和代看 / wardrobe 装扮描述 / image_label 看图标注（后三个只能选能看图的）。模型写成「供应商id/模型名」，按第一个 / 拆。
 # backup：主那家额度 / 余额用完或认证出错，这次运行里改用它；空 = 没有备用。temperature / max_tokens 只对 openai 那种生效
 # [models.brain]
-# main = "deepseek/deepseek-chat"
+# main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
 # [models.memory]
-# main = "deepseek/deepseek-chat"
+# main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
 # [models.reflect]
-# main = "deepseek/deepseek-chat"
+# main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
 # [models.reply]
-# main = "deepseek/deepseek-chat"
+# main = "deepseek/deepseek-flash"
 # max_tokens = 200
 # [models.eyes]
 # main = "deepseek/deepseek-flash"
@@ -123,7 +127,7 @@ persona = """
 # [llm]：旧写法，还能读（换算成 deepseek 供应商和 [models.reply]，启动时警告一行），换算见上面 spec §1.3
 # provider = "openai"
 # base_url = "https://api.deepseek.com"
-# model = "deepseek-chat"
+# model = "deepseek-flash"
 # api_key_env = "DEEPSEEK_API_KEY"
 
 [emotes]
@@ -585,6 +589,13 @@ close_with_back = true         # 发完按 BACK 关掉输入框，否则头顶�
 # 管理面板（python -m skydango console）。其余项（上次的启动选项等）由面板写进 console.toml，
 # 面板里改的设置也写在 console.toml（叠加在本文件之后），密钥写在 secrets.toml；两个文件都不进 git
 # port = 19390        # 面板端口（团子的接口端口是 [viewer] port）
+
+# [usage]
+# 模型用量和额度（管理面板「模型用量」卡片，spec 2026-10-06-model-usage）
+# ledger = "runs/usage.json"   # 今天累计的账本（不进 git，每台电脑各记各的）
+# keep_days = 7                # 账本只留最近几天
+# save_every = 60.0            # 每隔几秒把这次的用量加进账本（退出时再写一次）；0 = 只在退出时写
+# balance_every = 300.0        # 每隔几秒查一次 DeepSeek 余额；0 = 不查
 
 [sandbox]
 # 大脑沙盒（管理面板「沙盒」页）：不开 MuMu，假世界 + 真大脑 / 内心层；只写 <dir>/memory/，永远不写 memory/

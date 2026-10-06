@@ -662,6 +662,23 @@ def test_stage_knows_icon_kind():
     assert json.loads(out) == ["#a3e635", "string"]
 
 
+def test_usage_endpoint():   # spec 2026-10-06-model-usage §6.1
+    v = viewer()
+    url = v.start()
+    try:
+        assert request(url + "usage")[0] == 404
+        v.usage = lambda: {"source": "live", "run": {"rows": []}}
+        assert request(url + "usage") == (200, {"ok": True, "source": "live", "run": {"rows": []}})
+        req = urllib.request.Request(url + "usage", headers={"Host": "evil.example"})
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(req, timeout=5)
+        assert err.value.code == 403
+        v.usage = lambda: 1 / 0
+        assert request(url + "usage")[0] == 500
+    finally:
+        v.stop()
+
+
 def test_describe_env_splits_view_and_around():
     w = PerceptionWatcher(ScriptDetector([Detection("name_tag", Rect(1810, 500, 100, 44), 0.9)]), WidthOcr({100: "懒洋洋大王"}),
                           PerceptionConfig(), EnvConfig(), lambda: ["懒洋洋大王"], [0.0, 0.0, 0.3, 0.8], background=False)

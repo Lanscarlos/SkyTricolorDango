@@ -138,6 +138,9 @@ class ToolLoopBrain:
                 usage = usage or {"input_tokens": 0, "output_tokens": 0}
                 usage["input_tokens"] += int(getattr(u, "prompt_tokens", 0) or 0)
                 usage["output_tokens"] += int(getattr(u, "completion_tokens", 0) or 0)
+                hit = int(getattr(u, "prompt_cache_hit_tokens", 0) or 0)  # DeepSeek 的缓存命中（算钱用）
+                if hit:
+                    usage["cache_read_input_tokens"] = usage.get("cache_read_input_tokens", 0) + hit
             message = resp.choices[0].message
             content = message.content or ""
             tool_calls = list(message.tool_calls or [])

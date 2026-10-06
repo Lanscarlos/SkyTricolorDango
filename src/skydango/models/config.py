@@ -6,12 +6,36 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, fields
+from urllib.parse import urlparse
 
 from ..config import Config
 
 KINDS = ("claude-code", "openai")  # 面板可选；另有内部 "echo"（--echo 用）
 ID_RE = re.compile(r"^[a-z0-9_-]+$")
 _RANK = {"default": 0, "legacy": 1, "config": 2, "console": 3}
+
+
+@dataclass(frozen=True)
+class Price:
+    """元 / 百万 token 的空闲价：命中缓存的输入、没命中的输入、输出。est：价格页上没有、照别的模型估的。"""
+
+    hit: float
+    miss: float
+    out: float
+    est: bool = False
+
+
+# DeepSeek 价格页（https://api-docs.deepseek.com/zh-cn/quick_start/pricing，2026-10-06 取）的空闲价；高峰 ×2。
+# deepseek-chat / deepseek-reasoner 页上已经没有，按 Flash 的价估（spec 2026-10-06-model-usage §3.1）
+DEEPSEEK_PRICES: dict[str, Price] = {
+    "deepseek-flash": Price(0.02, 1, 4),
+    "deepseek-v4-pro": Price(0.15, 4.5, 13.5),
+    "deepseek-chat": Price(0.02, 1, 4, est=True),
+    "deepseek-reasoner": Price(0.02, 1, 4, est=True),
+}
+DEEPSEEK_PEAK = 2.0
+DEEPSEEK_PEAK_HOURS = ("09:00-12:00", "14:00-18:00")  # 北京时间周一到周五
+_HOURS_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d-(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$")
 
 
 @dataclass(frozen=True)
@@ -29,10 +53,17 @@ class ProviderConfig:
     key_env: str = ""
     timeout: float = 30.0
     max_retries: int = 2
+    # 单价（spec 2026-10-06-model-usage §3）：只对 openai 有意义，claude-code 走订阅不算钱
+    prices: tuple[tuple[str, Price], ...] = ()
+    peak: float = 1.0  # 高峰价 = 空闲价 × peak
+    peak_hours: tuple[str, ...] = ()  # 北京时间周一到周五，"HH:MM-HH:MM"
     source: str = "default"  # default / config / console（这家任一字段最"新"的来源）
 
     def sees(self, model: str) -> bool:
         return model in self.vision
+
+    def price(self, model: str) -> Price | None:
+        return dict(self.prices).get(model)
 
     def secret_env(self) -> str:
         """这家的密钥放在哪个环境变量：claude-code 是令牌，openai 是 Key，echo 没有。"""
@@ -44,6 +75,62 @@ class ProviderConfig:
 
 
 _PROVIDER_KEYS = {f.name for f in fields(ProviderConfig)} - {"id", "source"}
+
+
+def is_deepseek(p: ProviderConfig) -> bool:
+    """DeepSeek 官方接口（查得到余额、内置单价）：OpenAI 兼容且地址主机是 api.deepseek.com。"""
+    return p.kind == "openai" and (urlparse(p.base_url or "").hostname or "") == "api.deepseek.com"
+
+
+def mark_est(model: str, hit: float, miss: float, out: float) -> Price:
+    """和内置估价一模一样的数（面板保存时原样写回去的）仍然算估。"""
+    known = DEEPSEEK_PRICES.get(model)
+    est = known is not None and known.est and (known.hit, known.miss, known.out) == (hit, miss, out)
+    return Price(hit, miss, out, est)
+
+
+def parse_price(model: str, value) -> Price:
+    """[命中, 没命中, 输出] → Price；不对抛 ValueError。"""
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError(f"{model} 的单价要写成 [命中缓存的输入, 没命中的输入, 输出] 三个数")
+    nums = []
+    for v in value:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+            raise ValueError(f"{model} 的单价要是不小于 0 的数")
+        nums.append(float(v))
+    return mark_est(model, *nums)
+
+
+def parse_pricing(pid: str, values: dict, problems: list[Problem]) -> None:
+    """把 values 里的 prices / peak / peak_hours 换成 ProviderConfig 要的样子；坏的那项丢掉、记一条问题。"""
+    if "prices" in values:
+        raw, out = values.pop("prices"), []
+        if not isinstance(raw, dict):
+            problems.append(Problem(f"供应商 {pid} 的 prices 要写成 {{模型 = [命中, 没命中, 输出]}}", provider=pid))
+        else:
+            for model, v in raw.items():
+                try:
+                    out.append((str(model), parse_price(str(model), v)))
+                except ValueError as exc:
+                    problems.append(Problem(f"供应商 {pid}：{exc}", provider=pid))
+        values["prices"] = tuple(out)
+    if "peak" in values:
+        v = values.pop("peak")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 1:
+            problems.append(Problem(f"供应商 {pid} 的 peak（高峰倍数）要是不小于 1 的数", provider=pid))
+        else:
+            values["peak"] = float(v)
+    if "peak_hours" in values:
+        v = values.pop("peak_hours")
+        hours = [str(h) for h in v] if isinstance(v, (list, tuple)) else None
+        if hours is None or not all(_HOURS_RE.match(h) for h in hours):
+            problems.append(Problem(f"供应商 {pid} 的 peak_hours 要写成 [\"09:00-12:00\", …]", provider=pid))
+        else:
+            values["peak_hours"] = tuple(hours)
+
+
+def deepseek_pricing() -> dict:
+    return {"prices": tuple(DEEPSEEK_PRICES.items()), "peak": DEEPSEEK_PEAK, "peak_hours": DEEPSEEK_PEAK_HOURS}
 
 
 @dataclass(frozen=True)
@@ -78,11 +165,11 @@ class Use:
 
 
 USES: tuple[Use, ...] = (
-    Use("brain", "大脑", "每次醒来想、说、调工具", False, "deepseek/deepseek-chat", "claude/sonnet", 0.8, 4096),
-    Use("memory", "记忆", "随手记 inbox.md、整理 notes.md、memory update", False, "deepseek/deepseek-chat", "claude/sonnet", 0.8, 4096),
-    Use("reflect", "反思", "反思、日记、性格", False, "deepseek/deepseek-chat", "claude/sonnet", 0.8, 4096),
-    Use("reply", "回复", "普通 Agent（--no-brain）、chat 命令、大脑离线时的纯文字回复", False, "deepseek/deepseek-chat", "", 0.8, 200),
-    Use("text_label", "文字标注", "文字标注（addressee label）", False, "deepseek/deepseek-chat", "", 0.8, 4096),
+    Use("brain", "大脑", "每次醒来想、说、调工具", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
+    Use("memory", "记忆", "随手记 inbox.md、整理 notes.md、memory update", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
+    Use("reflect", "反思", "反思、日记、性格", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
+    Use("reply", "回复", "普通 Agent（--no-brain）、chat 命令、大脑离线时的纯文字回复", False, "deepseek/deepseek-flash", "", 0.8, 200),
+    Use("text_label", "文字标注", "文字标注（addressee label）", False, "deepseek/deepseek-flash", "", 0.8, 4096),
     Use("eyes", "眼睛", "眼睛（截图写成文字）、给大脑代看", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 2048),
     Use("wardrobe", "装扮描述", "装扮描述", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 1024),
     Use("image_label", "看图标注", "perception label --assist / --objects、attrs-label、gesture-label", True,
@@ -143,7 +230,7 @@ def _builtin(cfg: Config) -> dict[str, ProviderConfig]:
     llm, brain = cfg.llm, cfg.brain
     if llm.provider != "openai":  # 旧的 anthropic / echo：地址、Key、型号都不是 DeepSeek 的，别灌进来（Key 会被发到别家）
         llm = type(llm)()
-    models = ["deepseek-chat", "deepseek-reasoner", "deepseek-flash"]  # deepseek-flash（V4.1 Flash）能看图
+    models = ["deepseek-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"]  # deepseek-flash（V4.1 Flash）能看图；后两个是旧名
     if llm.model and llm.model not in models:
         models.insert(0, llm.model)
     return {
@@ -152,7 +239,8 @@ def _builtin(cfg: Config) -> dict[str, ProviderConfig]:
             path=brain.claude_path, token_env=brain.token_env, config_dir=brain.config_dir),
         "deepseek": ProviderConfig(
             "deepseek", "openai", models=tuple(models), vision=("deepseek-flash",),
-            base_url=llm.base_url, key_env=llm.api_key_env, timeout=float(llm.timeout), max_retries=int(llm.max_retries)),
+            base_url=llm.base_url, key_env=llm.api_key_env, timeout=float(llm.timeout), max_retries=int(llm.max_retries),
+            **deepseek_pricing()),
     }
 
 
@@ -184,6 +272,12 @@ def _explicit(cfg: Config, problems: list[Problem]) -> dict[str, ProviderConfig]
             problems.append(Problem(f"供应商 {pid} 的 vision 里有 models 没列的模型：{'、'.join(extra)}", provider=pid))
             vision = tuple(m for m in vision if m in models)
         source = max((cfg.sources.get(f"providers.{pid}.{k}", "default") for k in table), key=_RANK.get, default="default")
+        priced = any(k in values for k in ("prices", "peak", "peak_hours"))
+        parse_pricing(pid, values, problems)
+        if not priced and kind == "openai":  # 面板保存过的 deepseek（整张写进 console.toml、没单价）照样按内置单价算
+            probe = ProviderConfig(pid, kind, base_url=str(values.get("base_url") or ""))
+            if is_deepseek(probe):
+                values.update(deepseek_pricing())
         try:
             out[pid] = ProviderConfig(pid, kind, models=models, vision=vision, source=source, **values)
         except TypeError as exc:

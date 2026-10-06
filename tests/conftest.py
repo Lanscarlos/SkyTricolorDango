@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -8,8 +9,15 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+os.environ["SKYDANGO_USAGE_LEDGER"] = ""  # 测试别往本机的 runs/usage.json 记假用量（spec 2026-10-06-model-usage §4）
 
 from skydango.vision.bubbles import Rect  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_balance_thread(monkeypatch):
+    """测试里不起查 DeepSeek 余额的线程（本机 setx 过 Key 时会真的发请求）。"""
+    monkeypatch.setattr("skydango.cli._start_balance", lambda cfg, registry: None)
 from skydango.vision.ocr import OcrLine  # noqa: E402
 
 W, H = 1280, 720

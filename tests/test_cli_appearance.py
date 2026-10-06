@@ -120,7 +120,7 @@ def test_run_brain_loads_cards_and_starts_wardrobe(tmp_path, monkeypatch):
     assert name == "wardrobe" and daemon and stop.is_set()  # 和眼睛同一个 stop，下线时一起停
     calls.clear()  # 眼睛可能也调过
     assert wardrobe.describe(["图"]) == "描述"
-    [(cmd, _env, cwd, content, timeout)] = calls
+    [(cmd, _env, cwd, content, timeout, *_)] = calls
     assert cmd[cmd.index("--model") + 1] == "haiku"  # [models.wardrobe] 默认 claude/haiku
     assert cwd == run.path / "brain" / "wardrobe" and content == ["图"] and timeout == cfg.appearance.describe_timeout
     prompt = (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
