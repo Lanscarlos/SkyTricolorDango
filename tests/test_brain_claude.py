@@ -129,3 +129,17 @@ def test_gate_trip_from_many_threads_once(caplog):
     [t.join() for t in ts]
     assert not g.ok("claude") and sum("claude 不能用了" in r.getMessage() for r in caplog.records) == 1
 
+
+
+def test_brain_session_forwards_rate_limit(tmp_path):   # spec 2026-10-06-model-usage §5.2
+    from skydango.brain.session import BrainSession
+
+    got = []
+    env = fake_env(tmp_path)
+    env["FAKE_CLAUDE_RATE"] = "1"
+    s = BrainSession(FAKE, env, tmp_path / "w", "http://127.0.0.1:1/mcp", "prompt", "sonnet", "low", 10, on_rate_limit=got.append)
+    try:
+        assert s.send("在吗")["result"] == "收到：在吗"
+    finally:
+        s.close()
+    assert got and got[0]["status"] == "allowed_warning"

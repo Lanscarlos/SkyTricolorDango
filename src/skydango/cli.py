@@ -2584,10 +2584,12 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
 
     dev = _device(cfg)
     reader, self_filter = _chat_reader(cfg, dev, run.path / "a11y.jsonl")
+    registry = None
     try:
         reader.trace_path = run.rows_log
         panel = _panel(cfg, dev, reader)
-        registry = _registry(cfg, run.path / "models")
+        registry = _registry(cfg, run.path / "models", source="live")
+        registry.meter.start_saver(cfg.usage.save_every)
         llm = registry.call("reply")
         if not llm.available():
             raise RuntimeError("回复的模型用不了：" + registry.describe("reply"))
@@ -2629,6 +2631,8 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
         ime = _ime_switch(cfg, dev)
     except BaseException:  # 建到一半出错 / Ctrl+C / 面板点停止：别把设备上的无障碍客户端漏在那儿
         _stop_reader(reader)
+        if registry is not None:
+            registry.meter.close()
         raise
     try:
         agent.run(duration)
@@ -2647,6 +2651,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             log.exception("聊天面板没恢复")
         _stop_reader(reader)
         ime.stop()
+        registry.meter.close()
 
 
 def _camera(cfg: Config, dev, panel):
@@ -2683,17 +2688,34 @@ def cmd_camera(cfg: Config, args) -> None:
             print(f"认出团子：({b.x}, {b.y}) {b.w}×{b.h}")
 
 
-def _registry(cfg: Config, workdir: Path, environ=None):
+def _usage_ledger(cfg: Config):
+    """用量账本（spec 2026-10-06-model-usage §4）。环境变量 SKYDANGO_USAGE_LEDGER 盖过配置（测试设成空 = 不记账本）。"""
+    import os
+
+    from .models.usage_ledger import Ledger
+
+    path = os.environ.get("SKYDANGO_USAGE_LEDGER", cfg.usage.ledger)
+    return Ledger(Path(path), cfg.usage.keep_days) if path else None
+
+
+def _registry(cfg: Config, workdir: Path, environ=None, source: str = "offline"):
     """按用处给模型（spec 2026-10-05-model-providers §2）：解析 [providers] / [models]（含旧字段换算），每个用处 INFO 一行。
-    一次运行一个（闸是这次运行的）；离线命令各自建一个。"""
+    一次运行一个（闸是这次运行的）；离线命令各自建一个。带一个 UsageMeter 记用量（spec 2026-10-06-model-usage §2.3）：
+    source = live / sandbox 由调用方起保存线程、退出时 close；offline 退出时写一次账本。"""
+    import atexit
     import os
 
     from .models.config import resolve
     from .models.gate import ProviderGates
     from .models.registry import Registry
+    from .models.usage import UsageMeter
 
-    registry = Registry(resolve(cfg), ProviderGates(), workdir, os.environ if environ is None else environ)
+    setup, gates = resolve(cfg), ProviderGates()
+    meter = UsageMeter(setup, gates, source=source, ledger=_usage_ledger(cfg))
+    registry = Registry(setup, gates, workdir, os.environ if environ is None else environ, meter=meter)
     registry.log_summary()
+    if source == "offline" and meter.ledger is not None:
+        atexit.register(meter.close)
     return registry
 
 
@@ -2794,6 +2816,7 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
 
     dev = _device(cfg)
     reader, self_filter = _chat_reader(cfg, dev, run.path / "a11y.jsonl")
+    registry = None
     try:
         reader.trace_path = run.rows_log
         panel = _panel(cfg, dev, reader)
@@ -2825,6 +2848,8 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
         )
     except BaseException:  # 建到一半出错 / Ctrl+C / 面板点停止：别把设备上的无障碍客户端漏在那儿
         _stop_reader(reader)
+        if registry is not None:
+            registry.meter.close()
         raise
 
 
@@ -2858,10 +2883,15 @@ def _run_brain(
     _brain_env(cfg)  # 先检查 mcp
     # 按用处给模型（spec 2026-10-05-model-providers）：一次运行一个 Registry、一套按供应商的闸，
     # 大脑、记忆、反思、眼睛、装扮描述、备用回复共用；主那家额度 / 认证撞墙就关它的闸、改走备用
-    registry = _registry(cfg, run.path / "brain")
+    registry = _registry(cfg, run.path / "brain", source="live" if world is None else "sandbox")
     _check_brain_models(registry)  # 大脑的主和备都用不了才拦；别的用处的问题只警告（用到时那一处停用）
+    registry.meter.start_saver(cfg.usage.save_every)
     if world is None:
-        world = _game_world(cfg, run, no_emotes)
+        try:
+            world = _game_world(cfg, run, no_emotes)
+        except BaseException:
+            registry.meter.close()
+            raise
     wall, clock = world.wall, world.clock
     env = world.env
     try:
@@ -2937,6 +2967,7 @@ def _run_brain(
     except BaseException:
         world.close()
         world.restore()
+        registry.meter.close()
         raise
     if trace is None and viewer is not None:
         trace = viewer.brain or BrainTrace()  # 网页上的大脑时间线（一般 _viewer 已经挂好）
@@ -2956,7 +2987,7 @@ def _run_brain(
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
         eyes=eyes, clock=clock, wall=wall, run=run, store=live_store, trace=trace, slow=lambda: body.effects().slow,
-        fallback=backup, gates=registry.gates,
+        fallback=backup, gates=registry.gates, meter=registry.meter,
     )
     brain_box.append(brain)
     body.models_line = lambda: _models_line(brain, registry)
@@ -3049,6 +3080,7 @@ def _run_brain(
             except Exception:
                 log.exception("关大脑会话出错")
         server.stop()
+        registry.meter.close()  # 最后把这次的用量写进账本（下线反思也算在里面）
 
 
 WARDROBE_JOIN = 5.0  # 下线时等描述器手上那一个描述回来最多几秒（不为它拖住下线）

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+os.environ["SKYDANGO_USAGE_LEDGER"] = ""  # 测试别往本机的 runs/usage.json 记假用量（spec 2026-10-06-model-usage §4）
 
 from skydango.vision.bubbles import Rect  # noqa: E402
 from skydango.vision.ocr import OcrLine  # noqa: E402

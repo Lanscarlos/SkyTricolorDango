@@ -584,3 +584,42 @@ def test_brain_jsonl_has_provider(clock):
     brain, _, _, _ = make(clock, ProviderSession("deepseek", "deepseek-chat"), run=run)
     brain.wake(clock(), "heartbeat")
     assert run.entries[0]["provider"] == "deepseek" and run.entries[0]["model"] == "deepseek-chat"
+
+
+# ---- 用量（spec 2026-10-06-model-usage §2.2）----
+def _meter():
+    from skydango.config import Config
+    from skydango.models.config import resolve
+    from skydango.models.usage import UsageMeter
+
+    return UsageMeter(resolve(Config()), ProviderGates(), source="live")
+
+
+def _rows(m):
+    return {(r["use"], r["model"], r["backup"]): r for r in m.snapshot()["run"]["rows"]}
+
+
+def test_brain_records_usage(clock):
+    m = _meter()
+    session = FakeSession({**ok(), "provider": "deepseek", "model": "deepseek-flash"}, ClaudeError("坏了"))
+    session.provider, session.model = "deepseek", "deepseek-flash"
+    brain, _, _, _ = make(clock, session)
+    brain.meter = m
+    brain.wake(clock(), "heartbeat")
+    r = _rows(m)[("brain", "deepseek/deepseek-flash", False)]
+    assert (r["calls"], r["input"], r["fails"]) == (1, 5, 0)
+    brain.wake(clock(), "heartbeat")
+    assert _rows(m)[("brain", "deepseek/deepseek-flash", False)]["fails"] == 1
+
+
+def test_brain_records_backup_after_fallback(clock):
+    m = _meter()
+    fb = FakeSession(ok())
+    fb.provider, fb.model = "deepseek", "deepseek-flash"
+    brain, _, _, _ = make(clock, FakeSession(ClaudeError("limit", limit=True)), fallback_session=fb, gate=ProviderGates())
+    brain.meter = m
+    brain.wake(clock(), "heartbeat")
+    brain.wake(clock(), "heartbeat")
+    r = _rows(m)
+    assert r[("brain", "claude/sonnet", False)]["fails"] == 1
+    assert r[("brain", "deepseek/deepseek-flash", True)]["calls"] == 1

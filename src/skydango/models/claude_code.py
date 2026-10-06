@@ -162,12 +162,14 @@ def check_result(m: dict) -> str:
     return text
 
 
-def one_shot_message(cmd: list[str], env: dict[str, str], cwd: Path, content, timeout: float) -> dict:
-    """起一个进程，发一条消息，拿到结果就关；返回完整的 result 消息（辅助标注要里面的 usage）。失败抛 ClaudeError。"""
+def one_shot_message(cmd: list[str], env: dict[str, str], cwd: Path, content, timeout: float,
+                     on_message: Callable[[dict], None] | None = None) -> dict:
+    """起一个进程，发一条消息，拿到结果就关；返回完整的 result 消息（辅助标注要里面的 usage）。失败抛 ClaudeError。
+    on_message：每条输出都给它（限额事件用）。"""
     p = StreamProcess(cmd, env, cwd)
     try:
         p.send(content)
-        m = p.until_result(timeout)
+        m = p.until_result(timeout, on_message)
         check_result(m)
         return m
     finally:
@@ -213,7 +215,7 @@ class ClaudeCodeBackend:
 
     def __init__(self, provider: "ProviderConfig", model: str, cwd: Path, *, environ: Mapping[str, str] = os.environ,
                  effort: str = "low", persist: bool = True, base: list[str] | None = None,
-                 env: dict[str, str] | None = None) -> None:
+                 env: dict[str, str] | None = None, on_event: Callable[[dict], None] | None = None) -> None:
         self.provider = provider
         self.model = model
         self.cwd = cwd
@@ -221,6 +223,11 @@ class ClaudeCodeBackend:
         self.effort = effort
         self.persist = persist
         self._base, self._env = base, env
+        self.on_event = on_event  # Claude Code 的限额事件（rate_limit_info）交给它（spec 2026-10-06-model-usage §5.2）
+
+    def _seen(self, m: dict) -> None:
+        if m.get("type") == "rate_limit_event" and self.on_event is not None:
+            self.on_event(m.get("rate_limit_info") or {})
 
     def _ready(self) -> tuple[list[str], dict[str, str]]:
         if self._base is None or self._env is None:
@@ -236,7 +243,7 @@ class ClaudeCodeBackend:
             content = "\n\n".join([*parts, content]) if isinstance(content, str) else content
         cmd = claude_command(base, self.model, system, effort=self.effort, persist=self.persist)
         try:
-            m = one_shot_message(cmd, env, self.cwd, content, timeout)
+            m = one_shot_message(cmd, env, self.cwd, content, timeout, self._seen)
         except ClaudeError as exc:
             exc.provider = self.provider.id
             raise

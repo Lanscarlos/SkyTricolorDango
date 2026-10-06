@@ -38,7 +38,8 @@ class FakeClient:
             raise item
         resp = SimpleNamespace(choices=[SimpleNamespace(message=item)])
         if getattr(item, "fake_usage", None) is not None:
-            resp.usage = SimpleNamespace(prompt_tokens=item.fake_usage[0], completion_tokens=item.fake_usage[1])
+            resp.usage = SimpleNamespace(prompt_tokens=item.fake_usage[0], completion_tokens=item.fake_usage[1],
+                                         prompt_cache_hit_tokens=(item.fake_usage[2:] or (0,))[0])
         return resp
 
 
@@ -437,3 +438,9 @@ def test_make_session_claude_code(tmp_path, monkeypatch):
     s = make_session(reg, ModelRef("claude", "sonnet"), prompt="prompt", toolbox=_full_toolbox(), mcp_url="http://x",
                      workdir=tmp_path, cfg=BrainConfig(), addressee=False, on_message=None)
     assert isinstance(s, BrainSession) and s.provider == "claude" and s.model == "sonnet"
+
+
+def test_toolloop_cache_hit_tokens():   # spec 2026-10-06-model-usage §2.2：DeepSeek 缓存命中算得出钱
+    script = [msg(content=None, tool_calls=[tool_call("say", '{"text":"你好"}')], usage=(100, 5, 80)), msg(content="好", usage=(100, 5, 80))]
+    out = ToolLoopBrain(client(script), "sys", toolbox(), [say_schema()], model="deepseek-flash", temperature=0.8, max_tokens=4096).send("x")
+    assert out["usage"] == {"input_tokens": 200, "output_tokens": 10, "cache_read_input_tokens": 160}
