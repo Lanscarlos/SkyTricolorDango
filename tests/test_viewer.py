@@ -660,3 +660,12 @@ def test_stage_knows_icon_kind():
     # 中文名在 Windows 上 node 输出按 GBK 解码，只核对颜色和名字存在
     out = _node(f"const S=require({json.dumps(str(_stage_path()))});console.log(JSON.stringify([S.COLORS.icon,typeof S.NAMES.icon]));")
     assert json.loads(out) == ["#a3e635", "string"]
+
+
+def test_describe_env_splits_view_and_around():
+    w = PerceptionWatcher(ScriptDetector([Detection("name_tag", Rect(1810, 500, 100, 44), 0.9)]), WidthOcr({100: "懒洋洋大王"}),
+                          PerceptionConfig(), EnvConfig(), lambda: ["懒洋洋大王"], [0.0, 0.0, 0.3, 0.8], background=False)
+    w.process(frame(), 0.0, panel_visible=False)  # 名字贴在右边：在附近、画面里没有
+    info = describe_env(w, 0.0)
+    assert info["身边的好友"] == "没看到"
+    assert info["附近"] == ["懒洋洋大王（画面外·右边）"]

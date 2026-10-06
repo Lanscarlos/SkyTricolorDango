@@ -24,7 +24,7 @@ WAIT_EXTRA = 4.0  # 窗口结束后最多再等几秒（感知层一帧没跑到
 @dataclass
 class CallResult:
     at: float  # 按键时刻（身体时钟）；拒绝时是想喊的时刻
-    reason: str  # "brain" / "brain-owner"（主人命令窗口里放宽了间隔）/ "auto" / "manual"
+    reason: str  # "brain" / "brain-owner"（主人命令窗口里放宽了间隔）/ "auto" / "unsure" / "presence"（确认好友还在不在场）/ "manual"
     refused: str = ""  # 非空 = 没喊，原因
     dry: bool = False  # dry-run：没按键
     halo: str = "off"  # "self" / "others" / "none" / "skipped" / "off"
