@@ -300,6 +300,8 @@ class UsageMeter:
                      for p in self.setup.providers.values() if p.kind != "echo"]
         uses = []
         for spec in USES:
+            if spec.follows:  # 跟着大脑的（压缩）：用量照记成单独一行，这里不单独列
+                continue
             u = self.setup.uses[spec.name]
             current, backup = self.current(spec.name)
             uses.append({"use": spec.name, "label": spec.label, "main": str(u.main) if u.main else None,

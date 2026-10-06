@@ -1,6 +1,6 @@
 import pytest
 
-from skydango.config import load_config
+from skydango.config import Config, load_config
 from skydango.models.config import ModelRef, resolve
 
 
@@ -155,3 +155,19 @@ def test_saved_estimate_stays_estimate(tmp_path):
 def test_brain_temperature_default(tmp_path):  # 贱兮兮：大脑默认温度 1.0，配置还能改
     assert resolve(_cfg(tmp_path)).uses["brain"].temperature == 1.0
     assert resolve(_cfg(tmp_path, "[models.brain]\ntemperature = 1.2\n")).uses["brain"].temperature == 1.2
+
+
+def test_recap_follows_brain():   # spec 2026-10-06-brain-compact §5
+    from skydango.models.config import USE_BY_NAME
+
+    cfg = Config()
+    cfg.models = {"brain": {"main": "claude/sonnet", "backup": "deepseek/deepseek-flash"},
+                  "recap": {"main": "deepseek/deepseek-v4-pro"}}
+    cfg.sources["models.recap.main"] = "config"
+    s = resolve(cfg)
+    r, b = s.uses["recap"], s.uses["brain"]
+    assert (str(r.main), str(r.backup)) == ("claude/sonnet", "deepseek/deepseek-flash")
+    assert (r.temperature, r.max_tokens, r.disabled) == (b.temperature, b.max_tokens, b.disabled) and r.source == "follows"
+    assert any("[models.recap]" in p.text and p.warn for p in s.problems)
+    assert USE_BY_NAME["recap"].follows == "brain" and USE_BY_NAME["recap"].label == "压缩"
+    assert not any("recap" in p.text for p in resolve(Config()).problems)

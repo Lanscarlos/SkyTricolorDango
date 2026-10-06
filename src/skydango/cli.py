@@ -2787,7 +2787,7 @@ def _brain_env(cfg: Config) -> None:
 
 def _check_brain_models(registry) -> None:
     """大脑的主和备都用不了（缺 Key / 令牌 / claude 命令、没配好）才拦；别的用处的问题只警告，用到时那一处停用。"""
-    from .models.config import USE_NAMES
+    from .models.config import USE_BY_NAME, USE_NAMES
 
     u = registry.setup.uses["brain"]
     refs = [r for r in (u.main, u.backup) if r is not None]
@@ -2798,7 +2798,7 @@ def _check_brain_models(registry) -> None:
         raise RuntimeError("大脑没有能用的模型：" + why + "；不想接大脑可以用 --no-brain（调试用的普通模式）")
     missing: dict[str, list[str]] = {}  # 问题 → 受影响的用处
     for name in USE_NAMES:
-        if name != "brain":
+        if name != "brain" and not USE_BY_NAME[name].follows:
             for p in registry.requirements([name]):
                 missing.setdefault(p.text, []).append(name)
     for text, names in missing.items():
@@ -2832,6 +2832,8 @@ def _models_line(brain, registry) -> str:
     text = f"大脑已切到 {now}（{'；'.join(f'{p} {r}' for p, r in closed.items())}）" if brain.on_fallback else f"大脑 {now}"
     off = []
     for name, u in registry.setup.uses.items():
+        if USE_BY_NAME[name].follows:
+            continue
         label = USE_BY_NAME[name].label
         if u.disabled:
             off.append(f"{label}停用：{u.disabled}")

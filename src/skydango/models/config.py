@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from urllib.parse import urlparse
 
 from ..config import Config
@@ -162,6 +162,7 @@ class Use:
     backup: str
     temperature: float
     max_tokens: int
+    follows: str = ""  # 非空 = 跟着这个用处的模型走、不单独选（只用来单独记用量）：不读 [models.<它>]，面板 / status / 预检不单独报
 
 
 USES: tuple[Use, ...] = (
@@ -174,6 +175,8 @@ USES: tuple[Use, ...] = (
     Use("wardrobe", "装扮描述", "装扮描述", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 1024),
     Use("image_label", "看图标注", "perception label --assist / --objects、attrs-label、gesture-label", True,
         "deepseek/deepseek-flash", "claude/sonnet", 0.8, 8192),
+    # spec 2026-10-06-brain-compact §5：OpenAI 兼容大脑的历史压缩，用的就是大脑那个会话的模型
+    Use("recap", "压缩", "大脑历史太长时写成前情提要（跟着大脑的模型，不单独选）", False, "", "", 0.3, 4096, follows="brain"),
 )
 USE_NAMES: tuple[str, ...] = tuple(u.name for u in USES)
 USE_BY_NAME = {u.name: u for u in USES}
@@ -323,6 +326,12 @@ def resolve(cfg: Config) -> ModelSetup:
 
     uses: dict[str, UseConfig] = {}
     for use in USES:
+        if use.follows:  # 跟着别的用处（在它后面算）：[models.<它>] 写了只警告
+            if cfg.models.get(use.name):
+                problems.append(Problem(f"[models.{use.name}] 不生效：{use.label}跟着{USE_BY_NAME[use.follows].label}的模型",
+                                        use=use.name, warn=True))
+            uses[use.name] = replace(uses[use.follows], name=use.name, source="follows")
+            continue
         main, backup, source = use.main, use.backup, "default"
         temperature, max_tokens = use.temperature, use.max_tokens
         if use.name in old:

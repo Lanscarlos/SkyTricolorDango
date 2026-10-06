@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..config import load_config
-from ..models.config import ID_RE, KINDS, USES, ModelSetup, ProviderConfig, parse_price, resolve
+from ..models.config import ID_RE, KINDS, USE_BY_NAME, USES, ModelSetup, ProviderConfig, parse_price, resolve
 from .settings import SettingsStore, mask
 from .tomlfile import dumps, read, write_atomic
 
@@ -165,7 +165,7 @@ class ModelsView:
                 continue
             env = p.secret_env()
             value, source = self.store._secret_source(env) if env else ("", "none")
-            used_by = [u.name for u in setup.uses.values() if any(r is not None and r.provider == p.id for r in (u.main, u.backup))]
+            used_by = [u.name for u in setup.uses.values() if not USE_BY_NAME[u.name].follows and any(r is not None and r.provider == p.id for r in (u.main, u.backup))]
             row = {"id": p.id, "kind": p.kind, "models": [{"name": m, "vision": p.sees(m)} for m in p.models],
                    "secret": mask(value), "secret_source": source, "source": p.source, "used_by": used_by}
             for key in ("path", "token_env", "config_dir", "base_url", "key_env", "timeout", "max_retries", "peak"):
@@ -178,7 +178,7 @@ class ModelsView:
         for use in USES:
             u, b = setup.uses[use.name], base[use.name]
             issues = [p.text for p in setup.problems if p.use == use.name]
-            uses.append({"name": use.name, "label": use.label, "help": use.help, "vision": use.vision,
+            uses.append({"name": use.name, "label": use.label, "help": use.help, "vision": use.vision, "follows": use.follows,
                          "main": _ref(u.main), "backup": _ref(u.backup), "source": u.source,
                          "default_main": _ref(b.main), "default_backup": _ref(b.backup),  # 「恢复默认」= 默认值 + config.toml
                          "problem": u.disabled or (issues[0] if issues else "")})
@@ -228,6 +228,8 @@ class ModelsView:
         for name, sel in uses.items():
             if name not in base or not isinstance(sel, dict):
                 raise BadRequest(f"没有用处「{name}」")
+            if USE_BY_NAME[name].follows:  # 跟着大脑的（压缩）：不单独选，页面带上来也不写
+                continue
             main, backup = str(sel.get("main") or "").strip(), str(sel.get("backup") or "").strip()
             b = base[name]
             table = models.setdefault(name, {})
@@ -238,6 +240,9 @@ class ModelsView:
                 table.update(main=main, backup=backup)
             if not table:
                 models.pop(name)
+        for use in USES:
+            if use.follows:
+                models.pop(use.name, None)
         if not models:
             console.pop("models")
 

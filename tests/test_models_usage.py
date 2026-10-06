@@ -148,3 +148,12 @@ def test_delta_take_restore():
     m.record("brain", "deepseek", "deepseek-flash", backup=False, usage={"input_tokens": 3}, ok=True)
     assert m.take_delta()[day]["sandbox"]["brain|deepseek/deepseek-flash|main"]["input"] == 10
     assert rows(m.snapshot())[("brain", "deepseek/deepseek-flash", False)]["input"] == 10  # 这次运行不受 take 影响
+
+
+def test_recap_row_and_hidden_use():   # spec 2026-10-06-brain-compact §5
+    m = meter()
+    m.record("recap", "deepseek", "deepseek-flash", backup=True, usage={"input_tokens": 100, "output_tokens": 10}, ok=True)
+    snap = m.snapshot()
+    r = rows(snap)[("recap", "deepseek/deepseek-flash", True)]
+    assert r["label"] == "压缩" and r["calls"] == 1
+    assert "recap" not in [u["use"] for u in snap["uses"]]
