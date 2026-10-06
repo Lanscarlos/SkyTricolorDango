@@ -23,25 +23,40 @@ BLIND_NOTE = """你看不到画面：判断靠消息里的状态、聊天记录�
 ASIDE_NOTE = "\n- 标着“跟别人说”的话默认不接"  # [addressee] 开着时接在 BLIND_NOTE 后面（10-03 晚它的说听比 0.9~1.15，比 Claude 更爱接）
 
 HISTORY_TEXT = 1500  # 历史里每轮的唤醒消息最多留这么多字（状态之类长的截掉）
+SILENT = "（没说话）"  # 历史里一轮什么都没输出时的 assistant 占位
+HISTORY_TOOL = 200  # 历史里每个工具返回最多留这么多字
 HISTORY_CHARS = 12000  # 历史总共最多这么多字，超了从最老的丢
 
 
-def _summary(done: list[tuple[str, dict | None, str, bool]], final: str) -> str:
-    """这一轮做了什么，压成一句话放进历史（只给它自己看：说了什么、做了什么动作、调了什么、结果）。"""
-    parts = []
-    for name, args, out, is_error in done:
-        args = args or {}
-        if name == "say":
-            text = str(args.get("text", ""))
-            parts.append(f"想说「{text}」被拦下：{out[:60]}" if is_error else f"说了「{text}」")
-        elif name == "emote":
-            parts.append(f"做了动作 {args.get('name', '')}" + (f"（没做成：{out[:40]}）" if is_error else ""))
-        else:
-            brief = json.dumps(args, ensure_ascii=False)[:60]
-            parts.append(f"调了 {name}({brief}) → {out[:60]}")
-    if final.strip():
-        parts.append(f"心里：{final.strip()[:200]}")
-    return "你这一轮：" + ("；".join(parts) if parts else "什么都没做")
+def _replay(turn: list[dict], seq: int) -> list[dict]:
+    """这一轮的 assistant / tool 消息，压成历史里重放的样子：保留真的工具调用（换成不重复的 id）、
+    工具返回截到 HISTORY_TOOL 字、去掉没执行的调用（轮数到顶时最后一次）。
+    10-06 沙盒：以前压成一句纯文字「你这一轮：说了「…」」，DeepSeek 照着学，回话写成文字、不调 say，话没发出去。"""
+    answered = {m["tool_call_id"] for m in turn if m["role"] == "tool"}
+    ids: dict[str, str] = {}
+    out: list[dict] = []
+    for m in turn:
+        if m["role"] == "tool":
+            content = m["content"] if len(m["content"]) <= HISTORY_TOOL else m["content"][:HISTORY_TOOL] + "……"
+            out.append({"role": "tool", "tool_call_id": ids[m["tool_call_id"]], "content": content})
+            continue
+        calls = [c for c in m.get("tool_calls") or [] if c["id"] in answered]
+        for c in calls:
+            ids[c["id"]] = f"h{seq}_{len(ids)}"
+        item = {"role": "assistant", "content": m.get("content") or ""}
+        if calls:
+            item["tool_calls"] = [{**c, "id": ids[c["id"]]} for c in calls]
+        elif not item["content"].strip():
+            continue
+        out.append(item)
+    if not out:  # 什么都没说、没调：也留一条 assistant，别让两条 user 挨着（deepseek-reasoner 不收）
+        out.append({"role": "assistant", "content": SILENT})
+    return out
+
+
+def _size(messages: list[dict]) -> int:
+    return sum(len(m.get("content") or "") + sum(len(c["function"]["arguments"] or "") for c in m.get("tool_calls") or [])
+               for m in messages)
 
 
 class ToolLoopBrain:
@@ -78,7 +93,8 @@ class ToolLoopBrain:
         # 短期记忆：最近 history 轮（唤醒消息, 这一轮做了什么）。Claude 大脑是常驻会话；这里每轮重发，
         # 不带的话它不记得刚说过什么（10-03 晚：同一句话隔 8 秒说两遍、连说三句晚安）。只在内存里
         self.history = history
-        self._past: list[tuple[str, str]] = []
+        self._past: list[tuple[str, list[dict]]] = []  # (唤醒消息, 这一轮的 assistant / tool 消息，见 _replay)
+        self._seq = 0  # 历史里工具调用 id 的轮次编号
 
     def close(self) -> None:
         """同 BrainSession.close：没有常驻进程，什么都不用关。"""
@@ -86,21 +102,21 @@ class ToolLoopBrain:
     def _history_messages(self) -> list[dict]:
         out: list[dict] = []
         total = 0
-        for user, assistant in reversed(self._past):
+        for user, turn in reversed(self._past):
             user = user if len(user) <= HISTORY_TEXT else user[:HISTORY_TEXT] + "……（后面截掉了）"
-            size = len(user) + len(assistant)
+            size = len(user) + _size(turn)
             if out and total + size > HISTORY_CHARS:
                 break
             if not out and size > HISTORY_CHARS:
                 continue
-            out[:0] = [{"role": "user", "content": user}, {"role": "assistant", "content": assistant}]
+            out[:0] = [{"role": "user", "content": user}, *turn]
             total += size
         return out
 
     def send(self, text: str) -> dict:
         messages: list[dict] = [{"role": "system", "content": self.system}, *self._history_messages(),
                                 {"role": "user", "content": text}]
-        done: list[tuple[str, dict | None, str, bool]] = []
+        start = len(messages)
         deadline = self.clock() + self.turn_timeout
         final = ""
         rounds = 0
@@ -134,6 +150,8 @@ class ToolLoopBrain:
             messages.append(assistant)
             final = content
             if not tool_calls or rounds >= self.max_steps + 2:
+                if content.strip() and self.on_message is not None:  # 最后的文字也上时间线（不调工具的轮次才看得到它写了什么）
+                    self.on_message({"type": "assistant", "message": {"content": [{"type": "text", "text": content}]}})
                 break
             rounds += 1
             if content.strip() and self.on_message is not None:  # 工具调用前的中间文字：时间线上也要看到
@@ -161,8 +179,8 @@ class ToolLoopBrain:
                         {"type": "tool_result", "tool_use_id": tc.id, "content": out, "is_error": is_error}
                     ]}})
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
-                done.append((name, args, out, is_error))
         if self.history > 0:
-            self._past = (self._past + [(text, _summary(done, final))])[-self.history:]
+            self._seq += 1
+            self._past = (self._past + [(text, _replay(messages[start:], self._seq))])[-self.history:]
         return {"result": final, "subtype": "success", "num_turns": requests, "usage": usage,
                 "provider": self.provider, "model": self.model}

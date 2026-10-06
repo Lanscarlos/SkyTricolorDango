@@ -140,7 +140,7 @@ def test_on_message_records_tool_calls():
     brain = ToolLoopBrain(client(calls_then_ok([("say", {"text": "你好"})])), "sys", tb, tools=[say_schema()],
                           model="deepseek-chat", temperature=0.8, max_tokens=4096, on_message=msgs.append)
     brain.send("在吗")
-    assert [m["type"] for m in msgs] == ["assistant", "user"]
+    assert [m["type"] for m in msgs] == ["assistant", "user", "assistant"]  # 最后一条是收尾的文字「好」
     tool_use = msgs[0]["message"]["content"][0]
     assert tool_use["type"] == "tool_use" and tool_use["name"] == "mcp__sky__say" and tool_use["input"] == {"text": "你好"}
     tool_result = msgs[1]["message"]["content"][0]
@@ -163,9 +163,27 @@ def test_text_alongside_tool_calls_goes_to_timeline():
     brain = ToolLoopBrain(client(script), "sys", toolbox(), tools=[say_schema()],
                           model="deepseek-chat", temperature=0.8, max_tokens=4096, on_message=msgs.append)
     brain.send("在吗")
-    assert [m["type"] for m in msgs] == ["assistant", "assistant", "user"]
+    assert [m["type"] for m in msgs] == ["assistant", "assistant", "user", "assistant"]
     assert msgs[0]["message"]["content"] == [{"type": "text", "text": "我想想"}]
     assert msgs[1]["message"]["content"][0]["type"] == "tool_use"
+
+
+def test_final_text_goes_to_timeline():
+    """10-06：最后那段文字没推给时间线，写了字没调工具的轮次在网页上成了“什么都没做”、展不开。"""
+    msgs = []
+    script = [msg(content=None, tool_calls=[tool_call("say", '{"text":"你好"}')]), ok("等他回")]
+    brain = ToolLoopBrain(client(script), "sys", toolbox(), tools=[say_schema()],
+                          model="deepseek-chat", temperature=0.8, max_tokens=4096, on_message=msgs.append)
+    brain.send("在吗")
+    assert msgs[-1] == {"type": "assistant", "message": {"content": [{"type": "text", "text": "等他回"}]}}
+
+
+def test_text_only_turn_goes_to_timeline():
+    msgs = []
+    brain = ToolLoopBrain(client(ok("不说：等他们开口")), "sys", toolbox(), tools=[say_schema()],
+                          model="deepseek-chat", temperature=0.8, max_tokens=4096, on_message=msgs.append)
+    brain.send("在吗")
+    assert msgs == [{"type": "assistant", "message": {"content": [{"type": "text", "text": "不说：等他们开口"}]}}]
 
 
 def test_usage_is_summed_over_requests():
@@ -210,6 +228,12 @@ def brain_with(rec, tb=None, **kw):
                          model="deepseek-chat", temperature=0.8, max_tokens=4096, **kw)
 
 
+def _calls(messages):
+    """历史里 assistant 发起的工具调用：[(名字, 参数 dict)]。"""
+    return [(c["function"]["name"], json.loads(c["function"]["arguments"]))
+            for m in messages if m["role"] == "assistant" for c in m.get("tool_calls") or []]
+
+
 def test_next_turn_sees_what_it_said_last_turn():
     rec = Recording(calls_then_ok([("say", {"text": "卡洛回来啦"}), ("emote", {"name": "鞠躬"})]) + [ok("好")])
     brain = brain_with(rec, history=8)
@@ -218,8 +242,43 @@ def test_next_turn_sees_what_it_said_last_turn():
     second = rec.requests[-1]
     assert second[0] == {"role": "system", "content": "sys"} and second[-1] == {"role": "user", "content": "卡洛：嗯"}
     assert second[1] == {"role": "user", "content": "卡洛：我回来了"}
-    assert second[2]["role"] == "assistant" and "说了「卡洛回来啦」" in second[2]["content"] and "鞠躬" in second[2]["content"]
-    assert len(second) == 4
+    assert _calls(second[2:-1]) == [("say", {"text": "卡洛回来啦"}), ("emote", {"name": "鞠躬"})]
+
+
+def test_history_replays_real_tool_calls_not_prose():
+    """10-06 沙盒：历史里写成纯文字「你这一轮：说了「…」」，DeepSeek 照着学，回话写成文字、不调 say，话没发出去。"""
+    rec = Recording(calls_then_ok([("say", {"text": "卡洛早呀"})]) + [ok("好")])
+    brain = brain_with(rec, history=8)
+    brain.send("卡洛来了")
+    brain.send("卡洛：上班去了")
+    past = rec.requests[-1][1:-1]
+    assert not any("你这一轮" in (m.get("content") or "") for m in past)
+    assert not any("说了「" in (m.get("content") or "") for m in past if m["role"] == "assistant")
+    # 每个 tool_call 后面都跟着同 id 的 tool 消息（OpenAI 兼容接口要求）
+    for i, m in enumerate(past):
+        for c in m.get("tool_calls") or []:
+            assert any(n["role"] == "tool" and n["tool_call_id"] == c["id"] for n in past[i + 1:])
+    assert {"role": "assistant", "content": "好"} in past
+
+
+def test_history_tool_call_ids_unique_across_turns():
+    rec = Recording(calls_then_ok([("say", {"text": "一"})]) + calls_then_ok([("say", {"text": "二"})]) + [ok("好")])
+    brain = brain_with(rec, history=8)
+    brain.send("a")
+    brain.send("b")
+    brain.send("c")
+    ids = [c["id"] for m in rec.requests[-1] for c in m.get("tool_calls") or []]
+    assert len(ids) == 2 and len(set(ids)) == 2
+
+
+def test_history_drops_unanswered_tool_calls_at_iteration_cap():
+    rec = Recording([msg(content=None, tool_calls=[tool_call("say", '{"text":"你好"}')])] * 10 + [ok("好")])
+    brain = brain_with(rec, history=8, max_steps=1)
+    brain.send("a")
+    brain.send("b")
+    past = rec.requests[-1][1:-1]
+    answered = {m["tool_call_id"] for m in past if m["role"] == "tool"}
+    assert all(c["id"] in answered for m in past for c in m.get("tool_calls") or [])
 
 
 def test_history_keeps_last_n_turns():
@@ -241,8 +300,17 @@ def test_history_truncates_long_wake_messages_and_respects_budget():
     last = rec.requests[-1]
     past = last[1:-1]
     assert all(len(m["content"]) <= HISTORY_TEXT + 20 for m in past if m["role"] == "user")
-    assert sum(len(m["content"]) for m in past) <= HISTORY_CHARS
+    assert sum(len(m.get("content") or "") for m in past) <= HISTORY_CHARS
     assert past and past[-2]["content"].startswith("38:")  # 留下的是最近的
+
+
+def test_silent_turn_keeps_user_assistant_alternating():
+    rec = Recording([ok(""), ok("")])
+    brain = brain_with(rec, history=8)
+    brain.send("一")
+    brain.send("二")
+    roles = [m["role"] for m in rec.requests[-1]]
+    assert roles == ["system", "user", "assistant", "user"]
 
 
 def test_history_zero_is_old_behaviour():
@@ -262,8 +330,22 @@ def test_blocked_say_and_other_tools_are_summarised():
     brain = ToolLoopBrain(rec.client(), "sys", tb, [say_schema(), recall], model="m", temperature=0.8, max_tokens=4096, history=8)
     brain.send("a")
     brain.send("b")
-    summary = rec.requests[-1][2]["content"]
-    assert "想说「晚安」被拦下" in summary and "recall" in summary and "没找到" in summary
+    past = rec.requests[-1][1:-1]
+    assert _calls(past) == [("say", {"text": "晚安"}), ("recall", {"query": "上周日"})]
+    results = [m["content"] for m in past if m["role"] == "tool"]
+    assert "你刚说过「晚安」" in results[0] and "没找到" in results[1]
+
+
+def test_history_clips_long_tool_results():
+    from skydango.brain.toolloop import HISTORY_TOOL
+
+    tb = SimpleNamespace(calls=[], run=lambda name, args: ("状" * 3000, False))
+    rec = Recording(calls_then_ok([("say", {"text": "嗯"})]) + [ok("好")])
+    brain = brain_with(rec, tb, history=8)
+    brain.send("a")
+    brain.send("b")
+    tool = [m for m in rec.requests[-1] if m["role"] == "tool"]
+    assert tool and len(tool[0]["content"]) <= HISTORY_TOOL + 20
 
 
 def test_failed_turn_is_not_remembered():
