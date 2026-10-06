@@ -154,3 +154,46 @@ def test_state_kept_two_minutes():
     for t in range(0, 301, 10):
         j(a, t, "小明", "哈哈")
     assert len(a._lines) <= 13
+
+
+# 说难过 / 不舒服（inner.mind.DISTRESS）是说给在场所有人的：没点名别人就不走对话串的 other（10-06 沙盒）
+SANDBOX = {"懒洋洋大王": ["懒洋洋大王", "卡洛"], "番茄炒蛋盖饭": ["番茄炒蛋盖饭", "老登"]}
+BOTH = ["懒洋洋大王", "番茄炒蛋盖饭"]
+
+
+def test_distress_breaks_thread_sandbox_1006():
+    a = make()
+    s = dict(nearby=BOTH, friends=SANDBOX)
+    assert lt(j(a, 0, "懒洋洋大王", "老登你周末打不打瓦", **s)) == ("other", "番茄炒蛋盖饭")
+    assert lt(j(a, 8, "番茄炒蛋盖饭", "打啊卡洛，晚上八点上线", **s)) == ("other", "懒洋洋大王")
+    v = j(a, 20, "番茄炒蛋盖饭", "唉今天被老板骂了，真的有点难过", **s)
+    assert v.label == "all" and "难过" in v.reason and v.target == ""
+    # 判成 all 之后，这句不再算她在跟懒洋洋大王的对话串里
+    assert "番茄炒蛋盖饭" in a.thread_note(20)
+
+
+def test_distress_reply_and_alternating_become_all():
+    a = make()
+    assert lt(j(a, 0, "阿花", "明哥你看")) == ("other", "小明")
+    assert j(a, 3, "小明", "我心情不好").label == "all"  # 本来是「在回阿花」
+    b = make()
+    j(b, 0, "小明", "哈哈")
+    j(b, 2, "阿花", "嘿嘿")
+    assert j(b, 4, "小明", "好难受").label == "all"  # 本来是「和阿花一来一回」
+
+
+def test_distress_unsure_becomes_all():
+    assert j(make(), 0, "小明", "今天好难过").label == "all"
+
+
+def test_distress_naming_other_stays_other():
+    assert lt(j(make(), 0, "小明", "阿花我好难过")) == ("other", "阿花")
+
+
+def test_distress_keeps_me():
+    v = j(make(), 0, "小明", "好难过", nearby=["小明"])
+    assert v.label == "me" and "身边只有他" in v.reason
+    assert j(make(), 0, "小明", "团子我好难过").label == "me"
+    a = make()
+    a.said(0)
+    assert j(a, 5, "小明", "其实我有点难过").label == "me"
