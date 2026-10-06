@@ -166,3 +166,172 @@ def test_inbox_read_error_skips():
     brain = make(compact=CompactConfig(), inbox=read)
     run_turns(brain, 1, 1)
     assert "你刚记下" not in last_user(brain) and len(calls) == 2
+
+
+# ---- §2 §4 压缩 ----
+class FakeMeter:
+    def __init__(self):
+        self.calls = []
+
+    def record(self, use, provider, model, *, backup, usage, ok):
+        self.calls.append((use, provider, model, backup, usage, ok))
+
+
+def make_c(budget=1000, keep=2, usage=1000, retry=300.0, compact=(), now=None, **kw):
+    """budget / keep 小一点的压缩大脑；spawn 只把压缩任务存进 brain.jobs，测试自己决定什么时候跑。"""
+    jobs: list = []
+    now = now if now is not None else [0.0]
+    brain = make(FakeLLM(usage=usage, compact=compact),
+                 compact=CompactConfig(budget=budget, keep_turns=keep, recap_max=100, retry=retry),
+                 spawn=jobs.append, clock=lambda: now[0], **kw)
+    brain.jobs, brain.now = jobs, now
+    return brain
+
+
+def reqs_of(brain, i: int) -> list[dict]:
+    return [r for r in brain.llm.turn_requests() if r["messages"][_wake_index(r["messages"])]["content"].startswith(stamp(i))]
+
+
+def users(messages: list[dict]) -> list[str]:
+    return [m["content"] for m in messages if m["role"] == "user"]
+
+
+def test_no_compact_below_budget():                       # §9.2
+    brain = make_c(usage=999)
+    run_turns(brain, 1, 10)
+    assert brain.jobs == [] and brain.llm.compact_requests() == []
+
+
+def test_no_compact_without_usage():                      # 取不到 usage 的那一轮不判
+    brain = make_c(usage=None)
+    run_turns(brain, 1, 6)
+    assert brain.jobs == []
+
+
+def test_compact_request_shape():                         # §9.2
+    brain = make_c()
+    run_turns(brain, 1, 2)
+    assert brain.jobs == []                               # 没比 keep_turns 多
+    run_turns(brain, 3, 3)
+    assert len(brain.jobs) == 1
+    brain.llm.usage = 1500
+    run_turns(brain, 4, 4)
+    assert len(brain.jobs) == 1                           # 在跑：不起第二个
+    brain.jobs[0]()
+    req = brain.llm.compact_requests()[0]
+    last = reqs_of(brain, 3)[-1]["messages"]
+    assert req["messages"][:-2] == last
+    assert req["messages"][-2] == {"role": "assistant", "content": "说完了3"}
+    assert f"{stamp(2)} 那条消息之前" in req["messages"][-1]["content"]
+    assert req["tool_choice"] == "none" and req["tools"] == [SAY] and req["temperature"] == 0.3
+    assert req["max_tokens"] == 4096 and req["timeout"] == 120.0 and req["model"] == "deepseek-flash"
+
+
+def test_swap_in_recap_keeps_turns_added_meanwhile():     # §9.3 + Review Focus 1
+    brain = make_c()
+    run_turns(brain, 1, 3)
+    run_turns(brain, 4, 4)                                # 压缩期间接上的一轮
+    brain.jobs[0]()
+    assert brain.recap == "" and brain.compactions == 0   # 下一次 send 开头才换上
+    out = run_turns(brain, 5, 5)[0]
+    m = reqs_of(brain, 5)[0]["messages"]
+    assert m[1]["content"] == "（这次上线到现在的前情提要，第 1 次整理，写到 21:02 为止；之后的原话在后面）\n前情提要正文"
+    assert m[2] == {"role": "assistant", "content": "（知道了）"}
+    assert [u[:len(stamp(2))] for u in users(m)[1:]] == [stamp(2), stamp(3), stamp(4), stamp(5)]
+    assert brain.recap == "前情提要正文" and brain.compactions == 1 and out["history_mode"] == "append" and out["recap"] == 1
+    run_turns(brain, 6, 6)                                # 之后又只往后接
+    assert_append_only([r["messages"] for r in reqs_of(brain, 5) + reqs_of(brain, 6)])
+
+
+def test_second_compact_includes_old_recap():             # §9.4
+    brain = make_c(compact=[reply("第一份"), reply("第二份")])
+    run_turns(brain, 1, 3)
+    brain.jobs[0]()
+    run_turns(brain, 4, 4)                                # 换上第一份；这一轮结束又起第二次
+    assert len(brain.jobs) == 2
+    brain.jobs[1]()
+    second = brain.llm.compact_requests()[1]["messages"]
+    assert second[1]["content"].startswith("（这次上线到现在的前情提要，第 1 次整理") and second[1]["content"].endswith("第一份")
+    run_turns(brain, 5, 5)
+    m = reqs_of(brain, 5)[0]["messages"]
+    assert m[1]["content"].startswith("（这次上线到现在的前情提要，第 2 次整理") and m[1]["content"].endswith("第二份")
+    assert brain.recap == "第二份" and brain.compactions == 2 and "第一份" not in json.dumps(m, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("bad", [ModelError("余额用完", down="limit"), reply(""), reply(None, [("say", "{}")])])
+def test_compact_failure_slides_then_retries(bad):        # §9.5
+    brain = make_c(compact=[bad])
+    run_turns(brain, 1, 3)
+    brain.jobs[0]()
+    out = run_turns(brain, 4, 4)[0]
+    assert out["history_mode"] == "sliding" and brain.sliding
+    assert reqs_of(brain, 4)[0]["messages"] == record_requests(compact=None, turns=4)[-1]   # 和关着时一样的历史
+    run_turns(brain, 5, 6)
+    assert len(brain.jobs) == 1                           # retry 秒内不再试
+    brain.now[0] = 301.0
+    run_turns(brain, 7, 7)
+    assert len(brain.jobs) == 2                           # 冷却过了：滑动里不看 prompt_tokens 也再试
+    brain.jobs[1]()
+    src = brain.llm.compact_requests()[-1]["messages"]
+    assert [u[:len(stamp(1))] for u in users(src)[:-1]] == [stamp(i) for i in range(1, 8)]   # 用完整历史现拼
+    out = run_turns(brain, 8, 8)[0]
+    assert out["history_mode"] == "append" and brain.compactions == 1 and not brain.sliding
+
+
+def test_stuck_compact_slides_at_double_budget():         # §9.6
+    brain = make_c()
+    run_turns(brain, 1, 3)
+    brain.llm.usage = 2000
+    out = run_turns(brain, 4, 4)[0]
+    assert out["history_mode"] == "append" and brain.sliding
+    assert run_turns(brain, 5, 5)[0]["history_mode"] == "sliding" and len(brain.jobs) == 1
+    brain.jobs[0]()
+    assert run_turns(brain, 6, 6)[0]["history_mode"] == "append"
+
+
+def test_compact_meter_backup():                          # §9.8
+    meter = FakeMeter()
+    brain = make_c(meter=meter, backup=True, compact=[reply("好的提要"), ModelError("坏了")])
+    run_turns(brain, 1, 3)
+    brain.jobs[0]()
+    assert meter.calls == [("recap", "deepseek", "deepseek-flash", True,
+                            {"input_tokens": 1000, "output_tokens": 10, "cache_read_input_tokens": 900}, True)]
+    run_turns(brain, 4, 4)
+    brain.jobs[1]()
+    assert meter.calls[-1][-1] is False and meter.calls[-1][0] == "recap"
+
+
+def test_compact_skips_dangling_tool_calls():             # Review Focus 2：轮数到顶，最后那条 assistant 只留文字
+    brain = make_c(max_steps=0)
+    run_turns(brain, 1, 2)
+    brain.llm.queue.extend([reply("先说", [("say", '{"text":"a"}')])] * 3)
+    brain.send(wake(3))
+    brain.jobs[0]()
+    tail = brain.llm.compact_requests()[0]["messages"][-2]
+    assert tail == {"role": "assistant", "content": "先说"}
+
+
+def test_turn_error_not_recorded():                       # Review Focus 3
+    brain = make_c()
+    run_turns(brain, 1, 2)
+    brain.llm.queue.append(RuntimeError("断了"))
+    with pytest.raises(ModelError):
+        brain.send(wake(3))
+    assert len(brain._past) == 2 and brain.jobs == []
+
+
+def test_recap_jsonl_and_note(tmp_path):
+    notes: list = []
+    path = tmp_path / "recap.jsonl"
+    brain = make_c(compact=[reply("好的提要"), reply("")], recap_path=path, on_note=notes.append)
+    run_turns(brain, 1, 3)
+    brain.jobs[0]()
+    run_turns(brain, 4, 4)
+    assert notes[0].startswith("── 压缩：第 1 次，压掉 1 轮 → 前情提要 4 字，用时 0 秒 ──") and notes[0].endswith("好的提要")
+    brain.jobs[1]()
+    run_turns(brain, 5, 5)
+    assert notes[1].startswith("── 压缩失败：")
+    lines = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["n"] == 1 and lines[0]["turns"] == 1 and lines[0]["chars"] == 4 and lines[0]["text"] == "好的提要"
+    assert lines[0]["usage"]["input_tokens"] == 1000 and "time" in lines[0] and "seconds" in lines[0]
+    assert lines[1]["ok"] is False and lines[1]["error"]
