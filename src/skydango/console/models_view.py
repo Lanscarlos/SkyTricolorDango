@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..config import load_config
-from ..models.config import ID_RE, KINDS, USES, ModelSetup, ProviderConfig, resolve
+from ..models.config import ID_RE, KINDS, USES, ModelSetup, ProviderConfig, parse_price, resolve
 from .settings import SettingsStore, mask
 from .tomlfile import dumps, read, write_atomic
 
@@ -67,7 +67,29 @@ def provider_from(row: dict) -> ProviderConfig:
         models.append(name)
         if m.get("vision"):
             vision.append(name)
-    values: dict = {}
+    prices = []
+    raw_prices = row.get("prices") or {}
+    if not isinstance(raw_prices, dict):
+        raise BadRequest(f"供应商 {pid} 的单价要是对象")
+    for model, value in raw_prices.items():
+        if model not in models or value in (None, [], ""):
+            continue
+        try:
+            prices.append((model, parse_price(model, value)))
+        except ValueError as exc:
+            raise BadRequest(f"供应商 {pid}：{exc}") from None
+    values: dict = {"prices": tuple(prices)}
+    peak = row.get("peak")
+    if peak not in (None, ""):
+        try:
+            values["peak"] = float(peak)
+        except (TypeError, ValueError):
+            raise BadRequest(f"供应商 {pid} 的高峰倍数要是数") from None
+        if values["peak"] < 1:
+            raise BadRequest(f"供应商 {pid} 的高峰倍数不能小于 1")
+    hours = row.get("peak_hours")
+    if isinstance(hours, list) and hours:
+        values["peak_hours"] = tuple(str(h) for h in hours)
     for key in FIELDS[kind]:
         if key in row and row[key] is not None and row[key] != "":
             values[key] = row[key]
@@ -89,6 +111,11 @@ def provider_table(p: ProviderConfig) -> dict:
     table: dict = {"kind": p.kind, "models": list(p.models), "vision": list(p.vision)}
     for key in FIELDS[p.kind]:
         table[key] = getattr(p, key)
+    if p.kind == "openai":
+        table["prices"] = {m: [pr.hit, pr.miss, pr.out] for m, pr in p.prices}
+        table["peak"] = p.peak
+        if p.peak_hours:
+            table["peak_hours"] = list(p.peak_hours)
     return table
 
 
@@ -141,8 +168,10 @@ class ModelsView:
             used_by = [u.name for u in setup.uses.values() if any(r is not None and r.provider == p.id for r in (u.main, u.backup))]
             row = {"id": p.id, "kind": p.kind, "models": [{"name": m, "vision": p.sees(m)} for m in p.models],
                    "secret": mask(value), "secret_source": source, "source": p.source, "used_by": used_by}
-            for key in ("path", "token_env", "config_dir", "base_url", "key_env", "timeout", "max_retries"):
+            for key in ("path", "token_env", "config_dir", "base_url", "key_env", "timeout", "max_retries", "peak"):
                 row[key] = getattr(p, key)
+            row["prices"] = {m: [pr.hit, pr.miss, pr.out] for m, pr in p.prices}
+            row["peak_hours"] = list(p.peak_hours)
             providers.append(row)
         base = self._baseline()
         uses = []

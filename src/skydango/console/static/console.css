@@ -582,6 +582,8 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .mp-model{display:flex;gap:10px;align-items:center;width:100%}
 .mp-model input[type=text]{flex:1;min-width:0;max-width:320px}
 .mp-vision{display:inline-flex;gap:4px;align-items:center;font-size:13px;white-space:nowrap}
+.mp-price{display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap}
+.mp-price input{width:72px}
 .models-main .control .line+.line{margin-top:6px}
 .models-main .control .mp-label{width:1.5em;flex:none}
 select.bad{border-color:var(--brick);color:var(--brick-ink)}

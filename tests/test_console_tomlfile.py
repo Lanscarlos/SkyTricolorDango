@@ -50,3 +50,10 @@ def test_write_atomic_replaces_and_leaves_no_temp(tmp_path):
 def test_dumps_escapes_delete_char():  # U+007F：json.dumps 不转义，tomllib 却不认
     data = {"reply": {"disclosure_prefix": "a\x7fb"}}
     assert tomllib.loads(dumps(data)) == data
+
+
+def test_dumps_number_lists():  # 单价 [命中, 没命中, 输出]（spec 2026-10-06-model-usage §3.1）
+    data = {"providers": {"deepseek": {"peak": 2.0, "prices": {"deepseek-flash": [0.02, 1, 4.0]}}}}
+    assert tomllib.loads(dumps(data)) == data
+    with pytest.raises(ValueError):
+        dumps({"a": [True, 1]})

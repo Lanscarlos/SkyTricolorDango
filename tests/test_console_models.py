@@ -191,3 +191,20 @@ def test_untouched_legacy_console_choice_is_kept(tmp_path):
     assert submit(v)[0] == 200
     assert str(effective(store).uses["brain"].main) == "claude/opus"
     assert "brain" not in tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
+
+
+def test_console_models_roundtrip_prices(tmp_path):   # spec 2026-10-06-model-usage §3.1
+    v, store = view_of(tmp_path)
+    ds = next(p for p in v.view()["providers"] if p["id"] == "deepseek")
+    assert ds["prices"]["deepseek-flash"] == [0.02, 1, 4] and ds["peak"] == 2.0
+    claude = next(p for p in v.view()["providers"] if p["id"] == "claude")
+    assert claude["prices"] == {}
+    data = v.view()
+    rows = [{k: p[k] for k in p if k not in ("secret", "secret_source", "source", "used_by")} for p in data["providers"]]
+    next(r for r in rows if r["id"] == "deepseek")["prices"]["deepseek-flash"] = [0.03, 1, 4]
+    assert submit(v, providers=rows)[0] == 200
+    saved = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))["providers"]["deepseek"]
+    assert saved["prices"]["deepseek-flash"] == [0.03, 1, 4] and saved["peak"] == 2.0
+    assert effective(store).providers["deepseek"].price("deepseek-flash").hit == 0.03
+    next(r for r in rows if r["id"] == "deepseek")["prices"]["deepseek-flash"] = [-1, 1, 4]
+    assert submit(v, providers=rows)[0] == 400
