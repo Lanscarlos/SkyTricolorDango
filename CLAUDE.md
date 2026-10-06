@@ -556,7 +556,7 @@ dir = "private/sandbox"
 **代码 10-05 做完，还没在真机验证；离线评估（`addressee label` / `eval`）也还没在真实数据上跑过，三条门槛过没过不知道，数字都是估的。旧日志（没有「跟谁说」行）上算出的门槛只作参考（团子当时句句都接，「在接你的话」窗口几乎一直开着，`report.md` 按规则理由分列）；正式门槛用合并后录下的新日志算。代码带着 `enabled` 默认开合并，不合适可在管理面板设置页关掉。**
 - **每句好友聊天判一次**（`brain/addressee.py`，纯规则、不调模型；身体 `_heard` 里调）：`me` 跟你说 / `other` 跟别人说 / `all` 说给大家 / `unsure` 拿不准。
   规则从上往下命中即停：不是好友 → unsure；叫了 `[proactive] self_names` → me；叫了别的好友 → other；`group_words`、或身边 ≥ 2 个好友时开头是 `greet_words` → all；
-  接团子的话（团子 `followup_window` 内说过、他之后头 `followup_lines` 句、中间没有跟别人的来往）→ me；`thread_window` 内还在跟别人一来一回（团子没插进来）→ other；身边只有他 → me；其余 unsure。
+  接团子的话（团子 `followup_window` 内说过、他之后头 `followup_lines` 句、中间没有跟别人的来往）→ me；`thread_window` 内还在跟别人一来一回（团子没插进来）→ other（**这句说了难过 / 不舒服**（`inner/mind.py` 的 `DISTRESS`）**就改判 all**：诉苦是说给在场所有人的，10-06 沙盒里被判成「还在跟别人说」、团子没开口）；身边只有他 → me；说了难过的 → all；其余 unsure。
   卡洛的 `#` 命令、陌生人的聊天不进这套判断（陌生人一律 unsure）。判断出错记日志、按 unsure
 - **叫法**：friends.md 每个好友那一节加一行 `- 叫法：卡洛、老登`（顿号 / 逗号 / 空格分开，加上游戏昵称）；≥ 3 个字的叫法允许错一个字（OCR），1~2 个字只认原样。没写就只认昵称，改了不用重启。已有的 friends.md 自己加
 - **事件**：`me` / `all` / `unsure` → `chat`（立刻叫醒）；`other` → 主动开口额度还有放 `aside`（叫醒）、用完放 `aside_bg`（`BACKGROUND`，攒着）。正文末尾带标注「（跟别人说：在回小明）」。

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from ..chat.tracker import similar
 from ..config import AddresseeConfig
+from ..inner.mind import sounds_upset
 from .occasion import ME
 
 LABEL_NAMES = {"me": "跟你说", "other": "跟别人说", "all": "说给大家", "unsure": "拿不准"}
@@ -120,7 +121,19 @@ class Addressee:
             if mine < cfg.followup_lines and not involved:
                 return Verdict("me", "在接你的话")
 
+        thread = self._thread(now, who, after)
+        upset = sounds_upset(text)  # 说难过 / 不舒服是说给在场所有人的，没点名别人就不归进对话串
+        if thread is not None:
+            return Verdict("all", f"说难过的话（刚才在跟{thread.target}说）") if upset else thread
+
         recent = [e for e in after if now - e[0] <= cfg.thread_window]
+        if len(nearby) == 1 and similar(nearby[0], who, 0.75) and not any(e[1] != who for e in recent):
+            return Verdict("me", "身边只有他")
+        return Verdict("all", "说难过的话") if upset else Verdict("unsure", "")
+
+    def _thread(self, now: float, who: str, after: list[tuple[float, str, str, str]]) -> Verdict | None:
+        """还在跟别人一来一回（团子说完之后、thread_window 内）：判成 other，没有就 None。"""
+        recent = [e for e in after if now - e[0] <= self.cfg.thread_window]
         last_own = next((e for e in reversed(recent) if e[1] == who), None)
         if last_own is not None and last_own[2] == "other":
             return Verdict("other", f"还在跟{last_own[3]}说", last_own[3])
@@ -135,10 +148,7 @@ class Addressee:
             seq.append(who)
         if len(seq) >= 3 and seq[-1] == seq[-3] == who and seq[-2] != who:
             return Verdict("other", f"和{seq[-2]}一来一回", seq[-2])
-
-        if len(nearby) == 1 and similar(nearby[0], who, 0.75) and not any(e[1] != who for e in recent):
-            return Verdict("me", "身边只有他")
-        return Verdict("unsure", "")
+        return None
 
     def thread_note(self, now: float) -> str:
         """最近 thread_window×3 秒里两个好友互相说话：「小明 和 阿花 在聊（1 分钟内 6 句）」，没有就空串。"""
