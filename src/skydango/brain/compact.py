@@ -42,8 +42,8 @@ def compact_request(first_kept: str, keep: int, recap_max: int) -> str:
 
 def recap_message(text: str, n: int, until: str, keep: int) -> str:
     """历史开头那条前情提要（user 消息）。"""
-    upto = until or f"最后 {keep} 轮之前"
-    return f"（这次上线到现在的前情提要，第 {n} 次整理，写到 {upto} 为止；之后的原话在后面）\n{text}"
+    upto = f"写到 {until} 为止" if until else f"写到最后 {keep} 轮之前为止"
+    return f"（这次上线到现在的前情提要，第 {n} 次整理，{upto}；之后的原话在后面）\n{text}"
 
 
 def clean_recap(text: str | None, recap_max: int) -> str:
