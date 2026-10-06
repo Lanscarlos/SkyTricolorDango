@@ -776,6 +776,8 @@ def test_wardrobe_describe_follows_models(tmp_path):
     registry = cli._registry(cfg, tmp_path)
     w = cli._wardrobe(cfg, env, None, SimpleNamespace(name="game"), registry, time.monotonic)
     assert w is not None and w.available() is True
+    registry.gates.trip("deepseek", "limit", "402")  # 主 deepseek/deepseek-flash、备 claude/haiku：两家都关才停
+    assert w.available() is True
     registry.gates.trip("claude", "limit", "429")
     assert w.available() is False
     with pytest.raises(ModelUnavailable):

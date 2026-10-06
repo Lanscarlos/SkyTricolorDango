@@ -83,9 +83,10 @@ USES: tuple[Use, ...] = (
     Use("reflect", "反思", "反思、日记、性格", False, "deepseek/deepseek-chat", "claude/sonnet", 0.8, 4096),
     Use("reply", "回复", "普通 Agent（--no-brain）、chat 命令、大脑离线时的纯文字回复", False, "deepseek/deepseek-chat", "", 0.8, 200),
     Use("text_label", "文字标注", "文字标注（addressee label）", False, "deepseek/deepseek-chat", "", 0.8, 4096),
-    Use("eyes", "眼睛", "眼睛（截图写成文字）、给大脑代看", True, "claude/haiku", "", 0.8, 2048),
-    Use("wardrobe", "装扮描述", "装扮描述", True, "claude/haiku", "", 0.8, 1024),
-    Use("image_label", "看图标注", "perception label --assist / --objects、attrs-label、gesture-label", True, "claude/sonnet", "", 0.8, 8192),
+    Use("eyes", "眼睛", "眼睛（截图写成文字）、给大脑代看", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 2048),
+    Use("wardrobe", "装扮描述", "装扮描述", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 1024),
+    Use("image_label", "看图标注", "perception label --assist / --objects、attrs-label、gesture-label", True,
+        "deepseek/deepseek-flash", "claude/sonnet", 0.8, 8192),
 )
 USE_NAMES: tuple[str, ...] = tuple(u.name for u in USES)
 USE_BY_NAME = {u.name: u for u in USES}
@@ -142,7 +143,7 @@ def _builtin(cfg: Config) -> dict[str, ProviderConfig]:
     llm, brain = cfg.llm, cfg.brain
     if llm.provider != "openai":  # 旧的 anthropic / echo：地址、Key、型号都不是 DeepSeek 的，别灌进来（Key 会被发到别家）
         llm = type(llm)()
-    models = ["deepseek-chat", "deepseek-reasoner"]
+    models = ["deepseek-chat", "deepseek-reasoner", "deepseek-flash"]  # deepseek-flash（V4.1 Flash）能看图
     if llm.model and llm.model not in models:
         models.insert(0, llm.model)
     return {
@@ -150,7 +151,7 @@ def _builtin(cfg: Config) -> dict[str, ProviderConfig]:
             "claude", "claude-code", models=("sonnet", "haiku", "opus"), vision=("sonnet", "haiku", "opus"),
             path=brain.claude_path, token_env=brain.token_env, config_dir=brain.config_dir),
         "deepseek": ProviderConfig(
-            "deepseek", "openai", models=tuple(models), vision=(),
+            "deepseek", "openai", models=tuple(models), vision=("deepseek-flash",),
             base_url=llm.base_url, key_env=llm.api_key_env, timeout=float(llm.timeout), max_retries=int(llm.max_retries)),
     }
 

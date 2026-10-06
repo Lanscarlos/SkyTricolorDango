@@ -111,6 +111,15 @@ class Clock:
         self.t += dt
 
 
+@pytest.fixture(autouse=True)
+def _no_real_model_keys(monkeypatch):
+    """测试碰不到真的 OpenAI 兼容 Key（环境变量和 Windows 用户环境变量都算）：默认模型走 DeepSeek 时，
+    没注入假后端的测试会在建客户端时缺 Key、关闸改走备用，而不是真的发请求花钱。要 Key 的测试自己 setenv。"""
+    for name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY", "OLLAMA_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("skydango.chat.llm._user_env", lambda name: "")
+
+
 @pytest.fixture
 def clock():
     return Clock()
