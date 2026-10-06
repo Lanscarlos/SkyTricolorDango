@@ -13,9 +13,18 @@ def test_defaults(tmp_path):
     s = resolve(_cfg(tmp_path))
     assert set(s.providers) >= {"claude", "deepseek"}
     assert str(s.uses["brain"].main) == "deepseek/deepseek-chat" and str(s.uses["brain"].backup) == "claude/sonnet"
-    assert str(s.uses["eyes"].main) == "claude/haiku" and s.uses["eyes"].backup is None
     assert s.uses["reply"].max_tokens == 200 and s.uses["brain"].max_tokens == 4096
     assert s.problems == [] and s.legacy == []
+
+def test_vision_defaults_on_deepseek_flash(tmp_path):
+    s = resolve(_cfg(tmp_path))
+    ds = s.providers["deepseek"]
+    assert "deepseek-flash" in ds.models and ds.sees("deepseek-flash") and not ds.sees("deepseek-chat")
+    assert {n: (str(s.uses[n].main), str(s.uses[n].backup)) for n in ("eyes", "wardrobe", "image_label")} == {
+        "eyes": ("deepseek/deepseek-flash", "claude/haiku"),
+        "wardrobe": ("deepseek/deepseek-flash", "claude/haiku"),
+        "image_label": ("deepseek/deepseek-flash", "claude/sonnet")}
+    assert not any(s.uses[n].disabled for n in ("eyes", "wardrobe", "image_label"))
 
 def test_local_layout_brain_on_deepseek(tmp_path):   # Review Focus 1
     s = resolve(_cfg(tmp_path, '[llm]\nprovider = "openai"\nbase_url = "https://api.deepseek.com"\nmodel = "deepseek-chat"\napi_key_env = "DEEPSEEK_API_KEY"\n',
@@ -64,7 +73,7 @@ def test_model_ref_splits_on_first_slash():      # Review Focus 4
             ModelRef.parse(bad)
 
 def test_vision_use_with_blind_model_is_disabled(tmp_path):   # Review Focus 5
-    s = resolve(_cfg(tmp_path, '[models.eyes]\nmain = "deepseek/deepseek-chat"\n'))
+    s = resolve(_cfg(tmp_path, '[models.eyes]\nmain = "deepseek/deepseek-chat"\nbackup = ""\n'))
     assert s.uses["eyes"].disabled and "看图" in s.uses["eyes"].disabled
     assert any(p.use == "eyes" for p in s.problems)
 

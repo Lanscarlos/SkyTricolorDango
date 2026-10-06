@@ -70,7 +70,7 @@ def test_no_backup_raises_unavailable_after_trip(tmp_path):
 
 def test_disabled_use(tmp_path):
     cfg = Config()
-    cfg.models = {"eyes": {"main": "deepseek/deepseek-chat"}}
+    cfg.models = {"eyes": {"main": "deepseek/deepseek-chat", "backup": ""}}
     reg, _ = _registry(tmp_path, cfg)
     call = reg.call("eyes")
     assert call.available() is False

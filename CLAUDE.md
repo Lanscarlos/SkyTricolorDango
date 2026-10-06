@@ -63,7 +63,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - 编译 `android/a11y/` 的无障碍客户端要 JDK（本机 `D:\Java\azul-18.0.2.1`）和 R8（含 d8）：`.pydeps/r8/r8-9.4.28.jar`（Google Maven `com.android.tools:r8`，10-04 下载、SHA1 核对过）；
   不用 Android SDK（隐藏 API 照 `android/a11y/stubs/` 编译）。编好的 jar 进 git，只改 Java 时才要重编
 - `config.toml` 是本机配置（gitignore），模板是 `config.example.toml`；记忆在私有仓库，新电脑先按「记忆」一节克隆到 `private/`
-- **模型按用处选**（10-05，见「模型供应商」）：除了识图，默认全走 DeepSeek（`DEEPSEEK_API_KEY`）；Claude 令牌（`SKYDANGO_CLAUDE_TOKEN`）只有用到 Claude 的用处才要（默认是眼睛、装扮描述、看图标注，以及大脑 / 记忆 / 反思的备用）
+- **模型按用处选**（10-05，见「模型供应商」）：默认全走 DeepSeek（`DEEPSEEK_API_KEY`；10-06 起识图也是，用能看图的 `deepseek-flash`）；Claude 令牌（`SKYDANGO_CLAUDE_TOKEN`）只有用到 Claude 的用处才要（默认只当备用：大脑 / 记忆 / 反思 / 眼睛 / 装扮描述 / 看图标注）
 - 模拟器里装了 ADBKeyboard（团子输中文用），用户自己打字用 MuMu 里的搜狗输入法。**`run` 启动时自动切到 ADBKeyboard、停下时切回来**（`device/ime.py`，`[device] switch_ime`，默认开；
   切回启动时的那个，启动时已经是 ADBKeyboard（上次被强杀没切回）就找装了的搜狗，`[device] user_ime` 可以指定）；被强杀时切不回，在管理面板「设备」页「输入法」一栏手动切，
   或者 `python -m skydango ime off`（切回搜狗 / `user_ime`，都没有就 `ime reset`）。切换出错只记日志、团子照常跑（打不了中文）。10-04 真机上搜狗 ↔ ADBKeyboard 来回切正常；「启动时已经是 ADBKeyboard、按 id 里有没有 `sogou` 去找搜狗」这条路还没在真机触发过
@@ -111,7 +111,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己各一个底库、`assign_friends`、`looks_like_dango`、换装判定）、攒训练数据 `CropSaver` |
 | `src/skydango/vision/gallery.py` | 认装扮的多样本底库（纯数据）：`Sample`（颜色 + DINOv2 两个特征）、`Gallery`（去重、上限、钉住、`best` 取最像一张） |
 | `src/skydango/vision/catalog.py` | 装扮图鉴第 1 期（见「装扮图鉴」）：运行时把近处的人清楚的整身裁图存进 `catalog/inbox/`（门槛、每人留最好几张、写盘、索引）、离线工具的总览拼图 |
-| `src/skydango/vision/wardrobe.py` | 装扮描述器：排队、优先级、每小时额度，一次性 `claude -p --model haiku` 把人物裁图写成一句话 |
+| `src/skydango/vision/wardrobe.py` | 装扮描述器：排队、优先级、每小时额度，用 `[models.wardrobe]` 把人物裁图写成一句话 |
 | `src/skydango/vision/appearance_eval.py` | 认装扮的离线标定（`perception appearance-eval`）：收集轨迹特征、相似度分布、建议门槛、藏标签重放、报告 |
 | `src/skydango/vision/halo.py` `halo_eval.py` | 按 Q 喊一声的呼唤光圈：头顶区域、按键后连拍认团子（`HaloWatch`，纯计算）；离线标定 `perception halo-eval` |
 | `src/skydango/brain/calling.py` | 按 Q 喊一声：`CallResult`、给大脑 / 事件 / status 的文字、`wait_result`（在调用方线程里等呼喊窗口结束）、`call_available` |
@@ -344,7 +344,7 @@ dir = "private/sandbox"
   条件：感知层 + `[appearance] enabled` + DINOv2 加载成功；**不转**（WARNING + status"团子登记：没转（原因）"；转之前自己截一张现看画面黑不黑、开着哪些面板，因为这时主循环还没跑过）：dry-run、画面黑着、别的面板开着、截不到图、没有视角控制、正在跑技能；转了但一张都没取到记"转了一圈没认出自己"，都不重试
 - **陌生人**：认装扮开着时好样本不够先不判陌生人，最多多等 1.5 秒（`STRANGER_GRACE`）；判成陌生人后编号"陌生人A / B…"（这次上线不复用），走开超过 `keep` 又被认回来发 `stranger_back` 背景事件（"刚才那个陌生人A（白斗篷）又回来了"）；
   同屏两个陌生人不会共用编号；`stranger_forget`（30 分钟）没见就忘
-- **装扮描述**（`describe`，默认开）：描述器排队用 `[models.wardrobe]`（默认 `claude/haiku`）把裁图写成一句话（团子自己优先、好友其次、近处陌生人最后；每小时 `describe_max` 次、同一人一次上线最多重新描述 `redescribe_max` 次，额度用完等 `quota_wait`）；
+- **装扮描述**（`describe`，默认开）：描述器排队用 `[models.wardrobe]`（默认 `deepseek/deepseek-flash`，备 `claude/haiku`）把裁图写成一句话（团子自己优先、好友其次、近处陌生人最后；每小时 `describe_max` 次、同一人一次上线最多重新描述 `redescribe_max` 次，额度用完等 `quota_wait`）；
   status 多一行"你自己：…"，"身边的好友：小明（粉色长斗篷·…）"，"画面里：…、像小红（没看到名字，…）、陌生人A（白斗篷，…）"；`look_person` 也接受"陌生人A"；提示词多一段装扮的规矩（`enabled` 时才加）。沙盒里不描述
 - **判不判换装**（`outfit_change`，**默认关**）：10-01 在 15 段录像上标定（`tmp/appearance-eval/`），颜色特征下同一身衣服常跌到 0.15~0.5，0.70 的门槛会把同一身判成换装、往关系卡里记假装扮；
   换 DINOv2-small（`models/dinov2-small.onnx`）也没稳住（对比在 `tmp/appearance-eval/compare-color-dinov2.md`）。**关着时**：不追加新的一套、不发 `outfit` 事件、上线中途不重新描述；
@@ -437,7 +437,8 @@ dir = "private/sandbox"
 - **供应商** `[providers.<id>]`：接入方式只有 `claude-code`（`claude -p`，`path` / `token_env` / `config_dir`）和 `openai`（OpenAI 兼容，`base_url` / `key_env` / `timeout` / `max_retries`）；`models` 列模型、`vision` 勾能看图的。
   两个文件都没写 `[providers]` 时用内置的 `claude` + `deepseek`（deepseek 的地址 / Key 名 / 模型取旧 `[llm]`）；写了就只用写了的（config.toml 和 console.toml 按 id 合并）
 - **用处** `[models.<用处>]`（`main` / `backup` 写成「供应商id/模型名」，按第一个 `/` 拆；`temperature` / `max_tokens` 只在配置文件里写）：
-  brain / memory / reflect 默认 `deepseek/deepseek-chat`、备 `claude/sonnet`；reply / text_label `deepseek/deepseek-chat`；eyes / wardrobe `claude/haiku`；image_label `claude/sonnet`。
+  brain / memory / reflect 默认 `deepseek/deepseek-chat`、备 `claude/sonnet`；reply / text_label `deepseek/deepseek-chat`；eyes / wardrobe / image_label `deepseek/deepseek-flash`（V4.1 Flash，内置的 deepseek 供应商把它勾成能看图；10-06 起，之前是 Claude），备 `claude/haiku` / `claude/haiku` / `claude/sonnet`。
+  **10-06 换识图默认之前、面板保存过「模型」页的**：console.toml 里整张写着旧的 deepseek 供应商（没有 `deepseek-flash`），要在模型页给 deepseek 加上它、勾能看图，再把三个看图的用处「恢复默认」
   看图的用处（eyes / wardrobe / image_label）只能选能看图的，选错了这一处停用、团子照常起；引用了不存在的供应商同样停用；模型不在列表里只警告
 - **旧字段照样读**（启动时警告一行）：`[llm]`、`[brain] model / eyes_model / memory_model / claude_path / token_env / config_dir`、`[inner] reflect_model`、`[appearance] describe_model`、`[assist] model`，换算见 spec §1.3；同一用处 `[models.*]` 说了算。
   **本机 `config.toml` 只有 `[llm]`（DeepSeek）、没写 `brain.model`：换算后大脑就是 DeepSeek**（不用改配置）
@@ -458,7 +459,7 @@ dir = "private/sandbox"
   `--tools ""` 关掉所有内置工具；两种都只能调 look / look_at / look_person / look_around / status / chat_log / recall / say / emote / set_request_policy / camera / camera_reset / attention / move / check_friend / track / find / stop_task / panel_read / panel_press / panel_close（开了 `[call]` 还有 `call`，开了 `[backstage]` 还有 `introspect`）
 - **和用户自己的 Claude Code 隔离**：单独配置目录 `.brain-claude/` + `claude setup-token` 生成的令牌（用户环境变量 `SKYDANGO_CLAUDE_TOKEN`）。
   沿用用户登录会把用户的插件、钩子、技能一起加载进大脑（实测）。子进程里去掉所有 `ANTHROPIC_*`（`API_KEY` 在时 `-p` 一定用它；10-03 晚漏了 `ANTHROPIC_BASE_URL`，令牌被发到别的地址、连着 179 次 401）和用户自己的 OAuth 令牌
-- 眼睛 = `[models.eyes]`（默认 `claude/haiku`，只能选能看图的模型）：有人来 / 走、画面大变（隔 ≥20 秒）或 3 分钟没看时，把身体最近一帧写成文字；大脑醒来的消息里只有文字，要原图才 `look(image=true)`
+- 眼睛 = `[models.eyes]`（默认 `deepseek/deepseek-flash`、备 `claude/haiku`，只能选能看图的模型）：有人来 / 走、画面大变（隔 ≥20 秒）或 3 分钟没看时，把身体最近一帧写成文字；大脑醒来的消息里只有文字，要原图才 `look(image=true)`
 - `check_friend(x, y)`：点一下人物打开右侧好友树面板，截图交给大脑自己判断是不是好友，再按 ESC 关掉（用户确认）、恢复聊天面板（`game/friendtree.py`）。
   面板样子、好友和陌生人的面板怎么区分**未核对**，`[friend_check] enabled` 默认关；先用 `friend-check X Y` 手动核对，截图在 `runs/<…>/friend-check/`
 - `recall(query, who, days)`：翻以前的聊天（`chat/recall.py`）：在 `history.jsonl` 里按关键词（中一个就算，中得多的排前）/ 人名 / 往前几天（默认 14，最多 90）找原话，
