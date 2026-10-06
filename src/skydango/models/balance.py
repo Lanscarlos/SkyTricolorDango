@@ -103,7 +103,7 @@ class BalanceWatcher:
             log.debug("记余额出错", exc_info=True)
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._thread is not None or self.every <= 0:  # 0 = 不查余额
             return
 
         def loop() -> None:

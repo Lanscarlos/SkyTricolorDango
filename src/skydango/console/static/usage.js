@@ -86,7 +86,8 @@ function usageModel(data) {
     else if (u.backup && u.current) notes.push(`${u.label}现在走备用 ${u.current}`);
   }
   const scope = data.run ? (data.source === "sandbox" ? "这次沙盒" : "这次运行") : "今天";
-  const est = !!((data.run && data.run.est) || (data.today && data.today.est));
+  // 钱数都是折算的（不认节假日、以控制台扣费为准）：只要显示了钱就带「估」（spec §3.1）
+  const est = [data.run, data.today].some(p => p && p.cost != null) || !!((data.run && data.run.est) || (data.today && data.today.est));
   return {providers, rows, notes, scope,
           totals: {run: data.run ? fmtYuan(data.run.cost) : null, today: data.today ? fmtYuan(data.today.cost) : null, est}};
 }

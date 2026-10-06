@@ -594,8 +594,8 @@ close_with_back = true         # 发完按 BACK 关掉输入框，否则头顶�
 # 模型用量和额度（管理面板「模型用量」卡片，spec 2026-10-06-model-usage）
 # ledger = "runs/usage.json"   # 今天累计的账本（不进 git，每台电脑各记各的）
 # keep_days = 7                # 账本只留最近几天
-# save_every = 60.0            # 每隔几秒把这次的用量加进账本（退出时再写一次）
-# balance_every = 300.0        # 每隔几秒查一次 DeepSeek 余额
+# save_every = 60.0            # 每隔几秒把这次的用量加进账本（退出时再写一次）；0 = 只在退出时写
+# balance_every = 300.0        # 每隔几秒查一次 DeepSeek 余额；0 = 不查
 
 [sandbox]
 # 大脑沙盒（管理面板「沙盒」页）：不开 MuMu，假世界 + 真大脑 / 内心层；只写 <dir>/memory/，永远不写 memory/

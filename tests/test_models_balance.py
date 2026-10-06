@@ -99,3 +99,13 @@ def test_watcher_start_stop():
     w.start()
     w.stop()
     assert calls == [1]  # 启动时先查一次
+
+
+def test_watcher_every_zero_means_off():   # 终审 I1：0 = 不查余额，不是一直查
+    setup = resolve(Config())
+    meter = UsageMeter(setup, ProviderGates(), source="live")
+    calls = []
+    w = BalanceWatcher(setup, meter, {"DEEPSEEK_API_KEY": "sk"}, every=0, fetch=lambda base, key, **kw: calls.append(1) or {})
+    w.start()
+    w.stop()
+    assert calls == [] and w._thread is None

@@ -894,8 +894,8 @@ class UsageConfig:
 
     ledger: str = "runs/usage.json"  # 今天累计的账本（不进 git、不进私有仓库，每台电脑各记各的）
     keep_days: int = 7  # 账本只留最近几天
-    save_every: float = 60.0  # 每隔几秒把这次的用量加进账本（退出时再写一次）
-    balance_every: float = 300.0  # 每隔几秒查一次 DeepSeek 余额
+    save_every: float = 60.0  # 每隔几秒把这次的用量加进账本（退出时再写一次）；0 = 只在退出时写
+    balance_every: float = 300.0  # 每隔几秒查一次 DeepSeek 余额；0 = 不查
 
 
 @dataclass

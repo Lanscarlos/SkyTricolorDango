@@ -258,8 +258,8 @@ class UsageMeter:
             return True
 
     def start_saver(self, every: float) -> None:
-        """每 every 秒写一次账本（守护线程）。"""
-        if self.ledger is None or self._saver is not None:
+        """每 every 秒写一次账本（守护线程）；every ≤ 0 = 不定时写，只在 close 时写一次。"""
+        if self.ledger is None or self._saver is not None or every <= 0:
             return
 
         def loop() -> None:

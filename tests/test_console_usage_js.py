@@ -89,3 +89,11 @@ def test_usage_card_falls_back():   # Review Focus 5：拉取失败时留着上�
       return seen;
     """)
     assert got == ["live"]
+
+
+
+def test_estimate_tip_whenever_money_shown():   # 终审 I2：spec §3.1 钱数一律带「估」
+    plain = {**DATA, "run": {**DATA["run"], "est": False}, "today": {**DATA["today"], "est": False}}
+    assert _node(f"return U.usageModel({json.dumps(plain)}).totals.est") is True
+    nothing = {**plain, "run": {"rows": [], "cost": None, "est": False}, "today": {"rows": [], "cost": None, "est": False}}
+    assert _node(f"return U.usageModel({json.dumps(nothing)}).totals.est") is False

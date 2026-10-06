@@ -112,3 +112,10 @@ def test_close_flushes_and_stops_saver(tmp_path):
     brain(m)
     m.close()
     assert Ledger(path).day_rows(TODAY)[KEY]["calls"] == 1
+
+
+def test_save_every_zero_means_off(tmp_path):   # 终审 I1：0 = 关，不是死循环
+    m = meter(tmp_path / "usage.json")
+    m.start_saver(0)
+    assert m._saver is None
+    m.close()
