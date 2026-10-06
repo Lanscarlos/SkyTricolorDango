@@ -90,6 +90,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/env.py` | 识别环境：每隔几秒在后台 OCR 3D 画面，认好友头顶的名字（身边有谁）和地名，写进提示词 |
 | `src/skydango/vision/envdiff.py` | 两轮聊天之间环境变了什么（谁来了 / 走了、陌生人数、到了哪），写进那一轮的用户消息、跟着历史走 |
 | `src/skydango/vision/people.py` | `Person`（track_id、好友 / 陌生人 / 黑影、框、左 / 前 / 右、近 / 中 / 远）：感知层的 `people()` 给身体、技能、大脑用 |
+| `src/skydango/vision/presence.py` | 好友在不在场（纯计算，见「好友在不在场」）：身边 / 附近（贴边、喊到）/ 找不到 / 走开，感知层的 `nearby()` / `in_view()` / `need_call()` 靠它 |
 | `src/skydango/vision/detect.py` `track.py` `perception.py` `weaklabel.py` | YOLO 感知层（开发中，默认关）：检测器（ONNX / ultralytics）、追踪（IoU + 低分框续命 + 速度预测 + 画面平移 `estimate_shift`）、`PerceptionWatcher`（接口同 env，多认陌生人；画面被挡时暂停计时；续命、失踪好友接回、运动方向）、弱标注，见下 |
 | `src/skydango/vision/attrs.py` | 感知层第二层运行时（见「感知层第二层」）：`AttrModel`（冻住的 DINOv2 + `.npz` 线性头）、`PersonAttrs`（按轨迹裁图、投票、放行 / 撤下、点没点火）、`load_model`、`crop` |
 | `src/skydango/vision/attrs_data.py` | 第二层的数据：`perception crops`（数据集 / 难例 / 图片目录 → `datasets/attrs/`）、`--writeback`（标注页确认过的写回 `datasets/sky`：补漏标的人、改点没点火、删不是人，增强图一起改）、`perception attrs-label`（Claude 初分，复用 `assist.Reviewer`） |
@@ -582,15 +583,16 @@ dir = "private/sandbox"
 设计见 `docs/superpowers/specs/2026-10-01-q-call-design.md`，计划 `docs/superpowers/plans/2026-10-01-q-call.md`，操作见 game-ops「呼喊找好友」「呼唤特效」。
 起因：好友稍远一点头顶的名字标签就淡掉（人还在画面里），只有按 Q 才亮出来约 5 秒；以前标签一淡就被判成陌生人、5 秒后"走开了"。**10-02 / 10-03 晚真机跑过：手动喊通过，自动兜底不勤了（10-03 晚自动喊 4 次、`auto_again` 挡了 2 次），但只认回 1 次；数字都是估的**（spec §6 真机验证六步没逐条走）。
 - **轨迹续命**（`[perception] sticky_names`，平时就生效）：挂过名字标签的 `player` 轨迹只要这一帧还接得上就刷新"在身边"；轨迹断了（`track_buffer`）才开始算 `keep` 5 秒；只靠低分框续着的最多续 5 秒（`LOW_ONLY_MAX`，见「追踪和接回」）。按外观认的 `maybe`、黑影不续
-- **贴边标签**（`[perception] edge_band = 0.06`）：名字标签贴在屏幕最左 / 最右、又没挂上人 = 好友在画面外：**不算在身边**（不刷新 `last_seen`、不挂圆圈），
-  但 `labels` 照记（盯人 track 靠它往画面外转——和 spec §1.3 不同，见计划「偏离 spec」）；`edge_band = 0` 照旧
+- **贴边标签**（`[perception] edge_band = 0.06`）：名字标签贴在屏幕最左 / 最右（按屏宽）或最上 / 最下（按屏高，10-06 加的）、又没挂上人 = 好友在画面外：**不算在画面里**（不刷新 `last_seen`、不挂圆圈），
+  `presence` 开着时算"附近"（见下面「好友在不在场」）；`labels` 照记（盯人 track 靠它往画面外转——和 spec §1.3 不同，见计划「偏离 spec」）；`edge_band = 0` 照旧。
+  最下边那一条落在 `[env] roi` 排除的底部输入栏里（输入栏会出现好友名字），**实际认不到"下边"**，等真机核对
 - **呼喊窗口**（`PerceptionWatcher.called(at)` / `call_result(at)`）：按键后 `[call] window`（6 秒）里挂上名字的人记方位 / 远近、贴边的记"在画面外"，窗口里 `far_crops` 不退避、块数 ×2；
   结束那一帧数还剩几个没挂名字的点过火的人（`unnamed`）；暂停时窗口跟着往后挪。EnvWatcher 是空实现
 - **身体喊一声**（`Body.call_out(reason)`）：没开 / 没感知层 / 黑屏 / `min_gap`（20 秒，卡洛 `#` 命令窗口里大脑不受限）/ dry-run（不按，照样计间隔）→ 不按；
   `clear_view("call")` 关掉身体开的输入框，`ime_shown()` 还开着就拒绝（Q 会变成打字）；`panel.borrow("call")` 里拍基准、`hw_key(16)` 短按、连拍 `burst` 1 秒、`env.called(at)`
 - **光圈认团子**（`[call] halo`，**默认关**）：连拍里按键（命令发出前记的时间）后 0~0.8 秒头顶区域比基准亮 `halo_rise` 以上、恰好一个人、在画面中间（`halo_center`）→ 写 `env.self_box`（YOLO 已经认出一个团子就不覆盖；和 self 框重叠的 player 框算同一个人）；
   别人也在喊 / 镜头刚动过 / 喊之前聊天面板开着（关面板时画面横移）/ 没有新鲜的人物框 / 黑屏就放弃，**不为确认再按**。认错 = 把一个好友当成团子过滤掉，10-03 跑了 `perception halo-eval tmp/record/q-call-20260930-c`，信号太弱定不出门槛（团子光圈只升 7~8、噪声 6.5），继续关着，要换算法
-- **自动兜底**（`[call] auto`，`Body._watch_call`）：好友 `auto_after_leave`（30 秒）内走开、还没回来、这次走开没为他喊过，画面里有没挂名字的人，`auto_window` 1 分钟最多 `auto_quota` 3 次（10-02 晚从 10 分钟改的；还受 `min_gap` 20 秒限制）；喊一声认回来的好友 `auto_again`（5 分钟）内不再为他自动喊（10-03，他多半一直站在稍远处、标签淡了而已）；
+- **自动兜底**（`[call] auto`，`Body._watch_call`）：`[perception] presence` 开着（默认）时这一种起因换成「好友在不在场」的确认喊（见下）；关着时：好友 `auto_after_leave`（30 秒）内走开、还没回来、这次走开没为他喊过，画面里有没挂名字的人，`auto_window` 1 分钟最多 `auto_quota` 3 次（10-02 晚从 10 分钟改的；还受 `min_gap` 20 秒限制）；喊一声认回来的好友 `auto_again`（5 分钟）内不再为他自动喊（10-03，他多半一直站在稍远处、标签淡了而已）；
   输入框开着、技能在跑、有互动请求、在举蜡烛、别的面板开着、刚做完动作、大脑在回聊天、黑屏都不喊；dry-run 只记日志。喊完不等，窗口结束后放**背景事件** `call`（"你下意识喊了一声：认出 小明（右边·远）…"），
   认回来的好友照常 `return` 抵消那条 `leave`。
   **第二种起因：拿不准**（identity-gallery spec §5）：认装扮里某个人是"可能是小明"（`env.unsure(now)`，持续 `unsure_wait` 秒、小明没在别处确认）时也自动喊一声，**共用**上面的 `min_gap` / `auto_window` / `auto_quota` / `auto_again` 和所有拦截；额度 / 间隔 / `auto_again` 挡住不算尝试（他留在名单里、下一圈还能喊，受"可能是"超时约束），拦截（输入框、技能……）/ dry-run / `call_out` 拒绝才打 `unsure_called`（喊成没喊成都打，免得反复排队）；喊完窗口结束时按标签有没有亮出来判（见「认装扮」）。注意力的找人接管"刚走开的好友"那一声时，这个起因照旧在 `_watch_call` 里喊。空闲注意力的找人开着时（`[attention] search`，模式随意 / 好奇 / 专心，面板 auto），好友走开后的这一声改由「找刚走开的好友」当一步去喊（额度同上），`_watch_call` 不再自己喊
@@ -598,6 +600,19 @@ dir = "private/sandbox"
   返回"喊了一声：认出 …；小红在画面外（左边）；还有 1 个没挂名字的人。光圈：…"；拒绝时返回原因。提示词「视角」一节加一句什么时候喊；status 多一行"上次喊：2 分钟前（认出小明）"；
   网页手动控制"喊一声（Q）"（总是真执行、照样过检查）；管理面板有 `call.enabled` / `call.auto`
 - `enabled = false`：没有工具、不自动喊，提示词 / status / 工具列表逐字照旧（续命、贴边是 `[perception]` 的开关）
+
+## 好友在不在场（`[perception] presence`，要配合 `[perception]`）
+
+设计见 `docs/superpowers/specs/2026-10-06-friend-presence-design.md`，计划 `docs/superpowers/plans/2026-10-06-friend-presence.md`。
+起因（用户）：好友走出画面 5 秒就算"走开"，进进出出时团子觉得他走了又回来、在画面外待满 `rejoin` 再回来又打一次招呼。**代码 10-06 做完，还没在真机验证（spec §6 五步），数字都是估的**。
+- **三层**（`vision/presence.py`，纯计算，只存时间戳、查询时现算）：**身边**（画面里看得到 = `last_seen` 在 `keep` 5 秒内）/ **附近**（名字贴边 `keep` 内，或 `recheck`（90 秒）内按 Q 喊到过）/ **找不到**；
+  找不到满 `leave_after`（15 秒，从最后一次看到算起）**且**之后喊过一声也没亮出他才算**走开**；一直喊不成满 `confirm_max`（60 秒）也算；不能喊（`[call]` / `auto` 关、dry-run、普通 Agent）满 15 秒就算
+- **`nearby()` 改成在场**（身边 + 附近），新增 `in_view()`（身边）、`around()`（附近 + "画面外·右边" / "远处，刚喊到"）、`need_call()`、`left_note()`；
+  人来人走（`leave` / `arrive` / `return`）、关系卡、冷场、分清在跟谁说话、主动开口都按在场算，**身边 ↔ 附近不发事件**。`leave` 文字带原因（"喊了一声也没看到，15 秒了"）
+- **身体喊一声确认**（`Body._presence_call`，在 `_watch_call` 里）：有人找不到、这次没喊过就喊（`call_out("presence")`，一声确认所有人；照旧受 `min_gap`、1 分钟 3 声、各种拦截），**不发 `call` 事件**、只进 status"上次喊"；
+  好友一直在远处 ≈ 每 `recheck` 秒喊一声。任何一次呼喊（大脑 `call`、拿不准、找人那一步）的结果都算数。`auto_after_leave` / "走开"那种 `auto_again` 不再管自动喊（`auto_after_leave` 仍是注意力 / `find`"刚离开画面"的窗口）
+- **注意力找人、`find`** 按"离开画面"（`Body._out_at`，身边掉出去的时刻）发起，时机同以前的"走开"；status"身边的好友"只列画面里的，多一行"附近：阿花（画面外·右边）"，管理面板 `/status` 同样
+- `presence = false` 逐字照旧；`EnvWatcher`（感知层没开）不受影响。管理面板设置页有 `perception.presence` / `leave_after` / `recheck`
 
 ## 冷场时的心理活动（`[lull]`，大脑模式）
 

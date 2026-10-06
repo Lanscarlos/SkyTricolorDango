@@ -75,6 +75,8 @@
 呼喊结果的文字（`calling.py`）"在画面外（上边）"这类直接用新 side。盯人 `track` 只看 x，上下边的标签照样给出左右偏向，不改。
 
 **风险**：YOLO 只在左右两边见过贴边标签，上下两边认不认得出没核对（真机验证第 5 步）；认不出要补标、重训。代码先四条边都处理。
+**实现时发现**：最下边那一条（屏高 6%）落在 `[env] roi` 排除的底部 11%（输入栏，里面会出现好友名字，`test_panel_area_and_bottom_bar_are_ignored`），
+所以现在实际认不到"下边"；要等真机核对输入栏和下边标签的位置再决定怎么放行。
 
 ### 2.2 `nearby()` / `in_view()`
 
@@ -105,9 +107,9 @@
 ### 3.3 注意力找人、`find`
 
 - 身体新记 `_out_at`：每圈比较 `env.in_view()` 前后，掉出去的记时间（`presence` 关时它和 `_left_at` 同一时刻）
-- `_start_lost_search`：触发从 `_left_at` 换成 `_out_at`、"他不在 `in_view`"，时间窗口还是 30 秒（`auto_after_leave` 的值改成模块常量 `OUT_RECENT`，`presence` 关时照旧读配置）
+- `_start_lost_search`：触发从 `_left_at` 换成 `_out_at`、"他不在 `in_view`"，时间窗口照旧读 `[call] auto_after_leave`（30 秒，现在只当"刚离开画面"的窗口）
 - `_search_call`（找走开的好友那一步喊一声）：照旧受 `min_gap` / 额度限制；"刚喊回来过他"那条在 `presence` 开时改成"`recheck` 内喊到过他"
-- `find`：`_left_at` + `auto_after_leave` 换成 `_out_at` + `OUT_RECENT`
+- `find`：`_left_at` 换成 `_out_at`（窗口照旧 `auto_after_leave`）
 - 冷场、关系卡、分清在跟谁说话、主动开口、大脑醒得勤不勤、两轮之间的 envdiff 都用 `nearby()`，自动变成按"在场"算，不改代码
 
 ### 3.4 status
