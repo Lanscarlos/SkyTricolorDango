@@ -150,7 +150,7 @@ class LlmConfig:
     # "openai"：任何 OpenAI 兼容接口；"anthropic"；"echo"：不调模型，原样回显，用于联调
     provider: str = "openai"
     base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-chat"
+    model: str = "deepseek-flash"
     api_key_env: str = "DEEPSEEK_API_KEY"
     temperature: float = 0.8
     max_tokens: int = 200

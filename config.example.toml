@@ -92,23 +92,23 @@ persona = """
 # key_env = "DEEPSEEK_API_KEY"
 # timeout = 30.0
 # max_retries = 2
-# models = ["deepseek-chat", "deepseek-reasoner", "deepseek-flash"]
+# models = ["deepseek-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"]  # 后两个是旧名，价格页上已经没有
 # vision = ["deepseek-flash"]           # V4.1 Flash 能看图
 #
 # 用处：brain 大脑 / memory 随手记和整理 / reflect 反思 / reply 普通 Agent 和备用回复 / text_label 文字标注 /
 #       eyes 眼睛和代看 / wardrobe 装扮描述 / image_label 看图标注（后三个只能选能看图的）。模型写成「供应商id/模型名」，按第一个 / 拆。
 # backup：主那家额度 / 余额用完或认证出错，这次运行里改用它；空 = 没有备用。temperature / max_tokens 只对 openai 那种生效
 # [models.brain]
-# main = "deepseek/deepseek-chat"
+# main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
 # [models.memory]
-# main = "deepseek/deepseek-chat"
+# main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
 # [models.reflect]
-# main = "deepseek/deepseek-chat"
+# main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
 # [models.reply]
-# main = "deepseek/deepseek-chat"
+# main = "deepseek/deepseek-flash"
 # max_tokens = 200
 # [models.eyes]
 # main = "deepseek/deepseek-flash"
@@ -123,7 +123,7 @@ persona = """
 # [llm]：旧写法，还能读（换算成 deepseek 供应商和 [models.reply]，启动时警告一行），换算见上面 spec §1.3
 # provider = "openai"
 # base_url = "https://api.deepseek.com"
-# model = "deepseek-chat"
+# model = "deepseek-flash"
 # api_key_env = "DEEPSEEK_API_KEY"
 
 [emotes]

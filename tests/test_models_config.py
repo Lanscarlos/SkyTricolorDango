@@ -12,7 +12,12 @@ def _cfg(tmp_path, text="", console=""):
 def test_defaults(tmp_path):
     s = resolve(_cfg(tmp_path))
     assert set(s.providers) >= {"claude", "deepseek"}
-    assert str(s.uses["brain"].main) == "deepseek/deepseek-chat" and str(s.uses["brain"].backup) == "claude/sonnet"
+    assert str(s.uses["brain"].main) == "deepseek/deepseek-flash" and str(s.uses["brain"].backup) == "claude/sonnet"
+    assert {n: (str(s.uses[n].main), str(s.uses[n].backup or "")) for n in ("memory", "reflect", "reply", "text_label")} == {
+        "memory": ("deepseek/deepseek-flash", "claude/sonnet"),
+        "reflect": ("deepseek/deepseek-flash", "claude/sonnet"),
+        "reply": ("deepseek/deepseek-flash", ""),
+        "text_label": ("deepseek/deepseek-flash", "")}
     assert s.uses["reply"].max_tokens == 200 and s.uses["brain"].max_tokens == 4096
     assert s.problems == [] and s.legacy == []
 
@@ -29,9 +34,14 @@ def test_vision_defaults_on_deepseek_flash(tmp_path):
 def test_local_layout_brain_on_deepseek(tmp_path):   # Review Focus 1
     s = resolve(_cfg(tmp_path, '[llm]\nprovider = "openai"\nbase_url = "https://api.deepseek.com"\nmodel = "deepseek-chat"\napi_key_env = "DEEPSEEK_API_KEY"\n',
                      '[console]\n[appearance]\nenabled = true\n'))
-    assert str(s.uses["brain"].main) == "deepseek/deepseek-chat"
+    assert str(s.uses["brain"].main) == "deepseek/deepseek-flash"   # 新默认；旧 [llm] model 只换算 reply
     assert s.providers["deepseek"].key_env == "DEEPSEEK_API_KEY"
     assert str(s.uses["reply"].main) == "deepseek/deepseek-chat"
+
+def test_builtin_deepseek_models(tmp_path):
+    ds = resolve(_cfg(tmp_path)).providers["deepseek"]
+    assert ds.models == ("deepseek-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner")
+    assert ds.vision == ("deepseek-flash",)
 
 def test_legacy_llm_model_added_to_models(tmp_path):
     s = resolve(_cfg(tmp_path, '[llm]\nmodel = "deepseek-v4"\ntemperature = 0.5\nmax_tokens = 300\n'))
@@ -55,7 +65,7 @@ def test_models_table_beats_legacy(tmp_path):
 def test_llm_echo_and_anthropic(tmp_path):
     assert str(resolve(_cfg(tmp_path, '[llm]\nprovider = "echo"\n')).uses["reply"].main) == "echo/echo"
     s = resolve(_cfg(tmp_path, '[llm]\nprovider = "anthropic"\n'))
-    assert str(s.uses["reply"].main) == "deepseek/deepseek-chat" and any("anthropic" in x for x in s.legacy)
+    assert str(s.uses["reply"].main) == "deepseek/deepseek-flash" and any("anthropic" in x for x in s.legacy)
 
 def test_explicit_providers_replace_builtin(tmp_path):
     s = resolve(_cfg(tmp_path, '[providers.gpt]\nkind = "openai"\nbase_url = "https://x"\nkey_env = "OPENAI_API_KEY"\nmodels = ["gpt-4o"]\nvision = ["gpt-4o"]\n'

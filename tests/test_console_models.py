@@ -48,8 +48,8 @@ def test_view_lists_builtin_and_uses(tmp_path):
     assert "brain" in ds["used_by"] and ds["secret"] == "已设置（sk-…abcd）" and ds["secret_source"] == "secrets"
     assert "1234567890" not in str(data)
     assert [u["name"] for u in data["uses"]] == list(USE_NAMES)
-    assert data["uses"][0]["main"] == "deepseek/deepseek-chat" and data["uses"][0]["backup"] == "claude/sonnet"
-    assert (data["uses"][0]["default_main"], data["uses"][0]["default_backup"]) == ("deepseek/deepseek-chat", "claude/sonnet")
+    assert data["uses"][0]["main"] == "deepseek/deepseek-flash" and data["uses"][0]["backup"] == "claude/sonnet"
+    assert (data["uses"][0]["default_main"], data["uses"][0]["default_backup"]) == ("deepseek/deepseek-flash", "claude/sonnet")
     assert data["kinds"] == ["claude-code", "openai"] and data["templates"]
 
 
@@ -67,7 +67,7 @@ def test_save_writes_only_changed_uses(tmp_path):
     data = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
     assert data["models"] == {"brain": {"main": "claude/sonnet", "backup": ""}}
     assert str(effective(store).uses["brain"].main) == "claude/sonnet" and effective(store).uses["brain"].backup is None
-    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-chat", "backup": "claude/sonnet"}})[0] == 200
+    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-flash", "backup": "claude/sonnet"}})[0] == 200
     data = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
     assert "models" not in data
 
@@ -179,9 +179,9 @@ def test_test_provider_claude(monkeypatch):
 def test_restore_default_overrides_legacy_console_fields(tmp_path):  # 终审 I3：console.toml 里旧设置页写的模型字段
     v, store = view_of(tmp_path, console='[brain]\nmodel = "sonnet"\nowner_name = "卡洛"\n[llm]\ntemperature = 0.3\n')
     assert str(effective(store).uses["brain"].main) == "claude/sonnet"
-    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-chat", "backup": "claude/sonnet"}})[0] == 200
+    assert submit(v, uses={"brain": {"main": "deepseek/deepseek-flash", "backup": "claude/sonnet"}})[0] == 200
     s = effective(store)
-    assert str(s.uses["brain"].main) == "deepseek/deepseek-chat" and s.uses["reply"].temperature == 0.3
+    assert str(s.uses["brain"].main) == "deepseek/deepseek-flash" and s.uses["reply"].temperature == 0.3
     data = tomllib.loads((tmp_path / "console.toml").read_text(encoding="utf-8"))
     assert data["brain"] == {"owner_name": "卡洛"} and "llm" not in data  # 旧字段迁走，别的照留
 

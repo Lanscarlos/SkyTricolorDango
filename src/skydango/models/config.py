@@ -78,11 +78,11 @@ class Use:
 
 
 USES: tuple[Use, ...] = (
-    Use("brain", "大脑", "每次醒来想、说、调工具", False, "deepseek/deepseek-chat", "claude/sonnet", 0.8, 4096),
-    Use("memory", "记忆", "随手记 inbox.md、整理 notes.md、memory update", False, "deepseek/deepseek-chat", "claude/sonnet", 0.8, 4096),
-    Use("reflect", "反思", "反思、日记、性格", False, "deepseek/deepseek-chat", "claude/sonnet", 0.8, 4096),
-    Use("reply", "回复", "普通 Agent（--no-brain）、chat 命令、大脑离线时的纯文字回复", False, "deepseek/deepseek-chat", "", 0.8, 200),
-    Use("text_label", "文字标注", "文字标注（addressee label）", False, "deepseek/deepseek-chat", "", 0.8, 4096),
+    Use("brain", "大脑", "每次醒来想、说、调工具", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
+    Use("memory", "记忆", "随手记 inbox.md、整理 notes.md、memory update", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
+    Use("reflect", "反思", "反思、日记、性格", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
+    Use("reply", "回复", "普通 Agent（--no-brain）、chat 命令、大脑离线时的纯文字回复", False, "deepseek/deepseek-flash", "", 0.8, 200),
+    Use("text_label", "文字标注", "文字标注（addressee label）", False, "deepseek/deepseek-flash", "", 0.8, 4096),
     Use("eyes", "眼睛", "眼睛（截图写成文字）、给大脑代看", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 2048),
     Use("wardrobe", "装扮描述", "装扮描述", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 1024),
     Use("image_label", "看图标注", "perception label --assist / --objects、attrs-label、gesture-label", True,
@@ -143,7 +143,7 @@ def _builtin(cfg: Config) -> dict[str, ProviderConfig]:
     llm, brain = cfg.llm, cfg.brain
     if llm.provider != "openai":  # 旧的 anthropic / echo：地址、Key、型号都不是 DeepSeek 的，别灌进来（Key 会被发到别家）
         llm = type(llm)()
-    models = ["deepseek-chat", "deepseek-reasoner", "deepseek-flash"]  # deepseek-flash（V4.1 Flash）能看图
+    models = ["deepseek-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"]  # deepseek-flash（V4.1 Flash）能看图；后两个是旧名
     if llm.model and llm.model not in models:
         models.insert(0, llm.model)
     return {

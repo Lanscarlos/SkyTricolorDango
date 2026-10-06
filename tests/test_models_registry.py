@@ -38,18 +38,18 @@ def test_main_down_switches_and_trips(tmp_path):
     reg, fakes = _registry(tmp_path)
     call = reg.call("memory")
     call.text("S", "x")
-    fakes[("deepseek", "deepseek-chat")].exc = ModelError("402", down="limit", provider="deepseek")
+    fakes[("deepseek", "deepseek-flash")].exc = ModelError("402", down="limit", provider="deepseek")
     assert call.text("S", "y") == "claude:y"
     assert reg.gates.ok("deepseek") is False
     assert call.text("S", "z") == "claude:z"
-    assert len(fakes[("deepseek", "deepseek-chat")].calls) == 2
+    assert len(fakes[("deepseek", "deepseek-flash")].calls) == 2
 
 
 def test_main_other_error_raises(tmp_path):
     reg, fakes = _registry(tmp_path)
     call = reg.call("memory")
     call.text("S", "x")
-    fakes[("deepseek", "deepseek-chat")].exc = ModelError("超时")
+    fakes[("deepseek", "deepseek-flash")].exc = ModelError("超时")
     with pytest.raises(ModelError):
         call.text("S", "y")
     assert reg.gates.ok("deepseek") and ("claude", "sonnet") not in fakes
@@ -60,7 +60,7 @@ def test_no_backup_raises_unavailable_after_trip(tmp_path):
     call = reg.call("reply")
     call.text("S", "x")
     err = ModelError("401", down="auth", provider="deepseek")
-    fakes[("deepseek", "deepseek-chat")].exc = err
+    fakes[("deepseek", "deepseek-flash")].exc = err
     with pytest.raises(ModelError) as e:
         call.text("S", "y")
     assert e.value is err
@@ -82,7 +82,7 @@ def test_complete_passes_history_and_default_max_tokens(tmp_path):
     reg, fakes = _registry(tmp_path)
     reg.call("memory").complete("S", [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"},
                                       {"role": "user", "content": "c"}])
-    got = fakes[("deepseek", "deepseek-chat")].calls[0]
+    got = fakes[("deepseek", "deepseek-flash")].calls[0]
     assert got["content"] == "c" and len(got["history"]) == 2 and got["max_tokens"] == 4096
 
 
@@ -91,12 +91,12 @@ def test_timeout_setter(tmp_path):
     call = reg.call("reflect", timeout=60)
     call.timeout = 7
     call.text("S", "x")
-    assert fakes[("deepseek", "deepseek-chat")].calls[0]["timeout"] == 7
+    assert fakes[("deepseek", "deepseek-flash")].calls[0]["timeout"] == 7
 
 
 def test_describe(tmp_path):
     reg, _ = _registry(tmp_path)
-    assert reg.describe("brain") == "deepseek/deepseek-chat（备 claude/sonnet）"
+    assert reg.describe("brain") == "deepseek/deepseek-flash（备 claude/sonnet）"
     reg.gates.trip("deepseek", "limit", "402")
     assert reg.current("brain") == ModelRef("claude", "sonnet")
 

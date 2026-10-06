@@ -17,7 +17,7 @@ from .tomlfile import dumps, read, write_atomic
 # 「+ 添加供应商」的预填（只填地址和模型名，Key 自己填）
 TEMPLATES = [
     {"label": "DeepSeek", "id": "deepseek", "kind": "openai", "base_url": "https://api.deepseek.com", "key_env": "DEEPSEEK_API_KEY",
-     "models": [["deepseek-chat", False], ["deepseek-reasoner", False], ["deepseek-flash", True]]},
+     "models": [["deepseek-flash", True], ["deepseek-v4-pro", False], ["deepseek-chat", False], ["deepseek-reasoner", False]]},
     {"label": "ChatGPT", "id": "openai", "kind": "openai", "base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY",
      "models": [["gpt-4o", True], ["gpt-4o-mini", True]]},
     {"label": "通义千问", "id": "qwen", "kind": "openai", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
