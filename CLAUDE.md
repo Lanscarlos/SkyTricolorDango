@@ -129,7 +129,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
 | `src/skydango/brain/addressee.py` | 分清好友在跟谁说话（见「分清在跟谁说话」）：`Addressee.judge` 每句判一次（`Verdict`：跟你说 / 跟别人说 / 说给大家 / 拿不准）、`said`、`parse_aliases`（friends.md 的 `- 叫法：`）、`legacy_addressed`（`enabled = false` 时反射用的旧规则）；纯规则、不调模型 |
 | `src/skydango/chat/addressee_eval.py` | 上面规则的离线评估：从 `agent.log` 取多人聊天、Claude 初标、规则重放、`review.md` 给人核对、`report.md` 三条门槛（`addressee label` / `eval`） |
-| `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；聊天记录 `brain/transcript.py`（沙盒和真机共用，带长轮询 `wait_since` 和事件分隔线 `event_line`）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、操作和状态 `control.py`、JSON 接口 `server.py` |
+| `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；聊天记录 `brain/transcript.py`（沙盒和真机共用，带长轮询 `wait_since` 和事件分隔线 `event_line`）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、操作和状态 `control.py`、JSON 接口 `server.py`、命令行客户端 `ctl.py`（`sandbox-ctl`） |
 | `src/skydango/config.py` | 所有可调参数和默认值（坐标都是 0~1 归一化，按 1920×1080 标定） |
 | `.claude/skills/` | 随仓库走的 skill（本地和云端都自动加载），见上面「Skill」一节和该目录的 README |
 
@@ -713,6 +713,8 @@ dir = "private/sandbox"
   沙盒记忆目录和 `reply.memory_dir` 重合（相同或互相包含，比如 `dir = "."`）时，重置和启动都拒绝。`--duration` 按真实时间，快进不会提前下线。随手记、反思、日记都真的调 Claude，和真机一样花额度
 - **子进程** `python -m skydango sandbox --port 19392 [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]`：只给 JSON 接口（`sandbox/server.py`：`/status` `/state` 长轮询 `/op` `/brain` `/inner` `/inner/forget` `/shutdown`，本机 Host + `post_guard`）；
   操作经 `body.call` 在身体线程做（`sandbox/control.py`：冒充发言、来去、陌生人、地名、场景、新鲜事、快进、拨时间、立刻反思）；下线 = `/shutdown`，走最终反思 → 日记 → 合账本，再存 `clock.json`
+- **命令行客户端** `python -m skydango sandbox-ctl …`（`sandbox/ctl.py`，10-06；**还没对着真沙盒跑过**，测试是假 HTTP 服务 + 真 `SandboxServer`）：Agent / 用户不点网页也能操作沙盒。
+  操作（`say 谁 话` / `come` / `leave` / `skip 分钟|30s|2h` / `time HH:MM` / `reflect` / `strangers N` / `place [地名]` / `scene [文字]` / `notice 文字`）发 `/op`，默认接着长轮询 `/state` 边等边打印新行（heard 带「跟谁说」标注、blocked 带被拦原因），等到 idle、不在想、不在反思（`--timeout` 默认 180 秒，超时退出码 1；`--no-wait` 发完就走），再打印这期间大脑每一轮的文字（「心里：…」「不说：…」）和沙盒时间 / 精力 / 身边 / 额度；`state [--lines N]`、`brain [--last N] [--prompt] [--full]` 只看；`start [resume|sleep|HH:MM]` / `stop` 转发给管理面板（`/api/sandbox/start|stop`，默认等沙盒起来 / 退出），面板没开、沙盒没开都报清楚怎么办；`--json`（放在子命令前）输出一个 JSON 对象；端口按 `[sandbox] port` / `[console] port`，`--port` / `--console-port` 覆盖；输出 UTF-8、请求不走代理；Windows 上连一个没人听的端口要 2 秒才报错
 - **管理面板**：子进程槽带 kind（团子 / 沙盒），**同一时间只能有一个**（共用令牌和 `.brain-claude/`），另一个在跑时拒绝并提示先停；`/sandbox/*` 转发、`/live/*` 只在团子时转。
   「沙盒」页：顶栏启动选项（接着上次 / 睡一晚 / 自定义）或沙盒时间牌 + 快进；三栏从左到右 团子（现在、身边、场景和新鲜事）/ 大脑控制台 / 聊天记录。
   聊天记录团子说的在左（樱花底）、冒充的人在右，动作旁白、事件分隔线、被拦的删除线 + 原因；
@@ -743,6 +745,9 @@ python -m skydango say "【AI】你好"        # 发一句（输入框没开会�
 python -m skydango chat --emotes 鞠躬,害羞  # 终端里和人设聊天，假装轮盘上有这些动作
 python -m skydango console [--port 端口] [--no-browser]  # 管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面；「沙盒」页不开模拟器调大脑
 python -m skydango sandbox [--port 19392] [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]  # 大脑沙盒子进程（一般由管理面板起；只有 JSON 接口），记忆只写 sandbox/memory/
+python -m skydango sandbox-ctl say 小明 团子在干嘛   # 冒充发言，等团子反应完，打印聊天新行和大脑的「心里」；另有 come/leave 谁、skip 30、time 23:30、reflect、strangers/place/scene/notice
+python -m skydango sandbox-ctl state | brain --last 3  # 看沙盒现在（时间、精力、身边、最近聊天）/ 大脑最近几轮；--json 放子命令前
+python -m skydango sandbox-ctl start [resume|sleep|HH:MM] | stop  # 让管理面板起停沙盒（面板要开着）
 python -m skydango run [--live | --dry-run] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；模型按 [models.*]（默认要 DEEPSEEK_API_KEY，用到 Claude 的才要 SKYDANGO_CLAUDE_TOKEN）；--duration 到点自己退出；模型用量看管理面板「模型用量」卡片
 python -m skydango run --no-brain [--echo] [--live]  # 调试用的普通 Agent（[models.reply] 回复）；--echo 回复不调模型
 python -m skydango panels scan [图片或目录]    # 面板识别：每张卡开没开、每个特征的分数 + 通用兜底，标注图 tmp/panels/（不发输入）
