@@ -123,7 +123,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`toolloop.py` OpenAI 兼容的大脑（`ToolLoopBrain`，function-calling 循环）、`sessions.py` 按供应商建大脑会话（`make_session`）、`claude.py` 旧名字的转引（进程、命令都搬到了 `models/claude_code.py`）、`llm_tools.py` OpenAI 兼容大脑的工具 schema（唯一来源）、`trace.py` 大脑时间线（给管理面板）、`manual.py` 手动控制、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `search.py` 有意识地找 / `find.py` 找人技能 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
 | `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
-| `src/skydango/models/` | 模型供应商和按用处选模型（见「模型供应商」）：`config.py` 解析 `[providers.*]` / `[models.*]`、旧字段换算、校验；`claude_code.py`（`claude -p`）/ `openai_compat.py`（DeepSeek 等）两种接入方式；`errors.py` `ModelError`（`down` = limit / auth）；`gate.py` 按供应商的闸；`registry.py` `Registry` / `GatedCall`（主 → 备）。**代码只从这里拿模型** |
+| `src/skydango/models/` | 模型供应商和按用处选模型（见「模型供应商」）：`config.py` 解析 `[providers.*]` / `[models.*]`、旧字段换算、校验；`claude_code.py`（`claude -p`）/ `openai_compat.py`（DeepSeek 等）两种接入方式；`errors.py` `ModelError`（`down` = limit / auth）；`gate.py` 按供应商的闸；`registry.py` `Registry` / `GatedCall`（主 → 备）；`usage.py` `UsageMeter` 用量 / 钱 / 限额、`usage_ledger.py` 今天累计的账本、`balance.py` DeepSeek 余额（见「模型供应商」的用量和额度）。**代码只从这里拿模型** |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、「模型」页后端（`models_view.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、整理 / 重训的任务槽（`jobs.py`）、整帧页后端（`frames.py`）、重训报告和换上 / 回退（`retrain_view.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`、标注页的整帧页 `frames.js`、重训区 `retrain.js`），左侧栏 + 八页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 模型 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
 | `src/skydango/brain/addressee.py` | 分清好友在跟谁说话（见「分清在跟谁说话」）：`Addressee.judge` 每句判一次（`Verdict`：跟你说 / 跟别人说 / 说给大家 / 拿不准）、`said`、`parse_aliases`（friends.md 的 `- 叫法：`）、`legacy_addressed`（`enabled = false` 时反射用的旧规则）；纯规则、不调模型 |
@@ -200,6 +200,7 @@ dir = "private/sandbox"
 | `enroll/` | 启动时转一圈登记团子取到的团子裁图（`<序号>.jpg`），事后核对登记的是不是团子各个角度 |
 | `icons/` | 认交互图标时认不出 / 低分的图标裁图 + `icons.jsonl`（`[icons] save`，每条轨迹 2 秒一张、每次最多 200 张）；难例原因 `icon_unknown` |
 | `appearance/` | 认装扮攒的训练数据：`crops/<身份>/*.jpg`（好友名，或 `t<轨迹>`）+ `appearance.jsonl`（`[appearance] save`，每条轨迹 2 秒一张、每次最多 2000 张） |
+| `../usage.json` | `runs/` 根目录（不随运行目录轮换）：模型用量今天累计的账本，最近 7 天（见「模型供应商」的用量和额度） |
 | `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有大脑模式，`--no-brain` 没有）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md） |
 
 ## 聊天面板（`[panel]`，`chat/panel.py`）
@@ -437,7 +438,7 @@ dir = "private/sandbox"
 - **供应商** `[providers.<id>]`：接入方式只有 `claude-code`（`claude -p`，`path` / `token_env` / `config_dir`）和 `openai`（OpenAI 兼容，`base_url` / `key_env` / `timeout` / `max_retries`）；`models` 列模型、`vision` 勾能看图的。
   两个文件都没写 `[providers]` 时用内置的 `claude` + `deepseek`（deepseek 的地址 / Key 名 / 模型取旧 `[llm]`）；写了就只用写了的（config.toml 和 console.toml 按 id 合并）
 - **用处** `[models.<用处>]`（`main` / `backup` 写成「供应商id/模型名」，按第一个 `/` 拆；`temperature` / `max_tokens` 只在配置文件里写）：
-  brain / memory / reflect 默认 `deepseek/deepseek-chat`、备 `claude/sonnet`；reply / text_label `deepseek/deepseek-chat`；eyes / wardrobe / image_label `deepseek/deepseek-flash`（V4.1 Flash，内置的 deepseek 供应商把它勾成能看图；10-06 起，之前是 Claude），备 `claude/haiku` / `claude/haiku` / `claude/sonnet`。
+  brain / memory / reflect 默认 `deepseek/deepseek-flash`、备 `claude/sonnet`；reply / text_label `deepseek/deepseek-flash`（10-06 起，价格页上已经没有 `deepseek-chat`；内置 deepseek 的模型表是 flash / v4-pro / chat / reasoner，写明了 chat 的配置照旧）；eyes / wardrobe / image_label `deepseek/deepseek-flash`（V4.1 Flash，内置的 deepseek 供应商把它勾成能看图；10-06 起，之前是 Claude），备 `claude/haiku` / `claude/haiku` / `claude/sonnet`。
   **10-06 换识图默认之前、面板保存过「模型」页的**：console.toml 里整张写着旧的 deepseek 供应商（没有 `deepseek-flash`），要在模型页给 deepseek 加上它、勾能看图，再把三个看图的用处「恢复默认」
   看图的用处（eyes / wardrobe / image_label）只能选能看图的，选错了这一处停用、团子照常起；引用了不存在的供应商同样停用；模型不在列表里只警告
 - **旧字段照样读**（启动时警告一行）：`[llm]`、`[brain] model / eyes_model / memory_model / claude_path / token_env / config_dir`、`[inner] reflect_model`、`[appearance] describe_model`、`[assist] model`，换算见 spec §1.3；同一用处 `[models.*]` 说了算。
@@ -447,6 +448,13 @@ dir = "private/sandbox"
   面板第一次保存会把当时生效的供应商（含旧 `[llm]` 换算出来的）整张写进 console.toml，之后改 config.toml 的 `[llm]` 不再影响 deepseek 那家。设置页的大模型一组和 Claude 令牌挪到这里了
 - **预检**：大脑模式只在大脑的主和备都用不了时拦（「大脑没有能用的模型：…」，跳到模型页那一行）；普通模式查回复的主模型；别的用处有问题不拦（启动日志一行一个，用到时那一处停用或改走备用）
 - 运行时见「统管大脑」（闸、代看）；`brain.jsonl` 每轮多 `provider` / `model`；离线命令（`memory update`、`look`、看图标注四个命令、`addressee label`）各走对应用处、各自一套闸
+- **用量和额度**（10-06，spec `docs/superpowers/specs/2026-10-06-model-usage-design.md`，计划 `docs/superpowers/plans/2026-10-06-model-usage.md`；**还没在真机 / 沙盒上看过，spec §9 四步没走**）：
+  `models/usage.py` 的 `UsageMeter` 挂在 `Registry.meter`，`GatedCall`、大脑（`Brain.meter`）每笔按 (用处, 供应商/模型, 主还是备) 记次数 / token / 钱；Claude Code 的 `rate_limit_event` 记成订阅额度（5 小时 / 7 天窗口的比例和重置时间，只有跑着时有）；
+  `models/balance.py` 每 `[usage] balance_every`（300 秒）查 DeepSeek 余额（只查 `api.deepseek.com`）；单价写在供应商下 `prices = { 模型 = [命中, 没命中, 输出] }`（元 / 百万 token 空闲价）+ `peak`（高峰倍数）+ `peak_hours`（北京时间工作日），
+  内置 DeepSeek 照价格页（flash 0.02 / 1 / 4、v4-pro 0.15 / 4.5 / 13.5，高峰 ×2；chat / reasoner 按 Flash 价估），**面板保存过的 deepseek（console.toml 里没单价）也按内置单价算**；不认法定节假日，钱数都是估的，以 DeepSeek 控制台为准；claude-code 走订阅不算钱。
+  今天累计记在 `runs/usage.json`（`models/usage_ledger.py`，每 `save_every` 秒和退出时把增量加进去、带锁、只留 `keep_days` 天；真机、沙盒、离线命令都算；不进 git / 私有仓库，两台电脑各记各的）。
+  团子 / 沙盒接口 `GET /usage`，面板 `GET /api/usage`（在跑转发，停着读账本 + 面板自己查余额，`console/usage_view.py`）；页面组件 `console/static/usage.js`：真机页、沙盒页左栏「模型用量」卡片（每 5 秒）、模型页顶上一行，模型页每个模型能填单价。
+  测试里 `SKYDANGO_USAGE_LEDGER` 设成空（conftest），不往本机账本记假用量；`cli._start_balance` 也被换成空的
 - 注意：大脑换了模型，`history.jsonl` 里 Claude 的旧回复会被 DeepSeek 模仿（想要的接续感）；要清照「记忆」一节挪进 `archive/`
 
 ## 统管大脑（`[brain]`，`run` 默认）
@@ -714,7 +722,7 @@ python -m skydango say "【AI】你好"        # 发一句（输入框没开会�
 python -m skydango chat --emotes 鞠躬,害羞  # 终端里和人设聊天，假装轮盘上有这些动作
 python -m skydango console [--port 端口] [--no-browser]  # 管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面；「沙盒」页不开模拟器调大脑
 python -m skydango sandbox [--port 19392] [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]  # 大脑沙盒子进程（一般由管理面板起；只有 JSON 接口），记忆只写 sandbox/memory/
-python -m skydango run [--live | --dry-run] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；模型按 [models.*]（默认要 DEEPSEEK_API_KEY，用到 Claude 的才要 SKYDANGO_CLAUDE_TOKEN）；--duration 到点自己退出
+python -m skydango run [--live | --dry-run] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；模型按 [models.*]（默认要 DEEPSEEK_API_KEY，用到 Claude 的才要 SKYDANGO_CLAUDE_TOKEN）；--duration 到点自己退出；模型用量看管理面板「模型用量」卡片
 python -m skydango run --no-brain [--echo] [--live]  # 调试用的普通 Agent（[models.reply] 回复）；--echo 回复不调模型
 python -m skydango panels scan [图片或目录]    # 面板识别：每张卡开没开、每个特征的分数 + 通用兜底，标注图 tmp/panels/（不发输入）
 python -m skydango panels read [图片]          # 细读开着的面板：标题、正文、按钮和类别

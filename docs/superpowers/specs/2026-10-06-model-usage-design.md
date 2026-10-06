@@ -78,7 +78,7 @@ OpenAI 兼容返回的 `prompt_tokens` 包含命中缓存的部分：没命中 =
 ## 4. 今天累计的账本：`runs/usage.json`
 
 - `[usage] ledger = "runs/usage.json"`（`runs/` 根目录，不被每次运行的轮换删；不进 git，也不进私有仓库——两台电脑各记各的）、`keep_days = 7`、`save_every = 60`、`balance_every = 300`。
-- 格式：`{"version": 1, "days": {"2026-10-06": {"live": {"deepseek/deepseek-flash": {"brain": {calls, fails, input, output, cache_read, cache_write, cost, est}}}}}}`。日期按本机时间、这一笔发生的那天。
+- 格式：`{"version": 1, "days": {"2026-10-06": {"live": {"brain|deepseek/deepseek-flash|main": {calls, fails, input, output, cache_read, cache_write, cost, est}}}}}`（key = 用处|供应商/模型|main 或 backup）。日期按本机时间、这一笔发生的那天。
 - 写入：每 `save_every` 秒和进程退出时，把「还没写进账本的增量」**加进**文件（读出来 → 相加 → 写临时文件 → 原子替换），成功后清空增量。
   同时只有一个团子 / 沙盒，但离线命令可能同时跑：用 `usage.json.lock`（`O_EXCL` 建、最多等 2 秒、超过 30 秒的旧锁当残留删掉）串起来；拿不到锁这次不写、增量留着下次。
 - 离线命令：`_registry()` 建的 meter 用 `atexit` 退出时写一次。
@@ -132,7 +132,7 @@ OpenAI 兼容返回的 `prompt_tokens` 包含命中缓存的部分：没命中 =
 
 ### 6.2 页面：`console/static/usage.js`
 
-一个共用组件 `mountUsage(容器, 取数函数)`，每 5 秒刷新（页面不可见时不拉）：
+一个共用组件 `mountUsage(容器, "api/usage", 选项)`，每 5 秒刷新（页面不可见时不拉；三个页面都只拉 `api/usage`，转发 / 回落在面板那头）：
 
 - **每家一行**：名字 · 闸（开着 / 「关了：额度用完」红字）· 余额「¥12.34」（悬停：赠送 / 充值、几分钟前查的）或 Claude「5 小时窗口 62%，19:00 重置」（没比例只写状态）
 - **每个用处一行**（这次运行）：用处 · 模型（走备用的标「备」，停用的灰）· 次数（失败数红字）· 输入 / 输出 / 缓存命中（k / M）· ¥
