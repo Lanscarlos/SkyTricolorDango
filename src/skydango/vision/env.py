@@ -180,6 +180,10 @@ class EnvWatcher:
         """最近 keep 秒内看到过名字标签的好友（按名单顺序）。标签会被挡住、会闪，所以不要求每次都看到。"""
         return [n for n in self.names() if now - self.last_seen.get(n, float("-inf")) <= self.cfg.keep]
 
+    def in_view(self, now: float) -> list[str]:
+        """画面里看得到的好友：整图 OCR 分不出"附近"，同 nearby()（接口同感知层）。"""
+        return self.nearby(now)
+
     def describe(self, now: float) -> str:
         parts = []
         if self.place and now - self.place_at <= self.cfg.place_keep:

@@ -237,6 +237,8 @@ class Body:
         self._last_move = float("-inf")
         self._nearby: set[str] = set()
         self._left_at: dict[str, float] = {}  # 好友上次走开的时间：brain.rejoin 秒内又出现算"回来了"
+        self._out_at: dict[str, float] = {}  # 好友上次离开画面的时间（注意力找人、find 用；presence 关时和 _left_at 同一刻）
+        self._in_view: set[str] = set()  # 上一圈画面里的好友（env.in_view；没有这个方法的 env 同 nearby）
         self._strangers = 0  # 上次看到几个陌生人（YOLO 感知层才有）
         self._requests: set[tuple[str, str]] = set()
         self._ref_thumb = None
@@ -817,8 +819,8 @@ class Body:
     def _start_lost_search(self, now: float) -> None:
         """好友刚走开、还没回来、这次走开没找过：交给注意力去找。一次只找最近走开的那一个，同时走开的别人这次不找。"""
         window = self.cfg.call.auto_after_leave
-        fresh = sorted(((t, n) for n, t in self._left_at.items()
-                        if now - t <= window and n not in self._nearby and self._searched_for.get(n) != t), reverse=True)
+        fresh = sorted(((t, n) for n, t in self._out_at.items()
+                        if now - t <= window and n not in self._in_view and self._searched_for.get(n) != t), reverse=True)
         if not fresh:
             return
         for t, n in fresh:
@@ -836,18 +838,30 @@ class Body:
         while self._call_times and now - self._call_times[0] > cfg.auto_window:
             self._call_times.popleft()
         why = ""
-        if self._pending_auto is not None:
+        r = self._pending_auto
+        if r is not None and r.reason == "presence" and not self._search_call_pending:
+            self._search_call_pending = True  # 确认在场的那一声刚按：找人这一步等它的结果，不另喊
+            s.call_sent(now)
+            return
+        last = self.last_call
+        if (r is None and last is not None and last.reason == "presence" and last.seen is not None
+                and now - last.at < cfg.min_gap):
+            s.called(last.seen, now)  # 刚喊过、结果也有了：直接拿去用
+            return
+        if r is not None:
             why = "上一声还没结果"
         elif now - self._call_at < cfg.min_gap:
             why = "刚喊过"
         elif len(self._call_times) >= cfg.auto_quota:
             why = "这一阵喊够了"
-        elif s.who and now - self._auto_found.get(s.who, float("-inf")) <= cfg.auto_again:
+        elif s.who and self._presence() is not None and now - (self._presence().confirmed(s.who) or float("-inf")) <= self.cfg.perception.recheck:
+            why = "刚喊到过他"
+        elif s.who and self._presence() is None and now - self._auto_found.get(s.who, float("-inf")) <= cfg.auto_again:
             why = "刚喊回来过他"
         if not why:
             self._call_times.append(now)
-            if s.who in self._left_at:
-                self._auto_called[s.who] = self._left_at[s.who]
+            if s.who in self._out_at:
+                self._auto_called[s.who] = self._out_at[s.who]
             log.info("找刚走开的%s：喊一声", s.who)
             try:
                 r = self.call_out("auto")
@@ -1201,6 +1215,11 @@ class Body:
     def _watch_comings(self, now: float, near_list: list[str] | None = None) -> None:
         """人来人走：身边有谁、陌生人、正在输入的气泡、有人走过来、对团子做动作。"""
         near = set(self.env.nearby(now) if near_list is None else near_list)
+        has_view = hasattr(self.env, "in_view")
+        view = set(self.env.in_view(now)) if has_view else near
+        for name in (self._in_view if has_view else self._nearby) - view:  # 离开画面（presence 开着时还不算走开）：注意力往那边找找
+            self._out_at[name] = now
+        self._in_view = view
         if near - self._nearby:  # 来人常常会打招呼：看一眼聊天
             self.panel.trigger("arrive", now)
         for name in sorted(near - self._nearby):
@@ -1222,7 +1241,8 @@ class Body:
         for name in sorted(self._nearby - near):
             keep = getattr(self.env, "keep", self.cfg.env.keep)
             self._lull_call(lambda: self.lulls.left(name, self.wall(), list(self.chat)))  # 聊着聊着走了：过 leave_grace 秒还没回来才叫醒
-            self.events.put("leave", f"{name} 走开了（{keep:.0f} 秒没看到名字）", who=name)
+            note = self.env.left_note(name, now) if hasattr(self.env, "left_note") else ""
+            self.events.put("leave", f"{name} 走开了（{note or f'{keep:.0f} 秒没看到名字'}）", who=name)
             self._arrive_notes.pop(name, None)
             self._reflect_note(f"{name} 走开了")
             self._left_at[name] = now
@@ -1936,6 +1956,8 @@ class Body:
         if others:
             parts.append("开着的面板：" + "、".join(p.describe() for p in others))
         near = self.env.nearby(now) if self.env is not None else []
+        if self._presence() is not None:  # 在场的分两行：画面里的写"身边"，看不到的写"附近"
+            near = self.env.in_view(now)
         me = self.env.my_look() if hasattr(self.env, "my_look") else ""
         if me:
             parts.append("你自己：" + me)
@@ -1947,6 +1969,9 @@ class Body:
             args = (near, self.wall(), looks) if looks else (near, self.wall())
             friends = self._ledger_call("status_line", *args, default="") or friends
         parts.append("身边的好友：" + (friends or "没看到"))
+        around = self.env.around(now) if self._presence() is not None else []
+        if around:
+            parts.append("附近：" + "、".join(f"{n}（{why}）" for n, why in around))
         if hasattr(self.env, "strangers"):
             parts.append(f"身边的陌生人：{self.env.strangers(now)} 个")
         closest = self.env.nearest(now) if hasattr(self.env, "nearest") else None
@@ -2458,7 +2483,7 @@ class Body:
     # ---- 按 Q 喊一声（spec 2026-10-01-q-call §2） ----
     def call_out(self, reason: str, *, live: bool = False, on_press: Callable[[float], None] | None = None) -> CallResult:
         """短按 Q 喊一声：同步按键 + 连拍 burst 秒看光圈，开感知层的呼喊窗口（结果约 window 秒后 env.call_result(at) 才有）。
-        reason："brain" / "auto" / "manual"。不能喊时不抛异常，CallResult.refused 写原因。约 1~1.3 秒。
+        reason："brain" / "auto" / "unsure" / "presence" / "manual"。不能喊时不抛异常，CallResult.refused 写原因。约 1~1.3 秒。
         on_press(at)：按键命令发出之前、用窗口开始的时间 at 调一次（拿不准那种自动喊靠它按 at 打标记，免得连拍那 1 秒里标记过期）；它出错只记日志、不拦按键。"""
         cfg = self.cfg.call
         now = self.clock()
@@ -2550,8 +2575,11 @@ class Body:
             self._collect_auto_call(now)
             if self._pending_auto is not None:
                 return
+            if self._presence() is not None:  # 好友在不在场（spec 2026-10-06-friend-presence §3.2）：看不到了就喊一声确认
+                if self._presence_call(now):
+                    return
             who = []
-            if not self._search_takes_call():  # 走开后的这一声归注意力的"找走开的好友"管时，只剩拿不准那一种
+            if self._presence() is None and not self._search_takes_call():  # 走开后的这一声归注意力的"找走开的好友"管时，只剩拿不准那一种
                 who = [n for n, t in self._left_at.items()
                        if now - t <= cfg.auto_after_leave and n not in self._nearby and self._auto_called.get(n) != t
                        and now - self._auto_found.get(n, float("-inf")) > cfg.auto_again]
@@ -2591,6 +2619,30 @@ class Body:
         except Exception:
             log.exception("自动喊一声出错")
 
+    def _presence(self):
+        """感知层的在场判断（[perception] presence 开着才有）；None = 老规矩（走出画面 keep 秒就算走开）。"""
+        return getattr(self.env, "presence", None)
+
+    def _presence_call(self, now: float) -> bool:
+        """有好友找不到（画面里、边上都没有）、这次还没喊过：喊一声看看还在不在。喊了（或在等结果）返回 True。
+        一声确认所有人；照旧受 min_gap、auto_quota、_auto_call_blocked 限制；不发 call 事件（每 recheck 秒一次，太吵）。"""
+        cfg = self.cfg.call
+        who = self.env.need_call(now)
+        if not who or now - self._call_at < cfg.min_gap:
+            return False
+        while self._call_times and now - self._call_times[0] > cfg.auto_window:
+            self._call_times.popleft()
+        if len(self._call_times) >= cfg.auto_quota or self._auto_call_blocked(now):
+            return False
+        self._call_times.append(now)
+        log.info("看不到 %s 了：喊一声看看还在不在", "、".join(who))
+        r = self.call_out("presence")
+        if r.refused:
+            log.info("确认在场的这一声没喊成：%s", r.refused)
+        elif not r.dry:
+            self._pending_auto = r
+        return True
+
     def _mark_unsure(self, ids: list[int], at: float) -> None:
         mark = getattr(self.env, "mark_unsure_called", None)
         if mark is not None:
@@ -2619,7 +2671,8 @@ class Body:
             r.seen = seen
             for name in seen.friends:  # 认回来了：多半一直就站在稍远处，标签淡了而已（画面外的也知道在哪了）
                 self._auto_found[name] = now
-            self.events.put("call", call_event_text(seen))
+            if r.reason != "presence":  # 确认在场的那一声只进 status（"上次喊"）
+                self.events.put("call", call_event_text(seen))
             self._pending_auto = None
             self._search_called(seen, now)
         elif now - r.at > self.cfg.call.window + 10:
@@ -2695,7 +2748,7 @@ class Body:
         if obs is not None and obs.target_x is not None:
             return f"{match}就在画面里（{obs.target_where}），不用找"
         side, edge = None, False
-        if now - self._left_at.get(match, float("-inf")) <= self.cfg.call.auto_after_leave:  # 刚走开：按找走开的好友那样找
+        if now - self._out_at.get(match, float("-inf")) <= self.cfg.call.auto_after_leave:  # 刚离开画面：按找走开的好友那样找
             side, edge = self._left_where(match)
         note = self.clear_view("camera", live)
         return self.skills.start(self, FindSkill(match, seconds, side, edge)) + note
