@@ -166,3 +166,14 @@ def test_section_says_how_to_admit_without_tripping_filter():
         s = section(owner, "sonnet", "haiku", "sonnet", [])
         assert "直接说“我是 AI”" in s and "我又不是真人" in s
     assert clean_reply("我是AI啦", 30) and not clean_reply("我又不是真人", 30)
+
+
+def test_section_cheeky_owner_line():  # 贱兮兮：卡洛是固定的损友
+    from skydango.brain.backstage import OWNER_CHEEKY
+
+    s = section("卡洛", "sonnet", "haiku", "sonnet", [], cheeky=True)
+    line = OWNER_CHEEKY.replace("<owner>", "卡洛")
+    assert line in s and "<owner>" not in s and "# 命令" in line
+    assert s.index("introspect(改动)") < s.index(line) < s.index("知情的好友")
+    assert section("卡洛", "sonnet", "haiku", "sonnet", []) == section("卡洛", "sonnet", "haiku", "sonnet", [], cheeky=False)
+    assert section("", "sonnet", "haiku", "sonnet", [], cheeky=True) == section("", "sonnet", "haiku", "sonnet", [])

@@ -871,6 +871,7 @@ class InnerConfig:
     diary_prompt: int = 1  # 「日子」带几篇日记
     # 第 3 期：性格（docs/superpowers/specs/2026-09-30-inner-phase3-design.md）
     persona: bool = True  # 性格总开关（口头禅、老梗、看法，提示词「脾气」，收着点）；false = 第 2 期原样
+    cheeky: bool = True  # 贱兮兮：「脾气」后面加招数、幕后主人那一档当损友、反思攒贱味的口头禅；要 persona 开着；false = 原来的脾气
     fade_days: float = 14.0  # 多少天没用的条目淡出
     catchphrases_max: int = 5
     jokes_per_friend: int = 3

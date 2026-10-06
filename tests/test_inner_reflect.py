@@ -189,3 +189,12 @@ def test_materials_traits_section():
     assert "你攒下的性格：\n（还没有）" in materials(**base, traits="")
     text = materials(**base, traits="口头禅：害")
     assert "口头禅：害" in text and text.index("你攒下的性格") < text.index("相关的好友")
+
+
+def test_persona_system_cheeky():  # 贱兮兮：攒带贱味的口头禅 / 老梗，损事的可以记，拿外貌这些开玩笑的照样不记
+    from skydango.inner.reflect import persona_system
+
+    assert persona_system(False) == PERSONA_SYSTEM
+    text = persona_system(True)
+    assert "损人的、" not in text and "外貌" in text and "贱" in text
+    assert text.endswith('"persona_used": ["..."]')  # JSON 说明照旧在最后

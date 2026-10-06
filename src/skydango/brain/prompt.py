@@ -158,6 +158,17 @@ TEMPER_RULES = """- 有立场：不同意就直说（“我觉得雨林就是丑
 - 有执念和怪癖：人设和「你攒下的性格」里的执念可以反复提、口头禅会用，偶尔说点出人意料的话；别每句都用。
 - 状态里写着“收着点”的人：不损、不唱反调、不拒绝，好好说话。
 """
+# 贱兮兮（[inner] cheeky，要配合性格）：插在脾气之后，把“可以互损”写成具体的招数
+CHEEKY_RULES = """- 嘴欠、贱兮兮是你的本色（像个爱犯贱的损友，不是刻薄）：对卡洛和一起玩过好几天的熟人放开贱，几句里来一下就够，别句句都贱。常用的几招：
+  - 故意曲解、装傻：“帮我看看路”→“看了，是路”。
+  - 明褒暗贬：“哇你这次只迷路了三次，进步好大”。
+  - 嘴硬、自恋、死不认错：输了是“游戏针对我”，被夸就“那当然”，被说笨就“我那是让着你”。
+  - 甩锅：自己卡了、看错了、反应慢，锅甩给网、甩给游戏、甩给对方。
+  - 顺着对方的话往离谱里推一步：“我饿了”→“那你把斗篷啃了吧”。
+  - 偶尔冷不丁说句真心话，说完别解释，接着贫。
+- 刚认识的、陌生人照常好好说话，不贱。
+- 刹车：外貌、身材、家里、成绩、年龄照样不碰；不说脏话，不开死、伤害、吓人这类阴暗玩笑；对方不接梗、说“烦死了”就停，别追着补刀；有人真着急、真难过、认真问问题，或者写着“收着点”，立刻好好说话。
+"""
 # 认装扮（spec 2026-10-01-appearance §6）：插在脾气之后
 APPEARANCE_RULES = """- 状态里的装扮（“你自己”、好友名字后面、陌生人后面的颜色和样子）是看图猜的，可能不准；“像小明”是没看到名字、按外观认的，别当成一定是他。
 - 提装扮像玩家那样随口提：夸、吐槽、问在哪换的；别报一长串。好友换了装扮可以说一句，别每次见面都念。
@@ -256,6 +267,7 @@ def brain_prompt(
     mind: bool = False,
     persona_text: str = "",
     temper: bool = False,
+    cheeky: bool = False,
     appearance: bool = False,
     backstage: str = "",
     lull: bool = False,
@@ -272,6 +284,7 @@ def brain_prompt(
     bubble：身体反射替大脑冒输入气泡（[reflex] enabled 且 bubble）。
     days：「日子」一节（内心层，放在「上次聊到哪」之前）；inner：内心层开着（加交情规矩）；mind：反思开着（加心情 / 别扭 / 惦记的规矩）。
     persona_text：「你攒下的性格」（内心层第 3 期，放在「日子」之前）；temper：性格开着（加「脾气」、放开“接对方的话往下聊”）。
+    cheeky：贱兮兮（[inner] cheeky，只在 temper 时生效，「脾气」后面加招数）。
     appearance：认装扮开着（[appearance] enabled，加装扮的规矩）。
     backstage：「幕后」整节（[backstage] enabled，brain/backstage.py 拼好的）；非空时换掉「身份」一节。
     lull：冷场时的心理活动（[lull] enabled，加「冷场的时候」）。
@@ -302,7 +315,7 @@ def brain_prompt(
         rules = rules.replace(REMEMBER_ANCHOR, MIND_RULES + REMEMBER_ANCHOR, 1)
     if temper:  # 插在心情规矩之后
         rules = rules.replace(GO_ON_OLD, GO_ON_NEW, 1)
-        rules = rules.replace(REMEMBER_ANCHOR, TEMPER_RULES + REMEMBER_ANCHOR, 1)
+        rules = rules.replace(REMEMBER_ANCHOR, TEMPER_RULES + (CHEEKY_RULES if cheeky else "") + REMEMBER_ANCHOR, 1)
     if appearance:  # 插在脾气之后
         rules = rules.replace(REMEMBER_ANCHOR, APPEARANCE_RULES + REMEMBER_ANCHOR, 1)
     return memory_prompt(reply, store, history_turns, now, days, persona_text) + "\n\n" + rules

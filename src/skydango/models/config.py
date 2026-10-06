@@ -165,7 +165,7 @@ class Use:
 
 
 USES: tuple[Use, ...] = (
-    Use("brain", "大脑", "每次醒来想、说、调工具", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
+    Use("brain", "大脑", "每次醒来想、说、调工具", False, "deepseek/deepseek-flash", "claude/sonnet", 1.0, 4096),
     Use("memory", "记忆", "随手记 inbox.md、整理 notes.md、memory update", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
     Use("reflect", "反思", "反思、日记、性格", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
     Use("reply", "回复", "普通 Agent（--no-brain）、chat 命令、大脑离线时的纯文字回复", False, "deepseek/deepseek-flash", "", 0.8, 200),
