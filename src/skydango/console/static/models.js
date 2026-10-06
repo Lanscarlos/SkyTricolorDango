@@ -119,7 +119,7 @@ function priceInputs(p, m) {
     }, {type: "number", label: `${m.name || "模型"} ${label}单价`, placeholder: label});
     i.min = "0"; i.step = "any"; box.append(i);
   });
-  box.append(el("span", "note", "元/百万 token（三个都填才算）"));
+  box.append(el("span", "note", "命中缓存 / 没命中 / 输出，元/百万 token（三个都填才算）"));
   return box;
 }
 
@@ -245,13 +245,17 @@ async function save() {
   refresh();
 }
 
+let usage = null;  // 顶上一行：今天合计 + 余额（usage.js）
 Pages.models = {
   init() {
+    usage = Usage.mountUsage($("models-usage"), "api/usage", {compact: true, every: 30000,
+      visible: () => !$("page-models").hidden});
     $("models-save").onclick = save;
     $("models-discard").onclick = () => { reset(ST.view); $("models-save-msg").textContent = ""; render(); };
     $("mp-add").onclick = addProvider;
   },
   async show(arg) {
+    usage.tick();
     if (!ST.view) { try { await load(); } catch (e) { toast("读取模型设置失败：" + e, "bad"); return; } }
     if (arg) flash(arg);
   },

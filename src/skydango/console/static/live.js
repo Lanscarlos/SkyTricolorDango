@@ -236,10 +236,14 @@ function bind() {
   });
 }
 
+let usage = null;  // 「模型用量」卡片（usage.js）：页面开着时每 5 秒拉一次
 Pages.live = {
-  init() { bind(); renderNow(null); renderFacts(); onState(render); },
+  init() {
+    bind(); renderNow(null); renderFacts(); onState(render);
+    usage = Usage.mountUsage($("lv-usage-body"), "api/usage", {visible: () => L.shown});
+  },
   show() {
-    L.shown = true; L.startProblems = false; render(); pullLogs();
+    L.shown = true; L.startProblems = false; render(); pullLogs(); usage.tick();
     for (const t of L.timers) clearInterval(t);
     L.timers = [setInterval(pullStatus, 2000), setInterval(pullInner, 5000), setInterval(pullLogs, 1000)];
     if (L.on) loops();

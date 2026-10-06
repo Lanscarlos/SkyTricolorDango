@@ -81,6 +81,7 @@
     <div class="cols sb-cols" id="sb-cols">
       <section class="pane sb-right" aria-label="现在和世界">
         <div id="sb-now"></div>
+        <details class="sb-sec us" id="sb-usage" open><summary><h4>模型用量</h4></summary><div class="us-body" id="sb-usage-body"><p class="none">读取中…</p></div></details>
         <fieldset class="sb-sec" id="sb-nearby">
           <h4>身边</h4>
           <div class="sb-friends" id="sb-friends"></div>
@@ -145,6 +146,7 @@
     <div class="cols sb-cols lv-cols">
       <section class="pane sb-right lv-left" aria-label="团子">
         <div id="lv-now"></div>
+        <details class="sb-sec us" id="lv-usage" open><summary><h4>模型用量</h4></summary><div class="us-body" id="lv-usage-body"><p class="none">读取中…</p></div></details>
         <div class="sb-sec"><h4>身边和状态</h4><dl class="lv-facts" id="cards"></dl></div>
         <div class="sb-sec lc" id="lv-ctl">
           <h4>手动控制<span class="grow"></span><span class="lc-busy" id="lc-busy"></span></h4>
@@ -350,6 +352,7 @@
   </section>
   <section id="page-models" class="page" hidden>
     <div class="page-title"><h1>模型</h1><span class="note">每个用到模型的地方选一个主模型（可以再配一个备用：主那家额度 / 余额用完或认证出错，这次运行里改用备用）。改的写在 console.toml，Key 明文写在本机 secrets.toml。</span></div>
+    <div class="us-line" id="models-usage"></div>
     <div class="banner bad" id="models-error" hidden></div>
     <div class="settings-main models-main">
       <section class="group">
@@ -410,6 +413,7 @@
 
 <script src="console/static/stage.js"></script>
 <script src="console/static/common.js"></script>
+<script src="console/static/usage.js"></script>
 <script src="console/static/markdown.js"></script>
 <script src="console/static/inner.js"></script>
 <script src="console/static/brainlog.js"></script>
