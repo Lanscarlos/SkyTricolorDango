@@ -158,3 +158,16 @@ def test_registry_no_ledger_in_tests(tmp_path):
     from skydango.config import Config
 
     assert cli._registry(Config(), tmp_path, environ={}).meter.ledger is None
+
+
+def test_start_balance_starts_watcher(monkeypatch, tmp_path):   # spec 2026-10-06-model-usage §5.1
+
+    from skydango.config import Config
+    from skydango.models import balance as bal
+
+    monkeypatch.undo()  # conftest 把 _start_balance 换成了空的：这里测真的
+    started = []
+    monkeypatch.setattr(bal.BalanceWatcher, "start", lambda self: started.append(self.every))
+    reg = cli._registry(Config(), tmp_path, environ={})
+    w = cli._start_balance(Config(), reg)
+    assert started == [300.0] and w.meter is reg.meter

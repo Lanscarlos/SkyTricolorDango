@@ -2584,12 +2584,13 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
 
     dev = _device(cfg)
     reader, self_filter = _chat_reader(cfg, dev, run.path / "a11y.jsonl")
-    registry = None
+    registry = balance = None
     try:
         reader.trace_path = run.rows_log
         panel = _panel(cfg, dev, reader)
         registry = _registry(cfg, run.path / "models", source="live")
         registry.meter.start_saver(cfg.usage.save_every)
+        balance = _start_balance(cfg, registry)
         llm = registry.call("reply")
         if not llm.available():
             raise RuntimeError("回复的模型用不了：" + registry.describe("reply"))
@@ -2632,7 +2633,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
     except BaseException:  # 建到一半出错 / Ctrl+C / 面板点停止：别把设备上的无障碍客户端漏在那儿
         _stop_reader(reader)
         if registry is not None:
-            registry.meter.close()
+            _close_usage(registry, balance)
         raise
     try:
         agent.run(duration)
@@ -2651,7 +2652,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             log.exception("聊天面板没恢复")
         _stop_reader(reader)
         ime.stop()
-        registry.meter.close()
+        _close_usage(registry, balance)
 
 
 def _camera(cfg: Config, dev, panel):
@@ -2696,6 +2697,26 @@ def _usage_ledger(cfg: Config):
 
     path = os.environ.get("SKYDANGO_USAGE_LEDGER", cfg.usage.ledger)
     return Ledger(Path(path), cfg.usage.keep_days) if path else None
+
+
+def _start_balance(cfg: Config, registry):
+    """后台每 [usage] balance_every 秒查 DeepSeek 余额（spec 2026-10-06-model-usage §5.1）；出错只记日志。"""
+    from .models.balance import BalanceWatcher
+
+    try:
+        watcher = BalanceWatcher(registry.setup, registry.meter, registry.environ, cfg.usage.balance_every)
+        watcher.start()
+        return watcher
+    except Exception:
+        log.debug("余额线程起不来", exc_info=True)
+        return None
+
+
+def _close_usage(registry, balance) -> None:
+    """停查余额、把这次的用量写进账本。"""
+    if balance is not None:
+        balance.stop()
+    registry.meter.close()
 
 
 def _registry(cfg: Config, workdir: Path, environ=None, source: str = "offline"):
@@ -2816,7 +2837,6 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
 
     dev = _device(cfg)
     reader, self_filter = _chat_reader(cfg, dev, run.path / "a11y.jsonl")
-    registry = None
     try:
         reader.trace_path = run.rows_log
         panel = _panel(cfg, dev, reader)
@@ -2848,8 +2868,6 @@ def _game_world(cfg: Config, run: RunDir, no_emotes: bool = False):
         )
     except BaseException:  # 建到一半出错 / Ctrl+C / 面板点停止：别把设备上的无障碍客户端漏在那儿
         _stop_reader(reader)
-        if registry is not None:
-            registry.meter.close()
         raise
 
 
@@ -2886,11 +2904,12 @@ def _run_brain(
     registry = _registry(cfg, run.path / "brain", source="live" if world is None else "sandbox")
     _check_brain_models(registry)  # 大脑的主和备都用不了才拦；别的用处的问题只警告（用到时那一处停用）
     registry.meter.start_saver(cfg.usage.save_every)
+    balance = _start_balance(cfg, registry)
     if world is None:
         try:
             world = _game_world(cfg, run, no_emotes)
         except BaseException:
-            registry.meter.close()
+            _close_usage(registry, balance)
             raise
     wall, clock = world.wall, world.clock
     env = world.env
@@ -2967,7 +2986,7 @@ def _run_brain(
     except BaseException:
         world.close()
         world.restore()
-        registry.meter.close()
+        _close_usage(registry, balance)
         raise
     if trace is None and viewer is not None:
         trace = viewer.brain or BrainTrace()  # 网页上的大脑时间线（一般 _viewer 已经挂好）
@@ -3080,7 +3099,7 @@ def _run_brain(
             except Exception:
                 log.exception("关大脑会话出错")
         server.stop()
-        registry.meter.close()  # 最后把这次的用量写进账本（下线反思也算在里面）
+        _close_usage(registry, balance)  # 最后把这次的用量写进账本（下线反思也算在里面）
 
 
 WARDROBE_JOIN = 5.0  # 下线时等描述器手上那一个描述回来最多几秒（不为它拖住下线）
