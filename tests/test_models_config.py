@@ -151,3 +151,7 @@ def test_saved_estimate_stays_estimate(tmp_path):
     s = resolve(_cfg(tmp_path, '[providers.deepseek]\nkind = "openai"\nbase_url = "https://api.deepseek.com"\n'
                                'models = ["deepseek-chat"]\nprices = { "deepseek-chat" = [0.02, 1, 4] }\n'))
     assert s.providers["deepseek"].price("deepseek-chat").est is True
+
+def test_brain_temperature_default(tmp_path):  # 贱兮兮：大脑默认温度 1.0，配置还能改
+    assert resolve(_cfg(tmp_path)).uses["brain"].temperature == 1.0
+    assert resolve(_cfg(tmp_path, "[models.brain]\ntemperature = 1.2\n")).uses["brain"].temperature == 1.2

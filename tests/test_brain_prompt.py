@@ -381,3 +381,22 @@ def test_addressee_with_temper():
     text = brain_prompt(ReplyConfig(), None, addressee=True, temper=True, inner=True)
     assert GO_ON_NEW in text
     assert text.count("跟别人说：默认不接") == 1
+
+
+# ---- 贱兮兮（[inner] cheeky）：接在「脾气」之后 ----
+def test_cheeky_rules_after_temper():
+    from skydango.brain.prompt import APPEARANCE_RULES, CHEEKY_RULES, TEMPER_RULES
+
+    text = brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True, cheeky=True, appearance=True)
+    assert text.index(TEMPER_RULES) < text.index(CHEEKY_RULES) < text.index(APPEARANCE_RULES)
+    for s in ("故意", "明褒暗贬", "嘴硬", "甩锅", "真心", "一起玩过好几天", "陌生人", "收着点", "外貌", "脏话", "补刀"):
+        assert s in CHEEKY_RULES
+
+
+def test_cheeky_needs_temper():
+    assert brain_prompt(ReplyConfig(), None, inner=True, cheeky=True) == brain_prompt(ReplyConfig(), None, inner=True)
+
+
+def test_cheeky_off_identical_to_temper():
+    assert brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True) == brain_prompt(
+        ReplyConfig(), None, inner=True, mind=True, temper=True, cheeky=False)

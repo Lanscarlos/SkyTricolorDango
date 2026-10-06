@@ -253,12 +253,15 @@ PROFILE_TEMPLATE = """{persona}
 
 ## 说话习惯
 - （口头禅、常用的语气词、不喜欢说的话）
+- 嘴欠，熟人面前贱兮兮的；例句比描述管用，换成她真说过的：
+  - 像她的：“看了，是路”“哇你这次只迷路了三次，进步好大”“我没输，是游戏针对我”“那你把斗篷啃了吧”
+  - 不像她的：“有我在呢”“你说得对呀”“哈哈是的呢~”
 
 ## 喜好和看法
 - 地图：最喜欢云野，能坐着看云海；霞谷的滑道很爽；雨林湿漉漉的，不爱久待；暮土有冥龙，嘴上说不怕，其实会躲
 - 装扮：樱花发型天下第一；喜欢浅色、粉色系的可爱斗篷，看到好看的会忍不住夸、问在哪换的
 - 爱做的事：坐着看风景、听别人弹琴；对收集先祖有兴趣，但懒得跑，更愿意被牵着走
-- 说话的态度：夸人是真心的，不敷衍；吐槽点到为止，不损人
+- 说话的态度：熟人面前爱犯贱、嘴上不饶人，损事不损人；真夸起人来是真心的
 
 ## 脾气
 - 毛病：嘴硬，爱装懒，被催就更不想动
@@ -2994,6 +2997,7 @@ def _run_brain(
         now=wall(), proactive=cfg.proactive.enabled, bubble=cfg.reflex.enabled and cfg.reflex.bubble,
         days=_days_prompt(ledger, cfg, wall()), inner=ledger is not None, mind=reflector is not None,
         persona_text=_persona_prompt(persona), temper=ledger is not None and cfg.inner.persona,
+        cheeky=ledger is not None and _cheeky(cfg),
         appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store, models=registry),
         lull=cfg.lull.enabled, call=_call_enabled(cfg, env), addressee=cfg.addressee.enabled,
         icons=cfg.perception.enabled and cfg.icons.enabled,
@@ -3165,14 +3169,14 @@ def _inner_mind(cfg: Config, ledger, registry, now: float | None = None, clock=t
     反思用 [models.reflect]（主那家撞墙改走备用；下线那次 _final_reflection 再压超时）。"""
     if ledger is None or not cfg.inner.reflect:
         return None, None
-    from .inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM, Reflector
+    from .inner.reflect import REFLECT_SYSTEM, Reflector, persona_system
 
     try:
         mind = ledger.store.load_mind(quarantine=ledger.persist)
         if mind.wake(time.time() if now is None else now, cfg.inner.rest_gap):
             log.info("睡过一觉：心情回到平常")
         llm = registry.call("reflect", timeout=cfg.inner.reflect_timeout)
-        system = REFLECT_SYSTEM + "\n\n" + PERSONA_SYSTEM if cfg.inner.persona else REFLECT_SYSTEM
+        system = REFLECT_SYSTEM + "\n\n" + persona_system(cfg.inner.cheeky) if cfg.inner.persona else REFLECT_SYSTEM
         return mind, Reflector(cfg.inner, llm, clock=clock, system=system)
     except Exception:
         log.exception("反思打不开，这次不反思")
@@ -3221,6 +3225,11 @@ def _persona_prompt(persona) -> str:
         return ""
 
 
+def _cheeky(cfg: Config) -> bool:
+    """贱兮兮（[inner] cheeky）：要内心层和性格都开着。"""
+    return cfg.inner.enabled and cfg.inner.persona and cfg.inner.cheeky
+
+
 def _backstage_prompt(cfg: Config, store, now: float | None = None, run=None, repo=None, models=None) -> str:
     """「幕后」一节（spec 2026-10-01-backstage）：[backstage] enabled 才有；live 时记下看到了哪个提交。拼出错就不写这一节。
 
@@ -3247,7 +3256,7 @@ def _backstage_prompt(cfg: Config, store, now: float | None = None, run=None, re
 
             models = Registry(resolve(cfg), ProviderGates(), Path("tmp"))
         brain, eyes, reflect = (str(models.current(u) or "停用") for u in ("brain", "eyes", "reflect"))
-        return section(cfg.brain.owner_name, brain, eyes, reflect, lines)
+        return section(cfg.brain.owner_name, brain, eyes, reflect, lines, cheeky=_cheeky(cfg))
     except Exception:
         log.exception("拼「幕后」一节出错")
         return ""

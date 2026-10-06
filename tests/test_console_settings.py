@@ -27,7 +27,7 @@ def test_every_spec_field_is_listed():
         "console.brain", "console.live", "console.emotes", "console.duration",
         "device.adb_path", "device.serial", "device.switch_ime", "device.capture",
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
-        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "call.enabled", "call.auto", "attention.search", "lull.enabled", "addressee.enabled", "backstage.enabled", "vision.source", "env.enabled",
+        "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "inner.cheeky", "call.enabled", "call.auto", "attention.search", "lull.enabled", "addressee.enabled", "backstage.enabled", "vision.source", "env.enabled",
         "perception.enabled",
         "perception.model", "perception.presence", "perception.leave_after", "perception.recheck", "attrs.enabled", "attrs.model", "inbox.enabled", "inbox.ask", "inbox.retrain_min", "places.enabled", "appearance.enabled", "appearance.describe", "catalog.enabled", "icons.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
@@ -211,3 +211,10 @@ def test_presence_fields_on_settings_page():
     assert by_key["perception.leave_after"].kind == "float"
     assert by_key["perception.recheck"].kind == "float"
     assert all(by_key[k].group == "features" for k in ("perception.presence", "perception.leave_after", "perception.recheck"))
+
+
+def test_console_has_cheeky_switch():
+    from skydango.console.settings import KNOWN
+
+    f = KNOWN["inner.cheeky"]
+    assert (f.label, f.kind, f.group) == ("贱兮兮", "bool", "brain") and "熟" in f.help

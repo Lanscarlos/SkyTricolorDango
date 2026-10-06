@@ -681,6 +681,11 @@ dir = "private/sandbox"
 - `memory init` 的人设模板多了「## 脾气」（毛病 / 执念 / 雷点）；已有的 `memory/profile.md` 要自己加。`memory show` 末尾打印性格档案（只读），`profile.md` 永远优先、程序不改
 - 只在 live 写 `persona.json`；dry-run 只在内存里，坏文件不改名。`persona = false` = 第 2 期原样（提示词、反思提示词和材料逐字一样，不记收着点）；管理面板有 `inner.persona` 开关
 - 还是太乖：旧的乖回复会把模型拉回去，按「记忆」一节把 `history.jsonl` 挪到 `memory/archive/` 再试
+- **贱兮兮**（`[inner] cheeky`，10-06，默认开，要 `persona` 开着；照 Neuro-sama 的路子，**还没在沙盒 / 真机上看过效果**）：
+  「脾气」后面接 `CHEEKY_RULES`（`brain/prompt.py`：故意曲解装傻、明褒暗贬、嘴硬自恋、甩锅、往离谱里推一步、偶尔冷不丁说句真心话；只对卡洛和一起玩过好几天的熟人，陌生人 / 刚认识的照常；外貌身材家里成绩年龄不碰、不说脏话、不开阴暗玩笑、不接梗就停、收着点 / 真难过立刻好好说话）；
+  幕后开着时卡洛那一档多一句 `OWNER_CHEEKY`（`brain/backstage.py`：甩锅给他的代码、嫌他把你改困了，# 命令照做）；反思用 `persona_system(True)`（`inner/reflect.py`：损事的可以记、优先攒带贱味有人接的口头禅和老梗；`Persona.apply` 的敏感词过滤照旧）。
+  `[models.brain]` 默认温度同时从 0.8 提到 1.0（只对 OpenAI 兼容的大脑生效）。`memory init` 的人设模板去掉了「不损人」、说话习惯带像 / 不像她的例句；**已有的 `profile.md` 要自己改**（模板那句「吐槽点到为止，不损人」压着别的规则）。
+  `cheeky = false`：提示词、幕后、反思提示词逐字照旧；管理面板有 `inner.cheeky` 开关。「身份」「底线」两节和 `_CLAIMS_HUMAN` 不动
 
 ## 幕后（`[backstage]`，大脑模式）
 

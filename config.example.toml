@@ -105,6 +105,7 @@ persona = """
 # [models.brain]
 # main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
+# temperature = 1.0            # 大脑默认 1.0（别的用处 0.8）；想更皮可以试 1.2 ~ 1.3，太高工具调用可能不稳
 # [models.memory]
 # main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
@@ -528,6 +529,7 @@ want_days = 7.0                # 心愿几天后过期
 diary_prompt = 1               # 启动时「日子」里带几篇日记
 # 第 3 期：性格（反思顺带攒口头禅 / 老梗 / 看法，进系统提示词；提示词加「脾气」；好友说难过就对他收着点）。数字都是估的，没在真机验证
 persona = true                 # false = 第 2 期原样（沉淀要 reflect = true；reflect = false 时只有提示词和收着点）
+cheeky = true                  # 贱兮兮：对卡洛和熟好友嘴欠（「脾气」后加招数、幕后卡洛那一档当损友、反思攒贱味的口头禅）；要 persona = true；false = 原来的脾气
 fade_days = 14.0               # 多少天没用的口头禅 / 老梗 / 看法淡出
 catchphrases_max = 5           # 口头禅最多几条
 jokes_per_friend = 3           # 每个好友最多几条老梗

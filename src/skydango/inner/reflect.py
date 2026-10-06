@@ -47,6 +47,15 @@ PERSONA_SYSTEM = """顺便想想你自己的性格（材料里“你攒下的性
 在上面那个 JSON 对象里多加两项：
 "persona_add": {"catchphrases": ["..."], "jokes": [{"who": "...", "text": "..."}], "opinions": [{"topic": "...", "stance": "..."}]}, "persona_used": ["..."]"""
 
+_PERSONA_STRICT = "- 损人的、拿外貌 / 身材 / 家里 / 成绩 / 年龄开玩笑的一律不记。"
+_PERSONA_CHEEKY = ("- 拿外貌 / 身材 / 家里 / 成绩 / 年龄开玩笑的一律不记；损事的（路痴、手残、放鸽子）可以记。"
+                   "带点贱味、有人笑了或者回怼了的口头禅和老梗优先记。")
+
+
+def persona_system(cheeky: bool) -> str:
+    """接在 REFLECT_SYSTEM 后面的性格说明；cheeky（[inner] cheeky）时放宽“损人的不记”、优先攒贱味的。"""
+    return PERSONA_SYSTEM.replace(_PERSONA_STRICT, _PERSONA_CHEEKY, 1) if cheeky else PERSONA_SYSTEM
+
 
 def _block(title: str, lines: list[str]) -> str:
     return f"{title}\n" + ("\n".join(lines) if lines else "（没有）")
