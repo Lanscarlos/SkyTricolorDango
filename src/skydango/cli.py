@@ -2490,6 +2490,17 @@ def cmd_run(cfg: Config, args) -> None:
         run.close()
 
 
+def cmd_sandbox_ctl(cfg: Config, args) -> None:
+    """沙盒命令行客户端（sandbox/ctl.py）：端口没给就按 [sandbox] port / [console] port；失败退出码 1。"""
+    from .sandbox import ctl
+
+    args.port = args.port or cfg.sandbox.port
+    args.console_port = args.console_port or cfg.console.port
+    code = ctl.run(args)
+    if code:
+        sys.exit(code)
+
+
 def cmd_sandbox(cfg: Config, args) -> None:
     """大脑沙盒（spec 2026-09-30-brain-sandbox）：不开 MuMu，真的大脑 + 身体 + 内心层接一个假世界，只给 JSON 接口（页面在管理面板里）。
 
@@ -3740,6 +3751,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--start", default="resume", help="沙盒时间从哪开始：resume 接着上次 / sleep 睡一晚 / HH:MM / \"YYYY-MM-DD HH:MM\"")
     p.add_argument("--duration", type=float, default=0.0, help="跑多少秒后自动下线（默认一直跑，调试用）")
     p.set_defaults(func=lambda cfg, args: cmd_sandbox(cfg, args))
+
+    from .sandbox import ctl as sandbox_ctl
+
+    p = sub.add_parser("sandbox-ctl", help="沙盒的命令行客户端：冒充发言、来去、快进，等团子反应完打印聊天和大脑的文字；start / stop 转发给管理面板")
+    sandbox_ctl.configure(p, sandbox_port=None, console_port=None)
+    p.set_defaults(func=cmd_sandbox_ctl)
 
     p = sub.add_parser("run", help="启动团子（默认接统管大脑、dry-run；--no-brain 是调试用的普通模式）")
     live = p.add_mutually_exclusive_group()
