@@ -1,6 +1,7 @@
 """OpenAI 兼容的大脑（DeepSeek / ChatGPT……）：function-calling 循环，每轮重发、带最近几轮短期记忆。
 
 `ToolLoopBrain.send(text)` 的签名和 brain.session.BrainSession 对齐，工具经同一个 ToolBox.run 执行。
+开着 [brain.compact] 时历史一次上线内只往后接（DeepSeek 前缀缓存一路命中），太长在后台压成前情提要（spec 2026-10-06-brain-compact）。
 失败抛 ModelError：down 按状态码判（402 余额用完 / 401 认证……，loop 据此关这家的闸、切备用），别的错按 BACKOFF 退避。
 """
 
@@ -12,6 +13,7 @@ from collections.abc import Callable
 
 from ..models.errors import ModelError
 from ..models.openai_compat import classify
+from .compact import RECAP_ACK, InboxWatch, inbox_note
 
 BLIND_NOTE = """你看不到画面：判断靠消息里的状态、聊天记录、身边人名地名（身体 OCR / YOLO 认的）和眼睛写的场景描述。
 看图的工具（look(image=true)、look_at、look_person、check_friend、panel_read(image=true)）会请眼睛代看，返回文字；想看清什么写在 question 里。
@@ -76,6 +78,8 @@ class ToolLoopBrain:
         on_message: Callable[[dict], None] | None = None,
         history: int = 0,
         provider: str = "deepseek",
+        compact=None,  # config.CompactConfig：None = 滑动 history 轮（原来的样子，逐字照旧）
+        inbox: Callable[[], str] | None = None,  # 读 inbox.md（compact 开着时才看）：中途新记的行接在下一轮唤醒消息末尾
     ) -> None:
         self.client = client
         self.system = system
@@ -95,27 +99,64 @@ class ToolLoopBrain:
         self.history = history
         self._past: list[tuple[str, list[dict]]] = []  # (唤醒消息, 这一轮的 assistant / tool 消息，见 _replay)
         self._seq = 0  # 历史里工具调用 id 的轮次编号
+        # 只往后接（spec 2026-10-06-brain-compact）：_past 不截，靠压缩收；状态只在大脑线程里改
+        self.compact = compact
+        self.recap = ""  # 最新的前情提要正文（没压过是空）：最终反思也拿它当材料
+        self.compactions = 0
+        self.sliding = False  # 压缩失败 / 卡住：先退回滑动 history 轮（前面带前情提要）
+        self._recap_head = ""  # 历史开头那条前情提要消息（recap_message 拼好的）
+        self._inbox = InboxWatch(inbox) if compact is not None and inbox is not None else None
 
     def close(self) -> None:
         """同 BrainSession.close：没有常驻进程，什么都不用关。"""
 
-    def _history_messages(self) -> list[dict]:
+    @staticmethod
+    def _turn_messages(user: str, turn: list[dict]) -> list[dict]:
+        """历史里的一轮：唤醒消息截到 HISTORY_TEXT 字 + _replay 压过的样子。"""
+        user = user if len(user) <= HISTORY_TEXT else user[:HISTORY_TEXT] + "……（后面截掉了）"
+        return [{"role": "user", "content": user}, *turn]
+
+    def _history_messages(self, past: list[tuple[str, list[dict]]] | None = None) -> list[dict]:
+        """滑动：从最近的往前装，总共不超过 HISTORY_CHARS 字。"""
         out: list[dict] = []
         total = 0
-        for user, turn in reversed(self._past):
-            user = user if len(user) <= HISTORY_TEXT else user[:HISTORY_TEXT] + "……（后面截掉了）"
-            size = len(user) + _size(turn)
+        for user, turn in reversed(self._past if past is None else past):
+            msgs = self._turn_messages(user, turn)
+            size = len(msgs[0]["content"]) + _size(turn)
             if out and total + size > HISTORY_CHARS:
                 break
             if not out and size > HISTORY_CHARS:
                 continue
-            out[:0] = [{"role": "user", "content": user}, *turn]
+            out[:0] = msgs
             total += size
         return out
 
+    def _recap_messages(self) -> list[dict]:
+        if not self._recap_head:
+            return []
+        return [{"role": "user", "content": self._recap_head}, {"role": "assistant", "content": RECAP_ACK}]
+
+    def _append_messages(self) -> list[dict]:
+        """只往后接：system + 前情提要 + 全部的轮（存下就不再变）。"""
+        out = [{"role": "system", "content": self.system}, *self._recap_messages()]
+        for user, turn in self._past:
+            out += self._turn_messages(user, turn)
+        return out
+
+    def _prefix(self) -> list[dict]:
+        if self.compact is None:
+            return [{"role": "system", "content": self.system}, *self._history_messages()]
+        if self.sliding:
+            recent = self._past[-self.history:] if self.history > 0 else []
+            return [{"role": "system", "content": self.system}, *self._recap_messages(), *self._history_messages(recent)]
+        return self._append_messages()
+
     def send(self, text: str) -> dict:
-        messages: list[dict] = [{"role": "system", "content": self.system}, *self._history_messages(),
-                                {"role": "user", "content": text}]
+        if self._inbox is not None:
+            note = inbox_note(self._inbox.fresh())
+            if note:
+                text = f"{text}\n\n{note}"
+        messages: list[dict] = [*self._prefix(), {"role": "user", "content": text}]
         start = len(messages)
         deadline = self.clock() + self.turn_timeout
         final = ""
@@ -182,8 +223,14 @@ class ToolLoopBrain:
                         {"type": "tool_result", "tool_use_id": tc.id, "content": out, "is_error": is_error}
                     ]}})
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
-        if self.history > 0:
+        if self.compact is not None:
+            self._seq += 1
+            self._past.append((text, _replay(messages[start:], self._seq)))
+        elif self.history > 0:
             self._seq += 1
             self._past = (self._past + [(text, _replay(messages[start:], self._seq))])[-self.history:]
-        return {"result": final, "subtype": "success", "num_turns": requests, "usage": usage,
-                "provider": self.provider, "model": self.model}
+        result = {"result": final, "subtype": "success", "num_turns": requests, "usage": usage,
+                  "provider": self.provider, "model": self.model}
+        if self.compact is not None:
+            result.update(history_mode="sliding" if self.sliding else "append", recap=self.compactions)
+        return result
