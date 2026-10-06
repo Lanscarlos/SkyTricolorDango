@@ -458,7 +458,7 @@ dir = "private/sandbox"
   测试里 `SKYDANGO_USAGE_LEDGER` 设成空（conftest），不往本机账本记假用量；`cli._start_balance` 也被换成空的
 - **OpenAI 兼容大脑的历史压缩**（`[brain.compact]`，spec `docs/superpowers/specs/2026-10-06-brain-compact-design.md`，计划 `docs/superpowers/plans/2026-10-06-brain-compact.md`；**代码 10-06 做完，还没在沙盒 / 真机验证，spec §10 六步没走，预算是粗算的**）：
   一次上线内历史**只往后接**（两次压缩之间每个请求都是上一个的前缀，DeepSeek 前缀缓存一路命中），不再按 `[brain] history` 截；这一轮最后一次请求的 `prompt_tokens` 到 `budget`（64000）就在后台接着同一份前缀发一次压缩（`tool_choice = "none"`、温度 0.3），把老的部分连同上一份前情提要写成「这次上线到现在的前情提要」（最多 `recap_max` 1500 字），最近 `keep_turns`（6）轮留原话；结果在**下一轮开头**换上，放在历史开头（系统提示词不动，免得它没命中）。
-  压缩失败（撞墙、超时、空的、调了工具）或卡着到 2 × `budget`：退回滑动（system + 前情提要 + 最近 `history` 轮），`retry`（300 秒）后再试（滑动里不看 `prompt_tokens`），成功回到只往后接。中途新记的 inbox 行接在下一轮唤醒消息末尾（「你刚记下：」，按行内容记、只带一次）。
+  压缩失败（撞墙、超时、空的、调了工具）或卡着到 2 × `budget`：退回滑动（system + 前情提要 + 最近 `history` 轮），`retry`（300 秒）后再试（滑动里不看 `prompt_tokens`），成功回到只往后接。中途新记的 inbox 行接在下一轮唤醒消息的事件后面、「状态：」前面（「你刚记下：」，按行内容记、只带一次；接在末尾会被历史截掉）。
   用量记在跟着大脑的用处 `recap`（「压缩」，模型页只显示「跟着大脑」，`[models.recap]` 写了只警告）；时间线一步「── 压缩：… ──」（点开看全文）；下线那次反思材料多一节「这次上线早些时候（前情提要，大脑自己写的）」。前情提要**不写进任何记忆文件**。
   `enabled = false` 逐字照旧（有基准测试 `tests/data/toolloop_baseline.json`）；管理面板设置页有 `brain.compact.enabled` / `budget` / `keep_turns`。Claude 大脑不受影响
 - 注意：大脑换了模型，`history.jsonl` 里 Claude 的旧回复会被 DeepSeek 模仿（想要的接续感）；要清照「记忆」一节挪进 `archive/`

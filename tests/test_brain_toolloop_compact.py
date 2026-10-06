@@ -147,11 +147,11 @@ def test_inbox_new_lines_once():
     assert "你刚记下" not in last_user(brain)
     inbox[0] += "- 小明下周考试\n"
     run_turns(brain, 2, 2)
-    assert last_user(brain).endswith("\n\n你刚记下：\n- 小明下周考试")
+    assert last_user(brain).endswith("\n\n你刚记下：\n- 小明下周考试\n状态：身边 小明")   # 接在「状态：」前面
     run_turns(brain, 3, 3)
     assert "你刚记下" not in last_user(brain)
     hist2 = next(m["content"] for m in brain.llm.turn_requests()[-1]["messages"] if m["role"] == "user" and m["content"].startswith(stamp(2)))
-    assert hist2.endswith("你刚记下：\n- 小明下周考试")              # 跟着进历史
+    assert "你刚记下：\n- 小明下周考试" in hist2                      # 跟着进历史
 
 
 def test_inbox_read_error_skips():
@@ -335,3 +335,35 @@ def test_recap_jsonl_and_note(tmp_path):
     assert lines[0]["n"] == 1 and lines[0]["turns"] == 1 and lines[0]["chars"] == 4 and lines[0]["text"] == "好的提要"
     assert lines[0]["usage"]["input_tokens"] == 1000 and "time" in lines[0] and "seconds" in lines[0]
     assert lines[1]["ok"] is False and lines[1]["error"]
+
+
+# ---- 终审修的 ----
+def test_keep_turns_zero_does_not_break_turns():          # keep_turns ≤ 0（设置页能填）：当 1 算，不能让每轮都失败
+    brain = make_c(keep=0)
+    run_turns(brain, 1, 2)
+    assert len(brain.jobs) == 1                           # 比 1 轮多就压
+    brain.jobs[0]()
+    run_turns(brain, 3, 3)
+    assert brain.compactions == 1 and [t[0][:len(stamp(2))] for t in brain._past] == [stamp(2), stamp(3)]
+
+
+def test_inbox_note_survives_long_wake():                 # 唤醒消息超过 HISTORY_TEXT：「你刚记下」照样留在历史里
+    inbox = [""]
+    brain = make(compact=CompactConfig(), inbox=lambda: inbox[0])
+    inbox[0] = "- 小明下周考试\n"
+    brain.llm.queue.extend(turn_script(1))
+    brain.send(f"{stamp(1)} 事件：\n- 小明：在吗\n状态：" + "长" * 2000)
+    run_turns(brain, 2, 2)
+    hist1 = next(m["content"] for m in brain.llm.turn_requests()[-1]["messages"] if m["role"] == "user" and m["content"].startswith(stamp(1)))
+    assert "你刚记下：\n- 小明下周考试" in hist1
+    assert last_user(brain).startswith(stamp(2))
+
+
+def test_compact_request_no_empty_assistant():            # 最后回复是空文字：压缩请求里别留空的 assistant
+    brain = make_c()
+    run_turns(brain, 1, 2)
+    brain.llm.queue.extend([reply(None, [("say", '{"text":"嗯"}')]), reply("")])
+    brain.send(wake(3))
+    brain.jobs[0]()
+    tail = brain.llm.compact_requests()[0]["messages"][-2]
+    assert tail["role"] == "assistant" and tail["content"].strip()

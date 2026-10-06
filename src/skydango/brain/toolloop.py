@@ -179,8 +179,9 @@ class ToolLoopBrain:
         mode = "sliding" if self.sliding else "append"
         if self._inbox is not None:
             note = inbox_note(self._inbox.fresh())
-            if note:
-                text = f"{text}\n\n{note}"
+            if note:  # 接在事件后面、「状态：」前面：历史里唤醒消息截到 HISTORY_TEXT 字，接在最末尾会被截掉
+                head, sep, tail = text.partition("\n状态：")
+                text = f"{head}\n\n{note}{sep}{tail}" if sep else f"{text}\n\n{note}"
         messages: list[dict] = [*self._prefix(), {"role": "user", "content": text}]
         start = len(messages)
         deadline = self.clock() + self.turn_timeout
@@ -273,7 +274,7 @@ class ToolLoopBrain:
                 self.sliding = True
                 log.warning("压缩还没回来、大脑历史已经 %d token，先只带最近 %d 轮", prompt_tokens, self.history)
             return
-        if self.clock() < self._retry_at or len(self._past) <= c.keep_turns:
+        if self.clock() < self._retry_at or len(self._past) <= max(1, c.keep_turns):
             return
         if self.sliding:  # 滑动的请求本来就小，不看 prompt_tokens；拿完整历史现拼（不走缓存，一次性的）
             source = self._append_messages()
@@ -282,15 +283,17 @@ class ToolLoopBrain:
         else:  # 接着这一轮最后一次请求发：前缀全在缓存里
             source = list(messages)
             last = source[-1]
-            if last.get("role") == "assistant" and last.get("tool_calls"):  # 轮数到顶、没执行的调用：只留文字
+            if last.get("role") == "assistant" and (last.get("tool_calls") or not (last.get("content") or "").strip()):
+                # 轮数到顶、没执行的调用：只留文字；最后什么都没说：占位（空的 assistant 接口可能不收）
                 source[-1] = {"role": "assistant", "content": last.get("content") or SILENT}
-        cut = len(self._past) - c.keep_turns
+        keep = max(1, c.keep_turns)  # 0 / 负数（设置页能填）当 1：至少留这一轮原话
+        cut = len(self._past) - keep
         first_kept = self._past[cut][0]
-        request = [*source, {"role": "user", "content": compact_request(first_kept, c.keep_turns, c.recap_max)}]
+        request = [*source, {"role": "user", "content": compact_request(first_kept, keep, c.recap_max)}]
         info = {"cut": cut, "until": until_of(wake_stamp(first_kept))}
         self._pending = True
         log.info("大脑历史%s，起压缩：压掉 %d 轮、留 %d 轮原话",
-                 f" {prompt_tokens} token" if prompt_tokens is not None else "", cut, c.keep_turns)
+                 f" {prompt_tokens} token" if prompt_tokens is not None else "", cut, keep)
         self._spawn(lambda: self._job(request, info))
 
     def _job(self, request: list[dict], info: dict) -> None:
@@ -339,7 +342,7 @@ class ToolLoopBrain:
             self._past = self._past[done["cut"]:]
             self.compactions = n
             self.recap = done["text"]
-            self._recap_head = recap_message(done["text"], n, done["until"], self.compact.keep_turns)
+            self._recap_head = recap_message(done["text"], n, done["until"], max(1, self.compact.keep_turns))
             self.sliding = False
             note = (f"── 压缩：第 {n} 次，压掉 {done['cut']} 轮 → 前情提要 {len(done['text'])} 字，"
                     f"用时 {done['seconds']:.0f} 秒 ──\n{done['text']}")
