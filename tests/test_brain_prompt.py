@@ -400,3 +400,37 @@ def test_cheeky_needs_temper():
 def test_cheeky_off_identical_to_temper():
     assert brain_prompt(ReplyConfig(), None, inner=True, mind=True, temper=True) == brain_prompt(
         ReplyConfig(), None, inner=True, mind=True, temper=True, cheeky=False)
+
+
+# ---- 回法（spec 2026-10-07-chat-pacing §3）----
+COMBOS = [
+    {},
+    {"bubble": True},
+    {"inner": True, "mind": True, "temper": True},
+    {"inner": True, "mind": True, "temper": True, "cheeky": True, "bubble": True, "addressee": True, "lull": True},
+]
+
+
+def test_manner_off_is_verbatim():
+    for kw in COMBOS:
+        assert brain_prompt(ReplyConfig(), None, manner=False, **kw) == brain_prompt(ReplyConfig(), None, **kw)
+
+
+def test_manner_rules_after_say_first():
+    from skydango.brain.prompt import BUBBLE_NOTE, MANNER_RULES, SAY_FIRST
+
+    text = brain_prompt(ReplyConfig(), None, manner=True, bubble=True)
+    assert SAY_FIRST + BUBBLE_NOTE + MANNER_RULES in text
+    assert "只做个动作不说话" in MANNER_RULES and "jab" in MANNER_RULES and "回法：" in MANNER_RULES
+    assert SAY_FIRST + MANNER_RULES in brain_prompt(ReplyConfig(), None, manner=True)
+
+
+def test_cheeky_first_line_replaced():
+    from skydango.brain.prompt import CHEEKY_FIRST_NEW
+
+    text = brain_prompt(ReplyConfig(), None, manner=True, inner=True, temper=True, cheeky=True)
+    assert CHEEKY_FIRST_NEW in text and "别句句都贱" not in text
+    for kept in ("故意曲解、装傻", "- 刹车：", "- 刚认识的、陌生人照常好好说话，不贱。", "甩锅："):
+        assert kept in text
+    plain = brain_prompt(ReplyConfig(), None, manner=True, inner=True, temper=True)
+    assert CHEEKY_FIRST_NEW not in plain and "故意曲解、装傻" not in plain

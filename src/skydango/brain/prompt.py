@@ -169,6 +169,12 @@ CHEEKY_RULES = """- 嘴欠、贱兮兮是你的本色（像个爱犯贱的损友
 - 刚认识的、陌生人照常好好说话，不贱。
 - 刹车：外貌、身材、家里、成绩、年龄照样不碰；不说脏话，不开死、伤害、吓人这类阴暗玩笑；对方不接梗、说“烦死了”就停，别追着补刀；有人真着急、真难过、认真问问题，或者写着“收着点”，立刻好好说话。
 """
+# 回法（[pacing] manner，spec 2026-10-07-chat-pacing §3）：贱兮兮开头那句改成以正常为底色，下面的招数和刹车不动
+CHEEKY_FIRST_OLD = "- 嘴欠、贱兮兮是你的本色（像个爱犯贱的损友，不是刻薄）：对卡洛和一起玩过好几天的熟人放开贱，几句里来一下就够，别句句都贱。常用的几招：\n"
+CHEEKY_FIRST_NEW = (
+    "- 你平时正常聊天，偶尔犯一下贱才好笑（像个爱犯贱的损友，不是刻薄）。什么时候可以贱：他先损你、你心情好、气氛正热；"
+    "连着贱了两句就收一收，正常说几句再说。常用的几招：\n"
+)
 # 认装扮（spec 2026-10-01-appearance §6）：插在脾气之后
 APPEARANCE_RULES = """- 状态里的装扮（“你自己”、好友名字后面、陌生人后面的颜色和样子）是看图猜的，可能不准；“像小明”是没看到名字、按外观认的，别当成一定是他。
 - 提装扮像玩家那样随口提：夸、吐槽、问在哪换的；别报一长串。好友换了装扮可以说一句，别每次见面都念。
@@ -250,6 +256,13 @@ def memory_prompt(
 SAY_FIRST = "- 聊天消息是截图识别出来的，可能有错别字、缺字。带名字的是“名字：内容”，同一批里可能有好几个人；先看清是谁说的、在对谁说。\n"
 BUBBLE_NOTE = "- 有人跟你说话时，身体已经替你冒了输入气泡（对方看到你在打字），不用急：想好就 say；想用动作回应就先 emote 再 say；不想回也行，身体会关掉。\n"
 
+# 回法（[pacing] manner）：插在「说话」一节第一条（和身体冒气泡那条）后面
+MANNER_RULES = (
+    "- 回法有三种，都是正常的：说一句；只做个动作不说话（用 emote，不 say）；对方连着说了好几句，挑最想接的那句回，别每句都回。\n"
+    "- 唤醒消息里的「回法：…」是身体根据你最近的样子给的建议，照着来，除非对方在认真问你事情。\n"
+    "- say 的时候用 jab 照实标出这句算不算犯贱（损人、故意曲解装傻、甩锅、自恋嘴硬、明褒暗贬都算）。\n"
+)
+
 PANEL_AUTO_NOTE = "- 聊天面板平时关着，画面外的人说话可能晚半分钟才看到；想马上看最近的聊天就调 chat_log。\n"
 
 
@@ -274,6 +287,7 @@ def brain_prompt(
     call: bool = False,
     addressee: bool = False,
     icons: bool = False,
+    manner: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -290,7 +304,8 @@ def brain_prompt(
     lull：冷场时的心理活动（[lull] enabled，加「冷场的时候」）。
     call：有 call 工具（按 Q 喊一声），「视角」一节加一句什么时候喊。
     addressee：身体给聊天标了在跟谁说（[addressee] enabled，换掉“明显不是跟你说的，不用回”，加怎么接的规矩）。
-    icons：认地图交互图标开着（[icons] enabled），「光遇常识」加一句图标只说明能互动。"""
+    icons：认地图交互图标开着（[icons] enabled），「光遇常识」加一句图标只说明能互动。
+    manner：回法（[pacing] manner）：「说话」一节加三种回法和 jab，贱兮兮开头那句改成以正常为底色。"""
     rules = static_prompt(reply, proactive)
     if addressee:  # 只换锚点那半句，和 NO_NEW_TOPIC / GO_ON_NEW 的替换互不相干
         rules = rules.replace(ADDRESSEE_ANCHOR, ADDRESSEE_RULES if proactive else ADDRESSEE_RULES_QUIET, 1)
@@ -301,6 +316,8 @@ def brain_prompt(
         rules = rules.replace(LULL_ANCHOR, LULL_POINTER, 1).replace("## 身份", LULL_RULES + "\n\n## 身份", 1)
     if backstage:  # 在主动开口插进来之后换：主动开口还在它前面
         rules = IDENTITY_SECTION.sub(lambda _: backstage, rules, count=1)
+    if manner:  # 在气泡那条之前换：结果是 SAY_FIRST → BUBBLE_NOTE → MANNER_RULES
+        rules = rules.replace(SAY_FIRST, SAY_FIRST + MANNER_RULES, 1)
     if bubble:
         rules = rules.replace(SAY_FIRST, SAY_FIRST + BUBBLE_NOTE, 1)
     if quick_around:
@@ -315,7 +332,8 @@ def brain_prompt(
         rules = rules.replace(REMEMBER_ANCHOR, MIND_RULES + REMEMBER_ANCHOR, 1)
     if temper:  # 插在心情规矩之后
         rules = rules.replace(GO_ON_OLD, GO_ON_NEW, 1)
-        rules = rules.replace(REMEMBER_ANCHOR, TEMPER_RULES + (CHEEKY_RULES if cheeky else "") + REMEMBER_ANCHOR, 1)
+        cheeky_rules = CHEEKY_RULES.replace(CHEEKY_FIRST_OLD, CHEEKY_FIRST_NEW, 1) if manner else CHEEKY_RULES
+        rules = rules.replace(REMEMBER_ANCHOR, TEMPER_RULES + (cheeky_rules if cheeky else "") + REMEMBER_ANCHOR, 1)
     if appearance:  # 插在脾气之后
         rules = rules.replace(REMEMBER_ANCHOR, APPEARANCE_RULES + REMEMBER_ANCHOR, 1)
     return memory_prompt(reply, store, history_turns, now, days, persona_text) + "\n\n" + rules
