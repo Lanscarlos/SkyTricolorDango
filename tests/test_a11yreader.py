@@ -987,3 +987,62 @@ def test_bubble_that_is_just_a_friend_name_is_not_a_message():
     r.read(None, 1.0)
     h[0] = closed(*head("小明", "在吗"))
     assert [m.text for m in r.read(None, 2.0)] == ["在吗"]
+
+
+def _stack(gap: int):
+    """10-07 晚真机：小明和团子挨着站，团子的气泡夹在小明两句中间；gap = 团子那条到小明下一句的距离。"""
+    return closed(
+        node("小明", (628, 188, 784, 230)),
+        node("不行啊你", (649, 250, 762, 288)),
+        node("我小短腿走得慢，等不了怪我咯", (370, 312, 763, 350)),
+        node("你还是拜倒在你造物主脚下吧", (523, 350 + gap, 888, 388 + gap)),
+    )
+
+
+def test_interleaved_stack_moving_does_not_rereport():
+    """夹着别人气泡的一摞随动画上下错动：小明那句只报一次。"""
+    r, h, sf = make()
+    sf.remember("我小短腿走得慢，等不了怪我咯", 0.0)
+    h[0] = closed(node("小明", (628, 188, 784, 230)), node("不行啊你", (649, 250, 762, 288)),
+                  node("我小短腿走得慢，等不了怪我咯", (370, 312, 763, 350)))
+    r.read(None, 1.0)
+    h[0] = _stack(-2)  # 挨着：旧规则也挂得上
+    assert [m.text for m in r.read(None, 2.0)] == ["你还是拜倒在你造物主脚下吧"]
+    t = 2.0
+    for gap in (19, -2, 19, -2, 19):  # 来回错动（19 = 隔 81 px，旧规则挂不上）、跨过 HOLD
+        t += 4.0
+        h[0] = _stack(gap)
+        assert r.read(None, t) == []
+
+
+M = ("......", "陌生人")  # 被屏蔽的陌生人行
+
+
+def test_masked_rows_do_not_misalign_reopened_panel():
+    """关面板期间进来一串被屏蔽的陌生人行，重开时游戏只留了几行：别靠一串一样的被屏蔽行对齐，
+    把早就报过的几句当成新的（10-07 晚 22:19:06 真机）。"""
+    r, h, _ = make()
+    w, go, ok = ("白眼狼", "小明"), ("你走", "小明"), ("那你倒是走啊", "小明")
+    no, bai, pull = ("不行啊你", "小明"), ("拜倒吧", "小明"), ("电源拔了", "小明")
+    h[0] = panel(w, go, ok, M, M, M, no, bai, pull)
+    r.read(None, 1.0)
+    h[0] = panel(w, go, ok, M, M, M, no, bai, pull, M, M, M, M, M, M)
+    assert r.read(None, 2.0) == []
+    h[0] = closed()
+    r.read(None, 3.0)
+    h[0] = panel(M, M, w, go, ok, M, M, M, no, bai, pull, M, M)
+    assert r.read(None, 90.0) == []
+
+
+def test_line_back_after_vanishing_long_is_reported():
+    """面板开着时某句消失够久（被挤出历史）后又出现：是又说了一遍，照报。"""
+    r, h, _ = make()
+    haha = ("哈哈", "小明")
+    h[0] = panel(A, haha)
+    r.read(None, 1.0)
+    h[0] = panel(B, C)
+    r.read(None, 2.0)
+    h[0] = panel(B, C)
+    r.read(None, 9.0)
+    h[0] = panel(B, C, haha)
+    assert [m.text for m in r.read(None, 10.0)] == ["哈哈"]

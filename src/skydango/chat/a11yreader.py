@@ -34,6 +34,8 @@ HOLD = 3.0  # 他头上某句的个数变少了，这么久之内还按见过的
 # 下面几句会晚一帧、那一帧挂不上名字（10-04 真机录像，差 74 px），掉下去再回来不能当成新冒出来的话
 FRIENDS_TTL = 2.0  # 好友名单（friends.md）最多隔这么久重读一次：每圈要分类好几次
 PEEK_KEEP = 60.0  # 为挂不上名字的气泡去看一眼面板：这么久之内面板建基准时，同一句照样报出来
+ROW_HOLD = 5.0  # 面板开着时某句的行数变少了，这么久之内还按见过的最多行数算（关着面板不计时）：游戏偶尔让一行闪没 0.2~0.3 秒，
+# 重开时被屏蔽的陌生人行也会少几行把对齐带歪（10-07 晚真机），早就报过的那几句不能因此又当成新的
 APPEAR_FILL = 0.8  # 面板刚出现这么久之内，列表只在底部往下长的算还在加载（重新登录后第一次开面板，行是从上往下陆续填进来的）
 
 
@@ -103,6 +105,7 @@ class A11yChatReader:
         self._typing: list[str] = []
         self._reported: deque[tuple[str, str, float]] = deque()  # 气泡报过的 (说话人, 原文, 时间)（§3.3）
         self._panel_reported: deque[tuple[str, str, float]] = deque()  # 面板行报过的，等气泡来抵（§3.3）
+        self._row_held: dict[tuple, tuple[int, float]] = {}  # 面板行的比较键 → (最近见过的最多行数, 最后一次见到这么多)
 
     # ---- 取快照 / 分类 ----
     def _friend_names(self) -> list[str]:
@@ -313,6 +316,20 @@ class A11yChatReader:
         return fresh
 
     # ---- 面板行 ----
+    def _row_hold(self, rows: list[PanelRow], now: float) -> Counter[tuple]:
+        """记下这一份每句几行，返回比 `ROW_HOLD` 秒内见过的最多行数多出来几行（被屏蔽的行不算）：只有多出来的才可能是新的。"""
+        cur = Counter(r.key() for r in rows if not r.masked)
+        base: Counter[tuple] = Counter()
+        for key, (n, at) in list(self._row_held.items()):
+            if now - at <= ROW_HOLD:
+                base[key] = n
+            if cur[key] >= n or now - at > ROW_HOLD:
+                del self._row_held[key]  # 追上了或者过期了：下面按这一份重记
+        for key, n in cur.items():
+            if key not in self._row_held:
+                self._row_held[key] = (n, now)
+        return Counter({key: n - base[key] for key, n in cur.items() if n > base[key]})
+
     def _panel_messages(self, view: UiView, now: float) -> list[Message]:
         """面板行和上一次对齐，把新行变成消息；头顶气泡已经报过的同一句不再报。
 
@@ -339,6 +356,7 @@ class A11yChatReader:
         )
         if filling and prev and len(cur) > len(prev) and cur[: len(prev)] == prev:
             self._prev, self._prev_at = cur, now
+            self._row_hold(rows, now)
             self.settling = True
             return []
         added_idx: list[int] = []
@@ -369,11 +387,16 @@ class A11yChatReader:
                 self._traced = vkeys
                 added = {i for i, r in enumerate(visible) if any(r is rows[a] for a in added_idx)}
                 self._trace(now, visible, added)
+        extra = self._row_hold(rows, now)
         fresh: list[Message] = []
         for i in added_idx:
             row = rows[i]
             if row.masked or not self._passes(row.text, now):
                 continue
+            if extra[row.key()] <= 0:
+                log.debug("面板行 %s：%s 刚才就在，不算新的", row.speaker, row.text)
+                continue
+            extra[row.key()] -= 1
             if self._take_reported(row.speaker, row.text, now):
                 continue
             fresh.append(Message(row.text, _rect(row.box), now, row.speaker, source="panel"))
@@ -399,6 +422,7 @@ class A11yChatReader:
         if self.panel_closed_since is not None or self._appeared_at is None:
             if self.panel_closed_since is not None:
                 log.info("聊天记录面板又出现了，读面板行")
+                self._row_held = {k: (n, now) for k, (n, _) in self._row_held.items()}  # 关着的这段不计时
             self.panel_closed_since = None
             self._appeared_at = now
         fresh = self._panel_messages(view, now)
