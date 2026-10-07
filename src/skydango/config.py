@@ -780,6 +780,23 @@ class LullConfig:
 
 
 @dataclass
+class PacingConfig:
+    """聊天的节奏和分寸（docs/superpowers/specs/2026-10-07-chat-pacing-design.md）：身体攒几句再叫醒大脑、
+    唤醒消息里给「回法」、say 标 jab 数着最近贱了几句。数字都是估的，没在真机验证；
+    enabled = false：0.8 秒叫醒、被叫到当圈冒气泡（逐字照旧）；manner = false：没有回法行、jab、提示词那几句（逐字照旧）。"""
+
+    enabled: bool = True
+    quiet_min: float = 2.0  # 最后一句后安静多久放行（随机，均匀分布）；有问句时固定取它
+    quiet_max: float = 6.0
+    max_wait: float = 15.0  # 一批最多攒多久（还在打字也放）
+    manner: bool = True
+    emote_chance: float = 0.3  # 提示「只回个动作」的概率（困了 ×1.5，最多 0.6）
+    short_len: int = 6  # 去掉空白多少字以内算短句
+    jab_window: int = 6  # 记最近几句说的话贱不贱
+    jab_limit: int = 2  # 最近几句里贱了这么多句就提醒收着
+
+
+@dataclass
 class AttentionConfig:
     """空闲注意力（东张西望，spec 2026-09-30-idle-attention、2026-10-03-attention-search）：闲着时按兴趣小步转镜头看说话 / 走近 /
     对团子做事的人；没有这些时找刚走开的好友、一个人待着时往最久没看过的方向看一片，没有动机就不转。
@@ -964,6 +981,7 @@ class Config:
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     lull: LullConfig = field(default_factory=LullConfig)
     reflex: ReflexConfig = field(default_factory=ReflexConfig)
+    pacing: PacingConfig = field(default_factory=PacingConfig)
     addressee: AddresseeConfig = field(default_factory=AddresseeConfig)
     attention: AttentionConfig = field(default_factory=AttentionConfig)
     inner: InnerConfig = field(default_factory=InnerConfig)
