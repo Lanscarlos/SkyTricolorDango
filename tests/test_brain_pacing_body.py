@@ -123,3 +123,49 @@ def test_pacing_off_unchanged(clock):
     say(reader, "团子")
     b.step()
     assert not events.held() and b.sender.opened
+
+
+# ---- say 标 jab、回法（spec 2026-10-07-chat-pacing §2）----
+def test_jab_recorded_after_send(clock):
+    b, dev, reader, events = pace(clock)
+    b.say("你才废物", jab=True)
+    clock.advance(10)
+    b.say("好", jab=False)
+    assert list(b._jabs) == [True, False]
+    clock.advance(10)
+    try:
+        b.say("你才废物", jab=True)  # 刚说过：被拦下，不记
+    except Exception:
+        pass
+    assert list(b._jabs) == [True, False]
+    clock.advance(10)
+    b.say("手动说的", live=True, jab=True)  # 手动控制：算不贱
+    assert list(b._jabs)[-1] is False
+    for text in ("雨林丑", "你是路痴", "我那是让着你", "锅是网的", "那当然", "斗篷啃了吧", "看了是路", "游戏针对我"):
+        clock.advance(10)
+        b.say(text, jab=True)
+    assert len(b._jabs) == 6 and all(b._jabs)
+
+
+def test_status_recent_jabs(clock):
+    b, dev, reader, events = pace(clock)
+    assert "最近说的" not in b.status()
+    b.say("你才废物", jab=True)
+    clock.advance(10)
+    b.say("好")
+    assert "最近说的：2 句里贱了 1 句" in b.status()
+    b.cfg.pacing.manner = False
+    assert "最近说的" not in b.status()
+
+
+class LowMind:
+    class mood:
+        level = "低落"
+        text = ""
+
+
+def test_manner_line_uses_mood_and_energy(clock):
+    b, dev, reader, events = pace(clock)
+    assert b.manner_line([("小明", "今天去哪个图？")]) is None  # 没内心层：中性
+    b.mind = LowMind()
+    assert "没力气贫" in b.manner_line([("小明", "今天去哪个图？")])

@@ -15,7 +15,7 @@ import uvicorn
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import CallToolResult, TextContent
 
-from .tools import CALL_DESCRIPTION, INTROSPECT_DESCRIPTION, ToolBox, descriptions
+from .tools import CALL_DESCRIPTION, INTROSPECT_DESCRIPTION, JAB_NOTE, ToolBox, descriptions
 
 log = logging.getLogger(__name__)
 
@@ -78,9 +78,14 @@ def build_server(toolbox: ToolBox) -> MCPServer:
     def recall(query: str = "", who: str = "", days: int = 14):
         return call("recall", query=query, who=who, days=days)
 
-    @srv.tool(name="say", description=DESCRIPTIONS["say"])
-    def say(text: str):
-        return call("say", text=text)
+    if toolbox.jab:  # [pacing] manner：大脑自己标这句贱不贱（关着时工具列表逐字照旧）
+        @srv.tool(name="say", description=f"{DESCRIPTIONS['say']} {JAB_NOTE}")
+        def say(text: str, jab: bool = False):
+            return call("say", text=text, jab=jab)
+    else:
+        @srv.tool(name="say", description=DESCRIPTIONS["say"])
+        def say(text: str):
+            return call("say", text=text)
 
     @srv.tool(name="emote", description=DESCRIPTIONS["emote"])
     def emote(name: str):

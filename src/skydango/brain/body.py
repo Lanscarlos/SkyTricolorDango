@@ -43,6 +43,7 @@ from .calling import CallResult, call_available, event_text as call_event_text, 
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
 from .find import FindSkill
+from .manner import jab_note, manner as manner_text
 from .pacing import Pacer
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
@@ -195,6 +196,7 @@ class Body:
         # 攒话（spec 2026-10-07-chat-pacing §1）：几句聊天攒一会儿再交给大脑；放行时才冒输入气泡
         self.pacer = Pacer(cfg.pacing, self.rng)
         self._pace_bubble = False  # 这批里有人在跟团子说话、没被拦：放行时冒输入气泡
+        self._jabs: deque[bool] = deque(maxlen=max(1, cfg.pacing.jab_window))  # 最近说的几句贱不贱（大脑 say 标的 jab）
         # 空闲注意力（东张西望，spec 2026-09-30-idle-attention）
         self.attention = Attention(cfg.attention, cfg.track, self.rng, clock(), hfov=cfg.spin.hfov)
         self._attention_pressed_at = float("-inf")  # 注意力上次按键：之后 settle 秒内冒出的"走近"是自己转出来的
@@ -650,6 +652,17 @@ class Body:
         self._open_bubble(now)
 
     # ---- 攒话（spec 2026-10-07-chat-pacing §1）----
+    def manner_line(self, batch: list[tuple[str, str]]) -> str | None:
+        """唤醒消息里「回法：…」那一行（§2）：最近几句贱不贱、心情、困不困；cli 让大脑醒来时在身体线程里调。"""
+        mood, sleepy = None, False
+        if self.mind is not None:
+            try:
+                mood = self.mind.mood.level
+                sleepy = self._energy is not None and self._energy.level == "困"
+            except Exception:
+                log.debug("取心情 / 精力出错", exc_info=True)
+        return manner_text(batch, list(self._jabs), mood, sleepy, self.rng, self.cfg.pacing)
+
     def _typists(self) -> list[str]:
         """头上冒着点点的好友（无障碍读法才有；OCR / 沙盒是空的）。"""
         typing = getattr(self.reader, "typing", None)
@@ -2071,6 +2084,8 @@ class Body:
             parts.append("互动规则：" + self.social.describe_policy())
         if self.said:
             parts.append("刚说过：" + " | ".join(self.said[-3:]))
+        if self.cfg.pacing.manner and self._jabs:
+            parts.append(jab_note(list(self._jabs)))
         thread = ""
         if self.cfg.addressee.enabled:
             try:
@@ -2168,8 +2183,9 @@ class Body:
                 return wall - t <= self.cfg.proactive.reply_window
         return False
 
-    def say(self, text: str, live: bool = False, reply: bool = False) -> str:
-        """live = 手动控制：dry-run 下也真的发（护栏照旧）。reply = 明确是接话（大脑离线时的备用回复），不算主动开口。"""
+    def say(self, text: str, live: bool = False, reply: bool = False, jab: bool = False) -> str:
+        """live = 手动控制：dry-run 下也真的发（护栏照旧）。reply = 明确是接话（大脑离线时的备用回复），不算主动开口。
+        jab = 大脑标的“这句算犯贱”（[pacing] manner）；手动控制和备用回复算不贱。"""
         now = self.clock()
         body = clean_reply(text, self.cfg.reply.max_chars)  # 含“不能声称自己是真人”的硬过滤
         if body is None:
@@ -2198,6 +2214,7 @@ class Body:
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
         self._said_at = now
+        self._jabs.append(bool(jab) and not live and not reply)  # 被拦下的不记；dry-run 也记
         self.addressee.said(now)  # 被护栏拦下的不算说过，所以放在这里
         self.reflexes.stir(now, scale=self.effects().idle)
         self.said.append(full)

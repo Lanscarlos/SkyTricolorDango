@@ -71,6 +71,10 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
 SWEEP_AROUND = "环顾四周：原地连续转一圈，身体认出每个方向有谁（好友名字、几个陌生人），返回文字，最后回到原来的朝向。几秒就好。"
 
 
+# say 标 jab（[pacing] manner，spec 2026-10-07-chat-pacing §2）：接在 say 的说明后面，大脑自己标这句贱不贱，身体记着最近几句
+JAB_NOTE = "jab：这句算不算犯贱（损人、故意曲解装傻、甩锅、自恋嘴硬、明褒暗贬都算），照实标。"
+
+
 def descriptions(sweep: bool) -> dict[str, str]:
     """工具说明；打开感知层（sweep=True）时 look_around 换成 YOLO 环绕扫描的说法。"""
     return {**DESCRIPTIONS, "look_around": SWEEP_AROUND} if sweep else dict(DESCRIPTIONS)
@@ -145,7 +149,7 @@ class ToolBox:
         self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None, text_only: bool = False, sandbox: bool = False,
         backstage: bool = False, call: bool = False,
         proxy: Callable[[list[dict], str], str] | None = None, sees: Callable[[], bool] = lambda: True,
-        eyes_label: str = "",
+        eyes_label: str = "", jab: bool = False,
     ) -> None:
         self.eyes_label = eyes_label  # introspect(眼睛) 里说眼睛是哪个模型（registry.describe("eyes")）
         self.body = body
@@ -153,6 +157,7 @@ class ToolBox:
         self.sees = sees  # 大脑现在用的模型看不看得了图
         self.backstage = backstage  # 幕后：有 introspect 工具
         self.calling = call  # 按 Q 喊一声：有 call 工具
+        self.jab = jab  # say 多一个 jab 参数（[pacing] manner）；关着时 say 逐字照旧
         self.sleep = time.sleep  # 等呼喊窗口时用；测试换掉
         self.eyes = eyes
         self.text_only = text_only  # 沙盒：没有画面，look 只给眼睛的文字、look_person / look_at 只回一句话
@@ -277,6 +282,9 @@ class ToolBox:
             return lambda: b.chat_log(n)
         if name == "say":
             text = _str(a, "text")
+            if self.jab:
+                jab = _bool(a, "jab", False)
+                return lambda: b.say(text, jab=jab)
             return lambda: b.say(text)
         if name == "emote":
             emote = _str(a, "name")

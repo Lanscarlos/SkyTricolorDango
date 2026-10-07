@@ -32,3 +32,18 @@ def test_required_and_defaults():
     assert say["function"]["parameters"]["required"] == ["text"]
     cl = next(t for t in openai_tools(fake_toolbox()) if t["function"]["name"] == "chat_log")
     assert cl["function"]["parameters"]["properties"]["n"]["default"] == 20  # OpenAI 用 "default"，非 required
+
+
+def test_say_jab_only_when_on():
+    """say 标 jab（spec 2026-10-07-chat-pacing §2）：只在 [pacing] manner 开着时有，关着逐字照旧。"""
+    from skydango.brain.tools import DESCRIPTIONS, JAB_NOTE
+
+    off = _tool("say")
+    assert off["function"]["parameters"] == {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+    assert off["function"]["description"] == DESCRIPTIONS["say"]
+    tb = fake_toolbox()
+    tb.jab = True
+    on = _tool("say", tb)
+    assert on["function"]["parameters"]["properties"]["jab"] == {"type": "boolean", "default": False}
+    assert on["function"]["parameters"]["required"] == ["text"]
+    assert on["function"]["description"] == DESCRIPTIONS["say"] + " " + JAB_NOTE

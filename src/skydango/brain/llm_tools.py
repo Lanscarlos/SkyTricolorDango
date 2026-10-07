@@ -4,7 +4,7 @@
 改参数时一起改。
 """
 
-from .tools import CALL_DESCRIPTION, INTROSPECT_DESCRIPTION, descriptions
+from .tools import CALL_DESCRIPTION, INTROSPECT_DESCRIPTION, JAB_NOTE, descriptions
 
 # 会返回图的工具：OpenAI 兼容的大脑看不了图，这几个交给眼睛代看，多一个可选参数 question（想看清什么）
 QUESTION_TOOLS = ("look", "look_at", "look_person", "check_friend", "panel_read")
@@ -65,7 +65,11 @@ def openai_tools(toolbox) -> list[dict]:
     tools = []
     for name in desc:  # descriptions() 的顺序就是注册顺序
         params = PARAMETERS[name] + ([QUESTION] if name in QUESTION_TOOLS else [])
-        tools.append(_function(name, desc[name], params))
+        text = desc[name]
+        if name == "say" and getattr(toolbox, "jab", False):  # [pacing] manner：大脑自己标这句贱不贱
+            params = params + [("jab", "boolean", False)]
+            text = f"{text} {JAB_NOTE}"
+        tools.append(_function(name, text, params))
     if toolbox.calling:
         tools.append(_function("call", CALL_DESCRIPTION, PARAMETERS["call"]))
     if toolbox.backstage:
