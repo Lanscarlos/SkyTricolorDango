@@ -421,3 +421,13 @@ def test_toolbox_say_passes_jab():
     plain = FakeBody()  # say 只接 text
     out, err = ToolBox(plain).run("say", {"text": "嗯", "jab": True})
     assert not err and out.startswith("说了嗯")
+
+
+def test_toolbox_say_lenient_jab():
+    """jab 只是标注：null / 字符串不该把这句话拦下（评审 Minor 5）。"""
+    b = JabBody()
+    tb = ToolBox(b, jab=True, max_says=10)
+    for raw in (None, "true", "false", 1):
+        out, err = tb.run("say", {"text": f"嗯{raw}", "jab": raw})
+        assert not err, out
+    assert [c[2] for c in b.calls] == [False, True, False, False]

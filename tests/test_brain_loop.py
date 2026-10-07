@@ -677,7 +677,7 @@ def test_manner_line_before_status(clock):
     lines = session.sent[0].splitlines()
     i = lines.index("回法：想贫可以贫一句")
     assert lines[i + 1].startswith("状态：") and lines[i - 1].startswith("- 聊天  阿花")
-    assert got == [[("小明", "哈哈"), ("阿花", "笑死")]]
+    assert got == [[("小明", "哈哈")]]  # 跟别人说的不进 batch：别劝它挑一句回（评审 Important 1）
 
 
 def test_manner_only_on_chat_turns(clock):
@@ -705,3 +705,15 @@ def test_manner_hook_error_skips_line(clock):
     events.put("chat", "聊天  小明：「哈哈」", speech=("小明", "哈哈"))
     brain.wake(clock() + 1.0, "events")
     assert len(session.sent) == 1 and "回法" not in session.sent[0] and "状态：" in session.sent[0]
+
+
+def test_manner_aside_only_gets_empty_batch(clock):
+    """整批都是跟别人说的：只给贱的分寸，不给「挑一句回 / 只回个动作」（batch 为空）。"""
+    session = FakeSession()
+    brain, events, _, _ = make(clock, session)
+    got = []
+    brain.manner = lambda batch: got.append(batch) or None
+    events.put("aside", "聊天  阿花：「笑死」（跟别人说）", speech=("阿花", "笑死"))
+    events.put("aside", "聊天  小明：「哈哈」（跟别人说）", speech=("小明", "哈哈"))
+    brain.wake(clock() + 1.0, "events")
+    assert got == [[]]

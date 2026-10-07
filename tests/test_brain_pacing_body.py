@@ -169,3 +169,48 @@ def test_manner_line_uses_mood_and_energy(clock):
     assert b.manner_line([("小明", "今天去哪个图？")]) is None  # 没内心层：中性
     b.mind = LowMind()
     assert "没力气贫" in b.manner_line([("小明", "今天去哪个图？")])
+
+
+# ---- 终审修正 ----
+class Emotes:
+    def __init__(self, names):
+        self.names = names
+
+    def available(self, ignore_interval=False):
+        return list(self.names)
+
+    def on_wheel(self):
+        return list(self.names)
+
+
+def test_no_emote_hint_when_cannot_emote(clock):
+    b, dev, reader, events = pace(clock)
+    b.rng = Rng(0.0)  # 概率一定命中
+    short = [("小明", "哈哈")]
+    b.emotes = None
+    assert "只回个动作" not in (b.manner_line(short) or "")
+    b.emotes = Emotes([])  # 刚做过、都在冷却
+    assert "只回个动作" not in (b.manner_line(short) or "")
+    b.emotes = Emotes(["点头"])
+    assert "只回个动作" in b.manner_line(short)
+
+
+def test_viewer_info_shows_pacing(clock):
+    class Viewer:
+        info = None
+
+        def update(self, frame, now, **kw):
+            Viewer.info = kw["info"]
+
+        def wants(self):
+            return True
+
+    b, dev, reader, events = pace(clock)
+    b.viewer = Viewer()
+    say(reader, "哈哈")
+    b.step()
+    assert Viewer.info["攒话"] == "在攒话：小明说了 1 句，再等 3 秒"
+    clock.advance(3.0)
+    b.step()
+    b.step()
+    assert "攒话" not in Viewer.info

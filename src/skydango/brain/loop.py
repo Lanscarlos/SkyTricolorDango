@@ -150,9 +150,10 @@ class Brain:
         """被聊天叫醒的那一轮（取走了 chat / aside、没有主人命令）才拼「回法」一行；钩子出错不加。"""
         if self.manner is None or any(e.kind == "owner_command" for e in events):
             return None
-        batch = [e.speech for e in events if e.kind in ("chat", "aside") and e.speech is not None]
-        if not batch:
+        if not any(e.kind in ("chat", "aside") and e.speech is not None for e in events):
             return None
+        # 跟别人说的（aside）不进 batch：整批都是它时只剩贱的分寸，不劝它「挑一句回 / 只回个动作」
+        batch = [e.speech for e in events if e.kind == "chat" and e.speech is not None]
         try:
             line = self.manner(batch)
         except Exception as exc:

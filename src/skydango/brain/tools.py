@@ -282,8 +282,9 @@ class ToolBox:
             return lambda: b.chat_log(n)
         if name == "say":
             text = _str(a, "text")
-            if self.jab:
-                jab = _bool(a, "jab", False)
+            if self.jab:  # 只是标注：null / 乱写当不贱，"true" 字符串当贱，别为它拦下这句话
+                raw = a.get("jab", False)
+                jab = raw is True or (isinstance(raw, str) and raw.strip().lower() == "true")
                 return lambda: b.say(text, jab=jab)
             return lambda: b.say(text)
         if name == "emote":

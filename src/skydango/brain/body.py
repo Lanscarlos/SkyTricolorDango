@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import bisect
 import copy
+import dataclasses
 import logging
 import math
 import queue
@@ -337,6 +338,8 @@ class Body:
         if panel:
             info["聊天面板"] = panel
         info["正在做"] = self.skills.describe(now).removeprefix("正在做：")
+        if self.pacer.pending():  # 攒话（spec 2026-10-07-chat-pacing §1）：管理面板也看得到
+            info["攒话"] = self.pacer.describe(now, self._typists())
         info["刚说过"] = self.said[-3:][::-1] or "还没说话"
         if self.cfg.reflex.enabled:
             info["反射"] = self._recent_reflex(now) or "还没有"
@@ -661,7 +664,19 @@ class Body:
                 sleepy = self._energy is not None and self._energy.level == "困"
             except Exception:
                 log.debug("取心情 / 精力出错", exc_info=True)
-        return manner_text(batch, list(self._jabs), mood, sleepy, self.rng, self.cfg.pacing)
+        cfg = self.cfg.pacing
+        if not self._can_emote():  # 做不了动作（没轮盘 / 都在冷却）：别提示只回个动作
+            cfg = dataclasses.replace(cfg, emote_chance=0.0)
+        return manner_text(batch, list(self._jabs), mood, sleepy, self.rng, cfg)
+
+    def _can_emote(self) -> bool:
+        if self.emotes is None:
+            return False
+        try:
+            return bool(self.emotes.available(self._owner(self.clock())))
+        except Exception:
+            log.debug("取能做的动作出错", exc_info=True)
+            return False
 
     def _typists(self) -> list[str]:
         """头上冒着点点的好友（无障碍读法才有；OCR / 沙盒是空的）。"""
