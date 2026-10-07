@@ -154,3 +154,30 @@ def test_panel_rows_sorted_by_position_not_tree_order():
     ]
     v = classify(snap(*nodes), 1920, 1080, FRIENDS)
     assert [r.text for r in v.rows] == ["很早以前", "团子", "我在呀", "在干啥呢", "怎么不说话"]
+
+
+def test_neighbour_bubble_between_does_not_break_column():
+    """两个人挨着站时光遇把两人的气泡排进一摞：团子那条（x 对不上）夹在小明两句中间，
+    小明下面那句照样挂在他名下（10-07 晚真机：挂不上 / 挂上来回跳，同一句报了两遍）。"""
+    v = cl(snap(
+        node("小明", (628, 188, 784, 230)),
+        node("不行啊你", (649, 250, 762, 288)),
+        node("我小短腿走得慢，等不了怪我咯", (370, 312, 763, 350)),  # 团子自己的，x 中心差 140
+        node("你还是拜倒在你造物主脚下吧", (523, 369, 888, 407)),  # 到上一句小明的气泡底 81 px
+    ))
+    assert [(b.text, b.speaker) for b in v.bubbles] == [
+        ("不行啊你", "小明"),
+        ("我小短腿走得慢，等不了怪我咯", None),
+        ("你还是拜倒在你造物主脚下吧", "小明"),
+    ]
+
+
+def test_unrelated_bubble_beside_does_not_bridge_column():
+    """旁边横着不重叠的气泡不算夹在中间：隔得远的那句照旧挂不上。"""
+    v = cl(snap(
+        tag("小明", 1053, 279),
+        bubble("嗨", 1053, 341),
+        node("别人的话", (1300, 400, 1460, 438)),
+        bubble("在吗", 1053, 460),  # 到「嗨」底 81 px
+    ))
+    assert [(b.text, b.speaker) for b in v.bubbles if b.text != "别人的话"] == [("嗨", "小明"), ("在吗", None)]

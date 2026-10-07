@@ -168,6 +168,13 @@ def classify(snap: Snapshot | None, width: int, height: int, friends: Collection
         else:
             columns.append([n])
             bottoms.append(n.box[3])
+            i = len(columns) - 1
+        # 两个人挨着站时光遇把两人的气泡排进一摞（10-07 晚真机）：别的列的气泡夹在这一列中间、横着和这一列重叠，
+        # 这一列也接得上它下面的（x 中心照旧要对齐），不然这一列被它隔断，下面那句一会儿挂得上一会儿挂不上
+        for k, col in enumerate(columns):
+            head = col[0].box
+            if k != i and n.box[0] < head[2] and head[0] < n.box[2] and n.box[1] - bottoms[k] <= COLUMN_GAP * v:
+                bottoms[k] = max(bottoms[k], n.box[3])
 
     band = EDGE_BAND * width
     order = {id(n): i for i, n in enumerate(candidates)}
