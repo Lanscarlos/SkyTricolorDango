@@ -82,6 +82,8 @@ class Brain:
         self.in_turn = False  # 正在一轮里（wake 开始到结束，成功 / 失败都算）：沙盒判断安静了没有用
         self.on_text: Callable[[str], None] | None = None  # 每轮成功后把最后的文字交出去（身体取“心里：”，spec 2026-10-01-lull-musing §2）
         self.chat_turn = False  # 正在回聊天（这一轮取走了聊天 / 主人命令，还没结束）：身体据此别把聊天面板当成安静关掉
+        # 回法（spec 2026-10-07-chat-pacing §2）：这批聊天 (说话人, 原文) → 「回法：…」一行；cli 接成在身体线程里算
+        self.manner: Callable[[list[tuple[str, str]]], str | None] | None = None
 
     # ---- 什么时候醒 ----
     def offline(self, now: float) -> bool:
@@ -100,6 +102,8 @@ class Brain:
 
     def due(self, now: float) -> str | None:
         if now < self.backoff_until:
+            return None
+        if self.events.held():  # 身体在攒聊天：心跳、背景兜底也等着，免得取走半批（最多等 [pacing] max_wait）
             return None
         if self.events.urgent() and now - self.events.last_put >= self.chat.debounce:
             return "events"
@@ -135,9 +139,28 @@ class Brain:
         stamp = f"{format_date(w)} {time.strftime('%H:%M:%S', time.localtime(w))}"
         lines = [f"[{stamp}] " + ("事件：" if events else "没有新事件（定时醒来）")]
         lines += [f"- {e.line()}" for e in events]
+        manner = self._manner(events)
+        if manner:
+            lines.append(manner)
         lines.append("状态：" + self.toolbox.status())
         lines.append(self.eyes.summary(now) if self.eyes is not None else "场景：（没开眼睛）")
         return "\n".join(lines)
+
+    def _manner(self, events: list[Event]) -> str | None:
+        """被聊天叫醒的那一轮（取走了 chat / aside、没有主人命令）才拼「回法」一行；钩子出错不加。"""
+        if self.manner is None or any(e.kind == "owner_command" for e in events):
+            return None
+        batch = [e.speech for e in events if e.kind in ("chat", "aside") and e.speech is not None]
+        if not batch:
+            return None
+        try:
+            line = self.manner(batch)
+        except Exception as exc:
+            log.warning("拼回法出错，这一轮不加：%s", exc)
+            return None
+        if line:
+            log.info("%s", line)
+        return line
 
     def wake(self, now: float, reason: str) -> None:
         self.in_turn = True

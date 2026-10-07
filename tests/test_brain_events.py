@@ -154,3 +154,17 @@ def test_search_events_are_background_and_keep_latest():
     q.put("search", "你往右前方看了看：有 1 个陌生人")
     assert "search" in BACKGROUND
     assert [e.text for e in q.drain()] == ["你往右前方看了看：有 1 个陌生人"]
+
+
+def test_hold_release(clock):
+    """攒话（spec 2026-10-07-chat-pacing §1）：身体扣住聊天、放行；事件带上说话人和原文。"""
+    q = EventQueue(clock=clock)
+    assert not q.held()
+    q.hold()
+    assert q.held()
+    q.release()
+    assert not q.held()
+    q.put("chat", "聊天  小明：「x」", speech=("小明", "x"))
+    q.put("arrive", "小明 来到身边", who="小明")
+    events = q.drain()
+    assert events[0].speech == ("小明", "x") and events[1].speech is None

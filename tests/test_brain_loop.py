@@ -633,3 +633,75 @@ def test_brain_jsonl_history_mode(clock):   # spec 2026-10-06-brain-compact §6
     brain.wake(clock(), "heartbeat")
     assert run.entries[0]["history_mode"] == "sliding" and run.entries[0]["recap"] == 2
     assert "history_mode" not in run.entries[1] and "recap" not in run.entries[1]
+
+
+# ---- 攒话 / 回法（spec 2026-10-07-chat-pacing）----
+def test_held_blocks_urgent_until_release(clock):
+    brain, events, _, _ = make(clock, FakeSession())
+    brain.last_wake = clock()
+    events.hold()
+    events.put("chat", "聊天  小明：「在吗」", speech=("小明", "在吗"))
+    assert brain.due(clock() + 1.0) is None
+    events.release()
+    assert brain.due(clock() + 1.0) == "events"
+
+
+def test_held_blocks_heartbeat_and_background(clock):
+    brain, events, _, _ = make(clock, FakeSession())
+    brain.last_wake = clock()
+    events.hold()
+    events.put("chat", "聊天  小明：「在吗」", speech=("小明", "在吗"))
+    events.put("stranger", "身边有 2 个陌生人")
+    late = clock() + 10_000  # 心跳、背景兜底都到点了
+    assert brain.due(late) is None
+    events.release()
+    assert brain.due(late) == "events"
+
+
+def test_not_held_urgent_still_debounce(clock):
+    brain, events, _, _ = make(clock, FakeSession())
+    brain.last_wake = clock()
+    events.put("arrive", "小明 来到身边", who="小明")
+    assert brain.due(clock() + 0.3) is None
+    assert brain.due(clock() + 1.0) == "events"
+
+
+def test_manner_line_before_status(clock):
+    session = FakeSession()
+    brain, events, _, _ = make(clock, session)
+    got = []
+    brain.manner = lambda batch: got.append(batch) or "回法：想贫可以贫一句"
+    events.put("chat", "聊天  小明：「哈哈」", speech=("小明", "哈哈"))
+    events.put("aside", "聊天  阿花：「笑死」（跟别人说）", speech=("阿花", "笑死"))
+    brain.wake(clock() + 1.0, "events")
+    lines = session.sent[0].splitlines()
+    i = lines.index("回法：想贫可以贫一句")
+    assert lines[i + 1].startswith("状态：") and lines[i - 1].startswith("- 聊天  阿花")
+    assert got == [[("小明", "哈哈"), ("阿花", "笑死")]]
+
+
+def test_manner_only_on_chat_turns(clock):
+    session = FakeSession()
+    brain, events, _, _ = make(clock, session)
+    got = []
+    brain.manner = lambda batch: got.append(batch) or "回法：想贫可以贫一句"
+    brain.wake(clock(), "heartbeat")
+    events.put("arrive", "小明 来到身边", who="小明")
+    brain.wake(clock() + 1.0, "events")
+    events.put("chat", "聊天  小明：「哈哈」", speech=("小明", "哈哈"))
+    events.put("owner_command", "卡洛的命令：#过来")
+    brain.wake(clock() + 2.0, "events")
+    assert got == [] and not any("回法" in t for t in session.sent)
+
+
+def test_manner_hook_error_skips_line(clock):
+    session = FakeSession()
+    brain, events, _, _ = make(clock, session)
+
+    def boom(batch):
+        raise RuntimeError("身体忙")
+
+    brain.manner = boom
+    events.put("chat", "聊天  小明：「哈哈」", speech=("小明", "哈哈"))
+    brain.wake(clock() + 1.0, "events")
+    assert len(session.sent) == 1 and "回法" not in session.sent[0] and "状态：" in session.sent[0]
