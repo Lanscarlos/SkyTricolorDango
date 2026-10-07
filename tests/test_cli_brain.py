@@ -577,9 +577,10 @@ def test_run_brain_live_persona_on(tmp_path, monkeypatch):
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
     prompt = (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
     assert TEMPER_RULES in prompt and "## 你攒下的性格" in prompt and "口头禅：害，懒得动" in prompt
-    from skydango.brain.prompt import CHEEKY_RULES
+    from skydango.brain.prompt import CHEEKY_FIRST_NEW, CHEEKY_FIRST_OLD, CHEEKY_RULES
     from skydango.inner.reflect import persona_system
-    assert CHEEKY_RULES in prompt  # [inner] cheeky 默认开
+    # [inner] cheeky 默认开；[pacing] manner 默认开：开头那句换成以正常为底色（spec 2026-10-07-chat-pacing §3）
+    assert CHEEKY_RULES.replace(CHEEKY_FIRST_OLD, CHEEKY_FIRST_NEW, 1) in prompt
     assert prompt.index("## 你攒下的性格") < prompt.index("## 日子")
     systems = [s for s in _reflect_systems(log) if s.startswith(REFLECT_SYSTEM)]
     assert systems and all(s == REFLECT_SYSTEM + "\n\n" + persona_system(True) for s in systems)
@@ -1003,3 +1004,14 @@ def test_backstage_prompt_cheeky(tmp_path):
     assert line not in cli._backstage_prompt(cfg, None, run=lambda *a: "")
     cfg.inner.cheeky, cfg.inner.persona = True, False
     assert line not in cli._backstage_prompt(cfg, None, run=lambda *a: "")
+
+
+def test_run_brain_wires_manner(tmp_path, monkeypatch):
+    """回法（spec 2026-10-07-chat-pacing §2）：manner 开着时大脑有钩子、say 带 jab；关着都没有。"""
+    for manner in (True, False):
+        cfg, run, _ = fake_brain_run(tmp_path / str(manner), monkeypatch)
+        cfg.pacing.manner = manner
+        seen = []
+        cli._run_brain(cfg, run, no_emotes=True, duration=1.0, on_ready=lambda parts: seen.append(parts))
+        brain = seen[0].brain
+        assert (brain.manner is not None) is manner and brain.toolbox.jab is manner

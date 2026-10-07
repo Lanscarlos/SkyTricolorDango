@@ -57,3 +57,16 @@ def test_mcp_lists_track():
         server.stop()
     assert "track" in names
     assert not track.is_error and tb.body.calls[-1] == ("track", "小明", 10)
+
+
+def test_mcp_say_jab():
+    from test_brain_tools import JabBody
+
+    tb = ToolBox(JabBody(), FakeEyes(), jab=True)
+    server = SkyServer(tb)
+    server.start()
+    try:
+        _, (said,) = asyncio.run(talk(server.url, [("say", {"text": "你才废物", "jab": True})]))
+    finally:
+        server.stop()
+    assert not said.is_error and tb.body.calls[-1] == ("say", "你才废物", True)

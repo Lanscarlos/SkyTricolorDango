@@ -402,3 +402,32 @@ def test_look_image_when_blind_reuses_recent_eyes():  # 刚看过：不再起代
     eyes = SimpleNamespace(latest=("在雨林", 99.0), last_look=99.0, summary=lambda now: "场景：在雨林")
     tb = ToolBox(body, eyes=eyes, proxy=lambda b, q: "不该调", sees=lambda: False)
     assert tb.run("look", {"image": True}) == ("场景：在雨林", False)
+
+
+class JabBody(FakeBody):
+    def say(self, text, jab=False):
+        self.calls.append(("say", text, jab))
+        return f"说了{text}"
+
+
+def test_toolbox_say_passes_jab():
+    """jab 开着时把大脑标的 jab 交给身体；关着时 say 只收到 text（spec 2026-10-07-chat-pacing §2）。"""
+    b = JabBody()
+    tb = ToolBox(b, jab=True)
+    tb.run("say", {"text": "嗯", "jab": True})
+    tb.begin_turn()
+    tb.run("say", {"text": "好"})
+    assert b.calls == [("say", "嗯", True), ("say", "好", False)]
+    plain = FakeBody()  # say 只接 text
+    out, err = ToolBox(plain).run("say", {"text": "嗯", "jab": True})
+    assert not err and out.startswith("说了嗯")
+
+
+def test_toolbox_say_lenient_jab():
+    """jab 只是标注：null / 字符串不该把这句话拦下（评审 Minor 5）。"""
+    b = JabBody()
+    tb = ToolBox(b, jab=True, max_says=10)
+    for raw in (None, "true", "false", 1):
+        out, err = tb.run("say", {"text": f"嗯{raw}", "jab": raw})
+        assert not err, out
+    assert [c[2] for c in b.calls] == [False, True, False, False]

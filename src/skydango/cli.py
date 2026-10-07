@@ -2995,7 +2995,7 @@ def _run_brain(
 
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
                           sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled, call=_call_enabled(cfg, env),
-                          proxy=eyes.proxy, sees=sees, eyes_label=registry.describe("eyes"))
+                          proxy=eyes.proxy, sees=sees, eyes_label=registry.describe("eyes"), jab=cfg.pacing.manner)
         wardrobe = _wardrobe(cfg, env, ledger, world, registry, clock)
         server = SkyServer(toolbox)
         server.start()
@@ -3014,7 +3014,7 @@ def _run_brain(
         cheeky=ledger is not None and _cheeky(cfg),
         appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store, models=registry),
         lull=cfg.lull.enabled, call=_call_enabled(cfg, env), addressee=cfg.addressee.enabled,
-        icons=cfg.perception.enabled and cfg.icons.enabled,
+        icons=cfg.perception.enabled and cfg.icons.enabled, manner=cfg.pacing.manner,
     )
     on_message = trace.chain(log_brain_message) if trace is not None else log_brain_message
     build = functools.partial(make_session, registry, prompt=prompt, toolbox=toolbox, mcp_url=server.url, workdir=work,
@@ -3063,6 +3063,8 @@ def _run_brain(
     body.brain_offline = lambda now: brain.offline(now) or not brain_thread.is_alive()
     body.brain_busy = lambda: brain.chat_turn
     body.brain_turn = lambda: brain.last_turn  # 替大脑开的输入框：开框之后的那一轮结束了没说话就关
+    if cfg.pacing.manner:  # 回法那一行（spec 2026-10-07-chat-pacing §2）：在身体线程里算，等不到就这一轮不加
+        brain.manner = lambda batch: body.call(lambda: body.manner_line(batch), timeout=3)
     if body.lulls is not None:  # 冷场时大脑心里想的（“心里：”）记到身体那边
         def hand_over(text: str) -> None:
             # 不等身体：身体在自动喊（约 4 秒）时 call 会超时报 ERROR、丢掉这轮的“心里”；退出时身体已停，直接丢掉

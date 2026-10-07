@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import bisect
 import copy
+import dataclasses
 import logging
 import math
 import queue
@@ -43,6 +44,8 @@ from .calling import CallResult, call_available, event_text as call_event_text, 
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import EventQueue
 from .find import FindSkill
+from .manner import jab_note, manner as manner_text
+from .pacing import Pacer
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
@@ -191,6 +194,10 @@ class Body:
         self._bubble_at: float | None = None  # 身体替大脑开输入框（冒“正在输入”）的时间；None = 没开（spec 2026-09-30-body-reflex §2）
         self.rng = rng or random.Random()
         self.reflexes = Reflexes(cfg.reflex, self.rng, clock())
+        # 攒话（spec 2026-10-07-chat-pacing §1）：几句聊天攒一会儿再交给大脑；放行时才冒输入气泡
+        self.pacer = Pacer(cfg.pacing, self.rng)
+        self._pace_bubble = False  # 这批里有人在跟团子说话、没被拦：放行时冒输入气泡
+        self._jabs: deque[bool] = deque(maxlen=max(1, cfg.pacing.jab_window))  # 最近说的几句贱不贱（大脑 say 标的 jab）
         # 空闲注意力（东张西望，spec 2026-09-30-idle-attention）
         self.attention = Attention(cfg.attention, cfg.track, self.rng, clock(), hfov=cfg.spin.hfov)
         self._attention_pressed_at = float("-inf")  # 注意力上次按键：之后 settle 秒内冒出的"走近"是自己转出来的
@@ -308,6 +315,7 @@ class Body:
             self._heard(fresh, frame, now)
             if self.viewer is not None:
                 self._show(frame, now, fresh)
+        self._watch_pacing(self.clock())
         self._run_commands()
         self._watch_bubble(self.clock())
         self._watch_idle(self.clock())
@@ -330,6 +338,8 @@ class Body:
         if panel:
             info["聊天面板"] = panel
         info["正在做"] = self.skills.describe(now).removeprefix("正在做：")
+        if self.pacer.pending():  # 攒话（spec 2026-10-07-chat-pacing §1）：管理面板也看得到
+            info["攒话"] = self.pacer.describe(now, self._typists())
         info["刚说过"] = self.said[-3:][::-1] or "还没说话"
         if self.cfg.reflex.enabled:
             info["反射"] = self._recent_reflex(now) or "还没有"
@@ -521,20 +531,34 @@ class Body:
             self._fallback_last_new = now
             return
         owner = self.cfg.brain.owner_name
-        for m, v, note in zip(fresh, verdicts, notes):  # note：这句结束了冷场时附上的“你刚才在想”
+        kinds = []  # 每句变成什么事件：owner_command / chat / aside / aside_bg
+        for m, v in zip(fresh, verdicts):
             if owner and m.speaker == owner and m.text.startswith("#"):
+                kinds.append("owner_command")
+            elif tagged and v.label == "other":  # 跟别人说的：插话额度还有才叫醒，否则攒着
+                kinds.append("aside" if self._aside_quota() else "aside_bg")
+            else:
+                kinds.append("chat")
+        pacing = self.cfg.pacing.enabled
+        paced = [(m.speaker or "", m.text) for m, k in zip(fresh, kinds) if k in ("chat", "aside")] if pacing else []
+        if paced:  # 先扣住再入队：同一圈、同一线程，大脑不会在两步之间醒
+            self.events.hold()
+        for m, v, note, kind in zip(fresh, verdicts, notes, kinds):  # note：这句结束了冷场时附上的“你刚才在想”
+            speech = (m.speaker or "", m.text)
+            if kind == "owner_command":
                 self._owner_window_until = now + self.cfg.brain.owner_window
                 if m.text.startswith("#允许") and m.text[3:].strip():  # 放行一个面板按钮（panel_press 用）
                     self._permits.append((m.text[3:].strip(), now + self.cfg.panels.permit_window))
                 self.events.put("owner_command", f"卡洛的命令：{m.text}{note}")
                 log.info("识别到卡洛的命令：%s（授权窗口延长到 %.0f 秒后）", m.text, self.cfg.brain.owner_window)
             elif not tagged:
-                self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」{note}")
-            else:  # 带上「跟谁说」的标注；跟别人说的，插话额度还有才叫醒，否则攒着
-                kind = "chat"
-                if v.label == "other":
-                    kind = "aside" if self._aside_quota() else "aside_bg"
-                self.events.put(kind, f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」（{v.tag()}）{note}")
+                self.events.put("chat", f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」{note}", speech=speech)
+            else:  # 带上「跟谁说」的标注
+                self.events.put(kind, f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」（{v.tag()}）{note}", speech=speech)
+        if paced:
+            self.pacer.heard(now, paced, urgent=any(sounds_upset(text) for _, text in paced))
+        if pacing and "owner_command" in kinds:
+            self.pacer.heard(now, [], urgent=True)  # 卡洛的命令：攒着的这批跟着马上放
         if self.cfg.reflex.enabled:
             self._on_heard(fresh, verdicts, now)
 
@@ -617,12 +641,74 @@ class Body:
         name = self.reflexes.pick_addressed(now, self._wheel(), scale=self.effects().addressed)
         if name:
             self._reflex_emote(name, f"有人叫你，你下意识{name}", now)
+        if self.cfg.pacing.enabled:  # 攒话：放行那一刻才冒（spec 2026-10-07-chat-pacing §1）
+            self._pace_bubble = True
+            return
+        self._bubble_now(now)
+
+    def _bubble_now(self, now: float) -> None:
         if not self.cfg.reflex.bubble:
             return
         if self._dry(False):
             log.info("[dry-run] 会冒输入气泡（有人在跟团子说话）")
             return
         self._open_bubble(now)
+
+    # ---- 攒话（spec 2026-10-07-chat-pacing §1）----
+    def manner_line(self, batch: list[tuple[str, str]]) -> str | None:
+        """唤醒消息里「回法：…」那一行（§2）：最近几句贱不贱、心情、困不困；cli 让大脑醒来时在身体线程里调。"""
+        mood, sleepy = None, False
+        if self.mind is not None:
+            try:
+                mood = self.mind.mood.level
+                sleepy = self._energy is not None and self._energy.level == "困"
+            except Exception:
+                log.debug("取心情 / 精力出错", exc_info=True)
+        cfg = self.cfg.pacing
+        if not self._can_emote():  # 做不了动作（没轮盘 / 都在冷却）：别提示只回个动作
+            cfg = dataclasses.replace(cfg, emote_chance=0.0)
+        return manner_text(batch, list(self._jabs), mood, sleepy, self.rng, cfg)
+
+    def _can_emote(self) -> bool:
+        if self.emotes is None:
+            return False
+        try:
+            return bool(self.emotes.available(self._owner(self.clock())))
+        except Exception:
+            log.debug("取能做的动作出错", exc_info=True)
+            return False
+
+    def _typists(self) -> list[str]:
+        """头上冒着点点的好友（无障碍读法才有；OCR / 沙盒是空的）。"""
+        typing = getattr(self.reader, "typing", None)
+        if not callable(typing):
+            return []
+        try:
+            return list(typing())
+        except Exception:
+            log.debug("读在打字的人出错", exc_info=True)
+            return []
+
+    def _watch_pacing(self, now: float) -> None:
+        if self.pacer.pending() and self.pacer.ready(now, self._typists()):
+            self._release_pacing(now)
+
+    def _release_pacing(self, now: float) -> None:
+        """放行攒着的这批：先冒输入气泡（冒不了照样放），再让大脑醒。"""
+        try:
+            if self._pace_bubble and self.cfg.reflex.enabled:
+                if self.skills.active is not None:
+                    log.debug("正在%s，不冒输入气泡", self.skills.active.goal)
+                elif busy := self._bubble_blocked():
+                    log.debug("不冒输入气泡：%s", busy)
+                else:
+                    self._bubble_now(now)
+        except Exception:
+            log.warning("放行时冒输入气泡出错", exc_info=True)
+        finally:
+            self._pace_bubble = False
+            self.pacer.released(now)
+            self.events.release()
 
     def _bubble_blocked(self) -> str:
         """这会儿不该开框 / 做反射动作的原因；空 = 可以。"""
@@ -1939,10 +2025,11 @@ class Body:
     def status(self) -> str:
         now = self.clock()
         parts = ["聊天记录面板" + ("开" if self.reader.panel_closed_since is None else "关")]
-        typing = getattr(self.reader, "typing", None)  # 无障碍读法才有：头上冒着点点的好友
-        typists = typing() if callable(typing) else []
+        typists = self._typists()  # 无障碍读法才有：头上冒着点点的好友
         if typists:
             parts.append("在打字：" + "、".join(typists))
+        if self.pacer.pending():
+            parts.append(self.pacer.describe(now, typists))
         source = getattr(self.reader, "describe", None)
         if callable(source):
             parts.append("读聊天：" + source())
@@ -2012,6 +2099,8 @@ class Body:
             parts.append("互动规则：" + self.social.describe_policy())
         if self.said:
             parts.append("刚说过：" + " | ".join(self.said[-3:]))
+        if self.cfg.pacing.manner and self._jabs:
+            parts.append(jab_note(list(self._jabs)))
         thread = ""
         if self.cfg.addressee.enabled:
             try:
@@ -2109,8 +2198,9 @@ class Body:
                 return wall - t <= self.cfg.proactive.reply_window
         return False
 
-    def say(self, text: str, live: bool = False, reply: bool = False) -> str:
-        """live = 手动控制：dry-run 下也真的发（护栏照旧）。reply = 明确是接话（大脑离线时的备用回复），不算主动开口。"""
+    def say(self, text: str, live: bool = False, reply: bool = False, jab: bool = False) -> str:
+        """live = 手动控制：dry-run 下也真的发（护栏照旧）。reply = 明确是接话（大脑离线时的备用回复），不算主动开口。
+        jab = 大脑标的“这句算犯贱”（[pacing] manner）；手动控制和备用回复算不贱。"""
         now = self.clock()
         body = clean_reply(text, self.cfg.reply.max_chars)  # 含“不能声称自己是真人”的硬过滤
         if body is None:
@@ -2139,6 +2229,7 @@ class Body:
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
         self._said_at = now
+        self._jabs.append(bool(jab) and not live and not reply)  # 被拦下的不记；dry-run 也记
         self.addressee.said(now)  # 被护栏拦下的不算说过，所以放在这里
         self.reflexes.stir(now, scale=self.effects().idle)
         self.said.append(full)

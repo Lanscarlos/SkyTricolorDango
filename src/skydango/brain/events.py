@@ -27,6 +27,7 @@ class Event:
     t: float
     count: int = 1  # 重复了几次（同一种错误连续出现只占一行；背景事件不挨着也合并）
     who: str = ""  # arrive / return / leave 的好友名字（抵消用）；outfit 也带
+    speech: tuple[str, str] | None = None  # chat / aside 的 (说话人, 原文)：大脑拼「回法」用（spec 2026-10-07-chat-pacing §2）
 
     def line(self) -> str:
         return self.text + (f"（×{self.count}）" if self.count > 1 else "")
@@ -43,6 +44,7 @@ class EventQueue:
         self._listeners: list[Callable[[str], None]] = []
         self._taps: list[Callable[[str, str, str], None]] = []  # 每个事件的全文（真机聊天记录）
         self.history: deque[Event] = deque(maxlen=20)  # 最近的事件（可视化页面显示用，drain 不清）
+        self._held = False  # 身体在攒聊天（spec 2026-10-07-chat-pacing §1）：大脑先别醒
 
     def subscribe(self, fn: Callable[[str], None]) -> None:
         """每放一个事件就调 fn(kind)（在放事件的线程里调）；眼睛用它知道有人来了、画面变了。"""
@@ -52,7 +54,7 @@ class EventQueue:
         """每放一个事件就调 fn(kind, text, who)（合并 / 抵消了也调，在放事件的线程里调）；真机聊天记录用它记来去。"""
         self._taps.append(fn)
 
-    def put(self, kind: str, text: str, who: str = "") -> None:
+    def put(self, kind: str, text: str, who: str = "", speech: tuple[str, str] | None = None) -> None:
         with self._cond:
             now = self.clock()
             last = self._items[-1] if self._items else None
@@ -73,7 +75,7 @@ class EventQueue:
                 if self.history and self.history[-1] is last:
                     self.history[-1] = self._items[-1]
             else:
-                self._items.append(Event(kind, text, now, who=who))
+                self._items.append(Event(kind, text, now, who=who, speech=speech))
                 self.history.append(self._items[-1])
                 if len(self._items) > self.limit:  # 大脑很久没醒（离线 / 退避）：丢最旧的
                     self._items.pop(0)
@@ -98,6 +100,20 @@ class EventQueue:
         if kind not in BACKGROUND:
             return None
         return self._find(lambda e: e.kind == kind and e.text == text)
+
+    def hold(self) -> None:
+        """身体在攒聊天：放行之前大脑别醒（别的事件照样入队，跟着这批一起交给大脑）。"""
+        with self._cond:
+            self._held = True
+
+    def release(self) -> None:
+        with self._cond:
+            self._held = False
+            self._cond.notify_all()
+
+    def held(self) -> bool:
+        with self._cond:
+            return self._held
 
     def urgent(self) -> bool:
         """攒着的事件里有没有要马上叫醒大脑的。"""

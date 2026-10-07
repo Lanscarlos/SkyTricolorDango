@@ -127,6 +127,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/models/` | 模型供应商和按用处选模型（见「模型供应商」）：`config.py` 解析 `[providers.*]` / `[models.*]`、旧字段换算、校验；`claude_code.py`（`claude -p`）/ `openai_compat.py`（DeepSeek 等）两种接入方式；`errors.py` `ModelError`（`down` = limit / auth）；`gate.py` 按供应商的闸；`registry.py` `Registry` / `GatedCall`（主 → 备）；`usage.py` `UsageMeter` 用量 / 钱 / 限额、`usage_ledger.py` 今天累计的账本、`balance.py` DeepSeek 余额（见「模型供应商」的用量和额度）。**代码只从这里拿模型** |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、「模型」页后端（`models_view.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、整理 / 重训的任务槽（`jobs.py`）、整帧页后端（`frames.py`）、重训报告和换上 / 回退（`retrain_view.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`、标注页的整帧页 `frames.js`、重训区 `retrain.js`），左侧栏 + 八页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 模型 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
+| `src/skydango/brain/pacing.py` `manner.py` | 聊天的节奏和分寸（见「聊天的节奏和分寸」）：`Pacer` 攒几句再交给大脑（纯计算）、`manner()` 拼唤醒消息里的「回法：…」和 status 的「最近说的」 |
 | `src/skydango/brain/addressee.py` | 分清好友在跟谁说话（见「分清在跟谁说话」）：`Addressee.judge` 每句判一次（`Verdict`：跟你说 / 跟别人说 / 说给大家 / 拿不准）、`said`、`parse_aliases`（friends.md 的 `- 叫法：`）、`legacy_addressed`（`enabled = false` 时反射用的旧规则）；纯规则、不调模型 |
 | `src/skydango/chat/addressee_eval.py` | 上面规则的离线评估：从 `agent.log` 取多人聊天、Claude 初标、规则重放、`review.md` 给人核对、`report.md` 三条门槛（`addressee label` / `eval`） |
 | `src/skydango/brain/world.py` `src/skydango/sandbox/` | 大脑沙盒（见「大脑沙盒」）：`World` / `BrainParts`（`_run_brain` 拆出的"接世界的东西"）；聊天记录 `brain/transcript.py`（沙盒和真机共用，带长轮询 `wait_since` 和事件分隔线 `event_line`）；`sandbox/` 模拟时钟 `clock.py`、沙盒世界 `world.py`、操作和状态 `control.py`、JSON 接口 `server.py`、命令行客户端 `ctl.py`（`sandbox-ctl`） |
@@ -575,6 +576,21 @@ dir = "private/sandbox"
   `python -m skydango addressee eval <目录>` 读回人标 → `report.md`（混淆矩阵 + 判错的句子）；三条门槛：跟别人说被判 me ≤ 5%、跟团子被判 other ≤ 10%、unsure ≤ 40%；没有足够人工核对的标准答案、或没过线退出码 1。
   改了规则不用重标，eval 用当前规则重放。数据来源建议 10-03 21:02、23:04、23:25、10-04 21:27 那几次多人聊天
 - 沙盒剧本 `docs/sandbox-scenarios/两个好友互相聊.toml`（占位名，换成 friends.md 里的好友名）；真机验收：两个以上好友在的一晚，抽查「跟谁说」行、数只有 aside 的那几轮团子开了几次口、问好友「怎么什么都接」没有；另外数一数「在接你的话」→ 团子回 → 又「在接你的话」的连锁（规则 4 会自己续命，`occasion.reply_state` 又把它当「有人接」，插话护栏不触发；要收紧可选：插话那一轮之后不开规则 4 窗口 / 规则 4 只给团子上一句回应的那个人 / `reply_state` 跳过判成 other 的句子）
+
+## 聊天的节奏和分寸（`[pacing]`，大脑模式）
+
+设计见 `docs/superpowers/specs/2026-10-07-chat-pacing-design.md`，计划 `docs/superpowers/plans/2026-10-07-chat-pacing.md`。
+起因：10-07 晚用户单聊 15 分钟，团子 43 句回了 36 句、几乎话音刚落就回，而且句句都贱。**代码 10-07 做完，spec §7 沙盒 / 真机验证没走，数字都是估的**。
+- **攒话**（`brain/pacing.py` 的 `Pacer`，纯计算）：`chat` / `aside` 进来时身体先 `events.hold()` 再入队，大脑的 `due()` 在 `held()` 时什么都不返回（心跳、背景兜底也等，免得取走半批）；
+  最后一句后安静 `quiet_min`~`quiet_max`（2~6 秒随机，有问句取 `quiet_min`）、批里说过话的人都不在打字（`reader.typing()`，无障碍读法才有）才放，在打字就从最后看到他打字起重新算；
+  第一句进来过了 `max_wait`（15 秒）一定放；难过类的话（`sounds_upset`）、卡洛的 `#` 命令马上放。攒着时进来的别的紧急事件跟着这批一起等。status「在攒话：小明说了 3 句，再等 4 秒」
+- **输入气泡挪到放行那一刻**（`_release_pacing`）：被叫到的小动作反射照旧当场做，开框改到放行前；冒不了（技能、互动请求、面板……）不影响放行，`bubble_max` 从放行算
+- **回法**（`brain/manner.py`，`manner = true`）：被聊天叫醒的那一轮（取走了 `chat` / `aside`、没有主人命令），唤醒消息在「状态：」前多一行「回法：…」（大脑醒来时经 `body.call(body.manner_line)` 现算，事件带 `speech` = (说话人, 原文)）：
+  贱的分寸三选一（最近 `jab_window` 句里贱了 ≥ `jab_limit` 句或最后一句贱 → 这轮好好说；低落 / 烦 / 困 → 懒一点回；开心且最多贱了 1 句 → 想贫可以贫一句）、短句没问句按 `emote_chance` 提示只回个动作、一批 ≥ 2 句提示挑一句回
+- **`say` 的 `jab`**：大脑自己标这句算不算犯贱（两种大脑都有，`tools.JAB_NOTE`）；身体在 `say` 过了所有拦截后记一笔（dry-run 也记，手动控制 / 备用回复算不贱），status「最近说的：6 句里贱了 2 句」
+- **提示词**：「说话」一节加三种回法和 jab 的说明（`MANNER_RULES`）；`[inner] cheeky` 开着时 `CHEEKY_RULES` 开头那句换成「你平时正常聊天，偶尔犯一下贱才好笑……连着贱了两句就收一收」，招数和刹车不动
+- `enabled = false`：0.8 秒叫醒、被叫到当圈冒气泡，逐字照旧；`manner = false`：没有回法行、`jab`、提示词那几句，逐字照旧。管理面板设置页有 `pacing.enabled` / `pacing.manner`。`--no-brain` 不受影响；沙盒照样攒（没有打字信息，只按时间）
+- **还要用户在本机做**（spec §5）：私有仓库 `private/tools/curate_history.py` 加 `--since` / `--until`，把 10-07 22:08~22:23 句句顶嘴的回合挪进 `memory/archive/`（不然重启后「上次聊到哪」会让它接着模仿）
 
 ## 身体反射（`[reflex]`，大脑模式）
 
