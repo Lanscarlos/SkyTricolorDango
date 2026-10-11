@@ -130,7 +130,7 @@ def test_blocked_say_not_followup(clock):
     clock.advance(1)
     say_batch(b, reader, ("小明", "哈哈"))
     assert b.verdicts[-1][3].reason != "在接你的话"
-    # 说成功之后才算（团子回的是小明：插话不开窗口，见 test_brain_addressee 的规则 4）
+    # 说成功之后才算。前面那批全是跟别人说的（插话不开窗口），所以先补一句叫团子的
     b.cfg.proactive.enabled = False
     say_batch(b, reader, ("小明", "团子你说呢"))
     b.say("好")
