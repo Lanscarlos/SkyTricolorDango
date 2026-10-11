@@ -44,6 +44,11 @@ def test_rule3_group_words():
 
 def test_rule3_greet_needs_two_nearby():
     assert j(make(), 0, "小明", "晚上好呀", nearby=TWO).label == "all"
+    assert j(make(), 0, "小明", "我先下了 晚安", nearby=TWO).label == "all"  # 句尾也算（10-11 沙盒）
+    assert j(make(), 0, "小明", "困了，拜拜~", nearby=TWO).label == "all"  # 句尾的标点不算
+    assert j(make(), 0, "小明", "拜拜啦我走了", nearby=TWO).label == "all"  # 句首照旧
+    for text in ("bug又来了", "他刚走了", "雨要来了"):  # 句尾的得是单独一个分句，不然是在说事
+        assert j(make(), 0, "小明", text, nearby=TWO).label != "all", text
     v = j(make(), 0, "小明", "晚上好呀", nearby=["小明"])
     assert v.label == "me" and "身边只有他" in v.reason
 
@@ -80,9 +85,56 @@ def test_rule5a_still_talking():
 
 def test_rule5_cut_by_dango():
     a = make()
+    j(a, 0, "小明", "团子你看")
+    j(a, 2, "阿花", "明哥你看")
+    a.said(5)  # 团子在回小明：这之后阿花说的不再算她还在回小明
+    assert j(a, 10, "小明", "好了").label == "me"
+
+
+# 规则 4 的连锁（10-11 沙盒）：团子插一句 / 回了别人，不该把旁边两个人互相说的都算成在接团子的话
+def test_rule4_interjection_opens_no_window():
+    a = make()
+    assert lt(j(a, 0, "小明", "阿花你看")) == ("other", "阿花")
+    assert lt(j(a, 4, "阿花", "看啥")) == ("other", "小明")
+    a.said(8)  # 整批都是跟别人说的：插话
+    v = j(a, 12, "小明", "你那个斗篷")
+    assert lt(v) == ("other", "阿花") and "还在跟阿花说" in v.reason
+    assert lt(j(a, 15, "阿花", "季节送的")) == ("other", "小明")
+
+
+def test_rule4_interjection_then_unknown_is_unsure():
+    a = make()
     j(a, 0, "小明", "阿花你看")
     a.said(5)
-    assert j(a, 10, "小明", "好了").label == "me"
+    v = j(a, 25, "阿花", "哪里像了")  # 对话串过期了，又没点名：可能在接团子插的那句，拿不准
+    assert v.label == "unsure" and "插的那句" in v.reason
+
+
+def test_rule4_only_for_who_dango_answered():
+    a = make()
+    assert j(a, 0, "阿花", "团子你说像不像").label == "me"
+    j(a, 3, "小明", "明明不像")  # 两个人都在，没点名：拿不准
+    a.said(6)  # 团子回这一批：两个人都开接话窗口
+    assert j(a, 9, "阿花", "就是像").label == "me"
+    b = make()
+    assert j(b, 0, "阿花", "团子你看").label == "me"
+    assert lt(j(b, 2, "小明", "阿花你看")) == ("other", "阿花")
+    b.said(5)  # 团子回的是阿花：小明那句是跟阿花说的，不给他开窗口
+    assert j(b, 8, "小明", "哈哈").label != "me"
+
+
+def test_rule4_sandbox_chain_1011():
+    """10-11 沙盒：辣椒和老登斗嘴，团子插一句之后两人互相回的被判成「在接你的话」。"""
+    fr = {"番茄炒蛋盖饭": ["番茄炒蛋盖饭", "老登"], "辣椒": ["辣椒"]}
+    s = dict(nearby=["番茄炒蛋盖饭", "辣椒"], friends=fr)
+    a = make()
+    assert lt(j(a, 0, "辣椒", "老登你那个新斗篷哪来的", **s)) == ("other", "番茄炒蛋盖饭")
+    assert lt(j(a, 4, "番茄炒蛋盖饭", "季节送的 好看吧", **s)) == ("other", "辣椒")
+    assert lt(j(a, 8, "辣椒", "还行吧 有点像窗帘", **s)) == ("other", "番茄炒蛋盖饭")
+    assert lt(j(a, 12, "番茄炒蛋盖饭", "你才窗帘", **s)) == ("other", "辣椒")
+    a.said(16)  # 「窗帘也挺好啊」：插话
+    assert lt(j(a, 19, "辣椒", "就是像", **s)) == ("other", "番茄炒蛋盖饭")
+    assert lt(j(a, 22, "番茄炒蛋盖饭", "哪里像了", **s)) == ("other", "辣椒")
 
 
 def test_rule5c_alternating():
@@ -197,3 +249,49 @@ def test_distress_keeps_me():
     a = make()
     a.said(0)
     assert j(a, 5, "小明", "其实我有点难过").label == "me"
+
+
+def test_rule4_second_line_same_turn_keeps_targets():
+    """团子一轮说两句：第二句前面没有新聊天，沿用第一句的对象，不当成主动开口给所有人开窗口。"""
+    a = make()
+    j(a, 0, "小明", "阿花你看")
+    a.said(4)
+    a.said(6)  # 插话说了两句
+    assert lt(j(a, 9, "小明", "好看吧")) == ("other", "阿花")
+    b = make()
+    assert j(b, 0, "阿花", "团子你看").label == "me"
+    j(b, 2, "小明", "阿花你看")
+    b.said(4)
+    b.said(6)  # 回阿花说了两句：还是只给阿花
+    assert j(b, 9, "小明", "哈哈").label != "me"
+    assert j(b, 10, "阿花", "嘿嘿").label == "me"
+    c = make()
+    c.said(0)
+    c.said(100)  # 隔了很久又开口：主动开口，谁接都算
+    assert j(c, 105, "小明", "嗯").label == "me"
+
+
+def test_rule4_unnamed_banter_breaks_after_one_line():
+    """评审：两人不点名斗嘴（都判拿不准），团子回一句之后两人接着互相说，不该一直算在接团子的话。"""
+    a = make()
+    assert j(a, 0, "小明", "这个斗篷好看吗").label == "unsure"
+    assert j(a, 3, "阿花", "还行").label == "unsure"
+    a.said(6)  # 团子回这一批（两个人都拿不准）
+    assert j(a, 9, "小明", "哪里还行了").label == "me"  # 第一句可能是接团子
+    assert j(a, 12, "阿花", "就是还行").label != "me"  # 别人已经接过话了：交给对话串
+    assert lt(j(a, 15, "小明", "你眼光不行")) == ("other", "阿花")
+    b = make()  # 直接叫过团子的人不受影响
+    assert j(b, 0, "小明", "团子你说呢").label == "me"
+    j(b, 2, "阿花", "嗯嗯")
+    b.said(5)
+    j(b, 7, "阿花", "哈哈")
+    assert j(b, 9, "小明", "你也这么觉得").label == "me"
+
+
+def test_rule4_late_interjection():
+    """评审：插话来得晚（大脑攒了一会儿），那批聊天早于 60 秒也照样算插话。"""
+    a = make()
+    j(a, 0, "小明", "阿花你看")
+    j(a, 3, "阿花", "明哥你看")
+    a.said(70)
+    assert j(a, 75, "阿花", "哪里像了").label != "me"

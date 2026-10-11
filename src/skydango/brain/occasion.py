@@ -80,12 +80,18 @@ def is_friend_fn(names: Sequence[str]) -> Callable[[str], bool]:
     return is_friend
 
 
+Aside = Callable[[float, str, str], bool]  # 这句聊天是好友之间互相说的（[addressee] 判成跟别人说）
+
+
 def reply_state(
-    cfg: ProactiveConfig, spoken: Spoken, chat: Chat, now: float, is_friend: Callable[[str], bool]
+    cfg: ProactiveConfig, spoken: Spoken, chat: Chat, now: float, is_friend: Callable[[str], bool],
+    aside: Aside | None = None,
 ) -> tuple[str, str]:
-    """主动那句之后 reply_window 内有没有好友说话：(called / replied / waiting / none, 谁)。"""
+    """主动那句之后 reply_window 内有没有好友说话：(called / replied / waiting / none, 谁)。
+    aside 给了就跳过好友之间互相说的（10-11：团子插一句之后两人接着聊，不算有人接）。"""
     end = spoken.t + cfg.reply_window
-    lines = [(who, text) for t, who, text in chat if spoken.t < t <= end and is_friend(who)]
+    lines = [(who, text) for t, who, text in chat
+             if spoken.t < t <= end and is_friend(who) and not (aside is not None and aside(t, who, text))]
     for who, text in lines:
         if any(name in text for name in cfg.self_names):
             return "called", who
@@ -104,6 +110,7 @@ def assess(
     is_friend: Callable[[str], bool],
     quota_scale: float = 1.0,  # 心情 / 精力的倍数（内心层第 2 期）；额度至少 1
     greeting: bool = False,  # 有好友刚来、团子还没开口：打招呼不受 min_gap 限制（额度、冷场照旧）
+    aside: Aside | None = None,  # 好友之间互相说的：不算接了主动的话、不让冷场重新计数（热闹不热闹照样算）
 ) -> Occasion:
     others = sum(1 for t, who, _ in chat if who != ME and now - cfg.busy_window <= t <= now)
     if not friends:
@@ -111,7 +118,7 @@ def assess(
     else:
         level = "busy" if others >= cfg.busy_lines else "quiet"
     mine = [s for s in spoken if s.proactive]
-    states = [reply_state(cfg, s, chat, now, is_friend) for s in mine]
+    states = [reply_state(cfg, s, chat, now, is_friend, aside) for s in mine]
     last = mine[-1] if mine else None
     last_reply, replier = states[-1] if states else ("", "")
     in_window = [(s, st) for s, st in zip(mine, states) if now - s.t < cfg.quota_window]
@@ -119,7 +126,8 @@ def assess(
     recent_replied = sum(1 for _, (st, _) in in_window if st in ("called", "replied"))
 
     # 冷场：最后一次有好友说话之后，连着 cold_after 句主动的话都没人接（好友一开口就重新计数）
-    heard_at = max((t for t, who, _ in chat if is_friend(who)), default=float("-inf"))
+    heard_at = max((t for t, who, text in chat if is_friend(who) and not (aside is not None and aside(t, who, text))),
+                   default=float("-inf"))
     since = [st for s, (st, _) in zip(mine, states) if s.t > heard_at]
     tail = since[-cfg.cold_after :] if cfg.cold_after > 0 else []
     cold = cfg.cold_after > 0 and len(tail) == cfg.cold_after and all(st == "none" for st in tail)

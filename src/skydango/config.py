@@ -861,7 +861,7 @@ class AddresseeConfig:
     followup_lines: int = 2  # 接话窗口里最多算头几句
     thread_window: float = 20.0  # 两个好友之间“还在聊”的窗口（秒）
     group_words: list[str] = field(default_factory=lambda: ["大家", "你们", "各位"])
-    greet_words: list[str] = field(  # 身边两个以上好友时，开头是这些算说给大家
+    greet_words: list[str] = field(  # 身边两个以上好友时，开头或结尾（去掉标点）是这些算说给大家
         default_factory=lambda: ["晚上好", "早上好", "中午好", "来了", "我来啦", "拜拜", "晚安", "走了"]
     )
 

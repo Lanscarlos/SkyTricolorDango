@@ -130,8 +130,9 @@ def test_blocked_say_not_followup(clock):
     clock.advance(1)
     say_batch(b, reader, ("小明", "哈哈"))
     assert b.verdicts[-1][3].reason != "在接你的话"
-    # 说成功之后才算
+    # 说成功之后才算。前面那批全是跟别人说的（插话不开窗口），所以先补一句叫团子的
     b.cfg.proactive.enabled = False
+    say_batch(b, reader, ("小明", "团子你说呢"))
     b.say("好")
     clock.advance(1)
     say_batch(b, reader, ("小明", "哈哈哈"))
@@ -257,3 +258,18 @@ def test_owner_command_row_has_no_why(clock):
     b.on_line = lambda kind, text, who, why="": lines.append((text, why))
     say_batch(b, reader, ("小明", "#过来"))
     assert ("#过来", "") in lines
+
+
+def test_occasion_aside_not_a_reply(clock):
+    """10-11：团子插一句之后两个好友接着互相说，不算有人接（插话护栏照常生效）。"""
+    b, _, reader, _ = ab(clock, proactive=True, wall=clock)  # spoken / chat 记的是墙钟
+    say_batch(b, reader, ("小明", "阿花你看"))
+    b.say("我也看看")  # 整批都是跟别人说的：插话、算主动开口
+    assert b.spoken[-1].proactive
+    clock.advance(2)
+    say_batch(b, reader, ("阿花", "明哥你看"))
+    assert b.verdicts[-1][3].label == "other"
+    clock.advance(100)
+    assert b.occasion().last_reply == "none"
+    b.cfg.addressee.enabled = False  # 关着照旧：谁说话都算接了
+    assert b.occasion().last_reply == "replied"
