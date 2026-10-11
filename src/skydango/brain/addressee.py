@@ -24,6 +24,8 @@ LABEL_NAMES = {"me": "跟你说", "other": "跟别人说", "all": "说给大家"
 KEEP = 120.0  # 对话状态只留最近这么多秒（团子上次开口之后、还留着的好友聊天就是「它在回的那批」）
 CONTINUE = 20.0  # 上一句之后这么多秒内、中间没人说话又开口 = 接着上一句说（同 body.FOLLOWUP_GAP），沿用上一句的对象
 TRAIL = "~～!！?？。.，,、… \t"  # 判句尾的招呼词前先去掉的标点和空白
+CALLED = "叫了你"  # 规则 1 的理由；判断里也拿它认「叫了团子」
+CROSSED = "（跨过你的话）"  # 跨过团子的话判出来的对话串，理由后面带上，离线评估能分开统计
 FUZZY_MIN = 3  # 叫法至少这么多个字才允许错一个字（2 个字错一个就只剩一个字对得上）
 
 
@@ -143,13 +145,13 @@ class Addressee:
         if not who:
             return Verdict("unsure", "不是好友说的")
         v = self._rules(now, who, text, friends, nearby)
-        self._lines.append((now, who, v.label, v.target, v.label == "all" or v.reason == "叫了你"))
+        self._lines.append((now, who, v.label, v.target, v.label == "all" or v.reason == CALLED))
         return v
 
     def _rules(self, now: float, who: str, text: str, friends: dict[str, list[str]], nearby: Sequence[str]) -> Verdict:
         cfg = self.cfg
         if any(n in text for n in self.self_names):
-            return Verdict("me", "叫了你")
+            return Verdict("me", CALLED)
         for name, words in friends.items():
             if name != who and any(_mentions(text, w) for w in words):
                 return Verdict("other", f"叫了{name}", name)
@@ -159,7 +161,7 @@ class Addressee:
             return Verdict("all", "说给大家")
 
         upset = sounds_upset(text)  # 说难过 / 不舒服是说给在场所有人的，没点名别人就不归进对话串
-        banter = self._banter(now, who)
+        banter = self._banter(now, who, nearby)
         if banter is not None:
             return Verdict("all", f"说难过的话（刚才在跟{banter.target}说）") if upset else banter
 
@@ -174,7 +176,7 @@ class Addressee:
                 return Verdict("me", "在接你的话")
 
         context = [e for e in self._lines if e[1] != ME and (self._ref_at is None or e[0] > self._ref_at)]
-        thread = self._thread(now, who, context)
+        thread = self._thread(now, who, context, nearby)
         if thread is not None:
             return Verdict("all", f"说难过的话（刚才在跟{thread.target}说）") if upset else thread
 
@@ -187,16 +189,30 @@ class Addressee:
             return Verdict("unsure", "可能在接你插的那句")
         return Verdict("unsure", "")
 
-    def _banter(self, now: float, who: str) -> Verdict | None:
+    def _banter(self, now: float, who: str, nearby: Sequence[str]) -> Verdict | None:
         """thread_window 内没人叫团子 / 说给大家时，跨过团子的话看对话串（还在跟 X 说 / 在回 X / 和 X 一来一回）：
-        10-11 沙盒里团子插一句 / 回一句之后，两人互相回的话被当成接团子的话，团子一直跟着接。"""
-        recent = [e for e in self._lines if e[1] != ME and now - e[0] <= self.cfg.thread_window]
+        10-11 沙盒里团子插一句 / 回一句之后，两人互相回的话被当成接团子的话，团子一直跟着接。
+        X 已经不在身边、或者 X 上一句是在跟团子说（三人轮流接团子的话）的不算。"""
+        window = [e for e in self._lines if now - e[0] <= self.cfg.thread_window]
+        recent = [e for e in window if e[1] != ME]
         if any(e[4] for e in recent):
             return None
-        return self._thread(now, who, recent)
+        v = self._thread(now, who, recent, nearby)
+        if v is None:
+            return None
+        last_x = next((e for e in reversed(recent) if e[1] == v.target), None)
+        if last_x is not None and last_x[2] == "me":
+            return None
+        crossed = any(e[1] == ME for e in window)
+        return Verdict(v.label, v.reason + CROSSED, v.target) if crossed else v
 
-    def _thread(self, now: float, who: str, after: list[Line]) -> Verdict | None:
-        """还在跟别人一来一回（团子上次不是插话的开口之后、thread_window 内）：判成 other，没有就 None。"""
+    def _thread(self, now: float, who: str, after: list[Line], nearby: Sequence[str]) -> Verdict | None:
+        """还在跟别人一来一回（团子上次不是插话的开口之后、thread_window 内）：判成 other，没有就 None。
+        那个人已经不在身边的不算（10-11 评审：只剩他一个人时被走开的人的旧话带偏）。"""
+        v = self._thread_any(now, who, after)
+        return v if v is not None and any(similar(n, v.target, 0.75) for n in nearby) else None
+
+    def _thread_any(self, now: float, who: str, after: list[Line]) -> Verdict | None:
         recent = [e for e in after if now - e[0] <= self.cfg.thread_window]
         last_own = next((e for e in reversed(recent) if e[1] == who), None)
         if last_own is not None and last_own[2] == "other":

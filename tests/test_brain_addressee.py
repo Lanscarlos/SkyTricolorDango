@@ -315,6 +315,38 @@ def test_rule4_unnamed_banter_sandbox_1011b():
     assert lt(j(a, 32, "番茄炒蛋盖饭", "你才不行", **s)) == ("other", "辣椒")
 
 
+def test_banter_not_when_other_was_talking_to_dango():
+    """评审：三人里两个好友轮流接团子的话（都没点名）：对方上一句是在跟团子说，这句不算在回他。"""
+    a = make()
+    a.said(0)  # 主动问「你们今天去哪了」
+    assert j(a, 3, "小明", "去雨林了").label == "me"
+    assert j(a, 5, "阿花", "我去霞谷").label == "unsure"
+    a.said(8)
+    assert j(a, 11, "阿花", "对呀在滑雪").label == "me"
+    assert j(a, 14, "小明", "我也想去").label == "me"
+
+
+def test_banter_not_with_someone_who_left():
+    """评审：跟他一来一回的人已经走了、身边只剩他：不算还在跟那人说。"""
+    a = make()
+    j(a, 0, "阿花", "嘿嘿")
+    j(a, 3, "小明", "哈哈")
+    a.said(6)
+    j(a, 9, "阿花", "我先走了")
+    v = j(a, 12, "小明", "真的走了", nearby=["小明"])
+    assert v.label != "other"
+
+
+def test_banter_reason_marks_crossing():
+    """跨过团子的话判出来的，理由带「跨过你的话」，离线评估能分开统计。"""
+    a = make()
+    j(a, 0, "小明", "嘻嘻")
+    j(a, 3, "阿花", "哎呀")
+    a.said(5)
+    v = j(a, 8, "小明", "你呀")
+    assert lt(v) == ("other", "阿花") and "跨过你的话" in v.reason
+
+
 def test_banter_broken_by_calling_dango():
     """交替里有人叫了团子 / 说给大家：不算两人在聊，照旧按接团子的话判。"""
     a = make()
