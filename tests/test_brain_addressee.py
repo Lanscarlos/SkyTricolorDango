@@ -247,3 +247,23 @@ def test_distress_keeps_me():
     a = make()
     a.said(0)
     assert j(a, 5, "小明", "其实我有点难过").label == "me"
+
+
+def test_rule4_second_line_same_turn_keeps_targets():
+    """团子一轮说两句：第二句前面没有新聊天，沿用第一句的对象，不当成主动开口给所有人开窗口。"""
+    a = make()
+    j(a, 0, "小明", "阿花你看")
+    a.said(4)
+    a.said(6)  # 插话说了两句
+    assert lt(j(a, 9, "小明", "好看吧")) == ("other", "阿花")
+    b = make()
+    assert j(b, 0, "阿花", "团子你看").label == "me"
+    j(b, 2, "小明", "阿花你看")
+    b.said(4)
+    b.said(6)  # 回阿花说了两句：还是只给阿花
+    assert j(b, 9, "小明", "哈哈").label != "me"
+    assert j(b, 10, "阿花", "嘿嘿").label == "me"
+    c = make()
+    c.said(0)
+    c.said(100)  # 隔了很久又开口：主动开口，谁接都算
+    assert j(c, 105, "小明", "嗯").label == "me"

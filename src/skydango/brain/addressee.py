@@ -23,6 +23,7 @@ LABEL_NAMES = {"me": "跟你说", "other": "跟别人说", "all": "说给大家"
 
 KEEP = 120.0  # 对话状态只留最近这么多秒
 BATCH = 60.0  # 团子说话前这么多秒内、上次说话之后的好友聊天算「它在回的那批」
+CONTINUE = 20.0  # 上一句之后这么多秒内、中间没人说话又开口 = 接着上一句说（同 body.FOLLOWUP_GAP），沿用上一句的对象
 TRAIL = "~～!！?？。.，,、… \t"  # 判句尾的招呼词前先去掉的标点和空白
 FUZZY_MIN = 3  # 叫法至少这么多个字才允许错一个字（2 个字错一个就只剩一个字对得上）
 
@@ -88,7 +89,11 @@ class Addressee:
         self._prune(now)
         batch = [e for e in self._lines if e[1] != ME and now - e[0] <= BATCH
                  and (self._said_at is None or e[0] > self._said_at)]
-        self._reply_to = frozenset(e[1] for e in batch if e[2] != "other") if batch else None
+        if batch:
+            self._reply_to = frozenset(e[1] for e in batch if e[2] != "other")
+        elif self._said_at is None or now - self._said_at > CONTINUE:
+            self._reply_to = None
+        # else：接着上一句又说（一轮两句），中间没人说话：沿用上一句的对象
         if self._reply_to is None or self._reply_to:
             self._ref_at = now
         self._said_at = now
