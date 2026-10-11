@@ -79,12 +79,28 @@ def _mentions(text: str, word: str) -> bool:
     return any(sum(a != b for a, b in zip(text[i : i + n], word)) <= 1 for i in range(len(text) - n + 1))
 
 
+Line = tuple[float, str, str, str, bool]  # (时间, 谁, 判断, 对象, 叫了团子 / 说给大家)
+
+
+def _alternating(lines: Sequence[Line], who: str) -> Verdict | None:
+    """说话人（连着的算一个）最后是 他、X、他 交替：和 X 一来一回。"""
+    seq: list[str] = []
+    for e in lines:
+        if not seq or seq[-1] != e[1]:
+            seq.append(e[1])
+    if not seq or seq[-1] != who:
+        seq.append(who)
+    if len(seq) >= 3 and seq[-1] == seq[-3] == who and seq[-2] != who:
+        return Verdict("other", f"和{seq[-2]}一来一回", seq[-2])
+    return None
+
+
 class Addressee:
     def __init__(self, cfg: AddresseeConfig, self_names: Sequence[str], followup_window: float) -> None:
         self.cfg = cfg
         self.self_names = [n for n in self_names if n]
         self.followup_window = followup_window
-        self._lines: deque[tuple[float, str, str, str]] = deque()  # (时间, 谁, 判断, 对象)；团子是 ME
+        self._lines: deque[Line] = deque()  # (时间, 谁, 判断, 对象, 叫了团子 / 说给大家)；团子是 ME
         self._said_at: float | None = None
         # 接话窗口给谁：direct = 跟团子说过 / 说给大家的人，窗口照给；loose = 拿不准的人（None = 谁都算，主动开口），
         # 只在团子开口之后还没别的好友说话时给（两人不点名斗嘴时第二个人起就交给对话串）；两个都空 = 插话，谁都不给
@@ -105,7 +121,7 @@ class Addressee:
         if not self._interjected():
             self._ref_at = now
         self._said_at = now
-        self._lines.append((now, ME, "", ""))
+        self._lines.append((now, ME, "", "", False))
 
     def _prune(self, now: float) -> None:
         while self._lines and now - self._lines[0][0] > KEEP:
@@ -127,7 +143,7 @@ class Addressee:
         if not who:
             return Verdict("unsure", "不是好友说的")
         v = self._rules(now, who, text, friends, nearby)
-        self._lines.append((now, who, v.label, v.target))
+        self._lines.append((now, who, v.label, v.target, v.label == "all" or v.reason == "叫了你"))
         return v
 
     def _rules(self, now: float, who: str, text: str, friends: dict[str, list[str]], nearby: Sequence[str]) -> Verdict:
@@ -142,6 +158,11 @@ class Addressee:
         ):
             return Verdict("all", "说给大家")
 
+        upset = sounds_upset(text)  # 说难过 / 不舒服是说给在场所有人的，没点名别人就不归进对话串
+        banter = self._banter(now, who)
+        if banter is not None:
+            return Verdict("all", f"说难过的话（刚才在跟{banter.target}说）") if upset else banter
+
         since = self._since_said(now)
         in_window = since is not None and since <= self.followup_window
         after = [e for e in self._lines if e[1] != ME and (self._said_at is None or e[0] > self._said_at)]
@@ -154,7 +175,6 @@ class Addressee:
 
         context = [e for e in self._lines if e[1] != ME and (self._ref_at is None or e[0] > self._ref_at)]
         thread = self._thread(now, who, context)
-        upset = sounds_upset(text)  # 说难过 / 不舒服是说给在场所有人的，没点名别人就不归进对话串
         if thread is not None:
             return Verdict("all", f"说难过的话（刚才在跟{thread.target}说）") if upset else thread
 
@@ -167,7 +187,15 @@ class Addressee:
             return Verdict("unsure", "可能在接你插的那句")
         return Verdict("unsure", "")
 
-    def _thread(self, now: float, who: str, after: list[tuple[float, str, str, str]]) -> Verdict | None:
+    def _banter(self, now: float, who: str) -> Verdict | None:
+        """thread_window 内没人叫团子 / 说给大家时，跨过团子的话看对话串（还在跟 X 说 / 在回 X / 和 X 一来一回）：
+        10-11 沙盒里团子插一句 / 回一句之后，两人互相回的话被当成接团子的话，团子一直跟着接。"""
+        recent = [e for e in self._lines if e[1] != ME and now - e[0] <= self.cfg.thread_window]
+        if any(e[4] for e in recent):
+            return None
+        return self._thread(now, who, recent)
+
+    def _thread(self, now: float, who: str, after: list[Line]) -> Verdict | None:
         """还在跟别人一来一回（团子上次不是插话的开口之后、thread_window 内）：判成 other，没有就 None。"""
         recent = [e for e in after if now - e[0] <= self.cfg.thread_window]
         last_own = next((e for e in reversed(recent) if e[1] == who), None)
@@ -176,15 +204,7 @@ class Addressee:
         reply = next((e for e in reversed(recent) if e[1] != who and e[2] == "other" and e[3] == who), None)
         if reply is not None:
             return Verdict("other", f"在回{reply[1]}", reply[1])
-        seq: list[str] = []
-        for e in recent:
-            if not seq or seq[-1] != e[1]:
-                seq.append(e[1])
-        if not seq or seq[-1] != who:
-            seq.append(who)
-        if len(seq) >= 3 and seq[-1] == seq[-3] == who and seq[-2] != who:
-            return Verdict("other", f"和{seq[-2]}一来一回", seq[-2])
-        return None
+        return _alternating(recent, who)
 
     def thread_note(self, now: float) -> str:
         """最近 thread_window×3 秒里两个好友互相说话：「小明 和 阿花 在聊（1 分钟内 6 句）」，没有就空串。"""
@@ -192,7 +212,7 @@ class Addressee:
         self._prune(now)
         recent = [e for e in self._lines if e[1] != ME and e[2] == "other" and now - e[0] <= window]
         pairs: dict[frozenset[str], list[tuple[float, str, str]]] = {}
-        for t, who, _, target in recent:
+        for t, who, _, target, _ in recent:
             pairs.setdefault(frozenset((who, target)), []).append((t, who, target))
         best: tuple[int, list[tuple[float, str, str]]] | None = None
         for key, lines in pairs.items():

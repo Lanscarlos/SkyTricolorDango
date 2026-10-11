@@ -277,8 +277,9 @@ def test_rule4_unnamed_banter_breaks_after_one_line():
     assert j(a, 0, "小明", "这个斗篷好看吗").label == "unsure"
     assert j(a, 3, "阿花", "还行").label == "unsure"
     a.said(6)  # 团子回这一批（两个人都拿不准）
-    assert j(a, 9, "小明", "哪里还行了").label == "me"  # 第一句可能是接团子
-    assert j(a, 12, "阿花", "就是还行").label != "me"  # 别人已经接过话了：交给对话串
+    v = j(a, 9, "小明", "哪里还行了")  # 小明、阿花、小明交替，中间没人叫团子：跨过团子那句也算两人一来一回
+    assert lt(v) == ("other", "阿花") and "一来一回" in v.reason
+    assert j(a, 12, "阿花", "就是还行").label != "me"
     assert lt(j(a, 15, "小明", "你眼光不行")) == ("other", "阿花")
     b = make()  # 直接叫过团子的人不受影响
     assert j(b, 0, "小明", "团子你说呢").label == "me"
@@ -295,3 +296,34 @@ def test_rule4_late_interjection():
     j(a, 3, "阿花", "明哥你看")
     a.said(70)
     assert j(a, 75, "阿花", "哪里像了").label != "me"
+
+
+def test_rule4_unnamed_banter_sandbox_1011b():
+    """10-11 沙盒第二轮（[pacing] 上线后）：辣椒接了团子一句就成了「在跟团子说」的人，她回老登的「你眼光不行」也判成在接团子的话，
+    团子回了之后老登的「你才不行」又被算进去，团子连回三句。两人交替说、中间没人叫团子，跨过团子的话也算两人在聊。"""
+    fr = {"番茄炒蛋盖饭": ["番茄炒蛋盖饭", "老登"], "辣椒": ["辣椒"]}
+    s = dict(nearby=["番茄炒蛋盖饭", "辣椒"], friends=fr)
+    a = make()
+    assert j(a, 0, "辣椒", "这个斗篷好看吗", **s).label == "unsure"
+    assert j(a, 4, "番茄炒蛋盖饭", "还行", **s).label == "unsure"
+    a.said(10)  # 「好看，哪儿换的呀」
+    assert lt(j(a, 14, "辣椒", "哪里还行了", **s)) == ("other", "番茄炒蛋盖饭")
+    a.said(18)  # 团子还是接了：「就是好看呀」
+    assert lt(j(a, 20, "番茄炒蛋盖饭", "就是还行", **s)) == ("other", "辣椒")
+    assert lt(j(a, 24, "辣椒", "你眼光不行", **s)) == ("other", "番茄炒蛋盖饭")
+    a.said(28)
+    assert lt(j(a, 32, "番茄炒蛋盖饭", "你才不行", **s)) == ("other", "辣椒")
+
+
+def test_banter_broken_by_calling_dango():
+    """交替里有人叫了团子 / 说给大家：不算两人在聊，照旧按接团子的话判。"""
+    a = make()
+    assert j(a, 0, "小明", "团子你看这个").label == "me"
+    j(a, 3, "阿花", "哈哈")
+    a.said(6)
+    assert j(a, 9, "小明", "好看吧").label == "me"
+    b = make()  # 只有一个人在跟团子来回：不是一来一回
+    b.said(0)
+    assert j(b, 3, "小明", "嗯").label == "me"
+    b.said(6)
+    assert j(b, 9, "小明", "对").label == "me"
