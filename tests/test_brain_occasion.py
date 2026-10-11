@@ -119,3 +119,17 @@ def test_quota_scale():
     busy_chat = [line(10 * i + 5, "阿花") for i in range(5)]
     assert assess(CFG, NOW, ["阿花"], 0, busy_chat, [], FRIEND, quota_scale=1.5).left == 6
     assert assess(CFG, NOW, ["阿花"], 0, busy_chat, [], FRIEND).left == 4
+
+
+# 规则 4 连锁的另一半（10-11）：好友之间互相说的（判成跟别人说）不算接了团子的话，也不让冷场重新计数
+def test_aside_lines_not_a_reply():
+    aside = lambda t, who, text: text == "互相说"  # noqa: E731
+    chat = [line(90, "阿花", "互相说")]
+    assert reply_state(CFG, said(100), chat, NOW, FRIEND) == ("replied", "阿花")
+    assert reply_state(CFG, said(100), chat, NOW, FRIEND, aside=aside) == ("none", "")
+    three = [said(500), said(350), said(200)]
+    talk = [line(t, "阿花", "互相说") for t in (450, 300, 150, 50)]
+    o = assess(CFG, NOW, ("阿花",), 0, talk, three, FRIEND, aside=aside)
+    assert o.blocked.startswith("连着") and o.last_reply == "none"
+    assert assess(CFG, NOW, ("阿花",), 0, talk, three, FRIEND).last_reply == "replied"  # 不给就照旧
+    assert o.others == 2  # 热闹不热闹照样算这些（最近 3 分钟里的两句）

@@ -2145,7 +2145,12 @@ class Body:
         return assess(
             self.cfg.proactive, self.wall(), friends, strangers, list(self.chat), list(self.spoken),
             is_friend_fn(self.friend_names()), quota_scale=self.effects().quota, greeting=self._greeting(friends),
+            aside=self._aside_line if self.cfg.addressee.enabled else None,
         )
+
+    def _aside_line(self, t: float, who: str, text: str) -> bool:
+        """body.chat 里这句是好友之间互相说的（[addressee] 判成跟别人说）：按说话人、原文、时间对上 verdicts。"""
+        return any(w == who and tx == text and v.label == "other" and abs(vt - t) < 5 for vt, w, tx, v in self.verdicts)
 
     def _greeting(self, friends: list[str]) -> bool:
         """有好友刚来（greet_window 内）、团子之后还没开口：这句算打招呼。"""
@@ -2193,7 +2198,7 @@ class Body:
                 return False
             if is_friend(who):
                 # 跟别人说的不用接（spec 2026-10-05-addressee §4）：跳过，接着往前找
-                if any(w == who and tx == text and v.label == "other" and abs(vt - t) < 5 for vt, w, tx, v in self.verdicts):
+                if self._aside_line(t, who, text):
                     continue
                 return wall - t <= self.cfg.proactive.reply_window
         return False

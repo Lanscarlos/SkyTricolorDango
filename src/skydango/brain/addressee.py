@@ -2,6 +2,9 @@
 
 身体每读到一句好友聊天就 `judge` 一次，拿回 `Verdict`（跟你说 / 跟别人说 / 说给大家 / 拿不准）；团子说话时调 `said`。
 时间都用身体的 clock；模块只记最近 2 分钟的聊天和每句的判断。
+
+团子说话时按它前面那批没回的好友聊天定接话窗口给谁（10-11 修规则 4 的连锁）：没有这批 = 主动开口，谁接都算；
+这批里有跟你说 / 说给大家 / 拿不准的 = 在回这些人，只给他们开；整批都是跟别人说的 = 插话，谁都不开，旁边两个人的对话串接着算。
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ from .occasion import ME
 LABEL_NAMES = {"me": "跟你说", "other": "跟别人说", "all": "说给大家", "unsure": "拿不准"}
 
 KEEP = 120.0  # 对话状态只留最近这么多秒
+BATCH = 60.0  # 团子说话前这么多秒内、上次说话之后的好友聊天算「它在回的那批」
+TRAIL = "~～!！?？。.，,、… \t"  # 判句尾的招呼词前先去掉的标点和空白
 FUZZY_MIN = 3  # 叫法至少这么多个字才允许错一个字（2 个字错一个就只剩一个字对得上）
 
 
@@ -75,10 +80,17 @@ class Addressee:
         self.followup_window = followup_window
         self._lines: deque[tuple[float, str, str, str]] = deque()  # (时间, 谁, 判断, 对象)；团子是 ME
         self._said_at: float | None = None
+        self._reply_to: frozenset[str] | None = None  # 接话窗口给谁：None = 谁都给（主动开口）；空 = 谁都不给（插话）
+        self._ref_at: float | None = None  # 对话串从这之后算：插话不挪它，旁边两个人的对话串不会被团子插一句打断
 
     def said(self, now: float) -> None:
-        """团子说了一句。"""
+        """团子说了一句：按它在回的那批聊天定接话窗口给谁。"""
         self._prune(now)
+        batch = [e for e in self._lines if e[1] != ME and now - e[0] <= BATCH
+                 and (self._said_at is None or e[0] > self._said_at)]
+        self._reply_to = frozenset(e[1] for e in batch if e[2] != "other") if batch else None
+        if self._reply_to is None or self._reply_to:
+            self._ref_at = now
         self._said_at = now
         self._lines.append((now, ME, "", ""))
 
@@ -108,20 +120,23 @@ class Addressee:
         for name, words in friends.items():
             if name != who and any(_mentions(text, w) for w in words):
                 return Verdict("other", f"叫了{name}", name)
+        tail = text.rstrip(TRAIL)
         if any(w in text for w in cfg.group_words) or (
-            len(nearby) >= 2 and any(text.startswith(w) for w in cfg.greet_words)
+            len(nearby) >= 2 and any(text.startswith(w) or tail.endswith(w) for w in cfg.greet_words)
         ):
             return Verdict("all", "说给大家")
 
         since = self._since_said(now)
+        in_window = since is not None and since <= self.followup_window
         after = [e for e in self._lines if e[1] != ME and (self._said_at is None or e[0] > self._said_at)]
-        if since is not None and since <= self.followup_window:
+        if in_window and (self._reply_to is None or who in self._reply_to):
             mine = sum(1 for e in after if e[1] == who)
             involved = any(e[2] == "other" and (e[1] == who or e[3] == who) for e in after)
             if mine < cfg.followup_lines and not involved:
                 return Verdict("me", "在接你的话")
 
-        thread = self._thread(now, who, after)
+        context = [e for e in self._lines if e[1] != ME and (self._ref_at is None or e[0] > self._ref_at)]
+        thread = self._thread(now, who, context)
         upset = sounds_upset(text)  # 说难过 / 不舒服是说给在场所有人的，没点名别人就不归进对话串
         if thread is not None:
             return Verdict("all", f"说难过的话（刚才在跟{thread.target}说）") if upset else thread
@@ -129,7 +144,11 @@ class Addressee:
         recent = [e for e in after if now - e[0] <= cfg.thread_window]
         if len(nearby) == 1 and similar(nearby[0], who, 0.75) and not any(e[1] != who for e in recent):
             return Verdict("me", "身边只有他")
-        return Verdict("all", "说难过的话") if upset else Verdict("unsure", "")
+        if upset:
+            return Verdict("all", "说难过的话")
+        if in_window and self._reply_to is not None and not self._reply_to:
+            return Verdict("unsure", "可能在接你插的那句")
+        return Verdict("unsure", "")
 
     def _thread(self, now: float, who: str, after: list[tuple[float, str, str, str]]) -> Verdict | None:
         """还在跟别人一来一回（团子说完之后、thread_window 内）：判成 other，没有就 None。"""
