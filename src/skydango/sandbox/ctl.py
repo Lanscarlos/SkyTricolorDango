@@ -227,6 +227,11 @@ class Ctl:
             self.say(format_line(r))
 
         last, quiet = self.wait_quiet(before["version"], a.timeout, seen)
+        return self._finish(before, brain0, lines, last, quiet, {"result": result})
+
+    def _finish(self, before: dict, brain0: dict | None, lines: list[dict], last: dict | None, quiet: bool,
+                extra: dict) -> int:
+        """等完之后：打印这期间大脑每一轮的文字和沙盒现在，--json 时连同 extra 输出一个对象（op / play 共用）。"""
         turns = []
         if brain0 is not None:
             got = self.brain(brain0.get("version", 0))
@@ -239,10 +244,34 @@ class Ctl:
         last = last or before
         self.say(footer(last))
         if not quiet:
-            self.say(f"!! 等了 {a.timeout:g} 秒还没安静下来（大脑可能还在想），用 state / brain 接着看")
-        self.emit({"ok": quiet, "result": result, "lines": lines, "brain": [summarize_turn(t) for t in turns],
+            self.say(f"!! 等了 {self.args.timeout:g} 秒还没安静下来（大脑可能还在想），用 state / brain 接着看")
+        self.emit({"ok": quiet, **extra, "lines": lines, "brain": [summarize_turn(t) for t in turns],
                    "state": _no_lines(last), "timed_out": not quiet})
         return 0 if quiet else 1
+
+    def play(self, entries: list[tuple[float, str, str]]) -> int:
+        """按回放文件的时间点发话（spec 2026-10-21-chat-rhythm §3）：不等团子回完，最后一句发完再等到安静。"""
+        before = self.state(0, 0)
+        brain0 = self.brain(0)
+        lines: list[dict] = []
+        sent: list[dict] = []
+        start = time.monotonic()
+        for i, (at, who, text) in enumerate(entries, 1):
+            left = start + at - time.monotonic()
+            if left > 0:
+                time.sleep(left)
+            result = self.sandbox("POST", "/op", body={"op": "say", "who": who, "text": text})
+            if not result.get("ok"):
+                return self.fail(f"第 {i} 句没发出去（{who}：{text}）：{result.get('text') or '沙盒没做成'}")
+            sent.append({"t": at, "who": who, "text": text})
+            self.say(f"+{at:.1f}s {who}：{text}")
+
+        def seen(r: dict) -> None:
+            lines.append(r)
+            self.say(format_line(r))
+
+        last, quiet = self.wait_quiet(before["version"], self.args.timeout, seen)
+        return self._finish(before, brain0, lines, last, quiet, {"sent": sent})
 
     def wait_quiet(self, after: int, timeout: float, seen: Callable[[dict], None]) -> tuple[dict | None, bool]:
         """长轮询 /state 打印新行，直到 idle、不在想、不在反思；超时返回 (最后的状态, False)。"""
@@ -355,6 +384,37 @@ def _skip_seconds(text: str):
     return _num(value * 60)
 
 
+_SCRIPT_LINE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s+([^：:]+?)\s*[：:]\s*(.+?)\s*$")
+
+
+def parse_script(text: str) -> list[tuple[float, str, str]]:
+    """回放文件 → [(偏移秒, 说话人, 原文)]：一行 `<秒> <说话人>：<原文>`，全角 / 半角冒号都行（只按第一个拆），
+    空行和 # 开头的跳过；偏移不能往回走。格式不对抛 Failed（带行号），一句都没有也算错。"""
+    out: list[tuple[float, str, str]] = []
+    for n, raw in enumerate(text.lstrip("﻿").splitlines(), 1):
+        line = raw.rstrip("\r")
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = _SCRIPT_LINE.match(line)
+        if m is None:
+            raise Failed(f"回放文件第 {n} 行格式不对（要写成「秒数 说话人：原文」）：{line}")
+        at = float(m.group(1))
+        if out and at < out[-1][0]:
+            raise Failed(f"回放文件第 {n} 行的时间 {at:g} 比上一句早：{line}")
+        out.append((at, m.group(2), m.group(3)))
+    if not out:
+        raise Failed("回放文件里一句都没有")
+    return out
+
+
+def _read_script(path: str) -> list[tuple[float, str, str]]:
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError as exc:
+        raise Failed(f"读不了回放文件 {path}：{exc}") from None
+    return parse_script(text)
+
+
 def _build_op(args) -> dict:
     name = args.action
     if name == "say":
@@ -406,6 +466,10 @@ def configure(p: argparse.ArgumentParser, sandbox_port: int | None = SANDBOX_POR
     q = sub.add_parser("notice", parents=[wait], help="放一条新鲜事（同眼睛发现的，过主动开口的护栏）")
     q.add_argument("text", nargs="+")
 
+    q = sub.add_parser("play", help="按文件里的时间点把话发进沙盒（一行「秒数 说话人：原文」），不等团子回完，最后一句发完再等到安静")
+    q.add_argument("file")
+    q.add_argument("--timeout", type=float, default=OP_TIMEOUT, help=f"最后一句发完后最多等几秒（默认 {OP_TIMEOUT:g}）")
+
     q = sub.add_parser("state", help="沙盒现在：时间、精力、身边、额度 + 最近几行聊天")
     q.add_argument("--lines", type=int, default=20, help="打印最近几行聊天记录（默认 20，0 = 不打印）")
     q = sub.add_parser("brain", help="大脑最近几轮：调了什么工具、返回了什么、写了什么")
@@ -433,6 +497,8 @@ def run(args, out: TextIO | None = None) -> int:
     try:
         if args.action in WAIT_OPS:
             return ctl.op(_build_op(args))
+        if args.action == "play":
+            return ctl.play(_read_script(args.file))
         if args.action == "state":
             return ctl.show_state()
         if args.action == "brain":

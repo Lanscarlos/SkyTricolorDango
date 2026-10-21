@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -19,6 +20,7 @@ class Fake:
     def __init__(self, routes: dict):
         self.routes = {k: (list(v) if isinstance(v, list) else [v]) for k, v in routes.items()}
         self.calls: list[tuple[str, str, dict, object]] = []
+        self.times: list[float] = []  # 和 calls 一一对应：收到请求的 monotonic 时间
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -34,6 +36,7 @@ class Fake:
                     assert self.headers.get("X-Skydango") == "1"
                 query = {k: v[0] for k, v in parse_qs(url.query).items()}
                 fake.calls.append((method, url.path, query, body))
+                fake.times.append(time.monotonic())
                 queue = fake.routes.get((method, url.path))
                 if not queue:
                     code, data = 404, {"ok": False}
@@ -395,3 +398,77 @@ def test_against_real_sandbox_server():
     assert code == 0
     assert srv.control.ops == [{"op": "say", "who": "小明", "text": "在吗"}]
     assert "团子：在呢" in out.getvalue()
+
+
+# ---- play：按真实时间线回放（spec 2026-10-21-chat-rhythm §3）----
+
+def test_parse_script_formats():
+    text = "﻿# 10-07\n0 小明：嘻嘻\r\n\n2.5 小明:团子\n12 小明：我说：好\n"
+    assert ctl.parse_script(text) == [(0.0, "小明", "嘻嘻"), (2.5, "小明", "团子"), (12.0, "小明", "我说：好")]
+
+
+@pytest.mark.parametrize("bad, n", [("0 小明 嘻嘻", 1), ("x 小明：嘻嘻", 1), ("0 小明：嘻嘻\n3 ：空", 2),
+                                    ("5 小明：a\n2 小明：b", 2), ("0 小明：", 1), ("# 只有注释", 0)])
+def test_parse_script_bad_line(bad, n):
+    with pytest.raises(ctl.Failed) as e:
+        ctl.parse_script(bad)
+    assert (f"第 {n} 行" in e.value.text) if n else "一句都没有" in e.value.text
+
+
+def _script(tmp_path, text):
+    f = tmp_path / "play.txt"
+    f.write_text(text, encoding="utf-8")
+    return str(f)
+
+
+def test_play_sends_on_time_without_waiting_then_waits_idle(run, tmp_path):
+    code, out, sb, _ = run(["play", _script(tmp_path, "0 小明：嘻嘻\n0.4 小明：团子\n")], sandbox={
+        ("GET", "/state"): [state(5), state(7, [row(6, "heard", "嘻嘻", who="小明"), row(7, "heard", "团子", who="小明")],
+                                               idle=False, thinking=True),
+                            state(8, [row(8, "said", "干嘛", who="团子")], idle=True)],
+        ("GET", "/brain"): [brain(3), brain(5, [turn(2, "心里：他叫我")])],
+        ("POST", "/op"): (200, {"ok": True, "text": "ok"}),
+    })
+    assert code == 0
+    ops = [(c[3], t) for c, t in zip(sb.calls, sb.times) if c[1] == "/op"]
+    assert [o for o, _ in ops] == [{"op": "say", "who": "小明", "text": "嘻嘻"}, {"op": "say", "who": "小明", "text": "团子"}]
+    assert ops[1][1] - ops[0][1] >= 0.35
+    first_op = sb.calls.index(next(c for c in sb.calls if c[1] == "/op"))
+    assert all(c[2].get("after") in (None, "0") for c in sb.calls[:first_op] if c[1] == "/state")  # 发之前只拿版本号
+    assert "+0.0s 小明：嘻嘻" in out and "+0.4s 小明：团子" in out
+    assert "团子：干嘛" in out and "心里：他叫我" in out
+    assert out.index("+0.4s 小明：团子") < out.index("团子：干嘛")
+
+
+def test_play_refused_line_stops(run, tmp_path):
+    code, out, sb, _ = run(["play", _script(tmp_path, "0 小明：a\n0.1 阿花：b\n0.2 小明：c\n")], sandbox={
+        ("GET", "/state"): state(5),
+        ("GET", "/brain"): brain(3),
+        ("POST", "/op"): [(200, {"ok": True, "text": "ok"}), (200, {"ok": False, "text": "阿花 不在身边"})],
+    })
+    assert code == 1
+    assert "第 2 句" in out and "不在身边" in out
+    assert len([c for c in sb.calls if c[1] == "/op"]) == 2
+
+
+def test_play_bad_file_sends_nothing(run, tmp_path):
+    code, out, sb, _ = run(["play", _script(tmp_path, "0 小明：a\n不对\n")], sandbox={
+        ("GET", "/state"): state(5),
+        ("GET", "/brain"): brain(3),
+        ("POST", "/op"): (200, {"ok": True, "text": "ok"}),
+    })
+    assert code == 1 and "第 2 行" in out
+    assert not [c for c in sb.calls if c[1] == "/op"]
+
+
+def test_play_json(run, tmp_path):
+    code, out, _, _ = run(["--json", "play", _script(tmp_path, "0 小明：嘻嘻\n")], sandbox={
+        ("GET", "/state"): [state(5), state(6, [row(6, "said", "嗯哼", who="团子")], idle=True)],
+        ("GET", "/brain"): [brain(3), brain(5, [turn(2, "心里：嗯")])],
+        ("POST", "/op"): (200, {"ok": True, "text": "ok"}),
+    })
+    data = json.loads(out)
+    assert code == 0 and data["ok"] is True
+    assert data["sent"] == [{"t": 0.0, "who": "小明", "text": "嘻嘻"}]
+    assert [r["text"] for r in data["lines"]] == ["嗯哼"]
+    assert data["brain"][0]["texts"] == ["心里：嗯"]

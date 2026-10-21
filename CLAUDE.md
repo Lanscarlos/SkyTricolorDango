@@ -738,7 +738,7 @@ dir = "private/sandbox"
 - **子进程** `python -m skydango sandbox --port 19392 [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]`：只给 JSON 接口（`sandbox/server.py`：`/status` `/state` 长轮询 `/op` `/brain` `/inner` `/inner/forget` `/shutdown`，本机 Host + `post_guard`）；
   操作经 `body.call` 在身体线程做（`sandbox/control.py`：冒充发言、来去、陌生人、地名、场景、新鲜事、快进、拨时间、立刻反思）；下线 = `/shutdown`，走最终反思 → 日记 → 合账本，再存 `clock.json`
 - **命令行客户端** `python -m skydango sandbox-ctl …`（`sandbox/ctl.py`，10-06；**还没对着真沙盒跑过**，测试是假 HTTP 服务 + 真 `SandboxServer`）：Agent / 用户不点网页也能操作沙盒。
-  操作（`say 谁 话` / `come` / `leave` / `skip 分钟|30s|2h` / `time HH:MM` / `reflect` / `strangers N` / `place [地名]` / `scene [文字]` / `notice 文字`）发 `/op`，默认接着长轮询 `/state` 边等边打印新行（heard 带「跟谁说」标注、blocked 带被拦原因），等到 idle、不在想、不在反思（`--timeout` 默认 180 秒，超时退出码 1；`--no-wait` 发完就走），再打印这期间大脑每一轮的文字（「心里：…」「不说：…」）和沙盒时间 / 精力 / 身边 / 额度；`state [--lines N]`、`brain [--last N] [--prompt] [--full]` 只看；`start [resume|sleep|HH:MM]` / `stop` 转发给管理面板（`/api/sandbox/start|stop`，默认等沙盒起来 / 退出），面板没开、沙盒没开都报清楚怎么办；`--json`（放在子命令前）输出一个 JSON 对象；端口按 `[sandbox] port` / `[console] port`，`--port` / `--console-port` 覆盖；输出 UTF-8、请求不走代理；Windows 上连一个没人听的端口要 2 秒才报错
+  操作（`say 谁 话` / `come` / `leave` / `skip 分钟|30s|2h` / `time HH:MM` / `reflect` / `strangers N` / `place [地名]` / `scene [文字]` / `notice 文字`）发 `/op`，默认接着长轮询 `/state` 边等边打印新行（heard 带「跟谁说」标注、blocked 带被拦原因），等到 idle、不在想、不在反思（`--timeout` 默认 180 秒，超时退出码 1；`--no-wait` 发完就走），再打印这期间大脑每一轮的文字（「心里：…」「不说：…」）和沙盒时间 / 精力 / 身边 / 额度；`play <文件>`（10-21，spec `2026-10-21-chat-rhythm-design.md` §3）按文件里的时间点发 `say`、**不等团子回完**（`say` 每句都等，话攒不起来），最后一句发完再等安静，格式不对报行号、一句都不发，中途被拒停下、退出码 1；`state [--lines N]`、`brain [--last N] [--prompt] [--full]` 只看；`start [resume|sleep|HH:MM]` / `stop` 转发给管理面板（`/api/sandbox/start|stop`，默认等沙盒起来 / 退出），面板没开、沙盒没开都报清楚怎么办；`--json`（放在子命令前）输出一个 JSON 对象；端口按 `[sandbox] port` / `[console] port`，`--port` / `--console-port` 覆盖；输出 UTF-8、请求不走代理；Windows 上连一个没人听的端口要 2 秒才报错
 - **管理面板**：子进程槽带 kind（团子 / 沙盒），**同一时间只能有一个**（共用令牌和 `.brain-claude/`），另一个在跑时拒绝并提示先停；`/sandbox/*` 转发、`/live/*` 只在团子时转。
   「沙盒」页：顶栏启动选项（接着上次 / 睡一晚 / 自定义）或沙盒时间牌 + 快进；三栏从左到右 团子（现在、身边、场景和新鲜事）/ 大脑控制台 / 聊天记录。
   聊天记录团子说的在左（樱花底）、冒充的人在右，动作旁白、事件分隔线、被拦的删除线 + 原因；
@@ -771,6 +771,7 @@ python -m skydango console [--port 端口] [--no-browser]  # 管理面板：填�
 python -m skydango sandbox [--port 19392] [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]  # 大脑沙盒子进程（一般由管理面板起；只有 JSON 接口），记忆只写 sandbox/memory/
 python -m skydango sandbox-ctl say 小明 团子在干嘛   # 冒充发言，等团子反应完，打印聊天新行和大脑的「心里」；另有 come/leave 谁、skip 30、time 23:30、reflect、strangers/place/scene/notice
 python -m skydango sandbox-ctl state | brain --last 3  # 看沙盒现在（时间、精力、身边、最近聊天）/ 大脑最近几轮；--json 放子命令前
+python -m skydango sandbox-ctl play tmp/<回放>.txt [--timeout 300]  # 按真实时间线回放（一行「秒数 说话人：原文」）：不等团子回完，测攒话节奏用；说话人先 come
 python -m skydango sandbox-ctl start [resume|sleep|HH:MM] | stop  # 让管理面板起停沙盒（面板要开着）
 python -m skydango run [--live | --dry-run] [--duration 秒] [--no-emotes]  # 团子（默认接统管大脑、dry-run）；模型按 [models.*]（默认要 DEEPSEEK_API_KEY，用到 Claude 的才要 SKYDANGO_CLAUDE_TOKEN）；--duration 到点自己退出；模型用量看管理面板「模型用量」卡片
 python -m skydango run --no-brain [--echo] [--live]  # 调试用的普通 Agent（[models.reply] 回复）；--echo 回复不调模型
