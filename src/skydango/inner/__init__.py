@@ -98,6 +98,17 @@ def show_lines(cfg: InnerConfig, directory: str | Path, friends: list[str], now:
     return lines
 
 
+def _drop_today(memo: str, now: float) -> str:
+    """要点开头模型自己写的日期就是今天的话去掉（写进 inbox 时前面已经有「某年某月某日 的要点：」，10-07 / 10-21 重复了两遍）；
+    别的日子是约定 / 发生的日期，留着。"""
+    import re
+    import time
+
+    d = time.localtime(now)
+    m = re.match(rf"^(?:{d.tm_year}年)?0?{d.tm_mon}月0?{d.tm_mday}日(?:（周.）)?[：:，,\s]*", memo)
+    return memo[m.end():].strip() if m and memo[m.end():].strip() else memo
+
+
 def finish_reflection(
     result: dict | None, mind, store, memory, cards: dict, friends: list[str], persist: bool, now: float, cfg: InnerConfig,
     persona=None, soft: set[str] = frozenset(), mind_log=None, energy=None,
@@ -134,7 +145,7 @@ def finish_reflection(
             _log.exception("最终反思记不进流水账")
     diary = result.get("diary") if isinstance(result.get("diary"), str) else ""
     raw_memos = result.get("memos") if isinstance(result.get("memos"), list) else []
-    memos = [str(m).strip() for m in raw_memos if str(m).strip()]
+    memos = [m for m in (_drop_today(str(x).strip(), now) for x in raw_memos) if m]
     if persist:
         for write in (
             lambda: store.write_mind(mind) if store is not None else None,

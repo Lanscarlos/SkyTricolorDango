@@ -362,6 +362,7 @@ class ToolLoopBrain:
                    "turns": done["cut"], "chars": len(done["text"]), "seconds": round(done["seconds"], 1), "usage": done["usage"]}
             row.update({"text": done["text"]} if done["ok"] else {"error": done["error"]})
             try:
+                Path(self.recap_path).parent.mkdir(parents=True, exist_ok=True)  # OpenAI 兼容大脑没人建 brain/（10-21）
                 with Path(self.recap_path).open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             except OSError:

@@ -337,6 +337,15 @@ def test_recap_jsonl_and_note(tmp_path):
     assert lines[1]["ok"] is False and lines[1]["error"]
 
 
+def test_recap_jsonl_dir_created(tmp_path):  # 10-21 沙盒：OpenAI 兼容大脑没人建 runs/<…>/brain/，recap.jsonl 写不进去
+    path = tmp_path / "brain" / "recap.jsonl"
+    brain = make_c(compact=[reply("好的提要")], recap_path=path)
+    run_turns(brain, 1, 3)
+    brain.jobs[0]()
+    run_turns(brain, 4, 4)
+    assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["text"] == "好的提要"
+
+
 # ---- 终审修的 ----
 def test_keep_turns_zero_does_not_break_turns():          # keep_turns ≤ 0（设置页能填）：当 1 算，不能让每轮都失败
     brain = make_c(keep=0)

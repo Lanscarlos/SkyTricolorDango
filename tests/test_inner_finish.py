@@ -18,6 +18,16 @@ def test_finish_writes_diary_memos_and_mind(tmp_path):
     assert "2026年9月30日（周三） 的要点：小明考试过了" in mem.inbox() and st.load_mind().mood.level == "开心"
 
 
+def test_finish_memo_drops_repeated_today(tmp_path):  # 10-07 / 10-21：「2026年9月30日（周三） 的要点：9月30日：…」
+    mem = MemoryStore(tmp_path)
+    memos = ["9月30日：小明考试过了", "2026年9月30日 阿花换了斗篷", "10月1日：约好去云野"]
+    s = finish_reflection({"memos": memos}, Mind(), None, mem, {}, [], True, T0, InnerConfig())
+    inbox = mem.inbox()
+    assert "的要点：小明考试过了" in inbox and "的要点：阿花换了斗篷" in inbox
+    assert "的要点：10月1日：约好去云野" in inbox  # 别的日子是约定的日期，留着
+    assert s.startswith("小明考试过了；阿花换了斗篷")  # days.jsonl 的经过也不重复日期
+
+
 def test_finish_summary_falls_back_to_diary(tmp_path):
     st = InnerStore(tmp_path / "inner")
     s = finish_reflection({"diary": "x" * 150}, Mind(), st, None, {}, [], True, T0, InnerConfig())
