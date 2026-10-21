@@ -62,6 +62,17 @@ def test_wants_rules():
     assert [w.text for w in m.wants] == ["想换个发型", "想听小明弹琴"]
 
 
+def test_wants_same_topic_reworded_is_one():  # 10-21 沙盒：同一件事换个后半句，记成了两条心愿
+    m = Mind()
+    m.apply({"wants_add": [{"kind": "小心思", "text": "辣椒那件会飘的斗篷在哪换的，想问一句"},
+                           {"kind": "小心思", "text": "辣椒那件会飘的斗篷在哪换的，她还没回我"},
+                           {"kind": "想做", "text": "想听小明弹琴"},
+                           {"kind": "想做", "text": "想看小明弹琴的视频"}]}, CARDS, FRIENDS, T0, CFG)
+    assert [w.text for w in m.wants] == ["辣椒那件会飘的斗篷在哪换的，想问一句", "想听小明弹琴", "想看小明弹琴的视频"]
+    m.apply({"wants_done": ["回头问一句辣椒那件会飘的斗篷在哪换"]}, CARDS, FRIENDS, T0, CFG)
+    assert [w.text for w in m.wants] == ["想听小明弹琴", "想看小明弹琴的视频"]
+
+
 def test_apply_ignores_junk_shapes():
     m = Mind()
     dropped = m.apply({"mood": "开心", "wants_add": "不是列表", "wants_done": 3, "grudge": 5}, CARDS, FRIENDS, T0, CFG)

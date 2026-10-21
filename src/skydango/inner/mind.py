@@ -26,6 +26,17 @@ def sounds_upset(text: str) -> bool:
     return any(w in (text or "") for w in DISTRESS)
 
 
+def same_want(a: str, b: str) -> bool:
+    """两条心愿说的是一件事：几乎一样，或者有一大段一模一样（≥ 6 个字、占短的一半以上）。
+    「辣椒那件会飘的斗篷在哪换的，想问一句」和「…，她还没回我」只差后半句（10-21 沙盒记成了两条）。"""
+    if similar(a, b, 0.75):
+        return True
+    from difflib import SequenceMatcher
+
+    common = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b)).size
+    return common >= 6 and common * 2 >= min(len(a), len(b))
+
+
 @dataclass
 class Mood:
     level: str = "平常"
@@ -85,7 +96,7 @@ class Mind:
         if isinstance(done, list):
             for text in done:
                 if isinstance(text, str) and text.strip():
-                    self.wants = [w for w in self.wants if not similar(text, w.text, 0.75)]
+                    self.wants = [w for w in self.wants if not same_want(text, w.text)]
         else:
             dropped.append("wants_done 不是列表")
         add = result.get("wants_add", [])
@@ -148,7 +159,7 @@ class Mind:
             if not who:
                 dropped.append(f"惦记的不是好友：{item.get('who')!r}")
                 return
-        if any(similar(text, w.text, 0.75) for w in self.wants):
+        if any(same_want(text, w.text) for w in self.wants):
             return
         self.wants.append(Want(item["kind"], text, who, now, now + cfg.want_days * 86400))
 
