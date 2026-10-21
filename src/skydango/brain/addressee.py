@@ -69,6 +69,14 @@ def _ends_clause(text: str, word: str) -> bool:
     return tail.endswith(word) and (len(tail) == len(word) or tail[-len(word) - 1] in TRAIL)
 
 
+def _to_group(text: str, word: str) -> bool:
+    """「大家 / 你们」是在招呼一群人：开头就是，或者句子里没有单数的「你」。
+    「你怎么知道大家是不是在跟你说话的」是在问一个人，「大家」只是话里提到（10-21 沙盒）。"""
+    if word not in text:
+        return False
+    return text.lstrip(TRAIL).startswith(word) or "你" not in text.replace("你们", "")
+
+
 def _mentions(text: str, word: str) -> bool:
     """句子里提到了这个名字：原样包含；≥ 3 个字的名字允许同长度的一段只差一个字（OCR 错字）。"""
     if not word:
@@ -136,6 +144,12 @@ class Addressee:
     def _since_said(self, now: float) -> float | None:
         return None if self._said_at is None else now - self._said_at
 
+    def _around(self, now: float, name: str, nearby: Sequence[str]) -> bool:
+        """提到的这个好友能被叫到：在身边，或者 thread_window 内说过话（身边名单还没认出他）。
+        不在的人只是被说起（「你还记得辣椒周六去干嘛了吗」，10-21 沙盒），不算跟他说。"""
+        return any(similar(n, name, 0.75) for n in nearby) or any(
+            e[1] == name and now - e[0] <= self.cfg.thread_window for e in self._lines)
+
     def judge(
         self, now: float, speaker: str, text: str, *, friends: dict[str, list[str]], nearby: Sequence[str]
     ) -> Verdict:
@@ -153,9 +167,9 @@ class Addressee:
         if any(n in text for n in self.self_names):
             return Verdict("me", CALLED)
         for name, words in friends.items():
-            if name != who and any(_mentions(text, w) for w in words):
+            if name != who and any(_mentions(text, w) for w in words) and self._around(now, name, nearby):
                 return Verdict("other", f"叫了{name}", name)
-        if any(w in text for w in cfg.group_words) or (
+        if any(_to_group(text, w) for w in cfg.group_words) or (
             len(nearby) >= 2 and any(text.startswith(w) or _ends_clause(text, w) for w in cfg.greet_words)
         ):
             return Verdict("all", "说给大家")

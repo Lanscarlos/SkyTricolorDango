@@ -38,8 +38,28 @@ def test_rule2_self_beats_other():
     assert j(make(), 0, "阿花", "团子和明哥").label == "me"
 
 
+def test_rule2_absent_friend_is_talked_about_not_called():  # 10-21 沙盒：「你还记得辣椒周六去干嘛了吗」辣椒早下线了
+    v = j(make(), 0, "小明", "你还记得小红周六去干嘛了吗", nearby=["小明"])
+    assert v.label == "me" and "身边只有他" in v.reason
+    assert j(make(), 0, "阿花", "你今天跟小红说话挺温柔的").label != "other"
+
+
+def test_rule2_absent_friend_who_just_spoke_still_called():  # 身边名单还没认出他，但他刚说过话
+    a = make()
+    j(a, 0, "小红", "在吗", nearby=["小明"])
+    assert lt(j(a, 5, "小明", "小红你好", nearby=["小明"])) == ("other", "小红")
+
+
 def test_rule3_group_words():
     assert j(make(), 0, "小明", "你们去哪").label == "all"
+    assert j(make(), 0, "小明", "我跟大家说个事").label == "all"
+    assert j(make(), 0, "小明", "大家你说是不是").label == "all"  # 开头就是，照旧
+
+
+def test_rule3_group_word_inside_question_to_one():  # 10-21 沙盒：「你怎么知道大家是不是在跟你说话的」是在问团子
+    v = j(make(), 0, "小明", "你怎么知道大家是不是在跟你说话的", nearby=["小明"])
+    assert v.label == "me" and "身边只有他" in v.reason
+    assert j(make(), 0, "小明", "你看大家都走了").label != "all"
 
 
 def test_rule3_greet_needs_two_nearby():
