@@ -107,11 +107,13 @@ class Brain:
             return None
         if self.events.urgent() and now - self.events.last_put >= self.chat.debounce:
             return "events"
+        # 兜底 / 心跳到期时队列里已经有要叫醒的事件（还在 debounce 里）：这一轮会一起取走，算 events，
+        # 不然 _idle 白加一、心跳越来越慢（10-21 沙盒：快进后冷场叫醒的那几轮都标成了 heartbeat）
         oldest = self.events.oldest_background()  # 背景事件不单独叫醒，攒太久才兜底叫醒一次
         if oldest is not None and now - oldest >= self.cfg.background_wait:
-            return "background"
+            return "events" if self.events.urgent() else "background"
         if now - self.last_wake >= self.heartbeat(now):
-            return "heartbeat"
+            return "events" if self.events.urgent() else "heartbeat"
         return None
 
     def run(self, stop: threading.Event) -> None:

@@ -99,6 +99,13 @@ def test_first_wake_is_immediate_and_sends_text_only(clock):
     assert "没有新事件" in text and "状态：面板开" in text and "在雨林" in text
 
 
+def test_heartbeat_due_with_urgent_event_counts_as_events(clock):  # 10-21 沙盒：快进后冷场事件那一轮标成 heartbeat、_idle 还加一
+    brain, events, _, _ = make(clock, FakeSession())
+    brain.last_wake = clock() - 3600
+    events.put("lull", "冷场  小明 3 分钟没说话了")
+    assert brain.due(clock()) == "events"
+
+
 def test_events_wait_for_debounce_and_go_into_message(clock):
     session = FakeSession()
     brain, events, _, _ = make(clock, session)
