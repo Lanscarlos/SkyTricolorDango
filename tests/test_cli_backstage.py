@@ -77,5 +77,10 @@ def test_recent_changes_ignores_seen(tmp_path):  # introspect(改动)：不管�
     assert not any(c[0] == "merge-base" for c in calls)
 
 
+def test_recent_changes_falls_back_to_latest():  # 10-21：窗口里没提交时取最近几条（带「N 天前」）
+    lines = _recent_changes(_cfg(), run=fake_runner([]), now=lambda: NOW + 30 * 86400)()
+    assert lines == ["- 30 天前 feat(brain): 会查自己了"]
+
+
 def test_recent_changes_off():
     assert _recent_changes(_cfg(enabled=False), run=fake_runner([])) is None

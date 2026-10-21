@@ -3294,7 +3294,8 @@ def _recent_changes(cfg: Config, run=None, repo=None, now=time.time):
     def lines() -> list[str]:
         if run is None:
             return []
-        return changelog(run, None, now(), cfg.backstage.changelog_max, cfg.backstage.changelog_days)[0]
+        return changelog(run, None, now(), cfg.backstage.changelog_max, cfg.backstage.changelog_days,
+                         latest=cfg.backstage.changelog_max)[0]
 
     return lines
 

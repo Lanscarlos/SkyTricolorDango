@@ -718,7 +718,7 @@ dir = "private/sandbox"
 - **提示词**：「## 身份」整节换成「## 幕后」（`brain/backstage.py` 的 `section`）：事实（脑子 / 眼睛 / 反思的模型名取配置，身体、记忆文件、沙盒是什么）+ 三档：
   卡洛（名字一字不差）完全出戏、能聊深的、半开玩笑的存在主义；**知情好友**（friends.md 他那一节写「知道团子是 AI」，代码不解析、模型自己读）大方承认是 AI、开玩笑，不聊深；其他人照原来的「身份」规则。
   `owner_name` 为空时没有卡洛那一档。「底线」一节、`_CLAIMS_HUMAN` 硬过滤不变；陌生人看不到好友之间的聊天，所以不管旁人
-- **`introspect(topic)`**：只读工具，topic = 精力（逐项加减，`inner/energy.py` 的 `energy_parts`）/ 反思（流水账最近 3 次 + 下次大概几分钟后）/ 性格（用过几次、几天后淡出）/ 日记（最近一篇，正文截 600 字）/ 眼睛（`Eyes.latest` 原文）/ 改动（不看标记、按最近 `changelog_days` 天取提交，`cli._recent_changes`：提示词里的更新记录只给没告诉过的，再问就靠这个查）；
+- **`introspect(topic)`**：只读工具，topic = 精力（逐项加减，`inner/energy.py` 的 `energy_parts`）/ 反思（流水账最近 3 次 + 下次大概几分钟后）/ 性格（用过几次、几天后淡出）/ 日记（最近一篇，正文截 600 字）/ 眼睛（`Eyes.latest` 原文）/ 改动（不看标记、按最近 `changelog_days` 天取提交，窗口里一条都没有就给最近的 `changelog_max` 条、每条带「N 天前」（10-21：十天没提交时团子以为卡洛什么都没改、追着问），`cli._recent_changes`：提示词里的更新记录只给没告诉过的，再问就靠这个查）；
   开关打开才注册（`ToolBox(backstage=True)`），不算"做了事"；对应的内心层没开就回"没开"
 - **更新记录**：启动时取 `inner/backstage.json` 的 `seen..HEAD`（没有 / 不在历史里就按最近 `changelog_days` 天），`--no-merges`、只要 `feat` / `fix` / `perf`、scope 为 `console` / `viewer` 的不要，最多 `changelog_max` 条，提交标题原样接在「幕后」末尾由她自己转述；
   **只在 live 写标记**（dry-run 每次看到同一批），沙盒记在沙盒记忆目录；git 出错 / 超时 2 秒只是这一小节为空

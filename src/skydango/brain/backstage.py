@@ -75,8 +75,10 @@ def _reachable(run: Runner, seen: str | None) -> bool:
     return True
 
 
-def changelog(run: Runner, seen: str | None, now: float, max_n: int = 10, days: int = 7) -> tuple[list[str], str | None]:
-    """返回 (给提示词的行, HEAD 哈希)：seen 之后（seen 不在历史里就按最近 days 天）的 feat / fix / perf，新到旧，最多 max_n 条。"""
+def changelog(run: Runner, seen: str | None, now: float, max_n: int = 10, days: int = 7,
+              latest: int = 0) -> tuple[list[str], str | None]:
+    """返回 (给提示词的行, HEAD 哈希)：seen 之后（seen 不在历史里就按最近 days 天）的 feat / fix / perf，新到旧，最多 max_n 条。
+    latest > 0：按天数的窗口里一条都没有时，改给窗口外最近的 latest 条（introspect 用：十天没提交时别让团子以为没改过，10-21）。"""
     try:
         head = run(["rev-parse", "HEAD"]).strip()
         fmt = "--format=%H%x1f%ct%x1f%s"
@@ -85,18 +87,19 @@ def changelog(run: Runner, seen: str | None, now: float, max_n: int = 10, days: 
         else:
             out, since = run(["log", "--no-merges", fmt, f"-n{SCAN_MAX}", "HEAD"]), now - days * DAY
         picked: list[str] = []
+        older: list[str] = []
         for row in out.splitlines():
             parts = row.split("\x1f")
             if len(parts) != 3:
                 continue
             _, ct, subject = parts
             t = float(ct)
-            if since is not None and t < since:
-                continue
             m = TITLE.match(subject)
             if m is None or (m.group(3) or "").strip() in HIDDEN_SCOPES:
                 continue
-            picked.append(f"- {_when(t, now)} {subject}")
+            (older if since is not None and t < since else picked).append(f"- {_when(t, now)} {subject}")
+        if not picked:
+            picked = older[:latest]
     except Exception as exc:
         log.warning("取更新记录失败，这次不写：%s", exc)
         return [], None

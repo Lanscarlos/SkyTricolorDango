@@ -78,6 +78,18 @@ def test_changelog_unknown_seen_falls_back_to_days(tmp_path):
     assert _titles(lines) == ["feat: 最近"]
 
 
+def test_changelog_window_empty_falls_back_to_latest(tmp_path):  # 10-21 沙盒：十天没提交，团子以为卡洛什么都没改
+    repo = _repo(tmp_path)
+    _commit(repo, "feat: 更早", when=NOW - 12 * DAY)
+    _commit(repo, "chore: 不算", when=NOW - 11 * DAY)
+    _commit(repo, "fix: 十天前", when=NOW - 10 * DAY)
+    assert changelog(git_runner(repo), None, NOW)[0] == []
+    lines, _ = changelog(git_runner(repo), None, NOW, latest=1)
+    assert lines == ["- 10 天前 fix: 十天前"]
+    _commit(repo, "feat: 最近", when=NOW - 2 * DAY)
+    assert _titles(changelog(git_runner(repo), None, NOW, latest=1)[0]) == ["feat: 最近"]  # 窗口里有就不往前补
+
+
 def test_changelog_limit(tmp_path):
     repo = _repo(tmp_path)
     for i in range(13):
