@@ -163,16 +163,19 @@ class Use:
     temperature: float
     max_tokens: int
     follows: str = ""  # 非空 = 跟着这个用处的模型走、不单独选（只用来单独记用量）：不读 [models.<它>]，面板 / status / 预检不单独报
+    thinking: bool = True  # False = 让模型别先思考（只对 DeepSeek 官方接口生效）：输出短的用处，思考会把 max_tokens 用光、正文空（10-21）
 
 
 USES: tuple[Use, ...] = (
     Use("brain", "大脑", "每次醒来想、说、调工具", False, "deepseek/deepseek-flash", "claude/sonnet", 1.0, 4096),
-    Use("memory", "记忆", "随手记 inbox.md、整理 notes.md、memory update", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
+    Use("memory", "记忆", "随手记 inbox.md、整理 notes.md、memory update", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096,
+        thinking=False),
     Use("reflect", "反思", "反思、日记、性格", False, "deepseek/deepseek-flash", "claude/sonnet", 0.8, 4096),
-    Use("reply", "回复", "普通 Agent（--no-brain）、chat 命令、大脑离线时的纯文字回复", False, "deepseek/deepseek-flash", "", 0.8, 200),
+    Use("reply", "回复", "普通 Agent（--no-brain）、chat 命令、大脑离线时的纯文字回复", False, "deepseek/deepseek-flash", "", 0.8, 200,
+        thinking=False),
     Use("text_label", "文字标注", "文字标注（addressee label）", False, "deepseek/deepseek-flash", "", 0.8, 4096),
     Use("eyes", "眼睛", "眼睛（截图写成文字）、给大脑代看", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 2048),
-    Use("wardrobe", "装扮描述", "装扮描述", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 1024),
+    Use("wardrobe", "装扮描述", "装扮描述", True, "deepseek/deepseek-flash", "claude/haiku", 0.8, 1024, thinking=False),
     Use("image_label", "看图标注", "perception label --assist / --objects、attrs-label、gesture-label", True,
         "deepseek/deepseek-flash", "claude/sonnet", 0.8, 8192),
     # spec 2026-10-06-brain-compact §5：OpenAI 兼容大脑的历史压缩，用的就是大脑那个会话的模型
@@ -201,6 +204,7 @@ class UseConfig:
     max_tokens: int
     source: str  # default / config / console / legacy（旧字段换算来的）
     disabled: str = ""  # 非空 = 主和备都用不了的原因（这一处停用）
+    thinking: bool = True  # 见 Use.thinking；[models.<用处>] thinking 可改
 
 
 @dataclass(frozen=True)
@@ -333,7 +337,7 @@ def resolve(cfg: Config) -> ModelSetup:
             uses[use.name] = replace(uses[use.follows], name=use.name, source="follows")
             continue
         main, backup, source = use.main, use.backup, "default"
-        temperature, max_tokens = use.temperature, use.max_tokens
+        temperature, max_tokens, thinking = use.temperature, use.max_tokens, use.thinking
         if use.name in old:
             main, source = old[use.name], "legacy"
         if use.name == "reply":
@@ -351,6 +355,8 @@ def resolve(cfg: Config) -> ModelSetup:
                 temperature = float(value)
             elif key == "max_tokens":
                 max_tokens = int(value)
+            elif key == "thinking":
+                thinking = bool(value)
             else:
                 problems.append(Problem(f"[models.{use.name}] 有不认识的字段「{key}」", use=use.name))
         if table:
@@ -361,7 +367,7 @@ def resolve(cfg: Config) -> ModelSetup:
         reasons: list[str] = []
         refs = [_check(use, "主", main, providers, problems, reasons), _check(use, "备", backup, providers, problems, reasons)]
         disabled = "" if any(refs) else "；".join(reasons) or "没有选模型"
-        uses[use.name] = UseConfig(use.name, refs[0], refs[1], temperature, max_tokens, source, disabled)
+        uses[use.name] = UseConfig(use.name, refs[0], refs[1], temperature, max_tokens, source, disabled, thinking)
     return ModelSetup(providers, uses, problems, legacy)
 
 

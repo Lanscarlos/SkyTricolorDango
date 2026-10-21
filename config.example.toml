@@ -109,6 +109,8 @@ persona = """
 # [models.memory]
 # main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"
+# thinking = false             # 让模型别先思考（只对 DeepSeek 官方接口生效）：memory / reply / wardrobe 默认 false，
+#                              # deepseek-flash 一思考就把随手记的 200 个 token 用光、正文空；别的用处默认 true
 # [models.reflect]
 # main = "deepseek/deepseek-flash"
 # backup = "claude/sonnet"

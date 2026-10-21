@@ -65,7 +65,7 @@ class Registry:
         from .openai_compat import OpenAIBackend
 
         return OpenAIBackend(provider, ref.model, temperature=usecfg.temperature, max_tokens=usecfg.max_tokens,
-                             max_retries=max_retries, environ=self.environ)
+                             max_retries=max_retries, environ=self.environ, thinking=usecfg.thinking)
 
     def _rate_hook(self, provider: str) -> Callable[[dict], None] | None:
         """Claude Code 的限额事件交给 meter（spec 2026-10-06-model-usage §5.2）。"""

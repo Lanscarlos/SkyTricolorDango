@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from ..chat import llm as chat_llm
+from .config import is_deepseek
 from .errors import ModelError
 
 if TYPE_CHECKING:
     from .config import ProviderConfig
+
+log = logging.getLogger(__name__)
 
 
 def to_openai_content(content: str | list[dict]) -> str | list[dict]:
@@ -74,11 +78,12 @@ class OpenAIBackend:
 
     def __init__(self, provider: "ProviderConfig", model: str, *, temperature: float, max_tokens: int,
                  timeout: float | None = None, max_retries: int | None = None, client=None,
-                 environ: Mapping[str, str] = os.environ) -> None:
+                 environ: Mapping[str, str] = os.environ, thinking: bool = True) -> None:
         self.provider = provider
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.thinking = thinking  # False：DeepSeek 官方接口上关掉思考（别家没有通用的写法，不发）
         self.timeout = provider.timeout if timeout is None else timeout
         self.max_retries = max_retries
         self.environ = environ
@@ -99,15 +104,21 @@ class OpenAIBackend:
             client = client.with_options(**opts)
         messages = [{"role": "system", "content": system}, *(history or []),
                     {"role": "user", "content": to_openai_content(content)}]
+        limit = max_tokens or self.max_tokens
+        extra = {"extra_body": {"thinking": {"type": "disabled"}}} if not self.thinking and is_deepseek(self.provider) else {}
         try:
             resp = client.chat.completions.create(
-                model=self.model, messages=messages, temperature=self.temperature,
-                max_tokens=max_tokens or self.max_tokens)
+                model=self.model, messages=messages, temperature=self.temperature, max_tokens=limit, **extra)
         except Exception as exc:  # noqa: BLE001 SDK 的各种错误（状态码、超时、连接）一律包成 ModelError
             raise ModelError(f"{self.provider.id} 出错：{exc}", down=classify(exc), provider=self.provider.id) from exc
         usage = getattr(resp, "usage", None)
+        choice = resp.choices[0]
+        text = choice.message.content or ""
+        if not text.strip() and getattr(choice, "finish_reason", None) == "length":
+            log.warning("%s/%s 正文是空的：输出到了 max_tokens=%d 被截断（多半是思考用光了，这个用处可以设 thinking = false 或调大 max_tokens）",
+                        self.provider.id, self.model, limit)
         return {
-            "result": resp.choices[0].message.content or "",
+            "result": text,
             "usage": {
                 "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
                 "output_tokens": getattr(usage, "completion_tokens", 0) or 0,

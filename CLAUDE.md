@@ -441,6 +441,8 @@ dir = "private/sandbox"
   两个文件都没写 `[providers]` 时用内置的 `claude` + `deepseek`（deepseek 的地址 / Key 名 / 模型取旧 `[llm]`）；写了就只用写了的（config.toml 和 console.toml 按 id 合并）
 - **用处** `[models.<用处>]`（`main` / `backup` 写成「供应商id/模型名」，按第一个 `/` 拆；`temperature` / `max_tokens` 只在配置文件里写）：
   brain / memory / reflect 默认 `deepseek/deepseek-flash`、备 `claude/sonnet`；reply / text_label `deepseek/deepseek-flash`（10-06 起，价格页上已经没有 `deepseek-chat`；内置 deepseek 的模型表是 flash / v4-pro / chat / reasoner，写明了 chat 的配置照旧）；eyes / wardrobe / image_label `deepseek/deepseek-flash`（V4.1 Flash，内置的 deepseek 供应商把它勾成能看图；10-06 起，之前是 Claude），备 `claude/haiku` / `claude/haiku` / `claude/sonnet`。
+  **`thinking`**（10-21）：`false` = 让模型别先思考，只对 DeepSeek 官方接口发 `thinking: disabled`（别家没有通用写法，不发）；memory / reply / wardrobe 默认 `false`、别的 `true`，也是只在配置文件里写。
+  起因：deepseek-flash 默认先思考，随手记（200 token）、整理笔记（1500）的输出被思考用光、正文空（10-07 起的「整理长期记忆时模型返回了空内容」就是它，notes.md 一直没整理上）；正文空且因长度截断时 `OpenAIBackend` 记一条 WARNING。面板「测试」按钮也不思考
   **10-06 换识图默认之前、面板保存过「模型」页的**：console.toml 里整张写着旧的 deepseek 供应商（没有 `deepseek-flash`），要在模型页给 deepseek 加上它、勾能看图，再把三个看图的用处「恢复默认」
   看图的用处（eyes / wardrobe / image_label）只能选能看图的，选错了这一处停用、团子照常起；引用了不存在的供应商同样停用；模型不在列表里只警告
 - **旧字段照样读**（启动时警告一行）：`[llm]`、`[brain] model / eyes_model / memory_model / claude_path / token_env / config_dir`、`[inner] reflect_model`、`[appearance] describe_model`、`[assist] model`，换算见 spec §1.3；同一用处 `[models.*]` 说了算。

@@ -201,3 +201,10 @@ def test_log_summary_skips_follows(tmp_path, caplog):   # spec 2026-10-06-brain-
     with caplog.at_level(logging.INFO):
         reg.log_summary()
     assert "模型：brain" in caplog.text and "模型：recap" not in caplog.text
+
+
+def test_openai_backend_gets_use_thinking(tmp_path):  # 10-21：随手记 / 整理笔记默认不思考
+    reg = Registry(resolve(Config()), ProviderGates(), tmp_path, environ={})
+    ref = ModelRef("deepseek", "deepseek-flash")
+    assert reg.backend(ref, "memory", tmp_path).thinking is False
+    assert reg.backend(ref, "brain", tmp_path).thinking is True

@@ -77,3 +77,31 @@ def test_missing_key_is_auth_down(monkeypatch):
     with pytest.raises(ModelError) as e:
         OpenAIBackend(DS, "deepseek-chat", temperature=0.8, max_tokens=10, environ={}).message("S", "x")
     assert e.value.down == "auth" and e.value.provider == "deepseek"
+
+
+# 10-21 沙盒：deepseek-flash 默认先思考，max_tokens 小的用处（随手记 200、整理笔记 1500）被思考用光、正文空
+DS_OFFICIAL = ProviderConfig("deepseek", "openai", models=("deepseek-flash",), base_url="https://api.deepseek.com",
+                             key_env="DEEPSEEK_API_KEY")
+
+
+def test_thinking_off_on_deepseek_sends_disabled():
+    c = FakeClient()
+    OpenAIBackend(DS_OFFICIAL, "deepseek-flash", temperature=0.8, max_tokens=200, thinking=False, client=c).message("S", "x")
+    assert c.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_thinking_default_or_other_provider_sends_nothing():
+    c = FakeClient()
+    OpenAIBackend(DS_OFFICIAL, "deepseek-flash", temperature=0.8, max_tokens=200, client=c).message("S", "x")
+    OpenAIBackend(DS, "deepseek-flash", temperature=0.8, max_tokens=200, thinking=False, client=c).message("S", "x")
+    assert "extra_body" not in c.calls[0] and "extra_body" not in c.calls[1]
+
+
+def test_empty_content_cut_by_length_warns(caplog):
+    resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="length")],
+                           usage=SimpleNamespace(prompt_tokens=5, completion_tokens=200, prompt_cache_hit_tokens=0))
+    c = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: resp)))
+    with caplog.at_level("WARNING"):
+        out = OpenAIBackend(DS_OFFICIAL, "deepseek-flash", temperature=0.8, max_tokens=200, client=c).message("S", "x")
+    assert out["result"] == ""
+    assert any("max_tokens" in r.getMessage() and "deepseek-flash" in r.getMessage() for r in caplog.records)

@@ -171,3 +171,11 @@ def test_recap_follows_brain():   # spec 2026-10-06-brain-compact §5
     assert any("[models.recap]" in p.text and p.warn for p in s.problems)
     assert USE_BY_NAME["recap"].follows == "brain" and USE_BY_NAME["recap"].label == "压缩"
     assert not any("recap" in p.text for p in resolve(Config()).problems)
+
+
+def test_thinking_defaults_and_override(tmp_path):  # 10-21：短输出的用处默认不思考，[models.*] thinking 可改
+    s = resolve(_cfg(tmp_path))
+    assert {n: s.uses[n].thinking for n in ("brain", "memory", "reflect", "reply", "eyes", "wardrobe", "recap")} == {
+        "brain": True, "memory": False, "reflect": True, "reply": False, "eyes": True, "wardrobe": False, "recap": True}
+    s = resolve(_cfg(tmp_path, '[models.memory]\nthinking = true\n[models.brain]\nthinking = false\n'))
+    assert s.uses["memory"].thinking is True and s.uses["brain"].thinking is False and s.problems == []

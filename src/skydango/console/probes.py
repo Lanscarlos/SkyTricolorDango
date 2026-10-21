@@ -41,12 +41,14 @@ def test_provider(provider: ProviderConfig, secret: str, *, run: Callable = subp
     try:
         client = factory(provider, api_key=secret or PLACEHOLDER_KEY, timeout=OPENAI_TIMEOUT, max_retries=0)
         model = provider.models[0]
-        reply = OpenAIBackend(provider, model, temperature=0.0, max_tokens=10, client=client).message(
+        reply = OpenAIBackend(provider, model, temperature=0.0, max_tokens=10, client=client,
+                              thinking=False).message(
             "你是连通性测试。", "只回复 ok")["result"].strip()
         text = f"通过：{model} 回复 {reply[:30]}（{(clock() - start) * 1000:.0f} ms）"
         if provider.vision:
             seeing = provider.vision[0]
-            color = OpenAIBackend(provider, seeing, temperature=0.0, max_tokens=10, client=client).message(
+            color = OpenAIBackend(provider, seeing, temperature=0.0, max_tokens=10, client=client,
+                                  thinking=False).message(
                 "你是连通性测试。", [_red(), {"type": "text", "text": COLOR_QUESTION}])["result"].strip()
             if "红" not in color:
                 return {"ok": False, "text": f"{text}；看图没过：{seeing} 说红图是「{color[:30]}」"}
