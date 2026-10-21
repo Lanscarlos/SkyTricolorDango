@@ -73,6 +73,18 @@ def test_wants_same_topic_reworded_is_one():  # 10-21 沙盒：同一件事换�
     assert [w.text for w in m.wants] == ["想听小明弹琴", "想看小明弹琴的视频"]
 
 
+def test_wants_same_opening_different_things_kept():  # 评审：固定开头一样、后面是两件事，不能合并、也不能了结一件删两条
+    pairs = [("想跟辣椒一起去雨林跑图", "想跟辣椒一起去霞谷滑冰"),
+             ("想问卡洛今天几点下线", "想问卡洛今天吃了什么"),
+             ("下次见到小明要问他周六去不去看演出", "下次见到小明要问他借的琴还了没")]
+    for a, b in pairs:
+        m = Mind()
+        m.apply({"wants_add": [{"kind": "想做", "text": a}, {"kind": "想做", "text": b}]}, CARDS, FRIENDS, T0, CFG)
+        assert [w.text for w in m.wants] == [a, b]
+        m.apply({"wants_done": [a]}, CARDS, FRIENDS, T0, CFG)
+        assert [w.text for w in m.wants] == [b]
+
+
 def test_apply_ignores_junk_shapes():
     m = Mind()
     dropped = m.apply({"mood": "开心", "wants_add": "不是列表", "wants_done": 3, "grudge": 5}, CARDS, FRIENDS, T0, CFG)

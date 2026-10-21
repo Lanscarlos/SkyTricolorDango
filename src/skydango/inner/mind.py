@@ -26,15 +26,18 @@ def sounds_upset(text: str) -> bool:
     return any(w in (text or "") for w in DISTRESS)
 
 
+def _main_clause(text: str) -> str:
+    return max(re.split(r"[，,。；;！!？?\s]+", text), key=len)
+
+
 def same_want(a: str, b: str) -> bool:
-    """两条心愿说的是一件事：几乎一样，或者有一大段一模一样（≥ 6 个字、占短的一半以上）。
-    「辣椒那件会飘的斗篷在哪换的，想问一句」和「…，她还没回我」只差后半句（10-21 沙盒记成了两条）。"""
+    """两条心愿说的是一件事：几乎一样，或者最长的那个分句（≥ 6 个字）几乎一样。
+    「辣椒那件会飘的斗篷在哪换的，想问一句」和「…，她还没回我」只差后半句（10-21 沙盒记成了两条）；
+    「想跟辣椒一起去雨林跑图」和「…霞谷滑冰」开头一样、是两件事（评审：只比公共片段会合并、了结时还一起删）。"""
     if similar(a, b, 0.75):
         return True
-    from difflib import SequenceMatcher
-
-    common = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b)).size
-    return common >= 6 and common * 2 >= min(len(a), len(b))
+    ca, cb = _main_clause(a), _main_clause(b)
+    return min(len(ca), len(cb)) >= 6 and similar(ca, cb, 0.75)
 
 
 @dataclass

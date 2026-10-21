@@ -130,4 +130,4 @@ def test_introspect_changes(clock):
     out = b.introspect("改动")
     assert "- 昨天 feat(inner): 冷场时会想东想西" in out and "7 天" not in out  # 窗口空时会往前补，标题别说「最近 7 天」
     b.recent_changes = lambda: []
-    assert "没改" in b.introspect("改动")
+    assert "没找到" in b.introspect("改动")

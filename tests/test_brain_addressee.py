@@ -44,6 +44,12 @@ def test_rule2_absent_friend_is_talked_about_not_called():  # 10-21 沙盒：「
     assert j(make(), 0, "阿花", "你今天跟小红说话挺温柔的").label != "other"
 
 
+def test_rule2_absent_friend_called_at_start():  # 评审：句首点名喊人（呼格）照旧算叫了他，句中只是说起
+    for text in ("小红你在哪", "小红，快来", "小红在吗", "小红"):
+        assert lt(j(make(), 0, "小明", text, nearby=["小明"])) == ("other", "小红"), text
+    assert j(make(), 0, "小明", "小红今天又被骂了", nearby=["小明"]).label == "me"
+
+
 def test_rule2_absent_friend_who_just_spoke_still_called():  # 身边名单还没认出他，但他刚说过话
     a = make()
     j(a, 0, "小红", "在吗", nearby=["小明"])
@@ -54,6 +60,8 @@ def test_rule3_group_words():
     assert j(make(), 0, "小明", "你们去哪").label == "all"
     assert j(make(), 0, "小明", "我跟大家说个事").label == "all"
     assert j(make(), 0, "小明", "大家你说是不是").label == "all"  # 开头就是，照旧
+    assert j(make(), 0, "小明", "你好呀大家").label == "all"  # 评审：「你好」不是在问一个人
+    assert j(make(), 0, "小明", "谢谢大家，你也早点睡").label == "all"  # 只看「大家」那个分句
 
 
 def test_rule3_group_word_inside_question_to_one():  # 10-21 沙盒：「你怎么知道大家是不是在跟你说话的」是在问团子

@@ -28,6 +28,13 @@ def test_finish_memo_drops_repeated_today(tmp_path):  # 10-07 / 10-21：「2026�
     assert s.startswith("小明考试过了；阿花换了斗篷")  # days.jsonl 的经过也不重复日期
 
 
+def test_finish_memo_date_variants(tmp_path):  # 评审：半角括号、「星期」、不带括号；「…日的事」不是日期前缀
+    mem = MemoryStore(tmp_path)
+    memos = ["9月30日(周三)：甲", "9月30日 星期三 乙", "09月30日：丙", "9月30日的事：丁"]
+    s = finish_reflection({"memos": memos}, Mind(), None, mem, {}, [], True, T0, InnerConfig())
+    assert s == "甲；乙；丙；9月30日的事：丁"
+
+
 def test_finish_summary_falls_back_to_diary(tmp_path):
     st = InnerStore(tmp_path / "inner")
     s = finish_reflection({"diary": "x" * 150}, Mind(), st, None, {}, [], True, T0, InnerConfig())

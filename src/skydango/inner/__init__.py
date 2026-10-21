@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -101,12 +103,10 @@ def show_lines(cfg: InnerConfig, directory: str | Path, friends: list[str], now:
 def _drop_today(memo: str, now: float) -> str:
     """要点开头模型自己写的日期就是今天的话去掉（写进 inbox 时前面已经有「某年某月某日 的要点：」，10-07 / 10-21 重复了两遍）；
     别的日子是约定 / 发生的日期，留着。"""
-    import re
-    import time
-
     d = time.localtime(now)
-    m = re.match(rf"^(?:{d.tm_year}年)?0?{d.tm_mon}月0?{d.tm_mday}日(?:（周.）)?[：:，,\s]*", memo)
-    return memo[m.end():].strip() if m and memo[m.end():].strip() else memo
+    m = re.match(rf"^(?:{d.tm_year}年)?0?{d.tm_mon}月0?{d.tm_mday}日\s*(?:[（(]?(?:周|星期).[）)]?)?[：:，,\s]*", memo)
+    rest = memo[m.end():].strip() if m else ""
+    return rest if rest and not rest.startswith("的") else memo  # 「9月30日的事：…」不是日期前缀
 
 
 def finish_reflection(

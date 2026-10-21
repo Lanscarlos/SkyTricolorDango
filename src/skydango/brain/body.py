@@ -2929,11 +2929,10 @@ class Body:
         if topic == "改动":
             if self.recent_changes is None:
                 return off
-            days = self.cfg.backstage.changelog_days
             lines = self.recent_changes()
             if not lines:
-                return f"最近 {days} 天没改你"
-            # 最近 days 天没提交时 recent_changes 会往前补最近几条，标题别写死「最近 N 天」，每行自带「N 天前」（10-21）
+                return "没找到最近改你的提交记录"
+            # changelog_days 天内没提交时 recent_changes 会往前补最近几条，标题别写死「最近 N 天」，每行自带「N 天前」（10-21）
             return f"{owner}最近改了你这些（每条前面是哪天改的；提交原文，技术话，用你自己的话理解）：\n" + "\n".join(lines)
         raise ToolError("topic 只能是 精力 / 反思 / 性格 / 日记 / 眼睛 / 改动")
 

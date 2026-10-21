@@ -177,5 +177,8 @@ def test_thinking_defaults_and_override(tmp_path):  # 10-21：短输出的用处
     s = resolve(_cfg(tmp_path))
     assert {n: s.uses[n].thinking for n in ("brain", "memory", "reflect", "reply", "eyes", "wardrobe", "recap")} == {
         "brain": True, "memory": False, "reflect": True, "reply": False, "eyes": True, "wardrobe": False, "recap": True}
-    s = resolve(_cfg(tmp_path, '[models.memory]\nthinking = true\n[models.brain]\nthinking = false\n'))
-    assert s.uses["memory"].thinking is True and s.uses["brain"].thinking is False and s.problems == []
+    s = resolve(_cfg(tmp_path, '[models.memory]\nthinking = true\n[models.reply]\nthinking = "true"\n'))
+    assert s.uses["memory"].thinking is True and s.problems[0].use == "reply" and not s.problems[0].warn
+    assert s.uses["reply"].thinking is False  # 不是 true / false：报问题、照默认
+    s = resolve(_cfg(tmp_path, '[models.brain]\nthinking = false\n'))
+    assert any(p.use == "brain" and p.warn and "thinking" in p.text for p in s.problems)  # 大脑自己发请求，不读它

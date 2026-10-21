@@ -27,6 +27,7 @@ TRAIL = "~～!！?？。.，,、… \t"  # 判句尾的招呼词前先去掉的�
 CALLED = "叫了你"  # 规则 1 的理由；判断里也拿它认「叫了团子」
 CROSSED = "（跨过你的话）"  # 跨过团子的话判出来的对话串，理由后面带上，离线评估能分开统计
 FUZZY_MIN = 3  # 叫法至少这么多个字才允许错一个字（2 个字错一个就只剩一个字对得上）
+VOCATIVE_NEXT = "你快在呢呀啊"  # 句首的名字后面紧跟这些 = 在喊他（不在身边也算叫了他）
 
 
 @dataclass(frozen=True)
@@ -70,11 +71,22 @@ def _ends_clause(text: str, word: str) -> bool:
 
 
 def _to_group(text: str, word: str) -> bool:
-    """「大家 / 你们」是在招呼一群人：开头就是，或者句子里没有单数的「你」。
-    「你怎么知道大家是不是在跟你说话的」是在问一个人，「大家」只是话里提到（10-21 沙盒）。"""
+    """「大家 / 你们」是在招呼一群人：开头就是，或者它所在的那个分句里没有单数的「你」（「你们」「你好」不算）。
+    「你怎么知道大家是不是在跟你说话的」是在问一个人，「大家」只是话里提到（10-21 沙盒）；「你好呀大家」「谢谢大家，你也早点睡」照旧算。"""
     if word not in text:
         return False
-    return text.lstrip(TRAIL).startswith(word) or "你" not in text.replace("你们", "")
+    if text.lstrip(TRAIL).startswith(word):
+        return True
+    return any(word in c and "你" not in c.replace("你们", "").replace("你好", "") for c in re.split(f"[{re.escape(TRAIL)}]+", text))
+
+
+def _calls_at_start(text: str, word: str) -> bool:
+    """句首点名喊人（呼格）：「小红你在哪」「小红，快来」「小红在吗」。「小红今天又被骂了」是在说起他。"""
+    head = text.lstrip(TRAIL)
+    if not head.startswith(word):
+        return False
+    rest = head[len(word):]
+    return not rest or rest[0] in TRAIL or rest[0] in VOCATIVE_NEXT
 
 
 def _mentions(text: str, word: str) -> bool:
@@ -167,7 +179,8 @@ class Addressee:
         if any(n in text for n in self.self_names):
             return Verdict("me", CALLED)
         for name, words in friends.items():
-            if name != who and any(_mentions(text, w) for w in words) and self._around(now, name, nearby):
+            if name != who and any(_mentions(text, w) for w in words) and (
+                    self._around(now, name, nearby) or any(_calls_at_start(text, w) for w in words)):
                 return Verdict("other", f"叫了{name}", name)
         if any(_to_group(text, w) for w in cfg.group_words) or (
             len(nearby) >= 2 and any(text.startswith(w) or _ends_clause(text, w) for w in cfg.greet_words)

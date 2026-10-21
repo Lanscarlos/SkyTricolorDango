@@ -441,7 +441,7 @@ dir = "private/sandbox"
   两个文件都没写 `[providers]` 时用内置的 `claude` + `deepseek`（deepseek 的地址 / Key 名 / 模型取旧 `[llm]`）；写了就只用写了的（config.toml 和 console.toml 按 id 合并）
 - **用处** `[models.<用处>]`（`main` / `backup` 写成「供应商id/模型名」，按第一个 `/` 拆；`temperature` / `max_tokens` 只在配置文件里写）：
   brain / memory / reflect 默认 `deepseek/deepseek-flash`、备 `claude/sonnet`；reply / text_label `deepseek/deepseek-flash`（10-06 起，价格页上已经没有 `deepseek-chat`；内置 deepseek 的模型表是 flash / v4-pro / chat / reasoner，写明了 chat 的配置照旧）；eyes / wardrobe / image_label `deepseek/deepseek-flash`（V4.1 Flash，内置的 deepseek 供应商把它勾成能看图；10-06 起，之前是 Claude），备 `claude/haiku` / `claude/haiku` / `claude/sonnet`。
-  **`thinking`**（10-21）：`false` = 让模型别先思考，只对 DeepSeek 官方接口发 `thinking: disabled`（别家没有通用写法，不发）；memory / reply / wardrobe 默认 `false`、别的 `true`，也是只在配置文件里写。
+  **`thinking`**（10-21）：`false` = 让模型别先思考，只对 DeepSeek 官方接口发 `thinking: disabled`（别家没有通用写法，不发）；memory / reply / wardrobe 默认 `false`、别的 `true`，也是只在配置文件里写；不是 true / false 报问题照默认，`[models.brain]` 写了只警告（大脑自己发请求、不读它）。
   起因：deepseek-flash 默认先思考，随手记（200 token）、整理笔记（1500）的输出被思考用光、正文空（10-07 起的「整理长期记忆时模型返回了空内容」就是它，notes.md 一直没整理上）；正文空且因长度截断时 `OpenAIBackend` 记一条 WARNING。面板「测试」按钮也不思考
   **10-06 换识图默认之前、面板保存过「模型」页的**：console.toml 里整张写着旧的 deepseek 供应商（没有 `deepseek-flash`），要在模型页给 deepseek 加上它、勾能看图，再把三个看图的用处「恢复默认」
   看图的用处（eyes / wardrobe / image_label）只能选能看图的，选错了这一处停用、团子照常起；引用了不存在的供应商同样停用；模型不在列表里只警告
@@ -563,7 +563,7 @@ dir = "private/sandbox"
 设计见 `docs/superpowers/specs/2026-10-05-addressee-design.md`，计划 `docs/superpowers/plans/2026-10-05-addressee.md`，路线图 ③。起因：好友之间聊天团子句句都接（10-03 / 10-04 真机）。
 **代码 10-05 做完，还没在真机验证；离线评估（`addressee label` / `eval`）也还没在真实数据上跑过，三条门槛过没过不知道，数字都是估的。旧日志（没有「跟谁说」行）上算出的门槛只作参考（团子当时句句都接，「在接你的话」窗口几乎一直开着，`report.md` 按规则理由分列）；正式门槛用合并后录下的新日志算。代码带着 `enabled` 默认开合并，不合适可在管理面板设置页关掉。**
 - **每句好友聊天判一次**（`brain/addressee.py`，纯规则、不调模型；身体 `_heard` 里调）：`me` 跟你说 / `other` 跟别人说 / `all` 说给大家 / `unsure` 拿不准。
-  规则从上往下命中即停：不是好友 → unsure；叫了 `[proactive] self_names` → me；叫了别的好友（**他在身边、或 `thread_window` 内说过话**；不在的只是被说起，10-21）→ other；`group_words`（**开头就是、或句子里没有单数的「你」**：「你怎么知道大家…」是在问一个人，10-21）、或身边 ≥ 2 个好友时开头是 `greet_words`（或句尾单独一个分句是它：「我先下了 晚安」）→ all；
+  规则从上往下命中即停：不是好友 → unsure；叫了 `[proactive] self_names` → me；叫了别的好友（**他在身边、或 `thread_window` 内说过话、或句首点名喊他**（「小红你在哪」「小红，快来」）；不在的人在句中只是被说起，10-21）→ other；`group_words`（**开头就是、或它所在的分句里没有单数的「你」**（「你们」「你好」不算）：「你怎么知道大家…」是在问一个人，10-21）、或身边 ≥ 2 个好友时开头是 `greet_words`（或句尾单独一个分句是它：「我先下了 晚安」）→ all；
   接团子的话（团子 `followup_window` 内说过、他之后头 `followup_lines` 句、中间没有跟别人的来往；**10-11 起只给团子在回的人**：开口前那批没回的聊天里判成 me / all 的人照给；判成 unsure 的人和主动开口时的所有人，只在团子开口后还没别的好友说过话时给；整批都是 other = 插话、谁都不开；一轮说两句沿用上一句的对象）→ me；`thread_window` 内还在跟别人一来一回（团子没插进来，插话不算；**这段时间里没人叫团子 / 说给大家时跨过团子的话也算**（理由带「跨过你的话」），排在接团子的话前面，10-11 不点名斗嘴的连锁；对方上一句在跟团子说、或对方已经不在身边的不算）→ other（**这句说了难过 / 不舒服**（`inner/mind.py` 的 `DISTRESS`）**就改判 all**：诉苦是说给在场所有人的，10-06 沙盒里被判成「还在跟别人说」、团子没开口）；身边只有他 → me；说了难过的 → all；其余 unsure。
   卡洛的 `#` 命令、陌生人的聊天不进这套判断（陌生人一律 unsure）。判断出错记日志、按 unsure
 - **叫法**：friends.md 每个好友那一节加一行 `- 叫法：卡洛、老登`（顿号 / 逗号 / 空格分开，加上游戏昵称）；≥ 3 个字的叫法允许错一个字（OCR），1~2 个字只认原样。没写就只认昵称，改了不用重启。已有的 friends.md 自己加
@@ -688,7 +688,7 @@ dir = "private/sandbox"
 - **精力**（`energy.py`，身体每圈现算，不存盘）：几点（白天满、深夜低）− 连着挂了多久（离上次下线不到 `rest_gap` 算没睡、接着累）+ 最近 10 分钟有好友跟团子说话 − 最近一小时热闹太久；四档 精神 / 还行 / 有点累 / 困
 - **反思**（`reflect.py`，`[models.reflect]`（默认 DeepSeek、备用 Claude sonnet），后台线程，结果回身体线程套进 `Mind`）：有动静时每 `reflect_every`（20 分钟）、好友说够 6 句后安静 3 分钟、下线时各一次；
   材料是上次以来的聊天原话、来去、相关好友的关系卡、friends.md 里他们那一节（日记里的称呼、性别照它，`friend_sections`）和笔记、人设、精力。回 JSON：心情（开心 / 平常 / 低落 / 烦 + 一句带原因的话）、别扭、心愿增删；下线那次再加日记和要点。主那家撞墙改走备用（见「统管大脑」的闸），都不行沿用上一份
-- **代码守的规矩**（`mind.py`）：别扭只冲一起玩过 ≥ `grudge_min_days`（3）天的好友、最长 `grudge_max`（2 小时，同一个人再给也不续期）、同时 1 条、消气后冷却同样长；别扭对象说了“难过 / 不舒服 / 想哭 / 认真的……”（`DISTRESS`）身体当场撤掉，不等反思；离上次反思超过 `rest_gap`（睡过一觉）心情回到平常；心愿最多 3 条、7 天过期，kind 只有 惦记（挂在好友名下）/ 想做 / 小心思；不认识的一律丢
+- **代码守的规矩**（`mind.py`）：别扭只冲一起玩过 ≥ `grudge_min_days`（3）天的好友、最长 `grudge_max`（2 小时，同一个人再给也不续期）、同时 1 条、消气后冷却同样长；别扭对象说了“难过 / 不舒服 / 想哭 / 认真的……”（`DISTRESS`）身体当场撤掉，不等反思；离上次反思超过 `rest_gap`（睡过一觉）心情回到平常；心愿最多 3 条、7 天过期、同一件事（几乎一样，或最长的分句几乎一样：「…在哪换的，想问一句 / 她还没回我」）只记一条（了结同理），kind 只有 惦记（挂在好友名下）/ 想做 / 小心思；不认识的一律丢
 - **后果**（`effects.py`，倍数相乘）：主动开口额度 开心 ×1.5、低落 / 烦 ×0.5、有点累 ×0.75、困 ×0.5（下限 ×0.25、至少 1 句）；烦时被叫到不做小动作、开心概率 ×1.5；困时闲着的小动作更勤、大脑心跳慢一档。
   **接话永远照常**；在跟谁闹别扭时，整批都是他说的话不冒输入气泡（故意晚点接），牵手等互动照接
 - **大脑看到**：status "心里：有点闷（…）· 有点困（…）· 跟小明闹别扭（…，还有 40 分钟消气）· 惦记：…"；arrive 后面接"你惦记着：…"；「日子」带上一篇日记（代替"上次的经过"）；提示词多一段心情 / 别扭（认真问、说难过时立刻作废）/ 惦记 / 小心思的规矩；网页和管理面板卡片有"心情""精力"

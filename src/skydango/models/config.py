@@ -356,7 +356,13 @@ def resolve(cfg: Config) -> ModelSetup:
             elif key == "max_tokens":
                 max_tokens = int(value)
             elif key == "thinking":
-                thinking = bool(value)
+                if not isinstance(value, bool):
+                    problems.append(Problem(f"[models.{use.name}] thinking 要写 true 或 false（写的是 {value!r}），照默认", use=use.name))
+                elif use.name == "brain":
+                    problems.append(Problem("[models.brain] thinking 不生效：大脑自己发请求、不读它（只对走 OpenAI 兼容接口的别的用处生效）",
+                                            use=use.name, warn=True))
+                else:
+                    thinking = value
             else:
                 problems.append(Problem(f"[models.{use.name}] 有不认识的字段「{key}」", use=use.name))
         if table:
