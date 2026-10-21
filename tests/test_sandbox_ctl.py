@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -437,7 +438,53 @@ def test_play_sends_on_time_without_waiting_then_waits_idle(run, tmp_path):
     assert all(c[2].get("after") in (None, "0") for c in sb.calls[:first_op] if c[1] == "/state")  # 发之前只拿版本号
     assert "+0.0s 小明：嘻嘻" in out and "+0.4s 小明：团子" in out
     assert "团子：干嘛" in out and "心里：他叫我" in out
-    assert out.index("+0.4s 小明：团子") < out.index("团子：干嘛")
+
+
+def _staged(ops):
+    """/state 按已经发了几句回：发第一句前拿版本号；发了一句后（两句之间）一直是「干嘛」那行（重复回、要去重）；
+    两句都发了之后才有「叫我啥事」、idle。"""
+    def route(query, body):
+        if not ops:
+            return state(5)
+        if len(ops) == 1:
+            return state(6, [row(6, "said", "干嘛", who="团子")], idle=False, thinking=True)
+        return state(7, [row(7, "said", "叫我啥事", who="团子")], idle=True)
+    return route
+
+
+def _counting(ops):
+    def route(query, body):
+        ops.append(body)
+        return 200, {"ok": True, "text": "ok"}
+    return route
+
+
+def test_play_prints_reactions_between_lines_with_offsets(run, tmp_path):  # 终审：要能和团子的回复对时间
+    ops: list = []
+    code, out, _, _ = run(["--json", "play", _script(tmp_path, "0 小明：嘻嘻\n0.6 小明：团子\n")], sandbox={
+        ("GET", "/state"): _staged(ops), ("GET", "/brain"): [brain(3), brain(5)], ("POST", "/op"): _counting(ops),
+    })
+    data = json.loads(out)
+    assert code == 0
+    assert [r["text"] for r in data["lines"]] == ["干嘛", "叫我啥事"]  # 两句之间读到的不重复
+    assert data["lines"][0]["at"] < 0.6 <= data["lines"][1]["at"]
+    ops = []
+    code, out, _, _ = run(["play", _script(tmp_path, "0 小明：嘻嘻\n0.6 小明：团子\n")], sandbox={
+        ("GET", "/state"): _staged(ops), ("GET", "/brain"): [brain(3), brain(5)], ("POST", "/op"): _counting(ops),
+    })
+    assert out.index("团子：干嘛") < out.index("+0.6s 小明：团子")
+    assert re.search(r"\+0\.\ds .*团子：干嘛", out)
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "gbk"])
+def test_play_file_not_utf8_is_friendly(run, tmp_path, encoding):  # 终审：PowerShell 5.1 Out-File 默认 UTF-16
+    f = tmp_path / "play.txt"
+    f.write_text("0 小明：嘻嘻\n", encoding=encoding)
+    code, out, sb, _ = run(["play", str(f)], sandbox={
+        ("GET", "/state"): state(5), ("GET", "/brain"): brain(3), ("POST", "/op"): (200, {"ok": True, "text": "ok"}),
+    })
+    assert code == 1 and "UTF-8" in out
+    assert not [c for c in sb.calls if c[1] == "/op"]
 
 
 def test_play_refused_line_stops(run, tmp_path):

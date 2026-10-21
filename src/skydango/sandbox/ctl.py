@@ -256,21 +256,32 @@ class Ctl:
         lines: list[dict] = []
         sent: list[dict] = []
         start = time.monotonic()
+        version, last_seq = before["version"], -1
+
+        def seen(r: dict) -> None:  # 每行带上相对第一句的秒数，好和发出去的话对时间（终审）
+            nonlocal last_seq
+            if r.get("seq", 0) <= last_seq:
+                return
+            last_seq = r.get("seq", last_seq)
+            at = time.monotonic() - start
+            lines.append({**r, "at": round(at, 1)})
+            self.say(f"+{at:.1f}s " + format_line(r))
+
         for i, (at, who, text) in enumerate(entries, 1):
-            left = start + at - time.monotonic()
-            if left > 0:
-                time.sleep(left)
+            while (left := start + at - time.monotonic()) > 0:  # 两句之间边等边读团子的反应
+                s = self.state(version, min(left, self.args.poll))
+                version = s.get("version", version)
+                for r in s.get("lines") or []:
+                    seen(r)
+                if not s.get("lines"):
+                    time.sleep(min(0.05, max(0.0, start + at - time.monotonic())))
             result = self.sandbox("POST", "/op", body={"op": "say", "who": who, "text": text})
             if not result.get("ok"):
                 return self.fail(f"第 {i} 句没发出去（{who}：{text}）：{result.get('text') or '沙盒没做成'}")
             sent.append({"t": at, "who": who, "text": text})
             self.say(f"+{at:.1f}s {who}：{text}")
 
-        def seen(r: dict) -> None:
-            lines.append(r)
-            self.say(format_line(r))
-
-        last, quiet = self.wait_quiet(before["version"], self.args.timeout, seen)
+        last, quiet = self.wait_quiet(version, self.args.timeout, seen)
         return self._finish(before, brain0, lines, last, quiet, {"sent": sent})
 
     def wait_quiet(self, after: int, timeout: float, seen: Callable[[dict], None]) -> tuple[dict | None, bool]:
@@ -409,9 +420,11 @@ def parse_script(text: str) -> list[tuple[float, str, str]]:
 
 def _read_script(path: str) -> list[tuple[float, str, str]]:
     try:
-        text = open(path, encoding="utf-8").read()
+        text = open(path, encoding="utf-8-sig").read()
     except OSError as exc:
         raise Failed(f"读不了回放文件 {path}：{exc}") from None
+    except UnicodeDecodeError:  # PowerShell 5.1 的 Out-File 默认写 UTF-16（终审）
+        raise Failed(f"回放文件 {path} 要存成 UTF-8（PowerShell 写文件加 -Encoding utf8）") from None
     return parse_script(text)
 
 
