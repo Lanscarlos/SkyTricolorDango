@@ -504,7 +504,8 @@ enabled = true                 # false = 照旧：0.8 秒叫醒、被叫到当�
 quiet_min = 2.0                # 最后一句后安静多久放行（quiet_min~quiet_max 随机；有问句取 quiet_min）
 quiet_max = 6.0
 max_wait = 15.0                # 一批最多攒多久（还在打字也放）
-manner = true                  # false = 没有回法行、jab、提示词那几句（逐字照旧）
+short_quiet = 8.0              # 全是短句（嗯 / 哈哈，不是问句、没叫团子）的一批至少安静这么久才放；0 = 关（spec 2026-10-21-chat-rhythm）
+manner = true                 # false = 没有回法行、jab、提示词那几句（逐字照旧）
 emote_chance = 0.3             # 短句、没问句时提示「只回个动作」的概率（困了 ×1.5，最多 0.6）
 short_len = 6                  # 去掉空白多少字以内算短句
 jab_window = 6                 # 记最近几句说的话贱不贱

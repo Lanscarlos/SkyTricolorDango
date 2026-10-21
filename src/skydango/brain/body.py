@@ -195,7 +195,7 @@ class Body:
         self.rng = rng or random.Random()
         self.reflexes = Reflexes(cfg.reflex, self.rng, clock())
         # 攒话（spec 2026-10-07-chat-pacing §1）：几句聊天攒一会儿再交给大脑；放行时才冒输入气泡
-        self.pacer = Pacer(cfg.pacing, self.rng)
+        self.pacer = Pacer(cfg.pacing, self.rng, cfg.proactive.self_names)
         self._pace_bubble = False  # 这批里有人在跟团子说话、没被拦：放行时冒输入气泡
         self._jabs: deque[bool] = deque(maxlen=max(1, cfg.pacing.jab_window))  # 最近说的几句贱不贱（大脑 say 标的 jab）
         # 空闲注意力（东张西望，spec 2026-09-30-idle-attention）

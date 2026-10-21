@@ -1,15 +1,17 @@
 """攒话（spec 2026-10-07-chat-pacing §1）：一批聊天什么时候交给大脑。纯计算，不碰设备、不读时钟（now 由调用方给）。
 
 最后一句之后安静 quiet 秒（quiet_min ~ quiet_max 随机，有问句取 quiet_min）、批里说过话的人都不在打字才放；
-在打字就从最后一次看到他打字起重新算；第一句进来过了 max_wait 一定放；urgent（难过类、卡洛的命令）马上放。"""
+在打字就从最后一次看到他打字起重新算；第一句进来过了 max_wait 一定放；urgent（难过类、卡洛的命令）马上放。
+全是短句（嗯 / 哈哈 / 嘻嘻：不是问句、没说难过、没叫团子）的一批至少安静 short_quiet 秒（spec 2026-10-21-chat-rhythm §1）。"""
 
 from __future__ import annotations
 
 import math
 import random
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 
 from ..config import PacingConfig
+from ..inner.mind import sounds_upset
 
 QUESTION_WORDS = ("？", "?", "吗", "什么", "怎么", "为啥", "啥", "哪", "几")
 
@@ -19,9 +21,10 @@ def is_question(text: str) -> bool:
 
 
 class Pacer:
-    def __init__(self, cfg: PacingConfig, rng: random.Random) -> None:
+    def __init__(self, cfg: PacingConfig, rng: random.Random, self_names: Sequence[str] = ()) -> None:
         self.cfg = cfg
         self.rng = rng
+        self.self_names = tuple(n for n in self_names if n)  # 句子里有这些 = 在叫团子，不算短句
         self._reset()
 
     def _reset(self) -> None:
@@ -56,6 +59,16 @@ class Pacer:
     def _speakers(self) -> list[str]:
         return list(dict.fromkeys(who for who, _ in self._lines if who))
 
+    def _short(self, text: str) -> bool:
+        return (len("".join(text.split())) <= self.cfg.short_len and not is_question(text) and not sounds_upset(text)
+                and not any(n in text for n in self.self_names))
+
+    def _effective_quiet(self) -> float:
+        """全是短句的一批至少等 short_quiet；进来一句不是短句的就回到原来的 quiet。"""
+        if self.cfg.short_quiet > 0 and all(self._short(text) for _, text in self._lines):
+            return max(self._quiet, self.cfg.short_quiet)
+        return self._quiet
+
     def _typing(self, typing: Collection[str]) -> bool:
         return any(who in typing for who in self._speakers())
 
@@ -68,7 +81,7 @@ class Pacer:
         if self._typing(typing):
             self._typed = now
             return False
-        return now - max(self._last, self._typed) >= self._quiet
+        return now - max(self._last, self._typed) >= self._effective_quiet()
 
     def released(self, now: float) -> None:
         self._reset()
@@ -82,6 +95,6 @@ class Pacer:
         head = f"在攒话：{who}说了 {len(self._lines)} 句，"
         if self._typing(typing):
             return head + f"等{'他们' if len(speakers) > 1 else '他'}说完（还在打字）"
-        wait = self._quiet - (now - max(self._last, self._typed))
+        wait = self._effective_quiet() - (now - max(self._last, self._typed))
         wait = min(wait, self.cfg.max_wait - (now - self._first))
         return head + f"再等 {max(0, math.ceil(wait))} 秒"

@@ -789,6 +789,7 @@ class PacingConfig:
     quiet_min: float = 2.0  # 最后一句后安静多久放行（随机，均匀分布）；有问句时固定取它
     quiet_max: float = 6.0
     max_wait: float = 15.0  # 一批最多攒多久（还在打字也放）
+    short_quiet: float = 8.0  # 全是短句（嗯 / 哈哈，不是问句、没叫团子）的一批至少安静这么久才放；0 = 关（spec 2026-10-21-chat-rhythm）
     manner: bool = True
     emote_chance: float = 0.3  # 提示「只回个动作」的概率（困了 ×1.5，最多 0.6）
     short_len: int = 6  # 去掉空白多少字以内算短句

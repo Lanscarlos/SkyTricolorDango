@@ -53,6 +53,7 @@ FIELDS: tuple[Field, ...] = (
     Field("lull.enabled", "冷场时的心理活动", "好友不说话了、聊着聊着走了时团子心里会犯嘀咕，按节点叫醒大脑；关掉就回到老样子", "bool", "brain"),
     Field("addressee.enabled", "分清在跟谁说话", "好友之间聊天时团子默认不接，叫到它、接它的话才接，偶尔插一句算主动开口；关掉就回到老样子", "bool", "brain"),
     Field("pacing.enabled", "攒几句再回", "好友连着说几句时团子等他说完再回（冒输入气泡也挪到那时）；关掉就是话音刚落就叫醒大脑", "bool", "brain"),
+    Field("pacing.short_quiet", "短句多等几秒", "好友只发了「嗯」「哈哈」这种短句时，至少安静这么久再叫醒大脑，后面还有话就并成一批；0 = 不多等", "float", "brain"),
     Field("pacing.manner", "回法提示", "按团子最近的样子提醒它这轮好好说 / 只回个动作 / 挑一句回，说话时标出贱不贱；关掉就回到老样子", "bool", "brain"),
     Field("brain.compact.enabled", "大脑历史压缩", "只对 DeepSeek 等 OpenAI 兼容的大脑：一次上线内历史只往后接（缓存一路命中），太长时压成前情提要；关掉回到只带最近 8 轮", "bool", "brain"),
     Field("brain.compact.budget", "压缩门槛（token）", "上一次请求的输入到这么多 token 就把老的部分压成前情提要", "int", "brain"),

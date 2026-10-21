@@ -585,7 +585,7 @@ dir = "private/sandbox"
 设计见 `docs/superpowers/specs/2026-10-07-chat-pacing-design.md`，计划 `docs/superpowers/plans/2026-10-07-chat-pacing.md`。
 起因：10-07 晚用户单聊 15 分钟，团子 43 句回了 36 句、几乎话音刚落就回，而且句句都贱。**代码 10-07 做完，spec §7 沙盒 / 真机验证没走，数字都是估的**。
 - **攒话**（`brain/pacing.py` 的 `Pacer`，纯计算）：`chat` / `aside` 进来时身体先 `events.hold()` 再入队，大脑的 `due()` 在 `held()` 时什么都不返回（心跳、背景兜底也等，免得取走半批）；
-  最后一句后安静 `quiet_min`~`quiet_max`（2~6 秒随机，有问句取 `quiet_min`）、批里说过话的人都不在打字（`reader.typing()`，无障碍读法才有）才放，在打字就从最后看到他打字起重新算；
+  最后一句后安静 `quiet_min`~`quiet_max`（2~6 秒随机，有问句取 `quiet_min`；**全是短句**（≤ `short_len` 字、不是问句、没说难过、没叫 `self_names`：嗯 / 哈哈 / 嘻嘻）至少 `short_quiet` 8 秒，后面还有话就并成一批，0 = 关，10-21 spec `2026-10-21-chat-rhythm-design.md`）、批里说过话的人都不在打字（`reader.typing()`，无障碍读法才有）才放，在打字就从最后看到他打字起重新算；
   第一句进来过了 `max_wait`（15 秒）一定放；难过类的话（`sounds_upset`）、卡洛的 `#` 命令马上放。攒着时进来的别的紧急事件跟着这批一起等。status「在攒话：小明说了 3 句，再等 4 秒」
 - **输入气泡挪到放行那一刻**（`_release_pacing`）：被叫到的小动作反射照旧当场做，开框改到放行前；冒不了（技能、互动请求、面板……）不影响放行，`bubble_max` 从放行算
 - **回法**（`brain/manner.py`，`manner = true`）：被聊天叫醒的那一轮（取走了 `chat` / `aside`、没有主人命令），唤醒消息在「状态：」前多一行「回法：…」（大脑醒来时经 `body.call(body.manner_line)` 现算，事件带 `speech` = (说话人, 原文)）：

@@ -6,11 +6,12 @@ from skydango.brain.pacing import Pacer, is_question
 from skydango.config import PacingConfig
 
 
-def pacer(quiet=None, seed=1, **kw):
+def pacer(quiet=None, seed=1, names=(), **kw):
+    kw.setdefault("short_quiet", 0.0)  # 老测试喂的多是「哈哈」：按原来的等法测，短句多等另测（spec 2026-10-21-chat-rhythm）
     cfg = PacingConfig(**kw)
     if quiet is not None:
         cfg.quiet_min = cfg.quiet_max = quiet
-    return Pacer(cfg, random.Random(seed))
+    return Pacer(cfg, random.Random(seed), names)
 
 
 def release_time(p, start, typing=()):
@@ -122,3 +123,57 @@ def test_describe():
     assert p.describe(1.0, []) == "在攒话：小明说了 2 句，再等 3 秒"  # 2.5 秒向上取整
     p.heard(1.0, [("阿花", "嗯")], False)
     assert p.describe(1.0, ["阿花"]) == "在攒话：小明、阿花说了 3 句，等他们说完（还在打字）"
+
+
+# ---- 短句多等一会儿（spec 2026-10-21-chat-rhythm §1）----
+
+def test_short_only_waits_short_quiet():
+    p = pacer(quiet=3, short_quiet=8)
+    p.heard(0, [("小明", "嘻嘻")], False)
+    assert release_time(p, 0) == 8.0
+
+
+def test_long_or_question_line_goes_back_to_quiet():
+    p = pacer(quiet=3, short_quiet=8)
+    p.heard(0, [("小明", "哈哈")], False)
+    p.heard(1, [("小明", "今天跑图累死我了真的")], False)
+    assert release_time(p, 1) == 4.0
+    q = pacer(quiet=3, short_quiet=8)
+    q.heard(0, [("小明", "哈哈")], False)
+    q.heard(1, [("小明", "去哪")], False)  # 问句：quiet_min = 3
+    assert release_time(q, 1) == 4.0
+
+
+def test_calling_dango_is_not_short():
+    for text in ("团子", "三彩", "团子团子"):
+        p = pacer(quiet=3, short_quiet=8, names=("团子", "三彩"))
+        p.heard(0, [("小明", text)], False)
+        assert release_time(p, 0) == 3.0, text
+
+
+def test_short_quiet_typing_extends():
+    p = pacer(quiet=3, short_quiet=8)
+    p.heard(0, [("小明", "嗯")], False)
+    assert not p.ready(5, {"小明"})
+    assert release_time(p, 5) == 13.0
+
+
+def test_short_quiet_capped_by_max_wait_and_urgent():
+    p = pacer(quiet=3, short_quiet=20, max_wait=15)
+    p.heard(0, [("小明", "嗯")], False)
+    assert release_time(p, 0) == 15.0
+    u = pacer(quiet=3, short_quiet=8)
+    u.heard(0, [("小明", "难过")], True)
+    assert u.ready(0, ())
+
+
+def test_short_quiet_zero_is_old_behavior():
+    p = pacer(quiet=3, short_quiet=0)
+    p.heard(0, [("小明", "嗯")], False)
+    assert release_time(p, 0) == 3.0
+
+
+def test_describe_uses_effective_quiet():
+    p = pacer(quiet=3, short_quiet=8)
+    p.heard(0, [("小明", "嗯")], False)
+    assert "再等 6 秒" in p.describe(2, ())

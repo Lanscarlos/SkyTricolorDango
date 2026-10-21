@@ -14,6 +14,7 @@ def pace(clock, pacing=True, live=True, typing=None, **pacing_cfg):
     env.near = ["小明"]
     b, dev, reader, events = body(clock, live=live, env=env, rng=Rng(0.99), device_override=dev, pacing=pacing)
     b.cfg.pacing.quiet_min = b.cfg.pacing.quiet_max = 3.0
+    pacing_cfg.setdefault("short_quiet", 0.0)  # 老测试喂「哈哈」按原等法；短句多等另测（spec 2026-10-21-chat-rhythm）
     for k, v in pacing_cfg.items():
         setattr(b.cfg.pacing, k, v)
     b.friend_names = lambda: ["小明"]
@@ -37,6 +38,23 @@ def test_chat_held_until_quiet(clock):
     b.step()
     assert events.held()
     clock.advance(0.1)
+    b.step()
+    assert not events.held()
+
+
+def test_short_quiet_knows_dango_names(clock):  # spec 2026-10-21-chat-rhythm §1：「团子」是在叫它，不按短句多等
+    b, dev, reader, events = pace(clock, short_quiet=8.0)
+    say(reader, "团子")
+    b.step()
+    clock.advance(3.0)
+    b.step()
+    assert not events.held()
+    say(reader, "嘻嘻")
+    b.step()
+    clock.advance(3.0)
+    b.step()
+    assert events.held()
+    clock.advance(5.0)
     b.step()
     assert not events.held()
 
