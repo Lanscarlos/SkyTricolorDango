@@ -1054,6 +1054,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_halo_eval(cfg, args)
     elif args.action == "track-eval":
         _perception_track_eval(cfg, args)
+    elif args.action == "identity-truth":
+        _perception_identity_truth(cfg, args)
 
 
 def _existing_clips(dataset: Path, out: Path, recording: str) -> dict[Path, list[str]]:
@@ -1801,6 +1803,55 @@ def _perception_track_eval(cfg: Config, args) -> None:
                                       encoding="utf-8")
     (out / "report.md").write_text(report_md(results["baseline"], results["current"], meta), encoding="utf-8")
     print(f"报告：{out / 'report.md'}")
+
+
+def _perception_identity_truth(cfg: Config, args) -> None:
+    """身份板的半自动标准答案（spec 2026-10-22-identity-board §7）：旧流程回放录像起草每条轨迹是谁 + 拼图，
+    人改完草稿后 --apply 展开成 <录像目录>/truth.jsonl。"""
+    from .vision.compare import timed_files
+    from .vision.identity_eval import apply_draft, collect_logs, draft_identities, save_logs, write_draft, write_sheet
+    from .vision.trackeval import subsample
+
+    root = Path(args.source)
+    out = Path(args.output or f"tmp/identity-truth/{root.stem if root.is_file() else root.name}")
+    if args.apply:
+        draft, logs = out / "truth-draft.toml", out / "logs.json"
+        if not draft.exists() or not logs.exists():
+            raise SystemExit(f"{out} 里没有 truth-draft.toml / logs.json：先不带 --apply 跑一遍")
+        target = (root.parent if root.is_file() else root) / "truth.jsonl"
+        try:
+            n = apply_draft(draft, logs, target, _friend_names(cfg)())
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+        print(f"写了 {n} 行 → {target}")
+        return
+    try:
+        timed, skipped = timed_files(_images(args.source))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f"跳过 {len(skipped)} 张文件名里没有时间的图（比如 {skipped[0].name}）")
+    out.mkdir(parents=True, exist_ok=True)
+    cfg.identity.enabled = False  # 旧流程：只要追踪和读名字
+    _, watcher = _perception(cfg, args)
+    kept = list(subsample(timed, args.fps))
+    base = root.parent if root.is_file() else root
+    print(f"{len(timed)} 帧里按 {args.fps:g} 帧 / 秒抽了 {len(kept)} 帧 → {out}")
+
+    def frames():
+        for n, (t, path) in enumerate(kept, 1):
+            frame = imread(path)
+            if n % 100 == 0:
+                print(f"  {n}/{len(kept)}")
+            rel = path.relative_to(base).as_posix() if path.is_relative_to(base) else path.name
+            yield t, rel, frame, _panel_open(cfg, frame)
+
+    logs = collect_logs(frames(), watcher)
+    ids = draft_identities(logs, cfg.identity.tag_hold)
+    save_logs(out / "logs.json", logs)
+    write_draft(out / "truth-draft.toml", ids, logs)
+    write_sheet(out / "sheet.jpg", logs, base)
+    print(f"{len(logs)} 条轨迹；对着 {out / 'sheet.jpg'} 改 {out / 'truth-draft.toml'}，再加 --apply")
 
 
 def _perception_appearance_eval(cfg: Config, args) -> None:
@@ -3642,6 +3693,14 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--imgsz", type=int)
     q.add_argument("--fps", type=float, default=6.5, help="按录像时间每秒抽几帧（模拟 run 时身体截图，默认 6.5）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/track-eval/<时间>）")
+    q = psub.add_parser("identity-truth", help="身份板的半自动标准答案：旧流程回放录像起草每条轨迹是谁 + 拼图，人改完草稿后 --apply 写 truth.jsonl")
+    q.add_argument("source", help="record 录的目录（文件名里带时间）")
+    q.add_argument("--model", help="模型文件（默认 perception.model）")
+    q.add_argument("--device", choices=["cuda", "dml", "cpu"])
+    q.add_argument("--imgsz", type=int)
+    q.add_argument("--fps", type=float, default=6.5, help="按录像时间每秒抽几帧（默认 6.5）")
+    q.add_argument("--apply", action="store_true", help="读改好的草稿和 logs.json，写 <录像目录>/truth.jsonl")
+    q.add_argument("-o", "--output", help="输出目录（默认 tmp/identity-truth/<录像名>）")
     q = psub.add_parser("appearance-eval", help="认装扮的离线标定：录像上统计同一个人 / 不同人的外观相似度，给出建议的门槛，藏标签重放")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="YOLO 模型（默认 perception.model）")
