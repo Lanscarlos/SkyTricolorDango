@@ -445,6 +445,28 @@ class AppearanceConfig:
 
 
 @dataclass
+class IdentityConfig:
+    """身份板：外观为主、名字标签证实（spec 2026-10-22-identity-board-design.md，要配合 [perception] 和 [appearance]）。
+    像 / 领先 / 拿不准的门槛和 unsure_wait 沿用 [appearance]。数字都是估的，等拥挤录像定。"""
+
+    enabled: bool = False  # 关着逐字是旧流程
+    tag_hold: float = 0.5  # 标签换到另一条轨迹要连续这么多秒才算数
+    tag_stick: float = 0.5  # 上一帧挂着这个标签的轨迹，分配误差乘它（越小越黏）
+    window: int = 5  # 外观分取最近几个样本的中位数
+    min_samples: int = 3  # 判"像" / "明显不像"至少几个样本
+    friend_feature: str = "dino"  # 好友外观分用哪个特征：dino / color / both（两个平均）
+    drop: float = 0.03  # 从"像"掉下来要低于 match - drop
+    stranger_low: float | None = None  # 对每个好友和团子都低于它才算"明显不像"；None = [appearance] unsure
+    dango_w_pos: float = 0.4  # 团子分四项权重：位置 / 长相 / YOLO self / 不跟背景走
+    dango_w_look: float = 0.4
+    dango_w_self: float = 0.2
+    dango_w_pivot: float = 0.2
+    dango_min: float = 0.5  # 团子分过它才可能是团子
+    dango_switch: float = 1.0  # 别人连续这么多秒比现任高才换团子
+    dango_learn: float = 0.75  # 团子分过它才学进团子底库
+
+
+@dataclass
 class GestureConfig:
     """别人对团子做的动作（感知层三期 §3，研究性质）：好友对着团子挥手、鞠躬时发 gesture 事件，大脑决定回不回礼。
 
@@ -964,6 +986,7 @@ class Config:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     places: PlacesConfig = field(default_factory=PlacesConfig)
     appearance: AppearanceConfig = field(default_factory=AppearanceConfig)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
     assist: AssistConfig = field(default_factory=AssistConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
     attrs: AttrsConfig = field(default_factory=AttrsConfig)
