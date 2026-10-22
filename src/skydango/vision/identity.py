@@ -37,7 +37,8 @@ EPS = 1e-9  # 时间比较的容差（0.6 - 0.1 之类）
 LOOK_SPAN = 0.15  # 团子长相分：比最像的好友高出这么多 = 满分
 POS_SPAN = 1.5  # 团子位置分：离记住的位置这么多个框宽 = 0
 SMOOTH = 0.7  # 团子分平滑：smooth = 0.7 × 旧 + 0.3 × 本帧
-CALL_SLACK = 2.0  # 喊过一声、窗口结束后最多再等这么久收到结果，再久就当没喊（按拿不准超时算）
+# 喊过一声、窗口结束后最多再等这么久收到结果：再久就当这一声没喊成，回到拿不准的超时（免得一个过期的 called_at 让他永远拿不准）
+CALL_SLACK = 2.0
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,7 @@ class _Track:
     seg_last: float = 0.0
     held: str | None = None  # 稳定持有的 key
     held_name: str | None = None
-    tagged: bool = False  # 稳定持有过名字
+    tagged: bool = False  # 稳定持有过读得出的名字（"#…" 不算：丢了它照没挂过名字的轨迹判，走陌生人第 3 条的时间）
     lost: str | None = None  # 拿不准的名字：失去的（读得出的），或者一直挂在旁边人身上的
     stranger: bool = False  # 判过陌生人：只有名字能改回来
     panel_at: float | None = None  # 最后一次在面板后面
@@ -172,13 +173,18 @@ class IdentityBoard:
             if named:
                 st.cand_at, st.cand_name = now, min(named, key=lambda c: (c.err, c.key)).name
         self._dango(frame)
-        tags = self._assign(frame.tracks, exclude={self.dango_id} if self.dango_id is not None else set())
+        # 团子也参加分配：它拿到的标签这一帧不给别人（不然认错的团子会把好友的名字推给旁边的真团子）
+        tags = self._assign(frame.tracks, exclude=set())
         self._hold(tags, frame.tracks, now)
         if frame.call_end is not None:
             for tid, name in sorted(frame.call_end.shown.items()):
-                if tid in seen and tid != self.dango_id:
+                if tid in seen:
                     self._take(tid, name, name, now)  # 喊一声亮出名字：当场算稳定持有
                     self._prev[name] = tid
+        cur = self._tracks.get(self.dango_id) if self.dango_id is not None else None
+        if cur is not None and cur.held_name is not None:
+            cur.low_since = None
+            self.dango_id = None  # 稳定挂上了读得出的名字：自己头上没有名字，摘掉团子
         for t in frame.tracks:
             self._sample(t)
         looks = self._looks(frame.tracks)
@@ -251,13 +257,10 @@ class IdentityBoard:
 
         def eligible(t: TrackIn) -> bool:
             st = self._tracks[t.id]
-            return st.held is None and not t.unlit and st.smooth is not None and st.smooth >= c.dango_min
+            return st.held_name is None and not t.unlit and st.smooth is not None and st.smooth >= c.dango_min
 
         cands = [t for t in frame.tracks if eligible(t) and self._tracks[t.id].fresh]  # 光靠位置不够当新团子
         cur = self._tracks.get(self.dango_id) if self.dango_id is not None else None
-        if cur is not None and cur.held is not None:
-            cur.low_since = None
-            self.dango_id = cur = None  # 稳定挂上了名字：自己头上没有名字
         if frame.sliding:
             for st in self._tracks.values():
                 st.above_since = None
@@ -339,7 +342,8 @@ class IdentityBoard:
         if st.held is not None and st.held != key:
             self._holder.pop(st.held, None)
         self._holder[key] = tid
-        st.held, st.held_name, st.tagged, st.lost, st.stranger = key, name, True, None, False
+        st.held, st.held_name, st.lost, st.stranger = key, name, None, False
+        st.tagged = st.tagged or name is not None
 
     # ── 外观 ──
 
@@ -372,8 +376,12 @@ class IdentityBoard:
         """样本够 min_samples 时每个好友的中位分（只算有分的样本）；不够 = None。"""
         if len(st.samples) < max(1, self.cfg.min_samples):
             return None
-        names = {n for d in st.samples for n in d}
-        return {n: median(d[n] for d in st.samples if n in d) for n in names}
+        out = {}
+        for n in sorted({n for d in st.samples for n in d}):
+            vals = [d[n] for d in st.samples if n in d]
+            if len(vals) >= self.cfg.min_samples:  # 他的分也要够 min_samples 个：一个样本说了不算
+                out[n] = median(vals)
+        return out
 
     def _looks(self, tracks: tuple[TrackIn, ...]) -> dict[int, tuple[str, str, float]]:
         """外观结论：轨迹 → (FRIEND_LOOK / UNSURE, 名字, 中位分)。稳定持有标签的、团子不算。"""
@@ -469,6 +477,10 @@ class IdentityBoard:
                 return t.id not in end.shown
             if now - t.called_at <= self.call_window + CALL_SLACK:
                 return False  # 他的那一声还在途中
+        if st.tagged:
+            # 丢过名字的（人挤在一起、标签被旁边的人占着）不靠超时判陌生人：这里看不到身体喊一声的额度，
+            # spec §4 的陌生人条件里挂过名字的只有"喊了没亮"这一条
+            return False
         since = st.since if st.kind == UNSURE else now
         return now - since >= self.acfg.unsure_wait + self.call_window - EPS
 

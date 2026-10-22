@@ -345,11 +345,30 @@ def test_dango_drops_after_low_for_switch_seconds():
     assert b.dango_id is None
 
 
-def test_dango_skips_tag_assignment():
+def test_dango_takes_part_in_tag_assignment():
     b = board()
     b.step(frame(0.0, tr(1, 960, self_score=0.9)))
     out = b.step(frame(0.1, tr(1, 960, tags=(TagCand("小明", "小明", 1.0),)), tr(2, 1100, tags=(TagCand("小明", "小明", 9.0),))))
-    assert out.tags == {2: "小明"} and out.verdicts[1].kind == DANGO
+    assert out.tags == {1: "小明"} and out.verdicts[1].kind == DANGO  # 拿到了、还没挂稳：照样是团子，别人这一帧拿不到
+
+
+def test_wrongly_crowned_friend_is_uncrowned_by_stable_name():  # 评审复现：好友被 self 框认成团子
+    b = board()
+    b.step(frame(0.0, tr(2, 960, self_score=0.9), tr(1, 1100)))
+    assert b.dango_id == 2
+    for t in (0.1, 0.3, 0.5, 0.7):
+        out = b.step(frame(t, tr(2, 960, tags=(TagCand("小明", "小明", 2.0),)), tr(1, 1100, tags=(TagCand("小明", "小明", 20.0),))))
+        assert 1 not in out.tags and 1 not in out.learn
+    assert b.dango_id != 2 and out.verdicts[2].kind == FRIEND_TAG and out.verdicts[2].name == "小明"
+    assert out.verdicts[1].kind != FRIEND_TAG
+
+
+def test_unread_tag_does_not_uncrown_dango():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    for t in (0.1, 0.3, 0.6, 0.8):
+        out = b.step(frame(t, tr(1, 960, tags=(TagCand("#5", None, 2.0),))))
+    assert b.dango_id == 1 and out.verdicts[1].kind == DANGO
 
 
 # ── Task 5：只从干净的帧学 ──
@@ -398,3 +417,55 @@ def test_unread_tag_and_weak_dango_never_learn():
     b.step(frame(0.0, tr(1, 960, self_score=0.6)))  # 团子分 0.6 < dango_learn
     out = b.step(frame(0.1, tr(1, 960, self_score=0.6, scores=sc(me=0.5, 小明=0.5))))
     assert b.dango_id == 1 and out.learn == {}
+
+
+
+# ── 修订第 1 轮 ──
+
+
+def test_lost_tag_unsure_does_not_time_out_to_stranger():
+    b = board(call_window=6.0)
+    for t in (0.0, 0.3, 0.6):
+        b.step(frame(t, tr(1, 1000, tags=(TagCand("小明", "小明", 5.0),)), tr(2, 1300)))
+    for t in (0.7, 0.9, 1.1, 1.2):
+        b.step(frame(t, tr(1, 1000), tr(2, 1300, tags=(TagCand("小明", "小明", 4.0),))))
+    out = b.step(frame(20.0, tr(1, 1000), tr(2, 1300, tags=(TagCand("小明", "小明", 4.0),))))
+    assert out.verdicts[1].kind == UNSURE and out.verdicts[1].name == "小明"
+    out = b.step(frame(21.0, tr(1, 1000, called_at=20.5), tr(2, 1300, called_at=20.5), call_end=CallEnd(20.5, {2: "小明"})))
+    assert out.verdicts[1].kind == STRANGER  # 喊了没亮出他：照样判
+
+
+def test_one_sample_for_a_friend_does_not_make_look():
+    b = board()
+    out = None
+    for t, s in ((0.0, sc(小明=0.95)), (0.1, sc(番茄=0.5)), (0.2, sc(番茄=0.5))):
+        out = b.step(frame(t, tr(1, 1000, scores=s)))
+    assert out.verdicts[1].kind != FRIEND_LOOK and out.verdicts[1].kind != UNSURE
+
+
+def test_unlit_judged_under_panel_and_small():
+    b = board()
+    small = Rect(1500, 400, 20, 40)
+    out = b.step(frame(0.5, tr(1, 300, unlit=True, under_panel=True), tr(2, 1500, unlit=True, box=small)))
+    assert out.verdicts[1].kind == PENDING and out.verdicts[2].kind == PENDING
+    out = b.step(frame(1.0, tr(1, 300, unlit=True, under_panel=True), tr(2, 1500, unlit=True, box=small)))
+    assert out.verdicts[1].kind == STRANGER and out.verdicts[2].kind == STRANGER
+
+
+def test_clearly_nobody_beats_neighbour_tag_exception():
+    b = board()  # 旁边好友的标签也挨着他，但长相明显不像任何人：照样判陌生人（只有第 3 条有例外）
+    for t in (0.0, 0.5, 1.0):
+        out = b.step(frame(t, tr(1, 1000, tags=(TagCand("饶总", "饶总", 5.0),), scores=sc(me=0.2, 饶总=0.3)),
+                           tr(2, 1080, tags=(TagCand("饶总", "饶总", 3.0),))))
+    assert out.verdicts[1].kind == STRANGER
+
+
+def test_lost_unread_key_falls_under_rule_3():
+    b = board()  # 读不出名字的标签丢了：回 pending，按没挂过名字的轨迹等满 stranger_after + grace
+    for t in (0.0, 0.3, 0.6):
+        b.step(frame(t, tr(1, 1000, tags=(TagCand("#7", None, 5.0),)), tr(2, 1300)))
+    for t in (0.7, 0.9, 1.1, 1.2):
+        out = b.step(frame(t, tr(1, 1000), tr(2, 1300, tags=(TagCand("#7", None, 4.0),))))
+    assert out.verdicts[1].kind == PENDING
+    out = b.step(frame(2.6, tr(1, 1000), tr(2, 1300, tags=(TagCand("#7", None, 4.0),))))
+    assert out.verdicts[1].kind == STRANGER
