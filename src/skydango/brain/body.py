@@ -2051,6 +2051,9 @@ class Body:
             parts.append("你自己：" + me)
         if self.enroll_note:
             parts.append(self.enroll_note)
+        id_off = getattr(self.env, "identity_off", None)
+        if id_off:
+            parts.append(f"身份板：退回旧流程（{id_off}）")
         looks = self.env.looks(list(near)) if near and hasattr(self.env, "looks") else {}
         friends = "、".join(f"{n}（{looks[n]}）" if looks.get(n) else n for n in near)
         if near and self.ledger is not None:

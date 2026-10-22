@@ -426,6 +426,35 @@ def _appearance_parts(cfg: Config, run: RunDir | None = None, dino_embedder=_UNS
     return parts
 
 
+def _identity_board(cfg: Config, dino):
+    """身份板（spec 2026-10-22-identity-board §2.3）：[identity]、[perception]、[appearance] 都开着且 DINOv2 加载成功才建。
+    返回 (板子或 None, 启动日志那一行)；[identity] 没开时日志是空串。"""
+    if not cfg.identity.enabled:
+        return None, ""
+    if not cfg.perception.enabled:
+        return None, "身份板没开：要先开感知层"
+    if not cfg.appearance.enabled:
+        return None, "身份板没开：要先开认装扮"
+    if dino is None:
+        return None, "身份板没开：DINOv2 没加载"
+    from .vision.identity import IdentityBoard
+    from .vision.perception import STRANGER_GRACE
+
+    p = cfg.perception
+    board = IdentityBoard(cfg.identity, cfg.appearance, stranger_after=p.stranger_after, grace=STRANGER_GRACE,
+                          stranger_min_height=p.stranger_min_height, track_buffer=p.track_buffer,
+                          call_window=cfg.call.window)
+    return board, f"身份板：外观为主、名字标签证实（好友特征 {cfg.identity.friend_feature}）"
+
+
+def _identity_parts(cfg: Config, dino) -> dict:
+    """给 PerceptionWatcher 的 identity 关键字参数；没建成时是空的。启动日志在这里打一次。"""
+    board, line = _identity_board(cfg, dino)
+    if line:
+        log.info(line)
+    return {"identity": board} if board is not None else {}
+
+
 def _catalog_collector(cfg: Config, run: RunDir | None):
     """装扮图鉴收集（spec 2026-10-02-catalog-collect §4）：[catalog] 开着、有运行目录（run 的 dry-run / live）才建；
     perception detect 等没有运行目录，不收。[perception] 没开时 _scene_watcher 根本不走到这里。"""
@@ -531,6 +560,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
         social_cfg=cfg.social, flame=flame,
         light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run, dino),
+        **_identity_parts(cfg, dino),
         call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
         catalog=_catalog_collector(cfg, run), icons_cfg=cfg.icons, map_icons=_map_icons(cfg, icons, dino, run),
         presence_call=can_call,
@@ -968,6 +998,7 @@ def _perception(cfg: Config, args, dev=None):
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=False, capture=dev.screenshot if dev is not None else None,
         **_appearance_parts(cfg, None, dino),  # 只挂记忆簿：不存训练数据、不描述
+        **_identity_parts(cfg, dino),
         attrs=attrs,
     )
     return detector, watcher

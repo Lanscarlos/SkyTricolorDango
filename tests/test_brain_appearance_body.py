@@ -384,3 +384,10 @@ def test_run_enrolls_before_main_loop_and_survives_errors(clock):
     stop = type("E", (), {"is_set": lambda s: len(calls) >= 2})()
     b.run(duration=5, stop=stop)
     assert calls[:2] == ["enroll", "step"]
+
+
+def test_status_shows_identity_off_reason(clock):
+    b, env, _, _ = make(clock)
+    assert "身份板" not in b.status()
+    env.identity_off = "连续出错"
+    assert "身份板：退回旧流程（连续出错）" in b.status()

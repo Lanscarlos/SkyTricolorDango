@@ -29,7 +29,7 @@ def test_every_spec_field_is_listed():
         "proactive.enabled", "proactive.quota_busy", "proactive.quota_quiet", "proactive.min_gap", "proactive.auto_look_busy",
         "reflex.enabled", "reflex.bubble", "inner.enabled", "inner.reflect", "inner.persona", "inner.cheeky", "call.enabled", "call.auto", "attention.search", "lull.enabled", "addressee.enabled", "pacing.enabled", "pacing.short_quiet", "pacing.manner", "brain.compact.enabled", "brain.compact.budget", "brain.compact.keep_turns", "backstage.enabled", "vision.source", "env.enabled",
         "perception.enabled",
-        "perception.model", "perception.presence", "perception.leave_after", "perception.recheck", "attrs.enabled", "attrs.model", "inbox.enabled", "inbox.ask", "inbox.retrain_min", "places.enabled", "appearance.enabled", "appearance.describe", "catalog.enabled", "icons.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
+        "perception.model", "perception.presence", "perception.leave_after", "perception.recheck", "attrs.enabled", "attrs.model", "inbox.enabled", "inbox.ask", "inbox.retrain_min", "places.enabled", "appearance.enabled", "identity.enabled", "appearance.describe", "catalog.enabled", "icons.enabled", "friend_check.enabled", "panels.enabled", "reply.disclosure_prefix", "owner",
     ]
 
 
