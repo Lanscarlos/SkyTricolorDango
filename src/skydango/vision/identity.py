@@ -11,6 +11,8 @@ perception 每帧把证据（标签候选、外观分、团子线索、喊一声
 3. 陌生人：黑影等 stranger_after；明显不像任何好友和团子；一直没结论等满 stranger_after + grace。
    挂过名字的、头顶最近有别人的名字标签候选的不判，进拿不准等喊一声：亮了 = 他，没亮 / 一直没喊成 = 陌生人。
    判了陌生人只有名字（稳定标签 / 喊一声亮出来）能改回来
+4. 团子：位置 / 长相 / YOLO self / 不跟背景走四项加权、按轨迹平滑；同一时刻只有一个，现任被别人连续 dango_switch 秒
+   反超、或者自己连续 dango_switch 秒不够 dango_min 才换；光靠站在老位置上选不出新团子；稳定挂着名字的永远不是团子
 """
 
 from __future__ import annotations
@@ -30,6 +32,9 @@ STRANGER = "stranger"
 PENDING = "pending"  # 刚出现、证据还不够
 
 EPS = 1e-9  # 时间比较的容差（0.6 - 0.1 之类）
+LOOK_SPAN = 0.15  # 团子长相分：比最像的好友高出这么多 = 满分
+POS_SPAN = 1.5  # 团子位置分：离记住的位置这么多个框宽 = 0
+SMOOTH = 0.7  # 团子分平滑：smooth = 0.7 × 旧 + 0.3 × 本帧
 CALL_SLACK = 2.0  # 喊过一声、窗口结束后最多再等这么久收到结果，再久就当没喊（按拿不准超时算）
 
 
@@ -114,6 +119,11 @@ class _Track:
     panel_at: float | None = None  # 最后一次在面板后面
     cand_at: float | None = None  # 最后一次头顶有读出名字的标签候选
     cand_name: str | None = None
+    smooth: float | None = None  # 团子分（平滑后）
+    look: float | None = None  # 上一次的团子长相分
+    fresh: bool = False  # 这一帧团子分有位置以外的项
+    low_since: float | None = None  # 现任团子从什么时候开始不够 dango_min
+    above_since: float | None = None  # 从什么时候开始比现任团子高
     kind: str = PENDING
     name: str | None = None
     since: float = 0.0
@@ -141,6 +151,7 @@ class IdentityBoard:
         self._holder: dict[str, int] = {}  # key → 稳定持有它的轨迹
         self._prev: dict[str, int] = {}  # 上一帧的分配 key → 轨迹
         self.dango_id: int | None = None
+        self._spot: dict[bool, Rect] = {}  # 面板开 / 关时团子在哪（现任团子的框，不过期）
 
     # ── 每帧 ──
 
@@ -158,6 +169,7 @@ class IdentityBoard:
             named = [c for c in t.tags if c.name is not None]
             if named:
                 st.cand_at, st.cand_name = now, min(named, key=lambda c: (c.err, c.key)).name
+        self._dango(frame)
         tags = self._assign(frame.tracks, exclude={self.dango_id} if self.dango_id is not None else set())
         self._hold(tags, frame.tracks, now)
         if frame.call_end is not None:
@@ -180,6 +192,86 @@ class IdentityBoard:
                 del self._holder[key]
             if self.dango_id == tid:
                 self.dango_id = None
+
+    # ── 团子 ──
+
+    def dango_spot(self, panel: bool) -> Rect | None:
+        return self._spot.get(panel)
+
+    def _dango_score(self, t: TrackIn, frame: FrameIn) -> None:
+        """这一帧的团子分（四项都在 0~1，不计入的项不参与归一），平滑进轨迹；一项都不计入的帧不更新。"""
+        c, st = self.cfg, self._tracks[t.id]
+        terms: list[tuple[float, float]] = []
+        spot = self._spot.get(frame.panel)
+        pos = spot is not None and not frame.sliding
+        if pos:
+            dist = abs((t.box.x + t.box.w / 2) - (spot.x + spot.w / 2)) / max(1, spot.w)
+            terms.append((c.dango_w_pos, 0.5 if frame.moved else _clip(1 - dist / POS_SPAN)))
+        if t.scores is not None and t.scores.me is not None:
+            st.look = _clip((t.scores.me - max(t.scores.dino.values(), default=0.0)) / LOOK_SPAN)
+        if st.look is not None:
+            terms.append((c.dango_w_look, st.look))
+        if t.self_score is not None:
+            terms.append((c.dango_w_self, _clip(t.self_score)))
+        if t.with_bg is not None:
+            terms.append((c.dango_w_pivot, 0.0 if t.with_bg else 1.0))
+        weight = sum(w for w, _ in terms)
+        st.fresh = len(terms) > (1 if pos else 0) and weight > 0
+        if weight <= 0:
+            return
+        score = sum(w * v for w, v in terms) / weight
+        st.smooth = score if st.smooth is None else SMOOTH * st.smooth + (1 - SMOOTH) * score
+
+    def _dango(self, frame: FrameIn) -> None:
+        """团子只有一个：现任留着，除非消失 / 挂上名字 / 连续不够 / 被连续反超；横移动画里不换人。"""
+        now, c = frame.now, self.cfg
+        for t in frame.tracks:
+            self._dango_score(t, frame)
+        here = {t.id: t for t in frame.tracks}
+
+        def eligible(t: TrackIn) -> bool:
+            st = self._tracks[t.id]
+            return st.held is None and not t.unlit and st.smooth is not None and st.smooth >= c.dango_min
+
+        cands = [t for t in frame.tracks if eligible(t) and self._tracks[t.id].fresh]  # 光靠位置不够当新团子
+        cur = self._tracks.get(self.dango_id) if self.dango_id is not None else None
+        if cur is not None and cur.held is not None:
+            cur.low_since = None
+            self.dango_id = cur = None  # 稳定挂上了名字：自己头上没有名字
+        if frame.sliding:
+            for st in self._tracks.values():
+                st.above_since = None
+        elif cur is not None and self.dango_id in here:
+            if cur.smooth is None or cur.smooth < c.dango_min:
+                cur.low_since = now if cur.low_since is None else cur.low_since
+            else:
+                cur.low_since = None
+            best = None
+            for t in cands:
+                st = self._tracks[t.id]
+                if t.id == self.dango_id or cur.smooth is None or st.smooth <= cur.smooth:
+                    st.above_since = None
+                    continue
+                st.above_since = now if st.above_since is None else st.above_since
+                if now - st.above_since >= c.dango_switch - EPS and (best is None or st.smooth > self._tracks[best.id].smooth):
+                    best = t
+            if best is not None:
+                self._crown(best.id)
+            elif cur.low_since is not None and now - cur.low_since >= c.dango_switch - EPS:
+                cur.low_since = None
+                self.dango_id = None
+        if self.dango_id is None and not frame.sliding and cands:
+            best = max(cands, key=lambda t: (self._tracks[t.id].smooth, -t.id))
+            self._crown(best.id)
+        if self.dango_id in here and not frame.sliding:
+            self._spot[frame.panel] = here[self.dango_id].box
+
+    def _crown(self, tid: int) -> None:
+        for st in self._tracks.values():
+            st.above_since = st.low_since = None
+        st = self._tracks[tid]
+        st.stranger, st.lost = False, None  # 团子不是陌生人
+        self.dango_id = tid
 
     # ── 标签 ──
 
@@ -304,6 +396,8 @@ class IdentityBoard:
     def _verdict(self, t: TrackIn, look: tuple[str, str, float] | None, frame: FrameIn) -> Verdict:
         now = frame.now
         st = self._tracks[t.id]
+        if t.id == self.dango_id:
+            return self._mark(st, DANGO, None, st.smooth or 0.0, now)
         meds = self._medians(st)
         top = max(meds.values()) if meds else 0.0
         if st.held is not None:
@@ -368,3 +462,7 @@ class IdentityBoard:
             st.since = now
         st.kind, st.name = kind, name
         return Verdict(kind, name, score, st.since)
+
+
+def _clip(v: float) -> float:
+    return min(1.0, max(0.0, v))

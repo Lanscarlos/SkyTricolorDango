@@ -266,3 +266,87 @@ def test_stranger_sticks_until_tag():
     for t in (1.6, 1.9, 2.1):
         out = b.step(frame(t, tr(1, 1000, tags=(TagCand("小明", "小明", 3.0),))))
     assert out.verdicts[1].kind == FRIEND_TAG
+
+
+# ── Task 4：团子分和"团子只有一个" ──
+
+
+def test_dango_without_self_box_by_position_and_look():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))  # 记下位置
+    for t in (0.1, 0.2, 0.3):
+        out = b.step(frame(t, tr(1, 960, scores=sc(me=0.9, 小明=0.5)), tr(2, 1300, scores=sc(me=0.5, 小明=0.5))))
+    assert out.verdicts[1].kind == DANGO and b.dango_id == 1
+
+
+def test_no_dango_evidence_no_dango():
+    b = board()
+    out = b.step(frame(0.0, tr(1, 960), tr(2, 1300)))
+    assert all(v.kind != DANGO for v in out.verdicts.values()) and b.dango_id is None
+
+
+def test_position_alone_never_picks_a_new_dango():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    b.step(frame(1.5, tr(2, 960)))  # 团子那条断了超过 track_buffer；新轨迹站在老位置上
+    out = b.step(frame(1.6, tr(2, 960)))
+    assert b.dango_id is None and out.verdicts[2].kind != DANGO
+    assert b.dango_spot(False) == Rect(960, 400, 90, 220) and b.dango_spot(True) is None
+
+
+def test_self_box_jumping_onto_tagged_friend_does_not_steal():
+    b = board()
+    for t in (0.0, 0.1):
+        b.step(frame(t, tr(1, 960, self_score=0.9), tr(2, 1040, tags=(TagCand("小明", "小明", 3.0),))))
+    for t in (0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4):
+        out = b.step(frame(t, tr(1, 960), tr(2, 1040, self_score=0.9, tags=(TagCand("小明", "小明", 3.0),))))
+    assert b.dango_id == 1 and out.verdicts[2].kind == FRIEND_TAG
+
+
+def test_pivot_separates_dango_from_hugging_friend():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    for t in (0.1, 0.2, 0.3, 0.4):
+        out = b.step(frame(t, tr(1, 960, with_bg=False), tr(2, 990, with_bg=True)))
+    assert b.dango_id == 1
+
+
+def test_panel_slide_keeps_dango():
+    b = board()
+    for t in (0.0, 0.1):
+        b.step(frame(t, tr(1, 960, self_score=0.9), tr(2, 1400)))
+    for t in (0.2, 0.6, 1.0, 1.4, 1.8):  # 面板横移：团子滑到 1360，另一个人滑到原来团子的位置
+        out = b.step(frame(t, tr(1, 1360), tr(2, 960), sliding=True))
+    assert b.dango_id == 1 and out.verdicts[2].kind != DANGO
+
+
+def test_challenger_needs_dango_switch_seconds():
+    # 照计划原样的夹具（轨迹 2 在 1300）位置分是 0、永远比不过轨迹 1；改成挨着团子、长相和 self 都更像团子
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.6), tr(2, 1000)))
+    one = lambda: tr(1, 960, self_score=0.6, scores=sc(me=0.5, 小明=0.6))  # noqa: E731
+    two = lambda: tr(2, 1000, self_score=1.0, scores=sc(me=0.95, 小明=0.5))  # noqa: E731
+    for t in (0.1, 0.5, 0.9):
+        b.step(frame(t, one(), two()))
+    assert b.dango_id == 1
+    for t in (1.3, 1.7, 2.1):
+        b.step(frame(t, one(), two()))
+    assert b.dango_id == 2
+
+
+def test_dango_drops_after_low_for_switch_seconds():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    low = sc(me=0.3, 小明=0.6)  # 长相不像团子、跟着背景走；位置跟着现任团子更新，光靠它只有 0.4
+    for t in (0.1, 0.5, 0.9, 1.3, 1.7):  # 0.9 起不够 dango_min（0.4 / 1.2 一直往下拉）
+        b.step(frame(t, tr(1, 1400, self_score=0.0, with_bg=True, scores=low)))
+        assert b.dango_id == 1, t
+    b.step(frame(2.1, tr(1, 1400, self_score=0.0, with_bg=True, scores=low)))
+    assert b.dango_id is None
+
+
+def test_dango_skips_tag_assignment():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    out = b.step(frame(0.1, tr(1, 960, tags=(TagCand("小明", "小明", 1.0),)), tr(2, 1100, tags=(TagCand("小明", "小明", 9.0),))))
+    assert out.tags == {2: "小明"} and out.verdicts[1].kind == DANGO
