@@ -22,9 +22,12 @@ from .bubbles import Rect
 from .attrs import crop as square_crop
 from .embed import OnnxEmbedder, cosine, unit
 from .gallery import Gallery, Sample
+from .identity import Scores
 from .track import iou
 
 log = logging.getLogger(__name__)
+
+ME_LOOK_MIN = 3  # 身份板：团子底库至少这么多张才给团子长相分（spec 2026-10-22-identity-board §5.2）
 
 
 def _inter(a: Rect, b: Rect) -> int:
@@ -363,6 +366,23 @@ class AppearanceBook:
                 if other is not None and other >= mine:
                     return None
             return mine
+
+    def identity_scores(self, sample: Sample) -> Scores:
+        """身份板的外观分（spec 2026-10-22-identity-board §3.2、§5.1）：这张样本对每个好友底库 DINOv2 / 颜色最像一张的余弦
+        （没有可比样本的好友不列；样本没有 DINOv2 时 dino 是空的），me = 团子底库 DINOv2 最像一张（团子底库不到 3 张、没有 DINOv2 = None）。"""
+        dino = None if sample.dino is None else unit(sample.dino)
+        color = unit(sample.color)
+        with self._lock:
+            dinos, colors = {}, {}
+            for n, p in self.friends.items():
+                if (d := p.gallery.best(dino, "dino")) is not None:
+                    dinos[n] = d
+                if (c := p.gallery.best(color, "color")) is not None:
+                    colors[n] = c
+            me = None
+            if dino is not None and self.me is not None and len(self.me.gallery) >= ME_LOOK_MIN:
+                me = self.me.gallery.best(dino, "dino")
+        return Scores(dino=dinos, color=colors, me=me)
 
     def stranger_id(self, feat, now: float, exclude: frozenset[str] | set[str] = frozenset()) -> tuple[str, bool]:
         """陌生人编号：认回已有的（第二项 = 离开超过 keep 秒又回来了），否则新编号。

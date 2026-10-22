@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .bubbles import Rect
 
@@ -92,3 +92,4 @@ class CallSeen:
     friends: dict[str, Seen]
     unnamed: int = 0
     ended: bool = False
+    tracks: dict[int, str] = field(default_factory=dict)  # 窗口里哪条人物轨迹挂上了哪个名字（身份板收尾用）

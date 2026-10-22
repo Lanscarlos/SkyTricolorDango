@@ -473,3 +473,24 @@ def test_dino_success_resets_error_count():
     img = np.zeros((10, 10, 3), np.uint8)
     res = [dino.embed(img) for _ in range(9)]
     assert dino.enabled and sum(r is not None for r in res) == 3  # 连续才算
+
+
+def test_identity_scores():
+    from skydango.vision.gallery import Sample
+
+    b = book()
+    for i in range(3):
+        b.learn("friend", "小明", _basis(0), float(i), dino=_basis(3))
+        b.learn("friend", "番茄", _basis(1), float(i), dino=_basis(4))
+    q = Sample(near(_basis(0), 0.9), near(_basis(4), 0.8), 5.0, 0.3)
+    s = b.identity_scores(q)
+    assert s.color == pytest.approx({"小明": 0.9, "番茄": 0.0}, abs=1e-5)
+    assert s.dino == pytest.approx({"小明": 0.0, "番茄": 0.8}, abs=1e-5)
+    assert s.me is None  # 还没有团子底库
+    b.learn("me", "", _basis(5), 0.0, dino=_basis(2))
+    b.learn("me", "", _basis(6), 1.0, dino=_basis(2))
+    assert b.identity_scores(q).me is None  # 团子底库只有 2 张
+    b.learn("me", "", _basis(2), 2.0, dino=_basis(4))
+    assert b.identity_scores(q).me == pytest.approx(0.8, abs=1e-5)
+    nodino = b.identity_scores(Sample(near(_basis(0), 0.9), None, 5.0, 0.3))
+    assert nodino.dino == {} and nodino.me is None and "小明" in nodino.color

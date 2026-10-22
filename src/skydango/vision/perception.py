@@ -53,6 +53,7 @@ from .detect import Detection, Detector
 from .embed import cosine, unit
 from .gesture import ClipBuffer, eligible, person_crop
 from .icons_map import MAP_OWNERS, UNKNOWN, Icon, map_label, owner_of
+from .identity import CallEnd, FrameIn, IdentityBoard, TagCand, TrackIn
 from .lighting import DISK_EVERY, DISK_GAP, GONE_RETRY, LIT_WEAK, FlameWatch, flame_area, person_under, under_tag
 from .ocr import OcrEngine, join_lines
 from .presence import Presence
@@ -103,6 +104,7 @@ RELINK_PREDICT = 1.0  # 接回时按速度最多往前推这么久
 RELINK_AMBIGUOUS = 1.3  # 一条记录的两个候选，近的要比远的近这么多倍才不算歧义
 RELINK_MAX_KEEPS = 6  # 接回的"像他"这么多个 keep 还没被名字标签证实就摘掉（接错了总得有个出口）
 LOW_ONLY_MAX = 5.0  # 只靠低分框续着的轨迹最多续命这么久（低分框可能是石像之类认错的东西）
+PIVOT_SHIFT = 0.25  # 身份板的"不跟背景走"：画面平移至少这么多倍框宽才看这条轨迹跟不跟着背景走（spec 2026-10-22-identity-board §5.1）
 TRACKING_SWITCHES = ("sticky_names", "track_low", "track_predict", "track_pan", "relink", "motion")  # 全关 = 原来的追踪
 PANEL_SWITCHES = ("panel_people", "panel_settle")  # 聊天面板开 / 关的处理（不进 TRACKING_SWITCHES：_resume 拿它判断要不要 _pan_recheck）；全关 = 照旧
 PANEL_DROP = ("name_tag", "typing", "social_ring")  # 面板开着时，中心在面板里的这几类还是丢（面板里的"- 名字"不是名字标签）
@@ -353,6 +355,7 @@ class PerceptionWatcher:
         icons_cfg: IconsConfig | None = None,  # 认地图交互图标（spec 2026-10-05-icon-detection）；圈的归属判断不受 enabled 管
         map_icons=None,  # vision.icons_map.MapIcons：先祖 / 物件 / 地图上的圈认种类（None = 不认，icons() 为空）
         presence_call: bool = False,  # 好友找不到时身体会不会喊一声确认（大脑模式、[call] auto、不是 dry-run）；不会就满 leave_after 直接算走开
+        identity: IdentityBoard | None = None,  # 身份板（spec 2026-10-22-identity-board；None = 旧流程，逐字照旧）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -410,6 +413,10 @@ class PerceptionWatcher:
         self._describe_asked: dict[tuple[str, str], float] = {}  # 上次 request 成功的时间：retry_after 内不再问
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.attrs = attrs
+        self.identity = identity
+        self.identity_off: str | None = None  # 身份板为什么关掉了（连续出错退回旧流程）
+        self.identity_log: list[FrameIn] | None = None  # 评估时设成 [] 就把每帧的 FrameIn 追加进去
+        self._identity_errors = 0
         self.tracker = Tracker(  # 同一个人可能两类来回变
             cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}),
             center_gate=cfg.track_center_gate if cfg.track_predict else 0.0, predict=cfg.track_predict,
@@ -1101,7 +1108,7 @@ class PerceptionWatcher:
             c = self._call
             if c is None or c.at != at or not c.ended:
                 return None
-            return replace(c, friends=dict(c.friends))
+            return replace(c, friends=dict(c.friends), tracks=dict(c.tracks))
 
     def unnamed(self, now: float) -> int:
         """最近一帧里没挂名字的点过火的人（陌生人、没归类的远处小人；按外观认的好友不算）。"""
@@ -1208,6 +1215,8 @@ class PerceptionWatcher:
             if name and not self._unlit(p):
                 where = side_of(p.box.x + p.box.w / 2, width)
                 self._call_note(name, Seen(where, distance(p.box.h, ref, self.cfg.near, self.cfg.far)), now)
+                with self._lock:
+                    c.tracks[p.id] = name  # 哪条轨迹亮出了哪个名字（身份板收尾用）
 
     def _far_tags(self, frame: np.ndarray, players: list[Track], tags: list[Track], now: float,
                   width: int, height: int, panel_visible: bool) -> list[Track]:
@@ -1554,6 +1563,62 @@ class PerceptionWatcher:
                 log.info("轨迹 %d 不算像团子了：%s", p.id, "团子在画面上" if dango_here else "另一个人更像团子")
                 d.pop("dango_look", None)
                 d.pop("dango_score", None)
+
+    # ---- 身份板（spec 2026-10-22-identity-board §2.2） ----
+    @staticmethod
+    def _tag_key(tag: Track) -> str:
+        """标签在身份板里的 key：读出来的名字，读不出用 "#<标签轨迹 id>"。"""
+        return tag.data.get("name") or f"#{tag.id}"
+
+    def _with_bg(self, t: Track) -> bool | None:
+        """镜头转了（这一帧平移 ≥ PIVOT_SHIFT 倍框宽）时这条轨迹跟不跟背景走：drift 这一帧的增量接近平移 = 跟着走，接近 0 = 不跟（团子是镜头支点）。
+        每帧都记下 drift，下一帧算增量用。"""
+        prev = t.data.get("drift_prev", 0.0)
+        t.data["drift_prev"] = t.drift[0]
+        shift = self.last_shift[0] if self.last_shift is not None else 0.0
+        if abs(shift) < PIVOT_SHIFT * max(1, t.box.w):
+            return None
+        step = t.drift[0] - prev
+        if abs(step - shift) < abs(shift) / 2:
+            return True
+        if abs(step) < abs(shift) / 2:
+            return False
+        return None
+
+    def _identity_frame(self, players: list[Track], selfs: list[Track], tags: list[Track],
+                        fresh: dict[int, tuple[Sample, Rect]], now: float, width: int, height: int,
+                        panel_visible: bool) -> FrameIn:
+        """把这一帧的证据拼成交给身份板的 FrameIn：标签候选、外观分、self 分、跟不跟背景走、接回的名字、喊一声的结果。"""
+        live_selfs = [s for s in selfs if s.last == now]
+        out = []
+        for p in players:
+            d = p.data
+            unlit = self._unlit(p)
+            cands = ()
+            if not unlit:
+                cands = tuple(
+                    TagCand(self._tag_key(tg), tg.data.get("name") or None, err)
+                    for tg in tags if (err := self._tag_err(p, tg)) is not None
+                )
+            scores = None
+            if p.id in fresh and self.appearance is not None:
+                scores = self.appearance.identity_scores(fresh[p.id][0])
+            mine = [s.score for s in live_selfs if same_body(p.box, s.box)]
+            relink = d.get("maybe") if d.get("maybe_by") == "relink" else None
+            out.append(TrackIn(
+                id=p.id, box=p.box, first=p.first, unlit=unlit,
+                under_panel=self._under_panel(p.box, width, height, panel_visible),
+                tags=cands, scores=scores, self_score=max(mine) if mine else None, with_bg=self._with_bg(p),
+                relink=relink, sid=d.get("sid"), called_at=d.get("unsure_called"),
+            ))
+        end = None
+        c = self._call
+        if c is not None and not c.ended and now >= self._call_span[0] and now > self._call_span[1]:
+            end = CallEnd(c.at, dict(c.tracks))  # 这一帧 _call_tick 会收尾
+        return FrameIn(
+            now=now, width=width, height=height, panel=panel_visible, sliding=now < self._panel_slide_until,
+            moved=now < self._quiet_until, tracks=tuple(out), call_end=end,
+        )
 
     # ---- 失踪好友接回（spec §4） ----
     def _note_lost(self, now: float) -> None:
