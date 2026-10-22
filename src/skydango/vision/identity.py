@@ -322,6 +322,10 @@ class IdentityBoard:
         """记每条轨迹挂着的这一段；满 tag_hold 稳定持有，原来的主人失去它。"""
         names = {c.key: c.name for t in tracks for c in t.tags}
         for tid, key in tags.items():
+            for oid, other in self._tracks.items():
+                if oid != tid and other.seg_key == key:
+                    other.seg_key = None  # 这一帧分给了别人：那条的"连续挂着"断了（隔帧来回分的谁都不算稳定）
+        for tid, key in tags.items():
             st = self._tracks[tid]
             if st.seg_key == key and now - st.seg_last <= self.cfg.tag_hold + EPS:
                 st.seg_last = now

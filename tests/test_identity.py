@@ -469,3 +469,13 @@ def test_lost_unread_key_falls_under_rule_3():
     assert out.verdicts[1].kind == PENDING
     out = b.step(frame(2.6, tr(1, 1000), tr(2, 1300, tags=(TagCand("#7", None, 4.0),))))
     assert out.verdicts[1].kind == STRANGER
+
+
+def test_alternating_assignment_never_moves_the_name():  # 接进感知层时发现：隔帧分给两条轨迹，两条的"这一段"都没断，每帧换一次主人
+    b = board()
+    for i in range(20):
+        t = i * 0.1
+        tags1 = (TagCand("小明", "小明", 5.0),) if i % 2 == 0 else ()
+        tags2 = (TagCand("小明", "小明", 5.0),) if i % 2 else ()
+        out = b.step(frame(t, tr(1, 1000, tags=tags1), tr(2, 1060, tags=tags2)))
+        assert all(v.kind != FRIEND_TAG for v in out.verdicts.values()) and out.learn == {}
