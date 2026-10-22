@@ -13,6 +13,8 @@ perception 每帧把证据（标签候选、外观分、团子线索、喊一声
    判了陌生人只有名字（稳定标签 / 喊一声亮出来）能改回来
 4. 团子：位置 / 长相 / YOLO self / 不跟背景走四项加权、按轨迹平滑；同一时刻只有一个，现任被别人连续 dango_switch 秒
    反超、或者自己连续 dango_switch 秒不够 dango_min 才换；光靠站在老位置上选不出新团子；稳定挂着名字的永远不是团子
+5. 学底库只从干净的帧：这一帧标签稳定挂在他身上（或喊一声刚亮出来）的好友、团子分够高的团子、有编号的陌生人；
+   看着像 / 拿不准 / 接回 / 刚出现的都不学
 """
 
 from __future__ import annotations
@@ -181,7 +183,25 @@ class IdentityBoard:
             self._sample(t)
         looks = self._looks(frame.tracks)
         verdicts = {t.id: self._verdict(t, looks.get(t.id), frame) for t in frame.tracks}
-        return StepOut(tags=tags, verdicts=verdicts, learn={})
+        shown = set(frame.call_end.shown) if frame.call_end is not None else set()
+        learn = {}
+        for t in frame.tracks:
+            kind = self._learn(t, verdicts[t.id], tags.get(t.id), t.id in shown)
+            if kind is not None:
+                learn[t.id] = kind
+        return StepOut(tags=tags, verdicts=verdicts, learn=learn)
+
+    def _learn(self, t: TrackIn, v: Verdict, key: str | None, shown: bool) -> tuple[str, str] | None:
+        if t.scores is None:
+            return None
+        st = self._tracks[t.id]
+        if v.kind == FRIEND_TAG and v.name is not None and (key == st.held or shown):
+            return ("friend", v.name)  # 这一帧标签只挂在他身上（被挡的帧不学）
+        if v.kind == DANGO and (st.smooth or 0.0) >= self.cfg.dango_learn:
+            return ("me", "")
+        if v.kind == STRANGER and t.sid is not None:
+            return ("stranger", t.sid)
+        return None
 
     # ── 清理 ──
 

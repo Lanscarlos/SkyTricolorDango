@@ -350,3 +350,51 @@ def test_dango_skips_tag_assignment():
     b.step(frame(0.0, tr(1, 960, self_score=0.9)))
     out = b.step(frame(0.1, tr(1, 960, tags=(TagCand("小明", "小明", 1.0),)), tr(2, 1100, tags=(TagCand("小明", "小明", 9.0),))))
     assert out.tags == {2: "小明"} and out.verdicts[1].kind == DANGO
+
+
+# ── Task 5：只从干净的帧学 ──
+
+
+def test_learn_only_stable_tag_frames_with_samples():
+    b = board()
+    s = sc(小明=0.9)
+    outs = [b.step(frame(t, tr(1, 1000, tags=(TagCand("小明", "小明", 3.0),), scores=s))) for t in (0.0, 0.3, 0.6)]
+    assert outs[0].learn == {} and outs[1].learn == {} and outs[2].learn == {1: ("friend", "小明")}
+    out = b.step(frame(0.7, tr(1, 1000, scores=s)))  # 标签被挡：不学
+    assert out.learn == {}
+
+
+def test_learn_dango_and_stranger():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=1.0)))
+    out = b.step(frame(0.1, tr(1, 960, self_score=1.0, scores=sc(me=0.9))))
+    assert out.learn == {1: ("me", "")}
+    for t in (0.0, 0.5, 1.0):
+        out = b.step(frame(t, tr(5, 1500, sid="陌生人A", scores=sc(me=0.2, 小明=0.3))))
+    assert out.learn[5] == ("stranger", "陌生人A")
+
+
+def test_look_alike_and_unsure_never_learn():
+    b = board()
+    for t in (0.0, 0.1, 0.2, 0.3):
+        out = b.step(frame(t, tr(1, 1000, scores=sc(小明=0.95)), tr(2, 1300, scores=sc(番茄=0.85, 小明=0.5))))
+    assert out.learn == {}
+
+
+def test_learn_on_call_confirm_frame():
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.86, 番茄=0.5))))
+    out = b.step(frame(3.0, tr(1, 1000, called_at=2.5, scores=sc(小明=0.86)), call_end=CallEnd(2.5, {1: "小明"})))
+    assert out.learn == {1: ("friend", "小明")}
+
+
+def test_unread_tag_and_weak_dango_never_learn():
+    b = board()
+    for t in (0.0, 0.3, 0.6):
+        out = b.step(frame(t, tr(1, 1000, tags=(TagCand("#77", None, 3.0),), scores=sc(小明=0.9))))
+    assert out.learn == {}
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.6)))  # 团子分 0.6 < dango_learn
+    out = b.step(frame(0.1, tr(1, 960, self_score=0.6, scores=sc(me=0.5, 小明=0.5))))
+    assert b.dango_id == 1 and out.learn == {}
