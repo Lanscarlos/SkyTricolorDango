@@ -54,6 +54,12 @@ def load_logs(path: Path) -> dict[int, TrackLog]:
     return {lg.id: lg for lg in logs}
 
 
+def frame_key(path: Path, base: Path) -> str:
+    """帧在 logs.json / truth.jsonl 里的写法：相对录像目录的路径（不在目录下就用文件名）。"""
+    path, base = Path(path), Path(base)
+    return path.relative_to(base).as_posix() if path.is_relative_to(base) else path.name
+
+
 def collect_logs(items: Iterable[tuple], watcher) -> dict[int, TrackLog]:
     """回放：items 是 (时间, 文件名, 帧, 聊天面板开没开)，watcher 是 background=False 的 PerceptionWatcher（身份板关）。"""
     now = [0.0]
@@ -71,7 +77,8 @@ def collect_logs(items: Iterable[tuple], watcher) -> dict[int, TrackLog]:
             lg.last = t
             lg.frames.append((name, track.box))
             d = track.data
-            if d.get("name") and d.get("tagged", True):
+            # 只记这一帧标签真的配上的名字：旧流程里 data["name"] 是黏的（标签一闪之后一直留着），tag_at 只在配上的那帧 = now
+            if d.get("name") and d.get("tag_at") == t:
                 lg.names.append((t, d["name"]))
             if track.cls == "self" or d.get("dango"):
                 lg.self_hits += 1
@@ -110,7 +117,9 @@ def write_draft(path: Path, ids: dict[int, str], logs: dict[int, TrackLog]) -> N
     ]
     for tid, who in ids.items():
         lg = logs[tid]
-        lines.append(f't{tid} = "{who}"  # 出现 {lg.first:.1f}~{lg.last:.1f} s，{len(lg.frames)} 帧')
+        hits = "，".join(f"{n} {c}次" for n, c in Counter(n for _, n in lg.names).most_common(3))
+        note = f"，名字 {hits}" if hits else ""
+        lines.append(f't{tid} = "{who}"  # 出现 {lg.first:.1f}~{lg.last:.1f} s，{len(lg.frames)} 帧{note}，self {lg.self_hits}')
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -158,6 +167,7 @@ def apply_draft(draft: Path, logs_path: Path, out: Path, friends: list[str]) -> 
     logs = load_logs(logs_path)
     ok = set(friends) | set(RESERVED)
     rows: list[str] = []
+    seen: dict[int, int] = {}
     for no, line in enumerate(draft.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -167,6 +177,9 @@ def apply_draft(draft: Path, logs_path: Path, out: Path, friends: list[str]) -> 
         tid, who = int(m.group(1)), m.group(2)
         if who not in ok:
             raise ValueError(f"草稿第 {no} 行：「{who}」不是好友名，也不是 团子 / 陌生人 / 不要 / ?")
+        if tid in seen:
+            raise ValueError(f"草稿第 {no} 行：t{tid} 重复了（第 {seen[tid]} 行已经写过）")
+        seen[tid] = no
         if tid not in logs:
             raise ValueError(f"草稿第 {no} 行：logs.json 里没有轨迹 t{tid}")
         if who in ("不要", "?"):

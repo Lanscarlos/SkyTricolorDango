@@ -1809,7 +1809,9 @@ def _perception_identity_truth(cfg: Config, args) -> None:
     """身份板的半自动标准答案（spec 2026-10-22-identity-board §7）：旧流程回放录像起草每条轨迹是谁 + 拼图，
     人改完草稿后 --apply 展开成 <录像目录>/truth.jsonl。"""
     from .vision.compare import timed_files
-    from .vision.identity_eval import apply_draft, collect_logs, draft_identities, save_logs, write_draft, write_sheet
+    from .vision.identity_eval import (
+        apply_draft, collect_logs, draft_identities, frame_key, save_logs, write_draft, write_sheet,
+    )
     from .vision.trackeval import subsample
 
     root = Path(args.source)
@@ -1843,7 +1845,7 @@ def _perception_identity_truth(cfg: Config, args) -> None:
             frame = imread(path)
             if n % 100 == 0:
                 print(f"  {n}/{len(kept)}")
-            rel = path.relative_to(base).as_posix() if path.is_relative_to(base) else path.name
+            rel = frame_key(path, base)
             yield t, rel, frame, _panel_open(cfg, frame)
 
     logs = collect_logs(frames(), watcher)

@@ -84,8 +84,10 @@ def test_sheet_written(tmp_path):
 
 
 class FakeWatcher:
-    """每帧给一个 player 轨迹 7，第 2 帧起挂名字 小红。"""
-    def __init__(self):
+    """每帧给一个 player 轨迹 7。名字是黏的（第一次配上后一直留着），tag_at 只在标签真配上的帧 = t。"""
+    def __init__(self, tag_frames=None):
+        self.tag_frames = tag_frames if tag_frames is not None else {2, 3, 4, 5, 6, 7, 8}
+        self.data = {}
         self.cfg = SimpleNamespace(keep=5.0)
         self.clock = None
         self.last_tracks = []
@@ -93,8 +95,9 @@ class FakeWatcher:
 
     def process(self, frame, t, panel):
         self.n += 1
-        d = {"name": "小红", "tagged": True} if self.n >= 2 else {}
-        self.last_tracks = [SimpleNamespace(id=7, cls="player", box=Rect(5, 5, 20, 40), data=d)]
+        if self.n in self.tag_frames:
+            self.data.update(name="小红", tagged=True, tag_at=t)
+        self.last_tracks = [SimpleNamespace(id=7, cls="player", box=Rect(5, 5, 20, 40), data=self.data)]
 
 
 def test_collect_logs():
@@ -104,6 +107,26 @@ def test_collect_logs():
     assert [f for f, _ in lg.frames] == ["0.jpg", "1.jpg", "2.jpg", "3.jpg"]
     assert lg.names == [(0.2, "小红"), (0.4, "小红"), (0.6000000000000001, "小红")]
     assert (lg.first, lg.last) == (0.0, pytest.approx(0.6))
+
+
+def test_collect_logs_flash_not_sticky():
+    items = [(i * 0.2, f"{i}.jpg", np.zeros((10, 10, 3), np.uint8), False) for i in range(6)]
+    logs = collect_logs(items, FakeWatcher(tag_frames={2}))
+    assert logs[7].names == [(0.2, "小红")]
+    assert draft_identities(logs, 0.5) == {7: "?"}
+
+
+def test_apply_duplicate_line(tmp_path):
+    save_logs(tmp_path / "logs.json", {1: log(1, n=2)})
+    (tmp_path / "d.toml").write_text('t1 = "团子"\nt1 = "不要"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="第 2 行"):
+        apply_draft(tmp_path / "d.toml", tmp_path / "logs.json", tmp_path / "t.jsonl", [])
+
+
+def test_frame_key(tmp_path):
+    from skydango.vision.identity_eval import frame_key
+    assert frame_key(tmp_path / "a" / "x.jpg", tmp_path) == "a/x.jpg"
+    assert frame_key(Path("/elsewhere/y.jpg"), tmp_path) == "y.jpg"
 
 
 def test_cli_end_to_end(tmp_path, monkeypatch):
