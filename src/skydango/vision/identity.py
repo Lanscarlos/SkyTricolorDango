@@ -6,11 +6,15 @@ perception 每帧把证据（标签候选、外观分、团子线索、喊一声
 
 1. 标签分配：按误差贪心，上一帧挂着的那一对误差乘 tag_stick；名字连续 tag_hold 秒挂在另一条轨迹上才换主人，
    原来的主人失去它 → 拿不准（不是陌生人）
+2. 外观：每条轨迹最近 window 个样本对每个好友的中位分；像（带滞回）/ 拿不准；一个名字同一时刻只给一条轨迹，
+   稳定标签永远盖过外观；接回的名字外观不反对就算像
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
+from statistics import median
 
 from ..config import AppearanceConfig, IdentityConfig
 from .bubbles import Rect
@@ -105,7 +109,8 @@ class _Track:
     kind: str = PENDING
     name: str | None = None
     since: float = 0.0
-    extra: dict = field(default_factory=dict)
+    samples: deque = field(default_factory=deque)  # 最近 window 个样本的好友分
+    mes: deque = field(default_factory=deque)  # 同上，团子底库分（None 不存）
 
 
 class IdentityBoard:
@@ -142,7 +147,10 @@ class IdentityBoard:
             st.last = now
         tags = self._assign(frame.tracks, exclude={self.dango_id} if self.dango_id is not None else set())
         self._hold(tags, frame.tracks, now)
-        verdicts = {t.id: self._verdict(t, now) for t in frame.tracks}
+        for t in frame.tracks:
+            self._sample(t)
+        looks = self._looks(frame.tracks)
+        verdicts = {t.id: self._verdict(t, looks.get(t.id), now) for t in frame.tracks}
         return StepOut(tags=tags, verdicts=verdicts, learn={})
 
     # ── 清理 ──
@@ -203,17 +211,91 @@ class IdentityBoard:
         self._holder[key] = tid
         st.held, st.held_name, st.tagged, st.lost = key, name, True, None
 
+    # ── 外观 ──
+
+    def _friends(self, s: Scores) -> dict[str, float]:
+        """按 friend_feature 挑好友分：both 两份都有时取平均、只有一份取那份。"""
+        feat = self.cfg.friend_feature
+        if feat == "color":
+            return dict(s.color)
+        if feat == "both":
+            out = {}
+            for name in set(s.dino) | set(s.color):
+                vals = [d[name] for d in (s.dino, s.color) if name in d]
+                out[name] = sum(vals) / len(vals)
+            return out
+        return dict(s.dino)
+
+    def _sample(self, t: TrackIn) -> None:
+        if t.scores is None:
+            return
+        st = self._tracks[t.id]
+        st.samples.append(self._friends(t.scores))
+        if t.scores.me is not None:
+            st.mes.append(t.scores.me)
+        while len(st.samples) > self.cfg.window:
+            st.samples.popleft()
+        while len(st.mes) > self.cfg.window:
+            st.mes.popleft()
+
+    def _medians(self, st: _Track) -> dict[str, float] | None:
+        """样本够 min_samples 时每个好友的中位分（只算有分的样本）；不够 = None。"""
+        if len(st.samples) < max(1, self.cfg.min_samples):
+            return None
+        names = {n for d in st.samples for n in d}
+        return {n: median(d[n] for d in st.samples if n in d) for n in names}
+
+    def _looks(self, tracks: tuple[TrackIn, ...]) -> dict[int, tuple[str, str, float]]:
+        """外观结论：轨迹 → (FRIEND_LOOK / UNSURE, 名字, 中位分)。稳定持有标签的、团子不算。"""
+        a = self.acfg
+        cands: dict[int, tuple[str, float]] = {}
+        out: dict[int, tuple[str, str, float]] = {}
+        for t in tracks:
+            st = self._tracks[t.id]
+            if st.held is not None or t.id == self.dango_id:
+                continue
+            meds = self._medians(st)
+            if t.relink is not None:
+                med = None if meds is None else meds.get(t.relink)
+                if med is None or med >= a.unsure:  # 外观不反对（样本不够 / 他没底库也算不反对）
+                    cands[t.id] = (t.relink, med or 0.0)
+                    continue
+            if not meds:
+                continue
+            ranked = sorted(meds.items(), key=lambda kv: (-kv[1], kv[0]))
+            name, top = ranked[0]
+            second = ranked[1][1] if len(ranked) > 1 else 0.0
+            if st.kind == FRIEND_LOOK and st.name in meds and meds[st.name] >= a.match - self.cfg.drop:
+                cands[t.id] = (st.name, meds[st.name])  # 已经像的，掉到 match - drop 以下才算不像
+            elif top >= a.match and top - second >= a.margin:
+                cands[t.id] = (name, top)
+            elif top >= a.unsure:
+                out[t.id] = (UNSURE, name, top)
+        held = {st.held_name for st in self._tracks.values() if st.held is not None and st.held_name is not None}
+        best: dict[str, tuple[float, int]] = {}
+        for tid, (name, score) in cands.items():
+            if name not in held and (name not in best or (score, -tid) > (best[name][0], -best[name][1])):
+                best[name] = (score, tid)
+        for tid, (name, score) in cands.items():
+            won = best.get(name, (0.0, None))[1] == tid
+            out[tid] = (FRIEND_LOOK if won else UNSURE, name, score)  # 名字被别人占着：拿不准
+        return out
+
     # ── 判定 ──
 
-    def _verdict(self, t: TrackIn, now: float) -> Verdict:
+    def _verdict(self, t: TrackIn, look: tuple[str, str, float] | None, now: float) -> Verdict:
         st = self._tracks[t.id]
+        meds = self._medians(st) or {}
         if st.held is not None:
             kind, name = FRIEND_TAG, st.held_name
+            score = meds.get(name, 0.0) if name else 0.0
+        elif look is not None:
+            kind, name, score = look
         elif st.lost is not None:
-            kind, name = UNSURE, st.lost
+            kind, name, score = UNSURE, st.lost, meds.get(st.lost, 0.0)
         else:
-            kind, name = PENDING, None
-        return self._mark(st, kind, name, 0.0, now)
+            kind, name, score = PENDING, None, 0.0
+        return self._mark(st, kind, name, score, now)
 
     def _mark(self, st: _Track, kind: str, name: str | None, score: float, now: float) -> Verdict:
         """since = 这个结论从什么时候开始；拿不准换了最像的人不重新计时。"""
