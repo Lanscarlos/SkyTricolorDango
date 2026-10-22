@@ -45,10 +45,14 @@ def test_bubble_saying_friend_name_is_not_a_tag():
     assert len(v.bubbles) == 1 and v.bubbles[0].text == "小红" and v.bubbles[0].speaker == "小明"
 
 
-def test_two_matching_same_column_topmost_is_tag():
-    v = cl(snap(tag("小明", 1053, 279), tag("小红", 1053, 340)))  # 竖着挨着：一摞里只有最上面的是标签
-    assert [t.name for t in v.tags] == ["小明"]
-    assert [b.text for b in v.bubbles] == ["小红"]
+def test_stacked_friend_tags_are_both_tags():
+    """两个人挨着站、名字标签上下叠住进了同一列（10-22 晚真机，中心差 19 px）：下面那个也是标签，
+    气泡挂给中心最近的那个（以前挂给最上面的，小明说的话报成了小红说的）。"""
+    v = cl(snap(tag("小红", 873, 234), tag("小明", 854, 251), tag("小明", 854, 255), bubble("我ca", 853, 314)))
+    assert [t.name for t in v.tags] == ["小红", "小明"]  # 同名的多余名字节点照旧不算标签
+    assert [(b.text, b.speaker) for b in v.bubbles if b.text != "小明"] == [("我ca", "小明")]
+    v = cl(snap(tag("小红", 873, 234), tag("小明", 854, 251), bubble("嗨", 873, 314)))
+    assert [(b.text, b.speaker) for b in v.bubbles] == [("嗨", "小红")]
 
 
 def test_far_below_in_same_column_is_another_column():

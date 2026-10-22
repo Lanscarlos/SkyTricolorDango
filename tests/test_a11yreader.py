@@ -920,6 +920,44 @@ def test_hold_does_not_expire_while_tag_is_out_of_view():
     assert r.read(None, 9.4) == []
 
 
+def test_bubble_jumping_into_neighbour_column_not_rereported():
+    """转镜头时小明的气泡先动、标签晚一帧，那一帧气泡落进了旁边小红那一列：
+    不能当成小红又说了一遍（10-22 晚真机 20:54:39，189 句里 34 句换个人又报一遍）。"""
+    r, h, _ = make()
+    h[0] = closed(tag("小明", 584, 463), tag("小红", 903, 212), bubble("免费的", 903, 274))
+    r.read(None, 1.0)
+    h[0] = closed(tag("小明", 584, 463), bubble("？！", 583, 525), tag("小红", 903, 212), bubble("免费的", 903, 274))
+    assert [(m.speaker, m.text) for m in r.read(None, 2.0)] == [("小明", "？！")]
+    h[0] = closed(tag("小明", 857, 292), tag("小红", 902, 210), bubble("免费的", 903, 274), bubble("？！", 919, 354))
+    assert r.read(None, 2.2) == []
+    h[0] = closed(tag("小明", 1091, 278), bubble("？！", 1091, 340), tag("小红", 1013, 216), bubble("免费的", 1013, 279))
+    assert r.read(None, 2.4) == []
+
+
+def test_orphan_bubble_drifting_into_other_column_not_rereported():
+    """小明的标签出了屏幕上沿好几秒，他的气泡没了主、漂进小红那一列：不当成小红说的（10-22 晚真机 20:59）。"""
+    r, h, _ = make()
+    h[0] = closed(tag("小明", 400, 300), tag("小红", 900, 300))
+    r.read(None, 1.0)
+    h[0] = closed(tag("小明", 400, 300), bubble("我笑的不行了", 400, 362), tag("小红", 900, 300))
+    assert [(m.speaker, m.text) for m in r.read(None, 2.0)] == [("小明", "我笑的不行了")]
+    h[0] = closed(bubble("我笑的不行了", 600, 362), tag("小红", 900, 300))  # 小明的标签看不见了
+    assert r.read(None, 5.0) == []
+    h[0] = closed(tag("小红", 900, 300), bubble("我笑的不行了", 905, 362))
+    assert r.read(None, 12.0) == []
+
+
+def test_two_friends_saying_same_thing_both_reported():
+    """小明的标签一直看得见、他那句也早就在了，小红隔了一会儿说了同一句：是两句话，都报。"""
+    r, h, _ = make()
+    h[0] = closed(tag("小明", 400, 300), tag("小红", 900, 300))
+    r.read(None, 1.0)
+    h[0] = closed(tag("小明", 400, 300), bubble("哈哈哈", 400, 362), tag("小红", 900, 300))
+    assert [(m.speaker, m.text) for m in r.read(None, 2.0)] == [("小明", "哈哈哈")]
+    h[0] = closed(tag("小明", 400, 300), bubble("哈哈哈", 400, 362), tag("小红", 900, 300), bubble("哈哈哈", 900, 362))
+    assert [(m.speaker, m.text) for m in r.read(None, 8.0)] == [("小红", "哈哈哈")]
+
+
 def test_out_of_order_snapshot_does_not_rereport_old_rows():
     """10-04 真机：一份乱序快照被当成基准后，下一份正常快照把后面几行全当成新行又报了一遍。"""
     from a11ysnap import row as prow

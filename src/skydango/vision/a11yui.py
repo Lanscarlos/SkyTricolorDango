@@ -182,18 +182,31 @@ def classify(snap: Snapshot | None, width: int, height: int, friends: Collection
     owner_of: dict[int, str | None] = {}
     for col in columns:
         top = next((n for n in col if tag_like(n)), None)
-        speaker = None
+        # 两个人挨着站、名字标签上下叠住时两人的标签进了同一列（10-22 晚真机，中心差 19 px）：
+        # 下面那个好友的标签也是标签、不是气泡；同名的多余名字节点（10-04 晚）照旧当气泡，_bubble_messages 会丢掉
+        heads: list[Node] = []
         if top is not None:
-            t = Tag(top.text, top.box, known=top.text in friends, edge=not band <= cx(top) <= width - band)
-            tags.append((order[id(top)], t))
-            if t.known and not t.edge:
-                speaker = t.name  # 名单外 / 贴边的标签：他列里的气泡挂不上已知好友
+            heads = [top]
+            for n in col[col.index(top) + 1:]:
+                if tag_like(n) and n.text in friends and all(n.text != h.text for h in heads):
+                    heads.append(n)
+        speaker_of: dict[int, str | None] = {}
+        for h in heads:
+            t = Tag(h.text, h.box, known=h.text in friends, edge=not band <= cx(h) <= width - band)
+            tags.append((order[id(h)], t))
+            speaker_of[id(h)] = t.name if t.known and not t.edge else None  # 名单外 / 贴边的标签：他列里的气泡挂不上已知好友
         below = False
         for n in col:
             if n is top:
                 below = True
+            if id(n) in speaker_of:
                 continue
-            owner_of[id(n)] = speaker if below else None  # 标签上面叠着的（动画里）挂不上
+            if not below:
+                owner_of[id(n)] = None  # 标签上面叠着的（动画里）挂不上
+                continue
+            # 气泡和标签都居中在头顶：挂给上面中心最近的标签（只有一个标签时就是它）
+            above = [h for h in heads if h.box[1] <= n.box[1]]
+            owner_of[id(n)] = speaker_of[id(min(above, key=lambda h: abs(cx(h) - cx(n))))]
 
     bubbles = tuple(
         Bubble(n.text, n.box, owner_of[id(n)], is_dots(n.text)) for n in candidates if id(n) in owner_of

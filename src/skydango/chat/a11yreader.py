@@ -256,6 +256,16 @@ class A11yChatReader:
             del self._orig[k]
         return cur, boxes, typing
 
+    def _moved_from(self, name: str, key: str, shown: Counter[tuple[str, str]], in_view: set[str], now: float) -> str | None:
+        """这句刚才还挂在别人头上、这一帧他头上的少了：返回那个人。画面转得快时同一份快照里标签和气泡的位置不是一起更新的，
+        气泡会落进旁边那人的列里一两帧（10-22 晚真机，189 句里 34 句换个人又报一遍）：`HOLD` 秒内算；
+        那人的标签这一帧看不见（贴在屏幕上沿时有时无）就是他的气泡没了主、漂进别人列里：`_held` 留多久算多久（`BUBBLE_KEEP`）。
+        他头上那句一个不少时另一个人说了同一句照样报；这一帧正好挪过去的那一下分不出来，会当成一句"""
+        for (who, k), (n, at) in self._held.items():
+            if k == key and who != name and shown[(who, k)] < n and (now - at <= HOLD or who not in in_view):
+                return who
+        return None
+
     def _hold(self, name: str, cur: Counter[str], now: float) -> Counter[str]:
         """这一份之前他每句"算作有几个"：`HOLD` 秒内见过的最多个数（只掉了一两帧的不算少了），并记下这一份。"""
         base: Counter[str] = Counter()
@@ -292,6 +302,8 @@ class A11yChatReader:
 
         fresh: list[Message] = []
         self._typing = []
+        in_view = {t.name for t in _in_view(view)}
+        shown = Counter((name, bubble_key(b.text.strip())) for name, bs in groups.items() for b in bs if not b.typing_only)
         for name, bubbles in groups.items():
             self._tag_seen[name] = now
             prev = self._counts.get(name, Counter())
@@ -301,12 +313,16 @@ class A11yChatReader:
             if typing:
                 self._typing.append(name)
             for key, n in cur.items():
+                moved = self._moved_from(name, key, shown, in_view, now)
                 for _ in range(n - max(prev[key], held[key])):
                     if not report:
                         self._take_panel_reported(name, key, now)  # 面板开着时看到了：面板那条抵掉
                         continue
                     text = strip_typing(self._orig[(name, key)])  # 第一次看到时就挂着打字的点：报的时候去掉
                     if not self._passes(text, now) or self._take_panel_reported(name, key, now):
+                        continue
+                    if moved is not None:
+                        log.debug("气泡「%s」刚才还在 %s 头上，这一帧挂到了 %s：当成同一个气泡，不再报", text, moved, name)
                         continue
                     fresh.append(Message(text, _rect(boxes[key]), now, name, source="bubble"))
                     self._expire_reported(now)
