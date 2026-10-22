@@ -58,12 +58,10 @@ perception.py ──喂证据──► vision/identity.py：IdentityBoard（纯�
 - `Verdict`：`kind` ∈ `friend_tag`（标签证实）/ `friend_look`（看着像）/ `dango` / `unsure`（拿不准）/ `stranger` / `pending`（刚出现、证据还不够），
   `name`（好友名，`unsure` 时是最像的那个）、`score`、`since`。
 - `IdentityBoard`：
-  - `assign_tags(candidates, now) -> {轨迹 id: 标签 id}`：带记性的标签分配（§3.1）
-  - `observe(track_id, ...)`：喂这一帧的外观分、团子线索、接回名字
-  - `decide(now, track_ids) -> {轨迹 id: Verdict}`：每帧一次，含"团子只有一个""一个名字只给一条轨迹"
-  - `learnable(track_id) -> (kind, who) | None`：这一帧这条轨迹的样本能不能学、学进谁（§5）
-  - `called(at)` / `call_result(at, shown)`：呼喊窗口开始 / 结束（`shown` = 窗口里亮出名字的轨迹）
-  - `forget(now)`：删掉断了的轨迹的证据
+  - `step(frame: FrameIn) -> StepOut`：每帧一次。`FrameIn` 是这一帧的全部输入（时间、面板状态、画面平移、每条轨迹的框 / 标签候选 / 外观分 / self 分 / 接回名字 / 喊一声的结果）；
+    `StepOut` 是带记性的标签分配（§3.1）、每条轨迹的 `Verdict`（含"团子只有一个""一个名字只给一条轨迹"）、这一帧能学进底库的轨迹（§6）。
+    一帧的输入是一个纯数据对象，离线评估能把它录下来，扫门槛时只重放身份板、不重跑 YOLO / DINOv2（§7）
+  - 这一帧没出现的轨迹的证据在 `step` 里按 `track_buffer` 删掉
 - 不持有底库，只拿分数；底库（`AppearanceBook` / `Gallery`）留在原处，学不学由 `learnable` 说了算。
 
 ### 2.2 `perception.py`（改）
@@ -190,7 +188,7 @@ perception.py ──喂证据──► vision/identity.py：IdentityBoard（纯�
 | `unsure` 占比、要喊几声（离线按"喊了全都亮"和"喊了都不亮"各算一次） | 记数 |
 | 发了几个陌生人编号 | 和答案里真实的路人数比 |
 
-报告另给门槛建议：扫 `match` / `unsure` / `friend_feature` / `dango_*` 权重 / `tag_hold`，列出满足三条目标的组合。录像回放里外观特征（DINOv2）照算，第一遍算完缓存进 `tmp/identity-eval/_features/`，扫门槛时不重算。
+报告另给门槛建议：扫 `match` / `unsure` / `friend_feature` / `dango_*` 权重 / `tag_hold`，列出满足三条目标的组合。新流程那一遍把每帧的 `FrameIn` 录进 `tmp/identity-eval/<时间>/frames.pkl`，扫门槛时只拿它重放身份板，不重跑 YOLO / DINOv2。
 
 ## 8. 出错、兼容、上线
 
