@@ -172,3 +172,97 @@ def test_friend_feature_picks_scores():
         for t in (0.0, 0.1, 0.2):
             out = b.step(frame(t, tr(1, 1000, scores=both)))
         assert out.verdicts[1].kind == kind, feat
+
+
+# ── Task 3：陌生人、拿不准喊一声、黑影、面板 ──
+
+
+def test_clearly_nobody_becomes_stranger():
+    b = board()
+    for t in (0.0, 0.5, 1.0):
+        out = b.step(frame(t, tr(1, 1000, scores=sc(me=0.4, 小明=0.5, 番茄=0.6))))
+    assert out.verdicts[1].kind == STRANGER
+
+
+def test_clearly_nobody_still_waits_stranger_after():
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        out = b.step(frame(t, tr(1, 1000, scores=sc(小明=0.5))))
+    assert out.verdicts[1].kind == PENDING
+
+
+def test_empty_galleries_wait_like_before():
+    b = board(stranger_after=1.0, grace=1.5)
+    out = b.step(frame(2.0, tr(1, 1000, first=0.0, scores=sc())))
+    assert out.verdicts[1].kind == PENDING
+    out = b.step(frame(2.6, tr(1, 1000, first=0.0, scores=sc())))
+    assert out.verdicts[1].kind == STRANGER
+
+
+def test_once_tagged_never_stranger_by_looks_only():
+    b = board()
+    for t in (0.0, 0.3, 0.6):
+        b.step(frame(t, tr(1, 1000, tags=(TagCand("小明", "小明", 5.0),)), tr(2, 1300)))
+    for t in (0.7, 0.9, 1.1, 1.3):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.3)), tr(2, 1300, tags=(TagCand("小明", "小明", 4.0),))))
+    out = b.step(frame(1.4, tr(1, 1000, scores=sc(小明=0.3)), tr(2, 1300, tags=(TagCand("小明", "小明", 4.0),))))
+    assert out.verdicts[1].kind == UNSURE
+
+
+def test_unsure_call_shown_confirms_and_not_shown_rejects():
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.86, 番茄=0.5)), tr(2, 1400, scores=sc(番茄=0.86, 小明=0.5))))
+    out = b.step(frame(3.0, tr(1, 1000, called_at=2.5), tr(2, 1400, called_at=2.5), call_end=CallEnd(2.5, {1: "小明"})))
+    assert out.verdicts[1].kind == FRIEND_TAG and out.verdicts[2].kind == STRANGER
+
+
+def test_unsure_without_call_times_out():
+    b = board(call_window=6.0)  # unsure_wait 2.0
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.86, 番茄=0.5))))
+    assert b.step(frame(8.0, tr(1, 1000))).verdicts[1].kind == UNSURE
+    assert b.step(frame(8.3, tr(1, 1000))).verdicts[1].kind == STRANGER
+
+
+def test_unsure_waiting_for_call_does_not_time_out():
+    b = board(call_window=6.0)
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.86, 番茄=0.5))))
+    assert b.step(frame(8.3, tr(1, 1000, called_at=5.0))).verdicts[1].kind == UNSURE
+
+
+def test_tag_held_by_neighbour_means_unsure():  # 10-22 轨迹 6：标签一直被旁边的人占着
+    b = board()
+    for i in range(30):
+        t = i * 0.1
+        a, c = (3.0, 5.0) if i % 2 else (5.0, 3.0)
+        out = b.step(frame(t, tr(1, 1000, tags=(TagCand("饶总", "饶总", a),)), tr(2, 1080, tags=(TagCand("饶总", "饶总", c),))))
+    assert out.verdicts[1].kind == UNSURE and out.verdicts[1].name == "饶总"
+
+
+def test_unlit_and_panel_and_small():
+    b = board()
+    out = b.step(frame(1.2, tr(1, 1000, unlit=True), tr(2, 300, under_panel=True), tr(3, 1500, box=Rect(1500, 400, 20, 40))))
+    assert out.verdicts[1].kind == STRANGER and out.verdicts[2].kind == PENDING and out.verdicts[3].kind == PENDING
+
+
+def test_panel_restarts_the_clock():
+    b = board()
+    b.step(frame(2.0, tr(1, 300, under_panel=True)))
+    out = b.step(frame(4.4, tr(1, 300)))  # 面板 2.0 关的：2.4 < stranger_after + grace
+    assert out.verdicts[1].kind == PENDING
+    out = b.step(frame(4.6, tr(1, 300)))
+    assert out.verdicts[1].kind == STRANGER
+
+
+def test_stranger_sticks_until_tag():
+    b = board()
+    for t in (0.0, 0.5, 1.0):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.3))))
+    for t in (1.1, 1.2, 1.3, 1.4, 1.5):  # 外观再像也不改
+        out = b.step(frame(t, tr(1, 1000, scores=sc(小明=0.95))))
+    assert out.verdicts[1].kind == STRANGER
+    for t in (1.6, 1.9, 2.1):
+        out = b.step(frame(t, tr(1, 1000, tags=(TagCand("小明", "小明", 3.0),))))
+    assert out.verdicts[1].kind == FRIEND_TAG

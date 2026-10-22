@@ -8,6 +8,9 @@ perception 每帧把证据（标签候选、外观分、团子线索、喊一声
    原来的主人失去它 → 拿不准（不是陌生人）
 2. 外观：每条轨迹最近 window 个样本对每个好友的中位分；像（带滞回）/ 拿不准；一个名字同一时刻只给一条轨迹，
    稳定标签永远盖过外观；接回的名字外观不反对就算像
+3. 陌生人：黑影等 stranger_after；明显不像任何好友和团子；一直没结论等满 stranger_after + grace。
+   挂过名字的、头顶最近有别人的名字标签候选的不判，进拿不准等喊一声：亮了 = 他，没亮 / 一直没喊成 = 陌生人。
+   判了陌生人只有名字（稳定标签 / 喊一声亮出来）能改回来
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ STRANGER = "stranger"
 PENDING = "pending"  # 刚出现、证据还不够
 
 EPS = 1e-9  # 时间比较的容差（0.6 - 0.1 之类）
+CALL_SLACK = 2.0  # 喊过一声、窗口结束后最多再等这么久收到结果，再久就当没喊（按拿不准超时算）
 
 
 @dataclass(frozen=True)
@@ -105,7 +109,11 @@ class _Track:
     held: str | None = None  # 稳定持有的 key
     held_name: str | None = None
     tagged: bool = False  # 稳定持有过名字
-    lost: str | None = None  # 失去的名字（读得出的）
+    lost: str | None = None  # 拿不准的名字：失去的（读得出的），或者一直挂在旁边人身上的
+    stranger: bool = False  # 判过陌生人：只有名字能改回来
+    panel_at: float | None = None  # 最后一次在面板后面
+    cand_at: float | None = None  # 最后一次头顶有读出名字的标签候选
+    cand_name: str | None = None
     kind: str = PENDING
     name: str | None = None
     since: float = 0.0
@@ -145,12 +153,22 @@ class IdentityBoard:
             if st is None:
                 st = self._tracks[t.id] = _Track(first=t.first, last=now, since=now)
             st.last = now
+            if t.under_panel:
+                st.panel_at = now
+            named = [c for c in t.tags if c.name is not None]
+            if named:
+                st.cand_at, st.cand_name = now, min(named, key=lambda c: (c.err, c.key)).name
         tags = self._assign(frame.tracks, exclude={self.dango_id} if self.dango_id is not None else set())
         self._hold(tags, frame.tracks, now)
+        if frame.call_end is not None:
+            for tid, name in sorted(frame.call_end.shown.items()):
+                if tid in seen and tid != self.dango_id:
+                    self._take(tid, name, name, now)  # 喊一声亮出名字：当场算稳定持有
+                    self._prev[name] = tid
         for t in frame.tracks:
             self._sample(t)
         looks = self._looks(frame.tracks)
-        verdicts = {t.id: self._verdict(t, looks.get(t.id), now) for t in frame.tracks}
+        verdicts = {t.id: self._verdict(t, looks.get(t.id), frame) for t in frame.tracks}
         return StepOut(tags=tags, verdicts=verdicts, learn={})
 
     # ── 清理 ──
@@ -209,7 +227,7 @@ class IdentityBoard:
         if st.held is not None and st.held != key:
             self._holder.pop(st.held, None)
         self._holder[key] = tid
-        st.held, st.held_name, st.tagged, st.lost = key, name, True, None
+        st.held, st.held_name, st.tagged, st.lost, st.stranger = key, name, True, None, False
 
     # ── 外观 ──
 
@@ -283,19 +301,66 @@ class IdentityBoard:
 
     # ── 判定 ──
 
-    def _verdict(self, t: TrackIn, look: tuple[str, str, float] | None, now: float) -> Verdict:
+    def _verdict(self, t: TrackIn, look: tuple[str, str, float] | None, frame: FrameIn) -> Verdict:
+        now = frame.now
         st = self._tracks[t.id]
-        meds = self._medians(st) or {}
+        meds = self._medians(st)
+        top = max(meds.values()) if meds else 0.0
         if st.held is not None:
-            kind, name = FRIEND_TAG, st.held_name
-            score = meds.get(name, 0.0) if name else 0.0
-        elif look is not None:
+            name = st.held_name
+            return self._mark(st, FRIEND_TAG, name, (meds or {}).get(name, 0.0) if name else 0.0, now)
+        if st.stranger:
+            return self._mark(st, STRANGER, None, top, now)
+        if look is not None:
             kind, name, score = look
         elif st.lost is not None:
-            kind, name, score = UNSURE, st.lost, meds.get(st.lost, 0.0)
+            kind, name, score = UNSURE, st.lost, (meds or {}).get(st.lost, 0.0)
         else:
             kind, name, score = PENDING, None, 0.0
-        return self._mark(st, kind, name, score, now)
+        # 面板挡着标签、框太小（远处）的不判陌生人；黑影照旧（远近、面板都算）
+        judge = not t.under_panel and t.box.h >= self.stranger_min_height * frame.height
+        base = max(t.first, st.panel_at) if st.panel_at is not None else t.first
+        after = self.stranger_after
+        if kind == UNSURE:
+            if judge and self._rejected(t, st, frame):
+                return self._stranger(st, top, now)
+            return self._mark(st, kind, name, score, now)
+        if kind != PENDING or st.tagged:
+            return self._mark(st, kind, name, score, now)
+        if t.unlit:
+            if now - t.first >= after - EPS:
+                return self._stranger(st, top, now)
+        elif judge and now - base >= after - EPS:
+            if self._nobody(st, meds):
+                return self._stranger(st, top, now)
+            if st.cand_at is not None and now - st.cand_at <= after + EPS:
+                st.lost = st.cand_name  # 名字标签一直被旁边的人占着：拿不准，等喊一声
+                return self._mark(st, UNSURE, st.lost, (meds or {}).get(st.lost, 0.0), now)
+            if now - base >= after + self.grace - EPS:
+                return self._stranger(st, top, now)
+        return self._mark(st, PENDING, None, 0.0, now)
+
+    def _nobody(self, st: _Track, meds: dict[str, float] | None) -> bool:
+        """明显不像：有好友底库、对每个好友和团子都低于 stranger_low。"""
+        low = self.cfg.stranger_low if self.cfg.stranger_low is not None else self.acfg.unsure
+        if not meds or any(v >= low for v in meds.values()):
+            return False
+        return not st.mes or median(st.mes) < low
+
+    def _rejected(self, t: TrackIn, st: _Track, frame: FrameIn) -> bool:
+        """拿不准的收尾：喊过没亮出他；或者一直没喊成、挂满 unsure_wait + call_window。"""
+        now, end = frame.now, frame.call_end
+        if t.called_at is not None:
+            if end is not None and abs(end.at - t.called_at) <= EPS:
+                return t.id not in end.shown
+            if now - t.called_at <= self.call_window + CALL_SLACK:
+                return False  # 他的那一声还在途中
+        since = st.since if st.kind == UNSURE else now
+        return now - since >= self.acfg.unsure_wait + self.call_window - EPS
+
+    def _stranger(self, st: _Track, score: float, now: float) -> Verdict:
+        st.stranger, st.lost = True, None
+        return self._mark(st, STRANGER, None, score, now)
 
     def _mark(self, st: _Track, kind: str, name: str | None, score: float, now: float) -> Verdict:
         """since = 这个结论从什么时候开始；拿不准换了最像的人不重新计时。"""
