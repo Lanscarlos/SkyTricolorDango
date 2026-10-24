@@ -60,7 +60,7 @@ def test_routes():  # 在 node 里跑 common.js 的 parseHash（common.js 末尾
 
 def test_theme_variables():
     css = (STATIC / "console.css").read_text(encoding="utf-8")
-    for v in ("--paper:#f6f1e7", "--card:#fffdf8", "--ink:#3b332b", "--sakura:#e58aab", "--matcha:#7fae7d", "--brick:#c4573f"):
+    for v in ("--paper:#f3f0f6", "--card:#fffdfb", "--ink:#4a3340", "--sakura:#ee8fb0", "--matcha:#86b06c", "--brick:#cf5a48"):
         assert v in css.replace(" ", "")
 
 

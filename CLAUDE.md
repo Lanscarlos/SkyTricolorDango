@@ -410,6 +410,7 @@ dir = "private/sandbox"
   节点 look（眼睛每看一次，带眼睛那笔钱；身体每秒的截图不算）/ has_new / read（`_heard` 读到新消息，没新消息不发）/ to_me（每句「跟谁说」：跟你说 / 大家 = ok、跟别人说 = skip、拿不准 = unsure）/ batch（攒话开始和放行）/ think（大脑一轮开始「在想…」和结束「想了 N 秒」+ 这一轮 brain / recap 的钱，订阅不显示钱）/ reply_or_not（这一轮说了或做了动作 = 回，否则带「不说：…」那一行）/ say_or_act / can_send（护栏：拦下 = ask + 原因）/ send（dry-run 写「没真发」）；
   大脑一轮里身体的 say_or_act / can_send / send 先攒着、排在「想完了」「回不回」后面放（`decision=True`）。**没有判定数字**：跟谁说是规则、能不能发是护栏，只显示结果；精力只有档位，不上跑道。
   拿不准 / 被拦：团子停住、头顶金色「？」、轨道变暗、中间亮「停下来 · 拿不准 / 被拦了」（不是真的停下来问卡洛，代码里没有这回事）。前端排队播、积压 > 4 加速、> 20 只播最后 4 条；接上正在跑的团子时直接跳到最后一步；`document.hidden` / 不在这一页时停动画和拉取；`prefers-reduced-motion` 不扰动不弹跳。还没在真机上看过
+- **外观「云上的三彩团子」**（10-24 换皮，只改 `console.css`，类名 / id / 文案 / 路由都没动）：云白底、糯米卡片、红豆色字；三色有含义——樱 = 运行（沙盒 / 真机）、糯米白 = 复盘（内心 / 剧本）、艾草绿 = 数据和配置，导航是一根竹签、每页一颗团子，页面标题前的团子同色；琥珀 = 要留意（光遇的蜡烛）；左上角团子的脸跟着 `body[data-state]` 变（睡着 / 醒来时依次弹起 / 醒着偶尔眨眼 / 收尾犯困 / 出错 ×× 眼），运行卡片是它说的话；标题和大数字用系统自带的幼圆（页面必须离线，不能引网络字体）
 - **页面拆分**：`static/console.html` + `console.css`（颜色只在 `:root` 定义，别处用 `var(--…)`，有测试查）+ `common.js`（`$` `el` `post` `ask` `toast` `problemList` `Pages` `go` `refresh` 等公共接口，node 能 require）+ `markdown.js` + 每页一个 js（`sandbox.js` `live.js` `inner.js` ……），经 `/console/static/<名字>.css|js` 提供，只给 `static/` 目录列表里真有的文件（Windows 设备名 con.js / nul.js 一律 404，不碰文件系统）。页面不引外部资源、请求一律相对路径。
 - **原生 `confirm` / `prompt` / `alert` 全换成页内对话框和提示条**（`ask()` / `toast()`；Claude 桌面版内嵌浏览器里原生弹窗用不了），测试禁止再出现。
 - **预检**：大脑模式下也查 LLM Key；每个问题带 `setting` 跳转目标，「去设置 →」跳到设置页并高亮那一行（樱花底闪一下）。
