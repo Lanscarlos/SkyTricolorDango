@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "labeling.js", "models.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "dangotrack.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "labeling.js", "models.js", "settings.js", "device.js"]
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做
@@ -496,3 +496,62 @@ def test_models_js_follows_row():   # spec 2026-10-06-brain-compact §5：压缩
 def test_brainlog_compact_step():   # spec 2026-10-06-brain-compact §6：压缩那一步总是折起来，摘要是第一行
     got = _brainlog_js('B.stepLine({kind: "compact", text: "── 压缩：第 1 次 ──\\n正文"})')
     assert got == {"cls": "dim", "mark": "─", "text": "── 压缩：第 1 次 ──\n正文", "fold": True}
+
+
+# ---- 团子跑道（brain/flow.py → live/flow，console/static/dangotrack.js）----
+def _track_js(expr: str):  # 在 node 里载入 dangotrack.js（没有 document），算 expr
+    node = shutil.which("node") or pytest.skip("没有 node")
+    js = f"const T=require({json.dumps(str(STATIC / 'dangotrack.js'))});console.log(JSON.stringify({expr}))"
+    return json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+
+
+def test_track_page_between_stage_and_brain():
+    page = (STATIC / "console.html").read_text(encoding="utf-8")
+    live = page.split('id="page-live"', 1)[1].split('id="page-inner"', 1)[0]
+    assert live.index('id="lv-canvas"') < live.index('id="lv-track"') < live.index('id="lv-brain"')
+    assert page.index('src="console/static/dangotrack.js"') < page.index('src="console/static/live.js"')
+    b = bundle()
+    assert "live/flow" in b and "DangoTrack.mount" in b
+    assert "prefers-reduced-motion" in b and "document.hidden" in b
+
+
+def test_track_nodes_in_order():
+    ids = _track_js("T.NODES.map(n => n.id)")
+    assert ids == ["look", "has_new", "read", "to_me", "batch", "reply_or_not", "think", "say_or_act", "can_send", "send"]
+    pos = _track_js("T.NODES.map(n => n.s)")
+    assert pos == sorted(pos) and pos[0] == 0
+
+
+def test_track_sticker_tone_and_cost():
+    out = _track_js("""[
+      T.stickerOf({node:"to_me",outcome:"ok",label:"跟你说：叫了团子"}),
+      T.stickerOf({node:"to_me",outcome:"skip",label:"跟别人说"}),
+      T.stickerOf({node:"to_me",outcome:"unsure",label:"拿不准"}),
+      T.stickerOf({node:"can_send",outcome:"ask",label:"不能发：说得太快了"}),
+      T.subOf({node:"look",outcome:"ok",label:"看了一眼",cost:0.0012}),
+      T.subOf({node:"think",outcome:"ok",label:"想了 6.2 秒"}),
+      T.haltText({node:"to_me",outcome:"unsure"}), T.haltText({node:"can_send",outcome:"ask"}), T.haltText({node:"send",outcome:"sent"})
+    ]""")
+    assert [o["tone"] for o in out[:4]] == ["ok", "skip", "halt", "halt"]
+    assert out[0]["text"] == "跟你说：叫了团子"
+    assert out[4] == "看了一眼 · ¥0.0012" and out[5] == "想了 6.2 秒"
+    assert out[6:] == ["停下来 · 拿不准", "停下来 · 被拦了", None]
+
+
+def test_track_queue_compacts_backlog():  # 积压太多：前面的只更新贴纸，最后几条照常播；积压一点就加速
+    out = _track_js("[T.compact(Array.from({length:30},(_, i)=>({id:i}))), T.compact([{id:1},{id:2}]), T.tempo(0), T.tempo(6), T.tempo(25)]")
+    big, small = out[0], out[1]
+    assert len(big["silent"]) == 26 and [e["id"] for e in big["play"]] == [26, 27, 28, 29]
+    assert small["silent"] == [] and len(small["play"]) == 2
+    assert out[2] == 1 and out[3] > 1 and out[4] >= out[3]
+
+
+def test_track_moves_forward_around_the_loop():  # 团子只往前走：目标在身后就绕一圈
+    out = _track_js("[T.ahead(100, 300), T.ahead(300, 100) > 0, T.ahead(300, 300)]")
+    assert out[0] == 200 and out[1] is True and out[2] == 0
+    assert _track_js("T.ahead(300, 100) + 200 === T.LENGTH") is True
+
+
+def test_live_page_mounts_track_only_in_brain_mode():
+    live = (STATIC / "live.js").read_text(encoding="utf-8")
+    assert "DangoTrack.mount" in live and "普通 Agent 没有跑道" in live

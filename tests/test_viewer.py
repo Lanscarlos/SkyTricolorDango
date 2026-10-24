@@ -612,6 +612,35 @@ def test_chat_endpoint_long_polls():
         v.stop()
 
 
+# ---- 团子跑道（brain/flow.py）----
+def test_flow_endpoint_404_without_flow():
+    v = viewer()
+    url = v.start()
+    try:
+        assert request(url + "flow?after=0")[0] == 404
+    finally:
+        v.stop()
+
+
+def test_flow_endpoint_long_polls():
+    from skydango.brain.flow import FlowLog
+
+    v = viewer()
+    v.flow = FlowLog(lambda: 1_790_000_000.0)
+    v.flow.emit("has_new", "1 条新", "ok", value=1)
+    url = v.start()
+    port = url.rstrip("/").rsplit(":", 1)[1]
+    try:
+        status, body = request(url + "flow?after=0&wait=2")
+        assert status == 200 and body["v"] == 1 and body["boot"] == v.flow.boot
+        assert body["events"][0]["node"] == "has_new" and body["events"][0]["value"] == 1
+        status, body = request(url + "flow?after=1&wait=0.1")
+        assert status == 200 and body["v"] == 1 and body["events"] == []
+        assert request(url + "flow?after=0", None, {"Host": f"evil.example:{port}"})[0] == 403
+    finally:
+        v.stop()
+
+
 # ---- 只剩接口（spec 2026-10-04-console-attach §1）----
 def test_root_page_is_gone():
     v = viewer()

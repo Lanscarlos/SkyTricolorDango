@@ -3054,6 +3054,12 @@ def _run_brain(
 
             events.tap(_event)
             viewer.chat = chat
+            from .brain.flow import FlowLog
+
+            flow = FlowLog(wall)  # 团子跑道（管理面板真机页中栏）：身体、大脑、用量各记各的那一步
+            body.flow = brain.flow = flow
+            registry.meter.listeners.append(flow.on_usage)
+            viewer.flow = flow
     stop = threading.Event()
     brain_thread = threading.Thread(target=brain.run, args=(stop,), name="brain", daemon=True)
     eyes_thread = threading.Thread(target=eyes.run, args=(stop,), name="eyes", daemon=True)

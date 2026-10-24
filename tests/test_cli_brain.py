@@ -55,6 +55,7 @@ class FakeViewer:
     brain = None
     control = None
     chat = None
+    flow = None
 
     def update(self, *args, **kwargs):
         return True
@@ -74,6 +75,16 @@ def test_run_brain_with_viewer_attaches_chat(tmp_path, monkeypatch):
     v = FakeViewer()
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
     assert isinstance(v.chat, Transcript)
+
+
+def test_run_brain_with_viewer_attaches_flow(tmp_path, monkeypatch):  # 团子跑道：上线后第一次心跳就有「在想 → 想完了」
+    from skydango.brain.flow import FlowLog
+
+    cfg, run, _ = fake_brain_run(tmp_path, monkeypatch)
+    v = FakeViewer()
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0, viewer=v)
+    assert isinstance(v.flow, FlowLog)
+    assert [e["node"] for e in v.flow.wait_since(0, 0)[2]][:2] == ["think", "think"]
 
 
 def test_run_brain_with_viewer_records_turns(tmp_path, monkeypatch):

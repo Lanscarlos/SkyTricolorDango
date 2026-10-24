@@ -162,6 +162,7 @@ class UsageMeter:
         self._flush_lock = threading.Lock()
         self._stop = threading.Event()
         self._saver: threading.Thread | None = None
+        self.listeners: list[Callable[[str, str, str, float | None, bool], None]] = []  # 每记一笔：(用处, 供应商, 模型, 钱 / None, 成功没)；团子跑道用
         self._refresh_base(time.strftime("%Y-%m-%d", time.localtime(self.started)))
 
     # ---- 记 ----
@@ -186,6 +187,12 @@ class UsageMeter:
         with self._lock:
             add_row(self._run.setdefault(key, _empty()), row)
             add_row(self._delta.setdefault(day, {}).setdefault(self.source, {}).setdefault(key, _empty()), row)
+        cost = row.get("cost") if ok else None
+        for fn in list(self.listeners):
+            try:
+                fn(use, provider, model, cost, ok)
+            except Exception:
+                log.debug("用量监听出错", exc_info=True)
 
     def rate_limit(self, provider: str, info: dict, at: float | None = None) -> None:
         if not isinstance(info, dict):

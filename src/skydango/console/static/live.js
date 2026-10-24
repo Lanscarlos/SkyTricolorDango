@@ -8,7 +8,7 @@
 if (typeof document === "undefined") return;
 const L = {launchLoaded: false, startProblems: false, on: false, gen: 0, shown: false, kind: "", state: "",
   seq: 0, snap: null, img: null, paused: false, boxes: true, mark: null, hover: null, pick: null, times: [],
-  chatV: 0, brain: true, trace: null, info: null, innerOk: false, logNext: 0, follow: true, drain: false, timers: []};
+  chatV: 0, brain: true, trace: null, track: null, info: null, innerOk: false, logNext: 0, follow: true, drain: false, timers: []};
 const FACTS = ["身边的好友", "陌生人", "互动请求", "开着的面板", "牵着手", "正在做", "刚说过", "场合", "聊天面板", "认装扮", "心情", "精力"];
 const WITH_INNER = ["心情", "精力"];  // 「现在」里已经有了，内心层开着时不重复
 const CHIP = {idle: "没在跑", starting: "正在启动", running: "运行中", stopping: "在收尾", crashed: "出错停下了", exited: "没在跑"};
@@ -71,12 +71,17 @@ function begin(brain) {
   const box = $("lv-brain"), none = $("lv-brain-none"); box.textContent = ""; box.hidden = true;
   if (brain && typeof mountBrainConsole === "function") { none.hidden = true; L.trace = mountBrainConsole(box, "live/brain"); }
   else { none.hidden = false; none.textContent = "普通 Agent 没有大脑"; }
+  if (L.track) { L.track.stop(); L.track = null; }
+  const tnone = $("lv-track-none"), tsvg = $("lv-track").querySelector("svg");
+  if (brain && typeof DangoTrack !== "undefined") { tnone.hidden = true; tsvg.hidden = false; L.track = DangoTrack.mount($("lv-track"), "live/flow", {visible: () => L.shown}); }
+  else { tsvg.hidden = true; tnone.hidden = false; tnone.textContent = brain ? "跑道脚本加载不了（console/static/dangotrack.js）" : "普通 Agent 没有跑道"; }
   if (globalThis.LiveCtl) LiveCtl.start(brain);
   if (L.shown) loops();
 }
 function end() {  // 停下：内容留着，只停掉拉取
   L.on = false; L.gen++;
   if (L.trace) { L.trace.stop(); L.trace = null; }
+  if (L.track) { L.track.stop(); L.track = null; }  // 跑道留着最后的样子
   if (globalThis.LiveCtl) LiveCtl.stop();
   LiveView.pick(null);
   $("lv-fps").textContent = "停了"; $("lv-fps").className = "lv-fps";
@@ -247,6 +252,7 @@ Pages.live = {
     for (const t of L.timers) clearInterval(t);
     L.timers = [setInterval(pullStatus, 2000), setInterval(pullInner, 5000), setInterval(pullLogs, 1000)];
     if (L.on) loops();
+    if (L.track) L.track.wake();
   },
   hide() { L.shown = false; L.gen++; for (const t of L.timers) clearInterval(t); L.timers = []; },
 };

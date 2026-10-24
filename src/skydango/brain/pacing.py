@@ -53,6 +53,10 @@ class Pacer:
     def pending(self) -> bool:
         return bool(self._lines)
 
+    def waited(self, now: float) -> float:
+        """这批从第一句进来到现在攒了多久。"""
+        return now - self._first if self._lines else 0.0
+
     def batch(self) -> list[tuple[str, str]]:
         return list(self._lines)
 

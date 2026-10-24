@@ -17,6 +17,10 @@
   /* 沙盒页的大脑控制台：底色和左右两栏一样，靠等宽字和终端排版区分 */
   --term-bg:var(--card);--term-head:var(--card);--term-line:var(--line);--term-fg:#2f2822;--term-dim:#6e6352;
   --term-sakura:#a13c66;--term-matcha:#3b6738;--term-amber:#875812;--term-red:#9c3420;--term-indigo:#32547f;
+  /* 真机页的团子跑道：全部取自上面的颜色（以后做深色只改上面那些） */
+  --tk-band:var(--sakura-bg);--tk-lane:var(--card);--tk-node:var(--card);--tk-node-line:var(--line);--tk-gate:var(--sakura-bg);
+  --tk-pink:var(--sakura);--tk-rice:var(--rice);--tk-rice-line:var(--ash-ink);--tk-matcha:var(--matcha);
+  --tk-halt:var(--amber);--tk-halt-bg:var(--amber-bg);--tk-halt-line:var(--amber-line);--tk-halt-ink:var(--amber-ink);
   /* 整帧页：画布底色（截图外的空白）、编辑中的标记 */
   --fr-stage:#2b2621;--fr-edit:var(--amber);
   --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
@@ -493,6 +497,48 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .lv-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;box-shadow:inset 0 0 0 1px var(--line)}  /* 先祖是白色：描一圈边 */
 .lv-brain{flex:1;min-height:0;display:flex;flex-direction:column;position:relative;background:var(--term-bg)}
 .lv-brain>.none{color:var(--term-dim);padding:12px 14px;font-family:var(--mono);font-size:12.5px}
+
+/* 中：团子跑道（dangotrack.js）——画面和大脑控制台之间一条横向跑道 */
+.lv-track{flex:none;height:clamp(170px,22vh,210px);padding:4px 10px;border-bottom:1px solid var(--line);background:var(--card);position:relative}
+.lv-track>svg{display:block;width:100%;height:100%;font-family:var(--font);overflow:visible}
+.lv-track>.none{position:absolute;inset:0;display:grid;place-items:center;margin:0}
+.lv-track .tk-band{fill:none;stroke:var(--tk-band);stroke-width:26;stroke-linecap:round;opacity:.6}
+.lv-track .tk-lane{fill:none;stroke:var(--tk-lane);stroke-width:2;stroke-dasharray:2 10;stroke-linecap:round}
+.lv-track .tk-strands path{fill:none;stroke-width:2;stroke-linecap:round;transition:opacity .4s}
+.lv-track .tk-s-pink{stroke:var(--tk-pink)}.lv-track .tk-s-rice{stroke:var(--tk-rice-line)}.lv-track .tk-s-matcha{stroke:var(--tk-matcha)}
+.lv-track svg.halt .tk-strands path,.lv-track svg.halt .tk-band{opacity:.3}
+.tk-pill{fill:var(--tk-node);stroke:var(--tk-node-line);stroke-width:1.5}
+.tk-dia{fill:var(--tk-gate);stroke:var(--tk-pink);stroke-width:1.5;stroke-opacity:.5}
+.tk-nt{font-size:16px;font-weight:600;fill:var(--ink);text-anchor:middle}
+.tk-ns{font-size:11.5px;fill:var(--muted);text-anchor:middle}
+.tk-nv{font-size:13px;font-weight:600;fill:var(--ink);text-anchor:middle}
+.tk-nq{font-size:13px;fill:var(--muted);text-anchor:middle}
+.tk-nq.end{text-anchor:end}
+.tk-node.on .tk-pill{stroke:var(--tk-pink);stroke-width:2.5}
+.tk-node.on .tk-dia{stroke-opacity:1;stroke-width:2.5}
+.tk-node.on .tk-nq{fill:var(--ink)}
+.tk-node.halt .tk-dia,.tk-node.halt .tk-pill{fill:var(--tk-halt-bg);stroke:var(--tk-halt);stroke-opacity:1;stroke-width:2.5}
+.tk-stk rect{fill:var(--tk-node);stroke:var(--tk-pink);stroke-width:1.3}
+.tk-stk text{font-size:12.5px;font-weight:700;fill:var(--sakura-ink);text-anchor:middle}
+.tk-stk.tone-ok rect{stroke:var(--tk-matcha)}.tk-stk.tone-ok text{fill:var(--matcha-ink)}
+.tk-stk.tone-skip rect{stroke:var(--tk-rice-line)}.tk-stk.tone-skip text{fill:var(--muted)}
+.tk-stk.tone-halt rect{stroke:var(--tk-halt);fill:var(--tk-halt-bg)}.tk-stk.tone-halt text{fill:var(--tk-halt-ink)}
+.tk-stk{transform-box:fill-box;transform-origin:center}
+.tk-stk.pop{animation:tk-pop .5s cubic-bezier(.3,1.6,.5,1)}
+@keyframes tk-pop{0%{transform:scale(.55)}100%{transform:scale(1)}}
+.tk-last{font-size:13px;fill:var(--muted);text-anchor:middle}
+.tk-halt rect{fill:var(--tk-node);stroke:var(--tk-halt-line);stroke-width:1.5;stroke-dasharray:4 4}
+.tk-halt text{font-size:13.5px;fill:var(--muted);text-anchor:middle}
+.tk-halt.lit rect{fill:var(--tk-halt-bg);stroke:var(--tk-halt);stroke-dasharray:none;stroke-width:2.5}
+.tk-halt.lit text{fill:var(--tk-halt-ink);font-weight:700}
+.tk-dango .d-pink{fill:var(--tk-pink)}.tk-dango .d-rice{fill:var(--tk-rice);stroke:var(--tk-rice-line);stroke-width:1.2}.tk-dango .d-matcha{fill:var(--tk-matcha)}
+.tk-dango .eye{fill:var(--ink)}.tk-dango .blush{fill:var(--sakura-bg)}
+.tk-bub rect{fill:var(--tk-node);stroke:var(--tk-pink);stroke-width:1.5}
+.tk-bub text{font-size:13px;fill:var(--ink);text-anchor:middle}
+.tk-bub.ask rect{fill:var(--tk-halt-bg);stroke:var(--tk-halt)}
+.tk-bub.ask text{fill:var(--tk-halt-ink);font-weight:800;font-size:16px}
+.tk-star{fill:var(--tk-halt);font-size:12px;text-anchor:middle}
+@media (prefers-reduced-motion:reduce){.tk-stk.pop{animation:none}.lv-track .tk-strands path{transition:none}}
 
 /* 日志抽屉：从右边滑出，关着也照样拉日志 */
 .lv-drawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,92vw);z-index:30;display:flex;flex-direction:column;background:var(--card);

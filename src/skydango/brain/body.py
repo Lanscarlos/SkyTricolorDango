@@ -84,6 +84,12 @@ CALL_TRACK_STALE = 1.0  # 喊一声时取感知层最近一帧的人物框：比
 PANEL_FOR_HOLD = {"wheel": "wheel_editor", "friend_tree": "friend_tree"}  # 身体自己打开面板的操作：期间这个面板不算遮挡
 
 
+def _short(text: str, n: int = 24) -> str:
+    """跑道贴纸上的一句话：一行、最多 n 个字。"""
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[:n] + "…"
+
+
 def _first_line(exc: BaseException) -> str:
     return (str(exc).splitlines() or [type(exc).__name__])[0]
 
@@ -226,6 +232,7 @@ class Body:
         self.lulls: LullTracker | None = (
             LullTracker(cfg.lull, lambda who: is_friend_fn(self.friend_names())(who)) if cfg.lull.enabled else None
         )
+        self.flow = None  # 团子跑道（brain/flow.py 的 FlowLog）：管理面板中栏；沙盒不接
         self.on_musing: Callable[[str], None] | None = None  # 记下心里想的一句时调；沙盒记进聊天记录
         self._lull_near: list[str] | None = None  # 这一圈人来人走用的身边名单：冷场追踪用同一份（别在圈尾再取，名字刚好过期会对不上）
         self._news: queue.Queue[str] = queue.Queue()  # 眼睛线程交来的新鲜事，身体线程里过滤后变成 notice
@@ -497,6 +504,7 @@ class Body:
             log.info("读到: %s", f"{m.speaker}：{m.text}" if m.speaker else m.text)
             self.chat.append((self.wall(), m.speaker, m.text))
         verdicts = self._judge_batch(fresh, now)
+        self._flow_heard(fresh, verdicts)
         if self.ledger is not None:
             for m, v in zip(fresh, verdicts):
                 to_me = v.label == "me"
@@ -557,6 +565,7 @@ class Body:
                 self.events.put(kind, f"聊天  {m.speaker or '（看不出是谁）'}：「{m.text}」（{v.tag()}）{note}", speech=speech)
         if paced:
             self.pacer.heard(now, paced, urgent=any(sounds_upset(text) for _, text in paced))
+            self._flow("batch", f"攒着 {len(self.pacer.batch())} 句", "ok")
         if pacing and "owner_command" in kinds:
             self.pacer.heard(now, [], urgent=True)  # 卡洛的命令：攒着的这批跟着马上放
         if self.cfg.reflex.enabled:
@@ -707,6 +716,7 @@ class Body:
             log.warning("放行时冒输入气泡出错", exc_info=True)
         finally:
             self._pace_bubble = False
+            self._flow("batch", f"攒了 {len(self.pacer.batch())} 句 · 等了 {self.pacer.waited(now):.0f} 秒", "ok")
             self.pacer.released(now)
             self.events.release()
 
@@ -2207,6 +2217,7 @@ class Body:
         """live = 手动控制：dry-run 下也真的发（护栏照旧）。reply = 明确是接话（大脑离线时的备用回复），不算主动开口。
         jab = 大脑标的“这句算犯贱”（[pacing] manner）；手动控制和备用回复算不贱。"""
         now = self.clock()
+        self._flow("say_or_act", f"说话「{_short(text)}」", "ok", decision=True)
         body = clean_reply(text, self.cfg.reply.max_chars)  # 含“不能声称自己是真人”的硬过滤
         if body is None:
             self._blocked(text, "过滤掉了（空的、<skip>，或者说了自己是真人）")
@@ -2230,7 +2241,8 @@ class Body:
             if blocked:
                 self._blocked(text, blocked)
                 raise ToolError(blocked)
-        note = self.clear_view("say", live)
+        note = self._flow_view("say", live, "不能发")
+        self._flow("can_send", "能发", "ok", decision=True)
         full = self.cfg.reply.disclosure_prefix + body
         self.limiter.record(now)
         self._said_at = now
@@ -2250,17 +2262,20 @@ class Body:
             self.spoken.append(Spoken(self.wall(), full, proactive))
         if self._dry(live):
             log.info("[dry-run] 将会发送: %s", full)
+            self._flow("send", f"dry-run 没真发：{_short(full)}", "sent", decision=True)
             self._remember(body, full, sent=False)
             self._line("said", full + "（dry-run，没真的发）", "团子")
             return f"dry-run：没真的发，“{full}”{note}"
         self.panel.before_speak(now)  # 先开面板再按 Enter：说完对方的回复马上读得到
         self.sender.send(full)
+        self._flow("send", _short(full), "sent", decision=True)
         self._line("said", full, "团子")
         self.self_filter.remember(full, self.clock())
         self._remember(body, full, sent=True, manual=live)
         return f"已发送：{full}"
 
     def _blocked(self, text: str, why: str) -> None:
+        self._flow("can_send", f"不能发：{why}", "ask", decision=True)
         self._line("blocked", text, "团子", why)
         if self.on_blocked is None:
             return
@@ -2268,6 +2283,40 @@ class Body:
             self.on_blocked(text, why)
         except Exception:
             log.exception("on_blocked 出错")
+
+    def _flow(self, node: str, label: str, outcome: str, **kw) -> None:
+        """往团子跑道记一步；出错只记日志。"""
+        if self.flow is None:
+            return
+        try:
+            self.flow.emit(node, label, outcome, **kw)
+        except Exception:
+            log.debug("团子跑道出错", exc_info=True)
+
+    def _flow_view(self, what: str, live: bool, refused: str) -> str:
+        """clear_view，被挡住时跑道上记一笔「不能发 / 不能做」再往上抛。"""
+        try:
+            return self.clear_view(what, live)
+        except ToolError as exc:
+            self._flow("can_send", f"{refused}：{_first_line(exc)}"[:40], "ask", decision=True)
+            raise
+
+    def _flow_heard(self, fresh: list[Message], verdicts: list[Verdict]) -> None:
+        """读到一批新消息：数一数 → 读面板 → 每句认一认在跟谁说。"""
+        if self.flow is None:
+            return
+        src = {"panel": "面板", "bubble": "头顶气泡"}
+        where = "、".join(dict.fromkeys(src.get(m.source, "面板 OCR") for m in fresh))
+        who = "、".join(dict.fromkeys(m.speaker for m in fresh if m.speaker)) or "看不出是谁"
+        self._flow("has_new", f"{len(fresh)} 条新", "ok", value=len(fresh))
+        self._flow("read", f"{who} · {where}", "ok")
+        owner = self.cfg.brain.owner_name
+        for m, v in zip(fresh, verdicts):
+            if owner and m.speaker == owner and m.text.startswith("#"):
+                self._flow("to_me", "主人命令", "ok", speaker=m.speaker)
+                continue
+            outcome = {"me": "ok", "all": "ok", "other": "skip"}.get(v.label, "unsure")
+            self._flow("to_me", v.tag()[:40], outcome, speaker=m.speaker or None)
 
     def _line(self, kind: str, text: str, who: str = "", why: str = "") -> None:
         """交给真机聊天记录；出错只记日志。"""
@@ -2300,28 +2349,36 @@ class Body:
 
     def emote(self, name: str, live: bool = False) -> str:
         """做动作不会松开牵手（用户实测；以前记的“会松手”是对方自己断开的），牵着手也照做。"""
+        self._flow("say_or_act", f"动作「{name}」", "ok", decision=True)
         if self.emotes is None:
+            self._flow("can_send", "不能做：没开动作", "ask", decision=True)
             raise ToolError("这次没开动作（--no-emotes 或者图标库是空的）")
         owner = self._owner(self.clock())
         available = self.emotes.available(owner)
         if name not in available:
+            self._flow("can_send", "不能做：现在做不了", "ask", decision=True)
             raise ToolError(f"「{name}」现在做不了；能做的：{'、'.join(available) or '暂时没有（刚做过动作，要等一会儿）'}")
         relaxed = owner and name not in self.emotes.available()  # 平时这会儿还在动作限速里
         gap = self.cfg.reflex.min_gap - (self.clock() - self.emotes.last_any) if self.cfg.reflex.enabled else 0.0
         if gap > 0:  # 上一个动作（多半是反射）的动画还没做完
+            self._flow("can_send", "不能做：上一个动作还没做完", "ask", decision=True)
             raise ToolError(f"刚做完一个动作，{math.ceil(gap)} 秒后再做")
-        note = self.clear_view("emote", live)
+        note = self._flow_view("emote", live, "不能做")
+        self._flow("can_send", "能做", "ok", decision=True)
         self.emoted.append(name)
         self.emoted[:] = self.emoted[-50:]  # 只留最近 50 条，别无限长
         if self._dry(live):
             self.emotes.pretend(name)
+            self._flow("send", f"dry-run 没真做「{name}」", "sent", decision=True)
             self._line("act", f"（团子做了 {name}）", "团子")
             return f"dry-run：没真的做「{name}」{note}"
         try:
             with self._held("wheel"):
                 self.emotes.perform(name)
         except Exception as exc:
+            self._flow("can_send", "没做成", "ask", decision=True)
             raise ToolError(f"「{name}」没做成：{exc}") from None
+        self._flow("send", f"做了「{name}」", "sent", decision=True)
         self._line("act", f"（团子做了 {name}）", "团子")
         return f"做了「{name}」" + (OWNER_NOTE if relaxed else "")
 
