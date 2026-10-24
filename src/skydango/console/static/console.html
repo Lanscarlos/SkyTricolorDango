@@ -81,7 +81,7 @@
     <div class="cols sb-cols" id="sb-cols">
       <section class="pane sb-right" aria-label="现在和世界">
         <div id="sb-now"></div>
-        <details class="sb-sec us" id="sb-usage" open><summary><h4>模型用量</h4></summary><div class="us-body" id="sb-usage-body"><p class="none">读取中…</p></div></details>
+        <div class="tray" role="group" aria-label="你来摆的世界">
         <fieldset class="sb-sec" id="sb-nearby">
           <h4>身边</h4>
           <div class="sb-friends" id="sb-friends"></div>
@@ -97,6 +97,8 @@
           <div class="sb-row"><button class="btn sm" type="button" id="sb-scene-go">改场景</button></div>
           <div class="sb-row"><input id="sb-notice" placeholder="新鲜事：天黑了" aria-label="新鲜事"><button class="btn sm" type="button" id="sb-notice-go">放</button></div>
         </fieldset>
+        </div>
+        <details class="sb-sec us" id="sb-usage"><summary><h4>模型用量</h4></summary><div class="us-body" id="sb-usage-body"><p class="none">读取中…</p></div></details>
       </section>
       <section class="pane sb-brainpane" aria-label="大脑控制台">
         <p class="none" id="sb-brain-none">（沙盒跑起来之后这里是大脑的控制台）</p>
@@ -146,9 +148,8 @@
     <div class="cols sb-cols lv-cols">
       <section class="pane sb-right lv-left" aria-label="团子">
         <div id="lv-now"></div>
-        <details class="sb-sec us" id="lv-usage" open><summary><h4>模型用量</h4></summary><div class="us-body" id="lv-usage-body"><p class="none">读取中…</p></div></details>
         <div class="sb-sec"><h4>身边和状态</h4><dl class="lv-facts" id="cards"></dl></div>
-        <div class="sb-sec lc" id="lv-ctl">
+        <div class="tray lc" id="lv-ctl" role="group" aria-label="手动控制">
           <h4>手动控制<span class="grow"></span><span class="lc-busy" id="lc-busy"></span></h4>
           <p class="lc-warn" id="lc-warn" hidden>大脑是 dry-run，手动操作照样会真的在游戏里执行</p>
           <p class="none" id="lc-none">叫醒之后能在这里手动让团子说话、做动作、转视角</p>
@@ -165,6 +166,7 @@
           <div class="lc-row" id="lc-panels" hidden><span class="sb-label">面板</span><button class="btn sm" type="button" id="lc-panel-read">读面板</button><button class="btn sm" type="button" id="lc-panel-close">关面板</button></div>
           <ul class="lc-log" id="lc-log"></ul>
         </div>
+        <details class="sb-sec us" id="lv-usage"><summary><h4>模型用量</h4></summary><div class="us-body" id="lv-usage-body"><p class="none">读取中…</p></div></details>
       </section>
       <section class="pane lv-mid" aria-label="画面和大脑">
         <div class="lv-stage">

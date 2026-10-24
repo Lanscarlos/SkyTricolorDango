@@ -15,6 +15,8 @@
   --m-happy:var(--sakura);--m-plain:#cfc3cc;--m-low:#94a6c4;--m-cross:#de8f7b;--blue-bg:#e6ebf7;--blue-ink:#3a5287;--flash:#fdf1db;
   --rice:#fffaf2;--rice-line:#e6d9c8;--stick:#c9a679;--stick-dark:#a9865a;--ash:#ddd4dc;--ash-ink:#ab9ea8;
   --soft:#faf7fb;--bubble:#f1ecf4;--track:#ebe4ee;--hover:#f6f1f8;--white:#fff;
+  /* 托盘：你能动手的地方（沙盒的世界、真机的手动控制、聊天输入），和只读的白卡片分开 */
+  --tray:#f5f1f8;--tray-line:#e2d8e7;
   --refl-line:#dcc9a8;--refl-bg:#fdf7ec;--refl-ink:#7a6847;
   /* 糯米团的"底座"：卡片、按钮底下那道压扁的边 */
   --shadow:0 3px 0 -1px #e7dfe9;--base:#e0d6e3;--base-hover:#cdbfd1;
@@ -288,6 +290,8 @@ input[type=checkbox],input[type=radio]{accent-color:var(--matcha-deep)}
 .ebar .track i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--ec,var(--matcha));transition:width .5s}
 .tags{display:flex;flex-wrap:wrap;gap:6px}
 .tag em{font-style:normal;color:var(--muted)}
+.now-rows .tag{border-radius:10px;align-items:baseline;padding:1px 9px}  /* 心愿一条可能折行：别做成胶囊，前缀（想 / 惦记 / 小心思）不拆开 */
+.now-rows .tag em{flex:none;white-space:nowrap}
 .tag.soft{background:var(--blue-bg);color:var(--blue-ink)}
 #inner-curve svg{display:block;width:100%;height:190px;overflow:visible}
 #inner-curve .axis{fill:var(--muted);font-size:11px}
@@ -389,7 +393,7 @@ h4.note{margin:0 0 4px;font-weight:500}
 .sb-act{font-size:12.5px;color:var(--muted);font-style:italic;margin:4px 0;text-align:left}
 .sb-refl{border:1.5px dashed var(--refl-line);background:var(--refl-bg);border-radius:14px;padding:6px 10px;font-size:12.5px;margin:10px 0;color:var(--refl-ink);overflow-wrap:anywhere}
 .sb-refl time{color:var(--muted)}
-.sb-say{flex:none;border-top:1px solid var(--line);padding:10px 12px;background:var(--soft)}
+.sb-say{flex:none;border-top:1px solid var(--tray-line);padding:10px 12px;background:var(--tray);border-radius:0 0 var(--r-pane) var(--r-pane)}
 .sb-say fieldset{display:flex;gap:8px;align-items:center}
 .sb-say select{max-width:38%}
 .sb-say input[name=name]{width:110px}
@@ -458,6 +462,13 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .sb-stepper button:disabled{opacity:.45;cursor:not-allowed}
 .sb-stepper span{min-width:2.6em;padding:0 8px;text-align:center;border-left:1px solid var(--line);border-right:1px solid var(--line)}
 .sb-sec:disabled .sb-friend{opacity:.6}
+/* 托盘：左栏里你能动手的那一块（沙盒：身边 + 团子看到的；真机：手动控制） */
+.tray{margin:4px 10px 12px;padding:0 12px 4px;background:var(--tray);border:1px solid var(--tray-line);border-radius:16px}
+.tray>.sb-sec{margin:0;padding:10px 0 12px;border-top:0}
+.tray>.sb-sec+.sb-sec{border-top:1.5px dotted var(--tray-line)}
+.tray.lc{padding-bottom:12px}
+.tray h4{margin:10px 0 4px;font-size:13px;color:var(--ink);font-weight:700}
+.tray .sb-stepper,.tray .sb-stepper button{background:var(--card)}
 
 @media (max-width:999px){  /* 窄屏：三栏上下排（#work .cols 变单列），页面恢复整页滚，每栏给个高度 */
   #page-sandbox{height:auto}
@@ -562,7 +573,7 @@ details.bc-fold>pre{margin:2px 0 6px 1.9em;padding-left:9px;border-left:1px soli
 .lv-brain>.none{color:var(--term-dim);padding:12px 14px;font-family:var(--mono);font-size:12.5px}
 
 /* 中：团子跑道（dangotrack.js）——画面和大脑控制台之间一条横向跑道 */
-.lv-track{flex:none;height:clamp(170px,22vh,210px);padding:4px 10px;border-bottom:1px solid var(--line);background:var(--card);position:relative}
+.lv-track{flex:none;aspect-ratio:1000/290;max-height:220px;padding:8px 14px 6px;border-bottom:1px solid var(--line);background:var(--card);position:relative}
 .lv-track>svg{display:block;width:100%;height:100%;font-family:var(--font);overflow:visible}
 .lv-track>.none{position:absolute;inset:0;display:grid;place-items:center;margin:0}
 .lv-track .tk-band{fill:none;stroke:var(--tk-band);stroke-width:26;stroke-linecap:round;opacity:.6}
