@@ -192,6 +192,9 @@ class WheelConfig:
     editor_center: list[float] = field(default_factory=lambda: [0.335, 0.5])
     # 关闭编辑界面点右上角的 ×：中间的 ✓ 只有改过东西之后才能关
     editor_close: list[float] = field(default_factory=lambda: [0.983, 0.03])
+    # 认编辑界面开没开：用这张面板卡片里右上角 × 的模板（close.png）。主界面同一个位置是齿轮（设置），
+    # 以前数右侧列表区有几个白色小块，草地上的小白花会被数成图标 → 以为还开着、又点一下 → 打开了设置菜单（10-24）
+    editor_card: str = "assets/panels/wheel_editor"
     editor_radius: float = 0.18  # 格子中心到轮盘中心的距离，相对截图高度
     slot_icon_size: float = 0.12  # 格子图标的裁剪边长，相对截图高度
     list_roi: list[float] = field(default_factory=lambda: [0.693, 0.037, 0.9375, 1.0])  # 右侧动作列表

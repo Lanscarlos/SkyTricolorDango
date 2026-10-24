@@ -23,6 +23,7 @@ from ..device.base import Device
 from ..imageio import imread, imwrite
 from ..vision.bubbles import Rect, roi_rect
 from ..vision.icons import best_match, find_icons, same_icon, silhouette, trim
+from ..vision.panels import CardError, Feature, check_feature, load_card
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +71,19 @@ class EmoteLibrary:
         return (best_name, best_score) if best_score >= threshold else (None, best_score)
 
 
+def load_close_mark(folder: str | Path) -> Feature | None:
+    """编辑界面卡片里右上角 × 的特征（close.png）；卡片读不了、没有这张图返回 None。"""
+    try:
+        card = load_card(Path(folder))
+    except (CardError, OSError) as exc:
+        log.warning("轮盘编辑界面的卡片读不了（%s），退回数图标认编辑界面", exc)
+        return None
+    mark = next((f for f in card.quick if f.kind == "template" and f.image == "close.png" and f.template is not None), None)
+    if mark is None:
+        log.warning("轮盘编辑界面的卡片 %s 里没有 close.png，退回数图标认编辑界面", folder)
+    return mark
+
+
 def _same_frame(a: np.ndarray, b: np.ndarray) -> bool:
     return a.shape == b.shape and float(np.abs(a.astype(np.int16) - b.astype(np.int16)).mean()) < 3.0
 
@@ -90,6 +104,7 @@ class Wheel:
         self.clock = clock
         self.slots: dict[int, str | None] = {}  # 已知的轮盘内容（None = 认不出 / 不在图标库里）
         self.last_used: dict[int, float] = {}
+        self.close_mark = load_close_mark(cfg.editor_card)  # 编辑界面右上角的 ×；None = 退回数图标
 
     # ---- 几何 ----
     def slot_center(self, slot: int, width: int, height: int) -> tuple[int, int]:
@@ -108,6 +123,9 @@ class Wheel:
 
     # ---- 编辑界面 ----
     def _editor_visible(self, frame: np.ndarray) -> bool:
+        if self.close_mark is not None:
+            # 只看右上角 ×：选中动作时轮盘中间的 ✓ 会换成那个动作，关的动画里 ✓ 还会多留一会儿（10-24 实测）
+            return check_feature(frame, self.close_mark, {})[0]
         height, width = frame.shape[:2]
         crop = roi_rect(self.cfg.list_roi, width, height).crop(frame)
         return len(find_icons(crop, int(0.025 * height), int(0.1 * height))) >= 8

@@ -243,3 +243,41 @@ def test_perform_never_uses_locked_slot_even_if_misread(library):
     assert slot != 3 and slot not in wheel.cfg.locked_slots
     assert assigned == [(slot, "指向")]
     assert ("hw_key", 4) not in device.calls  # KEY_3
+
+
+EDITOR_DATA = Path(__file__).resolve().parent / "data" / "wheel_editor"
+
+
+def _real_frame(name):
+    """真机截图右边那一条（x ≥ 1320：动作列表区 + 右上角 ×）贴进 1920×1080 的黑底。"""
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    frame[:, 1320:] = imread(EDITOR_DATA / f"{name}_right.jpg")
+    return frame
+
+
+def _editor_wheel(frames):
+    cfg = WheelConfig(editor_card=str(ASSETS / "panels" / "wheel_editor"))
+    device = FakeDevice(frames)
+    return Wheel(device, cfg, EmoteLibrary("missing"), sleep=lambda s: None), device
+
+
+def test_editor_visible_by_close_mark_not_flower_dots():
+    """10-24 遇境夜里：主界面右边草地上的小白花被数成 10~11 个「图标」，旧办法（≥ 8 个就算开着）判成编辑界面还开着。"""
+    wheel, _ = _editor_wheel([_real_frame("open")])
+    assert wheel._editor_visible(_real_frame("open"))
+    assert not wheel._editor_visible(_real_frame("closed_flowers"))
+
+
+def test_close_editor_stops_once_closed_so_it_never_taps_the_gear():
+    """第 1 下被游戏吞掉（切触屏），第 2 下关上了；再点一下就点在主界面右上角的齿轮上，打开设置菜单（10-24 真机复现）。"""
+    opened, closed = _real_frame("open"), _real_frame("closed_flowers")
+    wheel, device = _editor_wheel([opened, opened, closed])  # _size 截一张、第 1 下后、第 2 下后
+    wheel.close_editor()
+    assert [c[0] for c in device.calls] == ["tap", "tap"]
+
+
+def test_editor_falls_back_to_counting_icons_without_card(tmp_path):
+    """卡片目录读不到（被删、写错）时退回原来的数图标，不至于一直以为编辑界面没开。"""
+    cfg = WheelConfig(editor_card=str(tmp_path / "nothing"))
+    wheel = Wheel(FakeDevice([_real_frame("open")]), cfg, EmoteLibrary("missing"), sleep=lambda s: None)
+    assert wheel._editor_visible(_real_frame("open"))
