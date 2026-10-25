@@ -45,6 +45,7 @@ from ..config import AppearanceConfig, EnvConfig, GestureConfig, IconsConfig, Pe
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_request
 from .appearance import describe_crop, make_sample
 from .gallery import Sample
+from .identity import CallEnd, FrameIn, IdentityBoard, TagCand, TrackIn
 from .attrs import unlit_score
 from .candle import black, find_flames, white_ring
 from .bubbles import Rect, roi_rect
@@ -97,6 +98,7 @@ OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开�
 # 比 stranger_after 长，不等的话标签被挡住的好友会先冒一次 stranger 事件）；一直攒不到好样本的（太远、被挡）
 # 最多再多等这么久照样判
 STRANGER_GRACE = 1.5
+PIVOT_SHIFT = 0.25
 PAN_SCALE = 8  # 估计画面平移用的缩略图缩小这么多倍
 RELINK_EARLY = 0.2  # 接回的候选轨迹最早可以比失踪记录的"最后看到"早这么久冒出来（同一帧里先删后建）
 RELINK_PREDICT = 1.0  # 接回时按速度最多往前推这么久
@@ -353,6 +355,7 @@ class PerceptionWatcher:
         icons_cfg: IconsConfig | None = None,  # 认地图交互图标（spec 2026-10-05-icon-detection）；圈的归属判断不受 enabled 管
         map_icons=None,  # vision.icons_map.MapIcons：先祖 / 物件 / 地图上的圈认种类（None = 不认，icons() 为空）
         presence_call: bool = False,  # 好友找不到时身体会不会喊一声确认（大脑模式、[call] auto、不是 dry-run）；不会就满 leave_after 直接算走开
+        identity: IdentityBoard | None = None,
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -393,6 +396,8 @@ class PerceptionWatcher:
         self._gestures: deque[tuple[str, str]] = deque(maxlen=50)  # (好友名, 动作)，身体取走；没人取（普通 Agent）时只留最近的
         self._gesture_at: dict[tuple[str, str], float] = {}
         self.appearance = appearance
+        self.identity = identity
+        self._identity_call_at: float | None = None
         self.embedder = embedder
         self.dino = dino
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
@@ -1206,6 +1211,7 @@ class PerceptionWatcher:
             tag = tagged.get(p.id)
             name = tag.data.get("name") if tag is not None else None
             if name and not self._unlit(p):
+                c.tracks[p.id] = name
                 where = side_of(p.box.x + p.box.w / 2, width)
                 self._call_note(name, Seen(where, distance(p.box.h, ref, self.cfg.near, self.cfg.far)), now)
 
@@ -1268,6 +1274,38 @@ class PerceptionWatcher:
         return self.tracker.update(fresh, now, prune=False) if fresh else []  # 同一帧第二次：不删、不冲掉 dropped
 
     # ---- 认装扮（设计 §3.2、§4） ----
+    def _identity_frame(self, players: list[Track], selfs: list[Track], tags: list[Track], fresh: dict,
+                        now: float, width: int, height: int, panel_visible: bool) -> FrameIn:
+        """模型和几何运算留在感知层，交给板子的都是可存盘的证据。"""
+        inputs = []
+        shift = self.last_shift[0] if self.last_shift else 0.0
+        for p in players:
+            d = p.data
+            unlit = self._unlit(p)
+            candidates = tuple(TagCand(t.data.get('name') or f'#{t.id}', t.data.get('name'), err)
+                               for t in tags if not unlit and (err := self._tag_err(p, t)) is not None)
+            score = self.appearance.identity_scores(fresh[p.id][0]) if p.id in fresh else None
+            self_score = max((s.score for s in selfs if s.last == now and same_body(p.box, s.box)), default=None)
+            delta = p.drift[0] - d.get('drift_prev', 0.0)
+            d['drift_prev'] = p.drift[0]
+            with_bg = None
+            if abs(shift) > 0 and abs(shift) >= PIVOT_SHIFT * p.box.w:
+                if abs(delta - shift) < abs(shift) / 2:
+                    with_bg = True
+                elif abs(delta) < abs(shift) / 2:
+                    with_bg = False
+            inputs.append(TrackIn(p.id, p.box, p.first, unlit,
+                self._under_panel(p.box, width, height, panel_visible), candidates, score,
+                self_score, with_bg, d.get('maybe') if d.get('maybe_by') == 'relink' else None,
+                d.get('sid'), d.get('unsure_called')))
+        call_end = None
+        c = self._call
+        if c and c.ended and self._identity_call_at != c.at:
+            call_end = CallEnd(c.at, dict(c.tracks))
+            self._identity_call_at = c.at
+        return FrameIn(now, width, height, panel_visible, now < self._panel_slide_until,
+                       now < self._quiet_until, tuple(inputs), call_end)
+
     def _appearance_features(self, frame: np.ndarray, players: list[Track], selfs: list[Track], dangos: list[Track], now: float,
                              width: int, height: int, panel_visible: bool) -> dict[int, tuple[Sample, Rect]]:
         """点过火的人、团子（self 框和身上打了 data["dango"] 的 player 框）：每 every 帧裁一次好样本、算颜色和 DINOv2 两个特征，

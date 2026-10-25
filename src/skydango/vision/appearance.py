@@ -274,6 +274,18 @@ class AppearanceBook:
                 del self.strangers[k]
 
     # ---- 认人 ----
+    def identity_scores(self, sample: Sample):
+        """同时保留两种特征的分数，门槛扫描不用重跑模型。"""
+        from .identity import Scores
+
+        with self._lock:
+            def friends(which, feat):
+                return {name: score for name, p in self.friends.items()
+                        if (score := p.gallery.best(feat, which)) is not None}
+            me = (self.me.gallery.best(sample.dino, 'dino')
+                  if self.me is not None and len(self.me.gallery) >= 3 else None)
+            return Scores(friends('dino', sample.dino), friends('color', sample.color), me)
+
     def _scores(self, feat, exclude: set[str]) -> list[tuple[float, str]]:
         """feat 对这次上线学到的每个好友（不含 exclude）的颜色底库打分，从高到低；底库里没有可比样本的不列。"""
         out = []

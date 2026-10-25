@@ -26,6 +26,15 @@ def sc(me=None, **friends):
     return Scores(dino=friends, color=friends, me=me)
 
 
+def test_friend_feature_picks_scores():
+    for feature, want in [('dino', '小明'), ('color', '番茄'), ('both', '小明')]:
+        b = board(cfg=IdentityConfig(friend_feature=feature))
+        scores = Scores({'小明': 1.0, '番茄': 0.5}, {'小明': 0.9, '番茄': 1.0}, None)
+        for t in (0, 0.1, 0.2):
+            out = b.step(frame(t, tr(1, 1000, scores=scores)))
+        assert out.verdicts[1].name == want and out.verdicts[1].kind == FRIEND_LOOK
+
+
 def test_tag_goes_to_closest_and_becomes_friend_after_hold():
     b = board()
     for t in (0.0, 0.2, 0.4):

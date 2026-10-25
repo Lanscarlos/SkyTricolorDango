@@ -3,6 +3,24 @@ import json
 import numpy as np
 import pytest
 
+
+def test_identity_scores():
+    from skydango.vision.gallery import Sample
+    b = AppearanceBook(AppearanceConfig(), 'color')
+    for name, c, d in [('小明', 0, 1), ('番茄', 1, 0)]:
+        for i in range(3):
+            b.learn('friend', name, _basis(c), i, dino=_basis(d), pinned=True)
+    s = Sample(_basis(0), _basis(0), 0, 0.3)
+    scores = b.identity_scores(s)
+    assert scores.dino == {'小明': 0.0, '番茄': 1.0}
+    assert scores.color == {'小明': 1.0, '番茄': 0.0}
+    for i in range(2):
+        b.learn('me', '', _basis(0), i, dino=_basis(0), pinned=True)
+    assert b.identity_scores(s).me is None
+    b.learn('me', '', _basis(0), 3, dino=_basis(0), pinned=True)
+    assert b.identity_scores(s).me == 1.0
+    assert b.identity_scores(Sample(_basis(0), None, 0, 0.3)).dino == {}
+
 from skydango.config import AppearanceConfig, Config
 from skydango.vision.appearance import (
     AppearanceBook,
