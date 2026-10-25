@@ -73,6 +73,7 @@ FIELDS: tuple[Field, ...] = (
     Field("inbox.retrain_min", "攒够几张提示重训", "收件箱里核对过的难例攒到这么多张才提示可以重训", "int", "features"),
     Field("places.enabled", "认地图", "要配合 YOLO 感知层和 places/ 图库", "bool", "features"),
     Field("appearance.enabled", "认装扮", "按外观接回没读到名字的好友、认回来的陌生人；要配合 YOLO 感知层", "bool", "features"),
+    Field("identity.enabled", "身份板", "认人改成外观为主、名字标签证实（要配合认装扮和 DINOv2）；关掉 = 原来的认法", "bool", "features"),
     Field("appearance.describe", "描述装扮", "让识图模型把团子和身边人的装扮写成一句话（花额度）", "bool", "features"),
     Field("catalog.enabled", "收集装扮图鉴", "近处的人清楚的整身裁图存进 catalog/inbox/（只存图、不发输入）；要配合 YOLO 感知层", "bool", "features"),
     Field("icons.enabled", "认地图交互图标", "YOLO 框出的图标认出种类、写进状态和画面（只认不点）；要配合 YOLO 感知层", "bool", "features"),

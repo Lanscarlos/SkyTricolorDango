@@ -402,6 +402,26 @@ def _warn_dino_on_cpu(cfg: Config, embedder, device: str) -> None:
 _UNSET = object()
 
 
+def _identity_board(cfg: Config, dino):
+    """依赖不齐时沿用旧流程，启动时把原因说清楚。"""
+    if not cfg.identity.enabled:
+        return None, ''
+    if not cfg.perception.enabled:
+        return None, '身份板没开：要先开 YOLO 感知层'
+    if not cfg.appearance.enabled:
+        return None, '身份板没开：要先开认装扮'
+    if dino is None:
+        return None, '身份板没开：DINOv2 没加载'
+    from .vision.identity import IdentityBoard
+    from .vision.perception import STRANGER_GRACE
+
+    p = cfg.perception
+    board = IdentityBoard(cfg.identity, cfg.appearance, stranger_after=p.stranger_after,
+        grace=STRANGER_GRACE, stranger_min_height=p.stranger_min_height,
+        track_buffer=p.track_buffer, call_window=cfg.call.window)
+    return board, f'身份板：外观为主、名字标签证实（好友特征 {cfg.identity.friend_feature}）'
+
+
 def _appearance_parts(cfg: Config, run: RunDir | None = None, dino_embedder=_UNSET) -> dict:
     """认装扮（spec 2026-10-01-appearance）：给 PerceptionWatcher 的关键字参数（记忆簿、特征模型、配置、存训练数据）。
     [appearance] 没开时是空的；没有运行目录（perception detect 等）或 save = false 时不存训练数据。描述器由 _run_brain 挂。
@@ -484,6 +504,9 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
     light：大脑模式（只有它的身体会按 3 举蜡烛）才找黑影身上的火焰圆盘、出 light 请求。
     """
     if not cfg.perception.enabled:
+        _, identity_note = _identity_board(cfg, None)
+        if identity_note:
+            log.info(identity_note)
         if cfg.places.enabled:
             log.warning("[places] 要配合 [perception] 用（YOLO 感知层里认地图），现在没打开，不认地图")
         if cfg.appearance.enabled:
@@ -499,6 +522,9 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
     want_light = light and cfg.social.enabled and "light" in cfg.social.accept_strangers
     dino = _dino_embedder(cfg)
     attrs = _person_attrs(cfg, dino)
+    identity, identity_note = _identity_board(cfg, dino)
+    if identity_note:
+        log.info(identity_note)
     detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, want_light, attrs=attrs is not None), p.iou, p.device)
     log.info("YOLO 感知层：%s（%s），最多 %.0f fps，帧来自%s", p.model, "、".join(getattr(detector, "providers", [])),
              p.fps, "感知线程自己截图" if p.capture == "own" else "身体主循环")
@@ -534,6 +560,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
         catalog=_catalog_collector(cfg, run), icons_cfg=cfg.icons, map_icons=_map_icons(cfg, icons, dino, run),
         presence_call=can_call,
+        identity=identity,
     )
 
 
@@ -962,6 +989,9 @@ def _perception(cfg: Config, args, dev=None):
         p.far_crops = args.far_crops
     dino = _dino_embedder(cfg)
     attrs = _person_attrs(cfg, dino)
+    identity, identity_note = _identity_board(cfg, dino)
+    if identity_note:
+        log.info(identity_note)
     detector = make_detector(p.model, p.classes, p.imgsz, detector_conf(p, attrs=attrs is not None), p.iou, p.device)
     icons = _icon_classifier(cfg)
     watcher = PerceptionWatcher(
@@ -969,6 +999,7 @@ def _perception(cfg: Config, args, dev=None):
         icons=icons, background=False, capture=dev.screenshot if dev is not None else None,
         **_appearance_parts(cfg, None, dino),  # 只挂记忆簿：不存训练数据、不描述
         attrs=attrs,
+        identity=identity, call_window=cfg.call.window,
     )
     return detector, watcher
 
