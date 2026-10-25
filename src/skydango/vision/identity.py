@@ -86,6 +86,10 @@ class Evidence:
     stable: TagCand | None = None
     verdict: Verdict = field(default_factory=lambda: Verdict(PENDING))
     samples: list[dict[str, float]] = field(default_factory=list)
+    ever_tagged: bool = False
+    panel_at: float = float('-inf')
+    nearby_name: tuple[float, str] | None = None
+    me_samples: list[float | None] = field(default_factory=list)
 
 
 class IdentityBoard:
@@ -135,11 +139,13 @@ class IdentityBoard:
                         other.stable = None
                         self._set(other, UNSURE if name else PENDING, name, now)
                 e.stable = cand
+                e.ever_tagged = True
         for t in frame.tracks:
             e = self._evidence[t.id]
             if e.stable:
                 self._set(e, FRIEND_TAG, e.stable.name, now)
         self._friends(frame)
+        self._strangers(frame)
         return StepOut({id: c.key for id, c in assigned.items()},
                        {t.id: self._evidence[t.id].verdict for t in frame.tracks}, {})
 
@@ -164,7 +170,9 @@ class IdentityBoard:
             if t.scores is not None:
                 e.samples.append(self._scores(t.scores))
                 e.samples = e.samples[-self.cfg.window:]
-            if e.stable:
+                e.me_samples.append(t.scores.me)
+                e.me_samples = e.me_samples[-self.cfg.window:]
+            if e.stable or e.verdict.kind == STRANGER:
                 continue
             scores = self._medians(e)
             ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
@@ -190,3 +198,54 @@ class IdentityBoard:
                 claimed.add(name)
             else:
                 self._set(e, UNSURE, name, frame.now, score)
+
+    def _strangers(self, frame: FrameIn):
+        now = frame.now
+        low = self.acfg.unsure if self.cfg.stranger_low is None else self.cfg.stranger_low
+        for t in frame.tracks:
+            e = self._evidence[t.id]
+            if t.under_panel:
+                e.panel_at = now
+            names = [c for c in t.tags if c.name]
+            if names:
+                e.nearby_name = (now, min(names, key=lambda c: (c.err, c.key)).name)
+            v = e.verdict
+            call = frame.call_end
+            if call and v.kind in (UNSURE, STRANGER):
+                name = call.shown.get(t.id)
+                if name:
+                    for other in self._evidence.values():
+                        if other is not e and other.stable and other.stable.key == name:
+                            other.stable = None
+                            self._set(other, UNSURE, name, now)
+                    e.stable = TagCand(name, name, 0.0)
+                    e.ever_tagged = True
+                    e.key, e.tag_start, e.tag_last = name, now - self.cfg.tag_hold, now
+                    self._set(e, FRIEND_TAG, name, now)
+                    continue
+                if t.called_at == call.at:
+                    self._set(e, STRANGER, None, now)
+                    continue
+            if v.kind in (FRIEND_TAG, FRIEND_LOOK, STRANGER):
+                continue
+            # 遮挡和远处不凭“没有标签”下结论。
+            if t.under_panel or t.box.h < self.stranger_min_height * frame.height:
+                if v.kind != UNSURE:
+                    self._set(e, PENDING, None, now)
+                continue
+            if v.kind == UNSURE:
+                if t.called_at is None and now - v.since >= self.acfg.unsure_wait + self.call_window:
+                    self._set(e, STRANGER, None, now)
+                continue
+            age = now - max(t.first, e.panel_at)
+            recent = e.nearby_name and now - e.nearby_name[0] <= self.stranger_after
+            if recent and age >= self.stranger_after:
+                self._set(e, UNSURE, e.nearby_name[1], now)
+                continue
+            if e.ever_tagged:
+                continue
+            scores = self._medians(e)
+            me = [s for s in e.me_samples if s is not None]
+            clearly_other = bool(scores) and max(scores.values()) < low and (not me or median(me) < low)
+            if age >= self.stranger_after and (t.unlit or clearly_other or age >= self.stranger_after + self.grace):
+                self._set(e, STRANGER, None, now)
