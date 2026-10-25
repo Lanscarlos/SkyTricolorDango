@@ -272,7 +272,8 @@ def same_body(a: Rect, b: Rect) -> bool:
 
 def dango_self(t: Track) -> bool:
     """YOLO 的 self 轨迹，而且身份板没否掉它（开着身份板时，打在别人身上的 self 框这一帧记 data["not_dango"]）。"""
-    return t.cls == "self" and t.data.get("not_dango") != t.last
+    mark = getattr(t, "data", {}).get("not_dango")  # 身体的测试拿简单对象当轨迹
+    return t.cls == "self" and (mark is None or mark != t.last)
 
 
 def people_boxes(dets: list[Detection]) -> list[Detection]:
