@@ -305,3 +305,11 @@ def test_dango_does_not_claim_friend_look_name():
     for t in (0.1, 0.2, 0.3, 0.4):
         out = b.step(frame(t, tr(1, 960, scores=sc(me=0.97, 小明=0.95)), tr(2, 1300, scores=sc(小明=0.9))))
     assert out.verdicts[1].kind == DANGO and out.verdicts[2].kind == FRIEND_LOOK and out.verdicts[2].name == "小明"
+
+def test_pause_during_call_does_not_expire_it():  # 窗口里暂停：宽限跟着往后挪
+    b = board(call_window=6.0)
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.86, 番茄=0.5))))
+    b.step(frame(2.5, tr(1, 1000, called_at=2.5)))
+    b.shift(5.0)
+    assert b.step(frame(14.0, tr(1, 1000, called_at=2.5))).verdicts[1].kind == UNSURE  # 窗口顺延到 13.5，还在宽限里

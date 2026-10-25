@@ -95,6 +95,7 @@ class Evidence:
     me_samples: list[float | None] = field(default_factory=list)
     look: float | None = None
     smooth: float | None = None
+    call_mark: tuple[float, float] | None = None  # (这一声的 at, 算宽限的起点；暂停时往后挪)
 
 
 class IdentityBoard:
@@ -262,7 +263,10 @@ class IdentityBoard:
                     self._set(e, PENDING, None, now)
                 continue
             if v.kind == UNSURE:
-                calling = t.called_at is not None and now - t.called_at <= self.call_window + CALL_GRACE
+                if t.called_at is not None and (e.call_mark is None or e.call_mark[0] != t.called_at):
+                    e.call_mark = (t.called_at, t.called_at)
+                calling = (t.called_at is not None
+                           and now - e.call_mark[1] <= self.call_window + CALL_GRACE)
                 if not calling and now - v.since >= self.acfg.unsure_wait + self.call_window:
                     self._set(e, STRANGER, None, now)
                 continue
@@ -292,6 +296,8 @@ class IdentityBoard:
             e.verdict = replace(e.verdict, since=e.verdict.since + seconds)
             if e.nearby_name:
                 e.nearby_name = (e.nearby_name[0] + seconds, e.nearby_name[1])
+            if e.call_mark:
+                e.call_mark = (e.call_mark[0], e.call_mark[1] + seconds)
         if self._challenger:
             self._challenger = (self._challenger[0], self._challenger[1] + seconds)
         if self._weak_since is not None:
