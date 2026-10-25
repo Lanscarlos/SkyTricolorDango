@@ -270,6 +270,11 @@ def same_body(a: Rect, b: Rect) -> bool:
     return iou(a, b) >= SAME_BODY_IOU
 
 
+def dango_self(t: Track) -> bool:
+    """YOLO 的 self 轨迹，而且身份板没否掉它（开着身份板时，打在别人身上的 self 框这一帧记 data["not_dango"]）。"""
+    return t.cls == "self" and t.data.get("not_dango") != t.last
+
+
 def people_boxes(dets: list[Detection]) -> list[Detection]:
     """一帧里的人（player / player_unlit / self）。模型可能在团子身上同时出 self 和 player 框：player 那个不算另一个人。"""
     selfs = [d for d in dets if d.cls == "self"]
@@ -834,6 +839,9 @@ class PerceptionWatcher:
             tagged, dangos, fresh = self._identity_process(frame, pool, selfs, tags, now, width, height, panel_visible, tracks)
             players = [p for p in pool if p not in dangos and p.cls != 'self']
             selfs = [s for s in selfs if any(same_body(s.box, d.box) for d in dangos)]
+            for s in tracks:
+                if s.cls == "self" and s not in selfs:
+                    s.data["not_dango"] = now  # 板子没认它当团子：点亮、远近、画面、身体都别拿它当团子框
         else:
             tagged = self._assign_tags([p for p in players if not self._unlit(p)], tags)
         assigned = {t.id for t in tagged.values()}
@@ -1340,14 +1348,17 @@ class PerceptionWatcher:
         if self.cfg.relink:
             self._relink(players, {t.data['name'] for t in tags if t.data.get('name')}, now)
         fresh = self._appearance_features(frame, players, selfs, [], now, width, height, panel_visible)
+        call_at = self._identity_call_at
         try:
             fi = self._identity_frame(players, selfs, tags, fresh, now, width, height, panel_visible)
             if self.identity_log is not None:
                 self.identity_log.append(fi)
             out = self.identity.step(fi)
+            tagged, dangos = self._identity_apply(out, players, tags, fresh, frame, now, tracks)
         except Exception:
             log.exception('身份板出错，沿用上一帧结论')
             self._identity_errors += 1
+            self._identity_call_at = call_at  # 这一声的结果下一帧再交给板子
             for p in players:
                 p.data = saved[p.id]
             if self._identity_errors >= IDENTITY_MAX_ERRORS:
@@ -1356,7 +1367,6 @@ class PerceptionWatcher:
                 self.identity_off = '连续出错'
             return {}, [p for p in players if p.data.get('dango')], {}
         self._identity_errors = 0
-        tagged, dangos = self._identity_apply(out, players, tags, fresh, frame, now, tracks)
         return tagged, dangos, fresh
 
     def _identity_apply(self, out, players, tags, fresh, frame, now, tracks):
@@ -1897,7 +1907,7 @@ class PerceptionWatcher:
         """团子现在 / 刚才在哪：标着团子的轨迹、self 轨迹最后的框（1 秒内还在的，不分面板开关：面板标志刚翻时团子还在半路）
         + 这个面板状态下记住的团子框（DANGO_MEMORY 内）。"""
         refs = [t.box for t in self.tracker.tracks.values()
-                if (t.data.get("dango") or t.cls == "self") and now - t.last <= 1.0]
+                if (t.data.get("dango") or dango_self(t)) and now - t.last <= 1.0]
         mem = self._dango_mem.get(panel_visible)
         if mem is not None and now - mem[1] <= DANGO_MEMORY:
             refs.append(mem[0])
@@ -2007,7 +2017,7 @@ class PerceptionWatcher:
         """算远近的参照：团子的框高（转圈认出的 → 最近一帧的 self 框 → 按 self_height 估）。"""
         if self.self_box is not None:
             return float(self.self_box.h)
-        selfs = [t.box.h for t in list(self.last_tracks) if t.cls == "self"]
+        selfs = [t.box.h for t in list(self.last_tracks) if dango_self(t)]
         if selfs:
             return float(max(selfs))
         return self.cfg.self_height * frame_h
@@ -2391,7 +2401,7 @@ class PerceptionWatcher:
         黑影贴着团子时 YOLO 常认不出 self（10-03 20:45：黑影站在团子身前 3 秒多一直没有 self，过了 SELF_HOLD 不找火焰，
         举蜡烛晚了约 3 秒）；镜头跟着团子，屏幕位置只随聊天面板开关变（镜头拉近拉远只是框大小不准，范围本来就放得宽）。"""
         # 只用这一帧刚匹配上的 self 轨迹；别的时候都走下面的沿用
-        fresh_selfs = [t for t in self.tracker.tracks.values() if t.cls == "self" and now - t.last < 1e-6]
+        fresh_selfs = [t for t in self.tracker.tracks.values() if dango_self(t) and now - t.last < 1e-6]
         if fresh_selfs:
             best = max(fresh_selfs, key=lambda t: t.score)
             self._me_last = (best.box, now)
@@ -2689,7 +2699,7 @@ class PerceptionWatcher:
             elif dark:
                 kind, label = "unlit", "陌生人（没点火）"
             elif t.cls == "self":
-                kind, label = "self", "团子"
+                kind, label = ("self", "团子") if dango_self(t) else ("player", "")
             elif t.cls == "typing":
                 kind, label = "typing", "正在输入"
             elif t.cls == "name_tag":

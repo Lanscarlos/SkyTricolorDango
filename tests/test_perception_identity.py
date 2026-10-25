@@ -134,3 +134,48 @@ def test_identity_frame_consumes_call_end_once():
     f = w._identity_frame([], [], [], {}, 6.1, 1920, 1080, False)
     assert f.call_end == CallEnd(0, {1: XIAOMING})
     assert w._identity_frame([], [], [], {}, 6.2, 1920, 1080, False).call_end is None
+
+
+# ---- 整分支评审（10-25）补的 ----
+
+def test_board_error_keeps_call_result_for_next_frame(monkeypatch):
+    from skydango.vision.people import CallSeen
+    w, det = make(identity=True)
+    w._call = CallSeen(0, {}, ended=True)
+    w._call.tracks = {}
+    real, seen = w.identity.step, []
+
+    def flaky(fi):
+        seen.append(fi.call_end)
+        if len(seen) == 1:
+            raise RuntimeError('坏了一帧')
+        return real(fi)
+    monkeypatch.setattr(w.identity, 'step', flaky)
+    run(w, det, [(player(1000), PINK)], 6.1, 6.2)
+    assert seen[0] is not None and seen[1] == seen[0]
+
+
+def test_board_error_in_apply_counts_and_restores(monkeypatch):
+    w, det = make(identity=True)
+    monkeypatch.setattr(w, '_learn', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('坏了')))
+    t = 0.0
+    while w.identity is not None and t < 3.0:  # 退回旧流程后旧流程也会调 _learn，到这儿就停
+        run(w, det, [(player(1000), PINK), (tag(990, 110), None)], t, t)
+        t = round(t + 0.1, 3)
+    assert w.identity is None and w.identity_off == '连续出错'
+
+
+def test_rejected_self_box_is_not_dango_downstream():
+    from skydango.vision.perception import dango_self
+    w, det = make(identity=True)
+    me, friend = player(915), player(1400)
+    items = [(me, WHITE), (Detection('self', me.box, 0.9), None), (Detection('self', friend.box, 0.5), None)]
+    run(w, det, items, 0, 0.3)
+    selfs = [t for t in w.last_tracks if t.cls == 'self']
+    assert len(selfs) == 2
+    good = [t for t in selfs if dango_self(t)]
+    assert [t.box.x for t in good] == [915]
+    assert w._self_now(0.3, False).x == 915
+    assert w._ref_height(1080) == me.box.h
+    assert [o['x'] for o in w.overlay(0.3) if o['kind'] == 'self'] == [915]
+

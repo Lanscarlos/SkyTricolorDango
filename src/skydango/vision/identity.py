@@ -13,6 +13,7 @@ UNSURE = "unsure"
 STRANGER = "stranger"
 PENDING = "pending"
 LOOK_SPAN = 0.15
+CALL_GRACE = 2.0  # 标了喊过、这么久还没收到结果 = 其实没喊成（dry-run、被拦）
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ class IdentityBoard:
         pairs = sorted((c.err * (self.cfg.tag_stick if self._previous.get(c.key) == t.id else 1),
                         t.id, c.key, c) for t in frame.tracks if t.id != self.dango_id for c in t.tags)
         assigned: dict[int, TagCand] = {}
-        used = set()
+        used, before = set(), self._previous
         for _, id, key, cand in pairs:
             if id not in assigned and key not in used:
                 assigned[id] = cand
@@ -136,7 +137,9 @@ class IdentityBoard:
         self._previous = {c.key: id for id, c in assigned.items()}
         for id, cand in assigned.items():
             e = self._evidence[id]
-            if e.key != cand.key or now - e.tag_last > self.cfg.tag_hold + 1e-9:
+            # 上一帧这个标签在别人身上也算断了：来回换的标签谁都攒不满 tag_hold
+            if (e.key != cand.key or now - e.tag_last > self.cfg.tag_hold + 1e-9
+                    or before.get(cand.key, id) != id):
                 e.key, e.tag_start = cand.key, now
             e.tag_last = now
             if now - e.tag_start + 1e-9 >= self.cfg.tag_hold:
@@ -196,7 +199,7 @@ class IdentityBoard:
                 e.samples = e.samples[-self.cfg.window:]
                 e.me_samples.append(t.scores.me)
                 e.me_samples = e.me_samples[-self.cfg.window:]
-            if e.stable or e.verdict.kind == STRANGER:
+            if e.stable or e.verdict.kind == STRANGER or t.id == self.dango_id:
                 continue
             scores = self._medians(e)
             ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
@@ -247,21 +250,23 @@ class IdentityBoard:
                     e.key, e.tag_start, e.tag_last = name, now - self.cfg.tag_hold, now
                     self._set(e, FRIEND_TAG, name, now)
                     continue
-                if t.called_at == call.at:
+                # 一声确认画面里所有拿不准的人：喊之前就拿不准、喊的时候就在的，没亮出名字也算
+                if t.called_at == call.at or (v.kind == UNSURE and v.since <= call.at and t.first <= call.at):
                     self._set(e, STRANGER, None, now)
                     continue
             if v.kind in (FRIEND_TAG, FRIEND_LOOK, STRANGER):
                 continue
             # 遮挡和远处不凭“没有标签”下结论。
-            if t.under_panel or t.box.h < self.stranger_min_height * frame.height:
+            if not t.unlit and (t.under_panel or t.box.h < self.stranger_min_height * frame.height):  # 黑影照旧远近、面板后面都判
                 if v.kind != UNSURE:
                     self._set(e, PENDING, None, now)
                 continue
             if v.kind == UNSURE:
-                if t.called_at is None and now - v.since >= self.acfg.unsure_wait + self.call_window:
+                calling = t.called_at is not None and now - t.called_at <= self.call_window + CALL_GRACE
+                if not calling and now - v.since >= self.acfg.unsure_wait + self.call_window:
                     self._set(e, STRANGER, None, now)
                 continue
-            age = now - max(t.first, e.panel_at)
+            age = now - (t.first if t.unlit else max(t.first, e.panel_at))
             recent = e.nearby_name and now - e.nearby_name[0] <= self.stranger_after
             if recent and age >= self.stranger_after:
                 self._set(e, UNSURE, e.nearby_name[1], now)
@@ -296,6 +301,7 @@ class IdentityBoard:
         candidates = []
         by_id = {t.id: t for t in frame.tracks}
         spot = self._spots.get(frame.panel)
+        cued = set()
         for t in frame.tracks:
             e = self._evidence[t.id]
             parts = []
@@ -304,7 +310,9 @@ class IdentityBoard:
                 pos = 0.5 if frame.moved else max(0.0, 1 - dist / 1.5)
                 parts.append(('pos', self.cfg.dango_w_pos, pos))
             if t.scores is not None and t.scores.me is not None:
-                e.look = min(1.0, max(0.0, (t.scores.me - max(t.scores.dino.values(), default=0)) / LOOK_SPAN))
+                # 好友底库还空着时也要够像自己才有分，不然谁都满分
+                base = max(max(t.scores.dino.values(), default=0.0), self.acfg.dango_match - LOOK_SPAN)
+                e.look = min(1.0, max(0.0, (t.scores.me - base) / LOOK_SPAN))
             if e.look is not None:
                 parts.append(('look', self.cfg.dango_w_look, e.look))
             if t.self_score is not None:
@@ -312,15 +320,19 @@ class IdentityBoard:
             if t.with_bg is not None:
                 parts.append(('pivot', self.cfg.dango_w_pivot, float(not t.with_bg)))
             parts = [(kind, w, s) for kind, w, s in parts if w > 0]
+            if any(k != 'pos' for k, _, _ in parts):
+                cued.add(t.id)
             if parts:
                 raw = sum(w * s for _, w, s in parts) / sum(w for _, w, _ in parts)
                 e.smooth = raw if e.smooth is None else 0.7 * e.smooth + 0.3 * raw
-            if (not e.stable and not t.unlit and parts and any(k != 'pos' for k, _, _ in parts)
+            tagged = e.key is not None and frame.now - e.tag_last <= self.cfg.tag_hold + 1e-9  # 头上有标签的是别人
+            if (not e.stable and not t.unlit and not tagged and t.id in cued
                     and e.smooth >= self.cfg.dango_min):
                 candidates.append((e.smooth, t.id))
         current = self._evidence.get(self.dango_id)
-        valid = self.dango_id in by_id and not current.stable and not by_id[self.dango_id].unlit
-        if not valid:
+        here = self.dango_id in by_id
+        # 漏检一两帧（track_buffer 内证据还在）不换人，照常走下面的换人滞回
+        if current is None or (here and (current.stable or by_id[self.dango_id].unlit)):
             self.dango_id = None
             self._weak_since = None
         if not frame.sliding:
@@ -344,9 +356,10 @@ class IdentityBoard:
                     self._challenger = None
             else:
                 self._challenger = None
-        if self.dango_id is not None:
+        if self.dango_id in by_id:
             t = by_id[self.dango_id]
             e = self._evidence[t.id]
             self._set(e, DANGO, None, frame.now, e.smooth or 0.0)
-            if not frame.sliding:
+            # 只靠位置分的帧不挪位置，不然认错的人走到哪位置跟到哪、永远满分
+            if not frame.sliding and t.id in cued:
                 self._spots[frame.panel] = t.box

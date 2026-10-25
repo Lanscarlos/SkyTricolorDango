@@ -238,3 +238,70 @@ def test_look_alike_and_unsure_never_learn():
     assert out.learn == {}
 
 
+
+
+# ---- 整分支评审（10-25）补的 ----
+
+def test_marked_unsure_without_call_result_still_times_out():  # 标了"喊过"其实没喊成（dry-run、被拦）
+    b = board(call_window=6.0)
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.86, 番茄=0.5))))
+    assert b.step(frame(9.0, tr(1, 1000, called_at=2.5))).verdicts[1].kind == UNSURE  # 窗口还可能没结束
+    assert b.step(frame(11.0, tr(1, 1000, called_at=2.5))).verdicts[1].kind == STRANGER
+
+def test_alternating_tag_never_stabilises_or_learns():  # 误差 1 / 100 来回换，黏性压不住
+    b = board()
+    for i in range(30):
+        a, c = (1.0, 100.0) if i % 2 else (100.0, 1.0)
+        out = b.step(frame(i * 0.1, tr(1, 1000, tags=(TagCand("小明", "小明", a),), scores=sc(小明=0.4)),
+                           tr(2, 1080, tags=(TagCand("小明", "小明", c),), scores=sc(小明=0.4))))
+        assert out.learn == {} and all(v.kind != STRANGER for v in out.verdicts.values())
+        assert all(v.kind != FRIEND_TAG for v in out.verdicts.values())
+
+def test_shared_call_resolves_unsure_not_called_for():  # 在场确认那一声也算数
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 1000, scores=sc(小明=0.86, 番茄=0.5))))
+    out = b.step(frame(3.0, tr(1, 1000), call_end=CallEnd(2.5, {})))
+    assert out.verdicts[1].kind == STRANGER
+
+def test_unlit_judged_behind_panel_and_far():
+    b = board()
+    out = b.step(frame(1.2, tr(1, 300, unlit=True, under_panel=True), tr(2, 1500, unlit=True, box=Rect(1500, 400, 20, 40))))
+    assert out.verdicts[1].kind == STRANGER and out.verdicts[2].kind == STRANGER
+
+def test_dango_missing_one_frame_keeps_dango():
+    b = board(cfg=IdentityConfig(dango_w_pos=0))
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 960, self_score=0.9), tr(2, 1300, self_score=0.8)))
+    b.step(frame(0.3, tr(2, 1300, self_score=0.8)))  # 团子漏检一帧
+    out = b.step(frame(0.4, tr(1, 960), tr(2, 1300, self_score=0.8)))
+    assert b.dango_id == 1 and out.verdicts[1].kind == DANGO and out.verdicts[2].kind != DANGO
+
+def test_look_needs_absolute_score_without_friend_galleries():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    for t in (1.5, 1.6, 1.7, 1.8):  # 团子轨迹没了；好友底库还空着，一个陌生人有点像团子
+        out = b.step(frame(t, tr(2, 1000, scores=sc(me=0.6))))
+    assert b.dango_id is None and out.verdicts[2].kind != DANGO
+
+def test_tagged_friend_with_first_self_hint_is_not_dango():
+    b = board()
+    for i in range(10):
+        out = b.step(frame(i * 0.15, tr(1, 1000, tags=(TagCand("小明", "小明", 3.0),),
+                                         self_score=0.7 if i < 2 else None, scores=sc(小明=0.9))))
+    assert b.dango_id is None and out.verdicts[1].kind == FRIEND_TAG
+
+def test_wrong_dango_drifting_away_from_spot_is_dropped():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    for i in range(1, 30):  # 被认成团子的人只剩位置分，慢慢走开
+        b.step(frame(i * 0.1, tr(1, 960 + 20 * i)))
+    assert b.dango_id is None
+
+def test_dango_does_not_claim_friend_look_name():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    for t in (0.1, 0.2, 0.3, 0.4):
+        out = b.step(frame(t, tr(1, 960, scores=sc(me=0.97, 小明=0.95)), tr(2, 1300, scores=sc(小明=0.9))))
+    assert out.verdicts[1].kind == DANGO and out.verdicts[2].kind == FRIEND_LOOK and out.verdicts[2].name == "小明"

@@ -35,7 +35,7 @@ from ..imageio import imwrite
 from ..device.base import LINUX_KEY_Q
 from ..vision.bubbles import Rect, roi_rect
 from ..vision.halo import HaloWatch
-from ..vision.perception import same_body
+from ..vision.perception import dango_self, same_body
 from ..vision.track import iou
 from ..vision.panels import DISCONNECT, UNKNOWN, Button, PanelReading, describe_reading
 from ..vision.icons_map import describe_icons
@@ -1779,7 +1779,7 @@ class Body:
             return None
         cfg = self.cfg.peek
         boxes = [t.box for t in list(getattr(self.env, "last_tracks", ()))
-                 if t.cls == "self" and now - t.last <= cfg.tag_age and (since is None or t.last >= since)]
+                 if dango_self(t) and now - t.last <= cfg.tag_age and (since is None or t.last >= since)]
         if since is None and getattr(self.env, "self_box", None) is not None:
             boxes.append(self.env.self_box)
         return pick_self(boxes, self.frame_width, cfg.self_center)
@@ -2709,7 +2709,7 @@ class Body:
             result.halo, tid = watch.result(int(base.shape[1]))
             if result.halo == "self" and tid is not None:
                 result.self_box = watch.boxes[tid]
-                yolo = [t for t in tracks if t.cls == "self"]
+                yolo = [t for t in tracks if dango_self(t)]
                 if len(yolo) != 1:  # YOLO 已经稳稳认出团子就不覆盖
                     self.env.self_box = result.self_box
                     log.info("光圈认出团子：%s", result.self_box)
