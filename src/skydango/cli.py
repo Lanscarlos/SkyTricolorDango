@@ -1054,6 +1054,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_halo_eval(cfg, args)
     elif args.action == "track-eval":
         _perception_track_eval(cfg, args)
+    elif args.action == 'identity-truth':
+        _perception_identity_truth(cfg, args)
 
 
 def _existing_clips(dataset: Path, out: Path, recording: str) -> dict[Path, list[str]]:
@@ -1759,6 +1761,60 @@ def _perception_compare(cfg: Config, args) -> None:
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out / "report.md").write_text(report_md(summary), encoding="utf-8")
     print(f"两边不一致 {len(summary['diff_frames'])} 帧；报告：{out / 'report.md'}")
+
+
+def _identity_recording(cfg: Config, args):
+    from .vision.compare import timed_files
+    from .vision.trackeval import subsample
+
+    try:
+        if args.fps <= 0:
+            raise ValueError('--fps 要大于 0')
+        timed, skipped = timed_files(_images(args.source))
+        kept = list(subsample(timed, args.fps))
+    except (ValueError, FileNotFoundError) as exc:
+        raise SystemExit(str(exc)) from None
+    if skipped:
+        print(f'跳过 {len(skipped)} 张文件名里没有时间的图')
+
+    def items():
+        for n, (at, path) in enumerate(kept, 1):
+            image = imread(path)
+            if n % 100 == 0:
+                print(f'  {n}/{len(kept)}')
+            yield at, path.name, image, _panel_open(cfg, image)
+    return kept, items
+
+
+def _perception_identity_truth(cfg: Config, args) -> None:
+    import copy
+    from .vision.identity_eval import apply_draft, collect_logs, draft_identities, save_logs, write_draft, write_sheet
+
+    source = Path(args.source).resolve()
+    out = Path('tmp/identity-truth') / source.name
+    draft, logs_path = out / 'truth-draft.toml', out / 'logs.json'
+    if args.apply:
+        try:
+            n = apply_draft(draft, logs_path, source / 'truth.jsonl', friends=_friend_names(cfg)())
+        except (OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
+        print(f'写了 {n} 个框的标准答案：{source / "truth.jsonl"}')
+        return
+    c = copy.deepcopy(cfg)
+    c.identity.enabled = False
+    c.appearance.enabled = False  # 草稿只要检测、追踪和名字，不跑 DINOv2。
+    _, watcher = _perception(c, args)
+    kept, items = _identity_recording(c, args)
+    out.mkdir(parents=True, exist_ok=True)
+    print(f'{len(kept)} 帧 → {out}')
+    try:
+        logs = collect_logs(items(), watcher)
+    finally:
+        watcher.stop()
+    save_logs(logs_path, logs, source=str(source), fps=args.fps)
+    write_draft(draft, draft_identities(logs, c.identity.tag_hold), logs)
+    write_sheet(out / 'sheet.jpg', logs, source)
+    print(f'对着 {out / "sheet.jpg"} 改 {draft}，然后加 --apply 展开成答案')
 
 
 def _perception_track_eval(cfg: Config, args) -> None:
@@ -3641,6 +3697,13 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--interval", type=float, default=3.0, help="现有方案多久扫一次（同 env.interval）")
     q.add_argument("--far-crops", type=int, help="远处二次检测每帧最多几块（覆盖 perception.far_crops，0 = 关；开关各跑一次对比）")
     q.add_argument("-o", "--output", help="输出目录（默认 tmp/compare/<时间>）")
+    q = psub.add_parser('identity-truth', help='身份板标准答案：生成草稿和拼图，人工核对后 --apply')
+    q.add_argument('source', help='record 录的目录')
+    q.add_argument('--model', help='YOLO 模型文件')
+    q.add_argument('--device', choices=['cuda', 'dml', 'cpu'])
+    q.add_argument('--imgsz', type=int)
+    q.add_argument('--fps', type=float, default=6.5)
+    q.add_argument('--apply', action='store_true', help='把核对好的草稿展开到录像目录的 truth.jsonl')
     q = psub.add_parser("track-eval", help="同一批录像上对比追踪升级前后：轨迹断开和原因、假走开、确认冤枉、接回对错、运动方向")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="模型文件（默认 perception.model）")
