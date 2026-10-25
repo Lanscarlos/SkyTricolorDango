@@ -95,6 +95,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/presence.py` | 好友在不在场（纯计算，见「好友在不在场」）：身边 / 附近（贴边、喊到）/ 找不到 / 走开，感知层的 `nearby()` / `in_view()` / `need_call()` 靠它 |
 | `src/skydango/vision/detect.py` `track.py` `perception.py` `weaklabel.py` | YOLO 感知层（开发中，默认关）：检测器（ONNX / ultralytics）、追踪（IoU + 低分框续命 + 速度预测 + 画面平移 `estimate_shift`）、`PerceptionWatcher`（接口同 env，多认陌生人；画面被挡时暂停计时；续命、失踪好友接回、运动方向）、弱标注，见下 |
 | `src/skydango/vision/attrs.py` | 感知层第二层运行时（见「感知层第二层」）：`AttrModel`（冻住的 DINOv2 + `.npz` 线性头）、`PersonAttrs`（按轨迹裁图、投票、放行 / 撤下、点没点火）、`load_model`、`crop` |
+| `src/skydango/vision/identity.py` | 身份板（默认关）：纯计算 `step(FrameIn)`，攒名字 / 外观 / 团子线索，输出身份与干净帧的学习许可 |
+| `src/skydango/vision/identity_eval.py` | 身份板离线工具：标签稳定的轨迹初判、草稿 / 拼图 / 展开标准答案、按框对答案、新旧对比、重放证据扫门槛 |
 | `src/skydango/vision/attrs_data.py` | 第二层的数据：`perception crops`（数据集 / 难例 / 图片目录 → `datasets/attrs/`）、`--writeback`（标注页确认过的写回 `datasets/sky`：补漏标的人、改点没点火、删不是人，增强图一起改）、`perception attrs-label`（Claude 初分，复用 `assist.Reviewer`） |
 | `src/skydango/vision/attrs_train.py` | 第二层的训练和评估：`perception attrs-train`（提特征 + 线性头 → `models/attrs-<日期>.npz` + 报告）、`attrs-eval`、`bench --attrs` |
 | `src/skydango/vision/trackeval.py` | 追踪和接回的离线评估（`perception track-eval`）：基线（升级开关全关）vs 当前配置，断开原因、假走开、确认冤枉、接回对错、运动方向 |
@@ -329,7 +331,22 @@ dir = "private/sandbox"
 - **收件箱配套**（`perception inbox add`）：`<录像目录> [--every N]` 导入录像；`datasets/sky --redo` 老帧回炉（`_redo-<时间>/redo.json`，沿用原 split，通过时允许覆盖、先备份到 `datasets/sky/_backup/redo-<时间>/`，增强图 `_blur` / `_dark` 的标注副本一起改，撤销还原）；
   整理时 `find_flames` 整图补 `social_ring` 框（`flame_ring` = 1.82，**只量到 1 个样本**，而且那些旧框是 100 px 定尺，等有火焰录像重量）。标注规则见 `docs/progress/2026-09-28-yolo-training.md`
 
+## 身份板（`[identity]`，要配合 `[perception]` + `[appearance]`）
+
+设计见 `docs/superpowers/specs/2026-10-22-identity-board-design.md`，计划见同日期的 `plans/2026-10-22-identity-board.md`，验证清单见 `docs/progress/2026-10-22-identity.md`。
+10-22 晚好友的名字标签跳到邻居身上时，旧流程会立刻摘名字、误判陌生人，还把错人的样本学进底库；团子又经常没有 YOLO self 框。这一期按轨迹攒证据，用已有 DINOv2 认人，名字标签证实。
+
+- **代码默认关、门槛数字是估的；还没完成拥挤录像准确率验收，也没在真机上验证。** 已在旧录像做工具冒烟（草稿 600 帧；评估为 20 帧副本、只手工核对 2 个框），不能拿冒烟报告当上线依据。
+- 标签分配有黏性，名字连续稳定 `tag_hold`（0.5 秒）才换人。失去名字先拿不准；外观用最近 `window`（5）个样本的中位数，至少 3 张，像 / 拿不准门槛沿用 `[appearance]`。一个名字只给一条轨迹，稳定标签优先。
+- 拿不准交给原来的 Q 呼喊路径，沿用间隔和额度；陌生人编号、又回来、面板遮挡和黑影规则保留。身体 `_watch_call` 没改。
+- 团子综合位置 / DINOv2 长相 / YOLO self / 不跟背景走四项，缺失项不计权重；团子只有一个，换人要持续领先，面板横移动画里不换人。底库不到 3 张时不靠长相认自己。
+- 底库只学标签稳定的好友、证据够强的团子、已经编号的陌生人；像好友 / 拿不准 / 接回 / 未定不学。暂停时证据计时也暂停。
+- 管理面板「设置」的「身份板」开关写 `console.toml`；要先开 YOLO、认装扮并加载 DINOv2。依赖不齐时启动日志说明原因、沿用旧流程；身份板连续 10 帧出错也自动退回，status 说明。
+- 离线：`perception identity-truth <录像>` 生成 `tmp/identity-truth/<录像名>/truth-draft.toml`、`logs.json`、`sheet.jpg`；对着拼图改为好友名 / 团子 / 陌生人 / 不要 / ?，再加 `--apply` 写 `<录像>/truth.jsonl`。`identity-eval <录像>` 生成新旧指标、呼喊全亮 / 全不亮两种假设、门槛建议与 `frames.pkl`；按框 IoU 对答案，扫门槛不再跑模型，也不自动改配置。
+
 ## 认装扮（`[appearance]`，要配合 `[perception]`）
+
+开了 `[identity]` 时，maybe / unsure / 看着像团子由身份板判；下面描述的是默认的旧流程。
 
 设计见 `docs/superpowers/specs/2026-10-01-appearance-design.md`（第一版）和 `docs/superpowers/specs/2026-10-03-identity-gallery-design.md`（**10-03 改成多张底库**，计划 `docs/superpowers/plans/2026-10-03-identity-gallery.md`，依据是 10-03 的离线 spike）。
 名字标签挡住 / 太远读不到时靠外观把人认回来，认得出走开又回来的陌生人，说得出谁穿的什么。**代码默认关；本机 10-04 晚在 `console.toml` 打开、第一次上真机（启动转圈 31 帧里 4 帧是好样本、登记 4 张，都是正面附近的角度）；门槛还是 10-03 spike 估的**：
@@ -810,6 +827,8 @@ python -m skydango perception augment datasets/sky  # 训练集加运动模糊 /
 python -m skydango perception compare <录像目录> [--model 模型] [--far-crops 0]  # 同一批录像对比 YOLO 和整图 OCR → tmp/compare/<时间>/report.md（含远处认出率）
 python -m skydango perception halo-eval <录像目录> [--model 模型]  # 呼唤光圈标定：每个人头顶的亮度曲线、建议的 [call] halo_rise → tmp/halo-eval/<时间>/report.md + curves.png
 python -m skydango perception track-eval <录像目录> [--model 模型] [--fps 6.5]  # 追踪升级前后对比：断开和原因、假走开、确认冤枉、接回对错、运动方向 → tmp/track-eval/<时间>/report.md
+python -m skydango perception identity-truth <录像目录> [--fps 6.5] [--apply]  # 身份答案草稿和拼图；人工核对后 --apply 写 truth.jsonl
+python -m skydango perception identity-eval <录像目录> [--fps 6.5] [-o 输出目录]  # 新旧认人对比、呼喊两种假设、只重放身份板扫门槛
 python -m skydango perception crops <来源...> [--model 模型] [--conf 0.2] [--out datasets/attrs]  # 第二层的数据：数据集 / 难例目录（支持 runs/*/hard）/ 图片目录 → 人物裁图，已标注的按类别放，对不上的进 _unlabeled/
 python -m skydango perception crops datasets/sky --writeback  # 标注页确认过的写回 datasets/sky 的 labels/：补漏标的人、改点没点火、删确认不是人的框（「不要」和没确认的不动），增强图的标注副本一起改；先备份到 <数据集>/_backup/
 python -m skydango perception attrs-label [datasets/attrs] [--recheck]  # Claude 初分 _unlabeled 裁图（花额度），再去管理面板「标注」页「外形」确认
