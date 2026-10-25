@@ -12,6 +12,7 @@ DANGO = "dango"
 UNSURE = "unsure"
 STRANGER = "stranger"
 PENDING = "pending"
+LOOK_SPAN = 0.15
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,8 @@ class Evidence:
     panel_at: float = float('-inf')
     nearby_name: tuple[float, str] | None = None
     me_samples: list[float | None] = field(default_factory=list)
+    look: float | None = None
+    smooth: float | None = None
 
 
 class IdentityBoard:
@@ -103,6 +106,9 @@ class IdentityBoard:
         self.dango_id: int | None = None
         self._evidence: dict[int, Evidence] = {}
         self._previous: dict[str, int] = {}
+        self._spots: dict[bool, Rect] = {}
+        self._challenger: tuple[int, float] | None = None
+        self._weak_since: float | None = None
 
     @staticmethod
     def _set(e: Evidence, kind: str, name: str | None, now: float, score: float = 0.0):
@@ -119,7 +125,7 @@ class IdentityBoard:
             self._evidence.setdefault(t.id, Evidence(now)).last = now
 
         pairs = sorted((c.err * (self.cfg.tag_stick if self._previous.get(c.key) == t.id else 1),
-                        t.id, c.key, c) for t in frame.tracks for c in t.tags)
+                        t.id, c.key, c) for t in frame.tracks if t.id != self.dango_id for c in t.tags)
         assigned: dict[int, TagCand] = {}
         used = set()
         for _, id, key, cand in pairs:
@@ -146,6 +152,8 @@ class IdentityBoard:
                 self._set(e, FRIEND_TAG, e.stable.name, now)
         self._friends(frame)
         self._strangers(frame)
+        self._dango(frame)
+        assigned.pop(self.dango_id, None)
         return StepOut({id: c.key for id, c in assigned.items()},
                        {t.id: self._evidence[t.id].verdict for t in frame.tracks}, {})
 
@@ -249,3 +257,65 @@ class IdentityBoard:
             clearly_other = bool(scores) and max(scores.values()) < low and (not me or median(me) < low)
             if age >= self.stranger_after and (t.unlit or clearly_other or age >= self.stranger_after + self.grace):
                 self._set(e, STRANGER, None, now)
+
+    def dango_spot(self, panel: bool) -> Rect | None:
+        return self._spots.get(panel)
+
+    def _dango(self, frame: FrameIn):
+        candidates = []
+        by_id = {t.id: t for t in frame.tracks}
+        spot = self._spots.get(frame.panel)
+        for t in frame.tracks:
+            e = self._evidence[t.id]
+            parts = []
+            if spot is not None and not frame.sliding:
+                dist = abs(t.box.x + t.box.w / 2 - spot.x - spot.w / 2) / max(spot.w, 1)
+                pos = 0.5 if frame.moved else max(0.0, 1 - dist / 1.5)
+                parts.append(('pos', self.cfg.dango_w_pos, pos))
+            if t.scores is not None and t.scores.me is not None:
+                e.look = min(1.0, max(0.0, (t.scores.me - max(t.scores.dino.values(), default=0)) / LOOK_SPAN))
+            if e.look is not None:
+                parts.append(('look', self.cfg.dango_w_look, e.look))
+            if t.self_score is not None:
+                parts.append(('self', self.cfg.dango_w_self, t.self_score))
+            if t.with_bg is not None:
+                parts.append(('pivot', self.cfg.dango_w_pivot, float(not t.with_bg)))
+            parts = [(kind, w, s) for kind, w, s in parts if w > 0]
+            if parts:
+                raw = sum(w * s for _, w, s in parts) / sum(w for _, w, _ in parts)
+                e.smooth = raw if e.smooth is None else 0.7 * e.smooth + 0.3 * raw
+            if (not e.stable and not t.unlit and parts and any(k != 'pos' for k, _, _ in parts)
+                    and e.smooth >= self.cfg.dango_min):
+                candidates.append((e.smooth, t.id))
+        current = self._evidence.get(self.dango_id)
+        valid = self.dango_id in by_id and not current.stable and not by_id[self.dango_id].unlit
+        if not valid:
+            self.dango_id = None
+            self._weak_since = None
+        if not frame.sliding:
+            if self.dango_id is not None:
+                if current.smooth is not None and current.smooth < self.cfg.dango_min:
+                    if self._weak_since is None:
+                        self._weak_since = frame.now
+                    if frame.now - self._weak_since >= self.cfg.dango_switch:
+                        self.dango_id = None
+                else:
+                    self._weak_since = None
+            best = max(candidates, key=lambda item: (item[0], -item[1]), default=None)
+            if self.dango_id is None:
+                self.dango_id = best[1] if best else None
+                self._challenger = None
+            elif best and best[1] != self.dango_id and best[0] > (current.smooth or 0.0):
+                if self._challenger is None or self._challenger[0] != best[1]:
+                    self._challenger = (best[1], frame.now)
+                elif frame.now - self._challenger[1] >= self.cfg.dango_switch:
+                    self.dango_id = best[1]
+                    self._challenger = None
+            else:
+                self._challenger = None
+        if self.dango_id is not None:
+            t = by_id[self.dango_id]
+            e = self._evidence[t.id]
+            self._set(e, DANGO, None, frame.now, e.smooth or 0.0)
+            if not frame.sliding:
+                self._spots[frame.panel] = t.box

@@ -159,3 +159,49 @@ def test_unlit_and_panel_and_small():
     assert out.verdicts[1].kind == STRANGER and out.verdicts[2].kind == PENDING and out.verdicts[3].kind == PENDING
 
 
+def test_dango_without_self_box_by_position_and_look():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))  # 记下位置
+    for t in (0.1, 0.2, 0.3):
+        out = b.step(frame(t, tr(1, 960, scores=sc(me=0.9, 小明=0.5)), tr(2, 1300, scores=sc(me=0.5, 小明=0.5))))
+    assert out.verdicts[1].kind == DANGO and b.dango_id == 1
+
+def test_no_dango_evidence_no_dango():
+    b = board()
+    out = b.step(frame(0.0, tr(1, 960), tr(2, 1300)))
+    assert all(v.kind != DANGO for v in out.verdicts.values()) and b.dango_id is None
+
+def test_self_box_jumping_onto_tagged_friend_does_not_steal():
+    b = board()
+    for t in (0.0, 0.1):
+        b.step(frame(t, tr(1, 960, self_score=0.9), tr(2, 1040, tags=(TagCand("小明", "小明", 3.0),))))
+    for t in (0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4):
+        out = b.step(frame(t, tr(1, 960), tr(2, 1040, self_score=0.9, tags=(TagCand("小明", "小明", 3.0),))))
+    assert b.dango_id == 1 and out.verdicts[2].kind == FRIEND_TAG
+
+def test_pivot_separates_dango_from_hugging_friend():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    for t in (0.1, 0.2, 0.3, 0.4):
+        out = b.step(frame(t, tr(1, 960, with_bg=False), tr(2, 990, with_bg=True)))
+    assert b.dango_id == 1
+
+def test_panel_slide_keeps_dango():
+    b = board()
+    for t in (0.0, 0.1):
+        b.step(frame(t, tr(1, 960, self_score=0.9), tr(2, 1400)))
+    for t in (0.2, 0.6, 1.0, 1.4, 1.8):  # 面板横移：团子滑到 1360，另一个人滑到原来团子的位置
+        out = b.step(frame(t, tr(1, 1360), tr(2, 960), sliding=True))
+    assert b.dango_id == 1 and out.verdicts[2].kind != DANGO
+
+def test_challenger_needs_dango_switch_seconds():
+    b = board(cfg=IdentityConfig(dango_w_pos=0))  # 单独测换人延迟，不让位置分压过 self 分。
+    b.step(frame(0.0, tr(1, 960, self_score=0.6), tr(2, 1300)))
+    for t in (0.1, 0.5, 0.9):
+        b.step(frame(t, tr(1, 960, self_score=0.6), tr(2, 1300, self_score=1.0)))
+    assert b.dango_id == 1
+    for t in (1.3, 1.7, 2.1):
+        b.step(frame(t, tr(1, 960, self_score=0.6), tr(2, 1300, self_score=1.0)))
+    assert b.dango_id == 2
+
+
