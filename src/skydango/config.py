@@ -448,6 +448,27 @@ class AppearanceConfig:
 
 
 @dataclass
+class IdentityConfig:
+    """按轨迹攒认人证据；默认关，门槛等录像标定。"""
+
+    enabled: bool = False
+    tag_hold: float = 0.5
+    tag_stick: float = 0.5
+    window: int = 5
+    min_samples: int = 3
+    friend_feature: str = "dino"
+    drop: float = 0.03
+    stranger_low: float | None = None
+    dango_w_pos: float = 0.4
+    dango_w_look: float = 0.4
+    dango_w_self: float = 0.2
+    dango_w_pivot: float = 0.2
+    dango_min: float = 0.5
+    dango_switch: float = 1.0
+    dango_learn: float = 0.75
+
+
+@dataclass
 class GestureConfig:
     """别人对团子做的动作（感知层三期 §3，研究性质）：好友对着团子挥手、鞠躬时发 gesture 事件，大脑决定回不回礼。
 
@@ -967,6 +988,7 @@ class Config:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     places: PlacesConfig = field(default_factory=PlacesConfig)
     appearance: AppearanceConfig = field(default_factory=AppearanceConfig)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
     assist: AssistConfig = field(default_factory=AssistConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
     attrs: AttrsConfig = field(default_factory=AttrsConfig)
