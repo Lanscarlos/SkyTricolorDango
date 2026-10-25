@@ -61,6 +61,7 @@ class FrameIn:
     moved: bool
     tracks: tuple[TrackIn, ...]
     call_end: CallEnd | None = None
+    tag: str = ''  # 离线录像文件名；运行时留空
 
 
 @dataclass

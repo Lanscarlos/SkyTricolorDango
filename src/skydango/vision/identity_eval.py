@@ -6,11 +6,15 @@ import json
 import re
 import tomllib
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from itertools import product
 from pathlib import Path
 
 from ..imageio import imread, imwrite
 from .bubbles import Rect
+from .identity import DANGO, FRIEND_LOOK, FRIEND_TAG, STRANGER, UNSURE, CallEnd, IdentityBoard
+
+RESERVED = {'团子', '陌生人', '拿不准', '未定', '?', '不要'}
 
 
 @dataclass
@@ -156,3 +160,178 @@ def collect_logs(items, watcher) -> dict[int, TrackLog]:
             log.self_hits += int(image.shape[1] * 0.25 <= cx <= image.shape[1] * 0.75
                                  and any(same_body(p.box, s.box) for s in selfs))
     return seen
+
+
+def label_of(track) -> str:
+    d = track.data
+    if d.get('dango') or (track.cls == 'self' and 'identity_verdict' not in d):
+        return '团子'
+    if d.get('name') or d.get('maybe'):
+        return d.get('name') or d['maybe']
+    if d.get('unsure'):
+        return '拿不准'
+    return '陌生人' if d.get('stranger') else '未定'
+
+
+def score_frames(pred, truth, iou_min: float = 0.5) -> dict:
+    from .track import iou
+
+    n = dict(total=0, friend=0, dango=0, other=0, matched=0)
+    counts = Counter()
+    for name, raw in truth.items():
+        actual = [(box, who) for box, who in raw if who not in ('?', '不要')]
+        guesses = pred.get(name, [])
+        pairs = sorted(((iou(a, b), i, j) for i, (a, _) in enumerate(actual)
+                        for j, (b, _) in enumerate(guesses)), key=lambda p: (-p[0], p[1], p[2]))
+        matched, used = {}, set()
+        for overlap, i, j in pairs:
+            if overlap >= iou_min and i not in matched and j not in used:
+                matched[i] = guesses[j][1]
+                used.add(j)
+        n['matched'] += len(matched)
+        for i, (_, who) in enumerate(actual):
+            guess = matched.get(i, '未定')
+            friend = who not in RESERVED
+            n['total'] += 1
+            n['friend'] += friend
+            n['dango'] += who == '团子'
+            n['other'] += who != '团子'
+            counts['friend_as_stranger'] += friend and guess == '陌生人'
+            counts['dango_found'] += who == '团子' and guess == '团子'
+            counts['other_as_dango'] += who != '团子' and guess == '团子'
+            counts['friend_right'] += friend and guess == who
+            counts['friend_wrong'] += friend and guess not in RESERVED and guess != who
+            counts['unsure_rate'] += guess == '拿不准'
+    denominators = {'friend_as_stranger': 'friend', 'dango_found': 'dango', 'other_as_dango': 'other',
+                    'friend_right': 'friend', 'friend_wrong': 'friend', 'unsure_rate': 'total'}
+    return {key: counts[key] / n[den] if n[den] else 0.0 for key, den in denominators.items()} | {'n': n}
+
+
+def _verdict_label(v):
+    if v.kind == DANGO:
+        return '团子'
+    if v.kind in (FRIEND_TAG, FRIEND_LOOK) and v.name:
+        return v.name
+    if v.kind == UNSURE:
+        return '拿不准'
+    return '陌生人' if v.kind == STRANGER else '未定'
+
+
+def replay_board(frames, cfg, acfg, *, call_mode=None, stats=None, call_gap=20.0,
+                 auto_window=60.0, auto_quota=3, **board_kw):
+    if call_mode not in (None, 'shown', 'dark'):
+        raise ValueError('call_mode 要是 shown / dark / None')
+    kw = dict(stranger_after=1.0, grace=1.5, stranger_min_height=0.05, track_buffer=1.0, call_window=6.0) | board_kw
+    board = IdentityBoard(cfg, acfg, **kw)
+    pred, previous, calls, strangers = {}, {}, [], set()
+    for index, frame in enumerate(frames):
+        live = {t.id for t in frame.tracks}
+        unsure = {id: v for id, v in previous.items() if id in live and v.kind == UNSURE}
+        recent = [at for at in calls if frame.now - at <= auto_window]
+        ready = any(frame.now - v.since >= acfg.unsure_wait for v in unsure.values())
+        if (call_mode and ready and not frame.call_end and len(recent) < auto_quota
+                and (not calls or frame.now - calls[-1] >= call_gap)):
+            shown, taken = {}, set()
+            if call_mode == 'shown':
+                for id, v in sorted(unsure.items(), key=lambda item: (-item[1].score, item[0])):
+                    if v.name and v.name not in taken:
+                        shown[id] = v.name
+                        taken.add(v.name)
+            frame = replace(frame, call_end=CallEnd(frame.now, shown), tracks=tuple(
+                replace(t, called_at=frame.now) if t.id in unsure else t for t in frame.tracks))
+            calls.append(frame.now)
+        out = board.step(frame)
+        previous = out.verdicts
+        pred[frame.tag or str(index)] = [(t.box, _verdict_label(out.verdicts[t.id])) for t in frame.tracks]
+        strangers.update(t.id for t in frame.tracks if out.verdicts[t.id].kind == STRANGER)
+    if stats is not None:
+        stats.update(calls=len(calls), stranger_tracks=len(strangers))
+    return pred
+
+
+def _passed(scores):
+    n = scores['n']
+    return (n['friend'] > 0 and n['dango'] > 0 and n['other'] > 0
+            and scores['friend_as_stranger'] <= 0.02 and scores['dango_found'] >= 0.90
+            and scores['other_as_dango'] <= 0.01)
+
+
+def sweep(frames, truth, base_cfg, acfg, grid, **board_kw):
+    rows = []
+    keys = list(grid)
+    for values in product(*(grid[key] for key in keys)):
+        params = dict(zip(keys, values))
+        ap = {k: v for k, v in params.items() if k in ('match', 'unsure', 'margin')}
+        ip = {k: v for k, v in params.items() if k not in ap}
+        scores = score_frames(replay_board(frames, replace(base_cfg, **ip), replace(acfg, **ap), **board_kw), truth)
+        rows.append({'params': params, 'metrics': scores, 'passed': _passed(scores)})
+    return sorted(rows, key=lambda r: (not r['passed'], r['metrics']['unsure_rate'],
+                                      r['metrics']['friend_as_stranger'], r['metrics']['friend_wrong']))
+
+
+def report_md(base, cur, sweep, meta) -> str:
+    metrics = [('friend_as_stranger', '好友被判陌生人', '≤ 2%'), ('dango_found', '团子认出', '≥ 90%'),
+               ('other_as_dango', '别人被判团子', '≤ 1%'), ('friend_right', '好友认对', '记录'),
+               ('friend_wrong', '好友认错', '记录'), ('unsure_rate', '拿不准', '记录')]
+    lines = ['# 身份板：新旧对比', '', f'录像：{meta.get("source", "?")}；抽帧 {meta.get("fps", "?")} fps。',
+             '这份报告只评估人工标准答案覆盖的框；自动草稿未经核对不能作为准确率验收。', '',
+             '| 指标 | 旧流程 | 身份板 | 目标 |', '|---|---:|---:|---|']
+    for key, title, goal in metrics:
+        lines.append(f'| {title} | {base[key]:.2%} | {cur[key]:.2%} | {goal} |')
+    lines += ['', f'框数：旧流程 {base["n"]}；身份板 {cur["n"]}。',
+              f'陌生人编号：旧流程 {meta.get("baseline_ids", "未记录")}；身份板 {meta.get("current_ids", "未记录")}。',
+              '', '## 喊一声（离线假设）', '',
+              '以下是两种假设的结果，不是真机准确率；共用现有自动喊的间隔和额度。']
+    for mode, title in [('shown', '喊了都亮'), ('dark', '喊了都不亮')]:
+        row = meta.get('calls', {}).get(mode, {})
+        lines.append(f'- {title}：{row.get("calls", 0)} 声；指标 {row.get("metrics", "未记录")}')
+    lines += ['', '## 门槛建议', '',
+              '只重放已录下的 FrameIn，外观底库打分固定；候选必须回到原录像复验，不会自动改配置。']
+    eligible = [row for row in sweep if row['passed']]
+    if not eligible:
+        lines.append('没有同时满足三条目标的组合，或标准答案缺好友 / 团子；继续默认关闭。')
+    else:
+        lines += ['| 参数 | 拿不准占比 |', '|---|---:|']
+        lines += [f'| {json.dumps(row["params"], ensure_ascii=False)} | {row["metrics"]["unsure_rate"]:.2%} |'
+                  for row in eligible[:20]]
+    return '\n'.join(lines) + '\n'
+
+
+def read_truth(path: Path):
+    truth = {}
+    for n, text in enumerate(Path(path).read_text(encoding='utf-8').splitlines(), 1):
+        if not text.strip():
+            continue
+        try:
+            row = json.loads(text)
+            box = Rect(*row['box'])
+            if not isinstance(row['who'], str) or box.w <= 0 or box.h <= 0:
+                raise ValueError('框或身份无效')
+            truth.setdefault(row['frame'], []).append((box, row['who']))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f'truth.jsonl 第 {n} 行：{exc}') from exc
+    return truth
+
+
+def collect_predictions(items, watcher):
+    from .perception import same_body
+
+    predictions, ids = {}, set()
+    now = [0.0]
+    watcher.clock = lambda: now[0]
+    for at, name, image, panel in items:
+        now[0] = at
+        old_log_size = len(watcher.identity_log) if watcher.identity_log is not None else 0
+        watcher.process(image, at, panel)
+        if watcher.identity_log is not None and len(watcher.identity_log) > old_log_size:
+            watcher.identity_log[-1] = replace(watcher.identity_log[-1], tag=name)
+        if watcher._frame_at != at:
+            predictions[name] = []
+            continue
+        players = [t for t in watcher.last_tracks if t.cls in ('player', 'player_unlit')
+                   and watcher._admitted(t) and not watcher._other_form(t)]
+        selfs = [t for t in watcher.last_tracks if t.cls == 'self'
+                 and not any(same_body(t.box, p.box) for p in players)]
+        predictions[name] = [(t.box, label_of(t)) for t in players + selfs]
+        ids.update(t.data['sid'] for t in players if t.data.get('sid') and t.data.get('stranger'))
+    return predictions, len(ids)

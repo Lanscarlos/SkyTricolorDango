@@ -8,9 +8,69 @@ from skydango.imageio import imwrite, imread
 from skydango.vision.bubbles import Rect
 from skydango.vision.identity_eval import (
     TrackLog, draft_identities, write_draft, write_sheet, apply_draft, save_logs,
+    label_of, score_frames, replay_board, sweep, report_md,
 )
 
 R = Rect(10, 20, 30, 60)
+
+
+@pytest.mark.parametrize('data,want', [({'dango': R}, '团子'), ({'name': '小明'}, '小明'),
+    ({'maybe': '小明'}, '小明'), ({'unsure': ('小明', 0)}, '拿不准'), ({'stranger': True}, '陌生人'), ({}, '未定')])
+def test_label_of(data, want):
+    from skydango.vision.track import Track
+    assert label_of(Track(1, 'player', R, 0.9, 0, 0, data=data)) == want
+
+
+def test_legacy_self_is_labelled_as_dango():
+    from skydango.vision.track import Track
+    assert label_of(Track(1, 'self', R, 0.9, 0, 0)) == '团子'
+
+
+def test_score_frames_hand_calculated_and_unmatched_denominator():
+    b = Rect(100, 20, 30, 60)
+    truth = {'a': [(R, '小明'), (b, '团子')], 'b': [(R, '小明'), (b, '陌生人')]}
+    pred = {'a': [(R, '陌生人'), (b, '团子')], 'b': [(R, '小明'), (b, '陌生人')]}
+    scores = score_frames(pred, truth)
+    assert scores['friend_as_stranger'] == 0.5
+    assert scores['dango_found'] == 1.0 and scores['other_as_dango'] == 0
+    assert scores['friend_right'] == 0.5 and scores['friend_wrong'] == 0
+    missing = score_frames({}, truth)
+    assert missing['n']['total'] == 4 and missing['n']['matched'] == 0 and missing['dango_found'] == 0
+
+
+def evidence_frames():
+    from skydango.vision.identity import FrameIn, TrackIn, Scores
+    return [FrameIn(t, 1920, 1080, False, False, False,
+        (TrackIn(1, Rect(400, 400, 90, 220), 0, scores=Scores({'小明': 0.86}, {'小明': 0.86}, None)),
+         TrackIn(2, Rect(960, 400, 90, 220), 0, self_score=1.0)), tag=f'f{t}') for t in (0, 1, 2, 3)]
+
+
+def test_replay_is_deterministic_and_sweep_ranks_lower_match():
+    from skydango.config import IdentityConfig, AppearanceConfig
+    frames = evidence_frames()
+    cfg, acfg = IdentityConfig(min_samples=1), AppearanceConfig(match=0.90)
+    first = replay_board(frames, cfg, acfg)
+    assert replay_board(frames, cfg, acfg) == first
+    truth = {f.tag: [(t.box, who) for t, who in zip(f.tracks, ['小明', '团子'])] for f in frames}
+    rows = sweep(frames, truth, cfg, acfg, {'match': [0.90, 0.85]})
+    assert rows[0]['params'] == {'match': 0.85} and rows[0]['passed']
+
+
+def test_replay_simulates_both_call_outcomes():
+    from skydango.config import IdentityConfig, AppearanceConfig
+    frames = evidence_frames()
+    cfg, acfg = IdentityConfig(min_samples=1), AppearanceConfig()
+    shown, dark = {}, {}
+    a = replay_board(frames, cfg, acfg, call_mode='shown', stats=shown)
+    b = replay_board(frames, cfg, acfg, call_mode='dark', stats=dark)
+    assert a['f2'][0][1] == '小明' and b['f2'][0][1] == '陌生人'
+    assert shown['calls'] == dark['calls'] == 1
+
+
+def test_report_contains_comparison_calls_and_thresholds():
+    scores = score_frames({'a': [(R, '小明')]}, {'a': [(R, '小明')]})
+    text = report_md(scores, scores, [], {'source': 'demo', 'fps': 6.5, 'calls': {'shown': {'calls': 1}, 'dark': {'calls': 2}}})
+    assert '好友被判陌生人' in text and '团子认出' in text and '喊了都亮' in text and '门槛' in text
 
 
 def logs():
@@ -86,3 +146,45 @@ def test_truth_cli_generates_and_applies_with_real_watcher(tmp_path, monkeypatch
     cli.main(['perception', 'identity-truth', str(source), '--apply'])
     truth = [json.loads(line) for line in (source / 'truth.jsonl').read_text(encoding='utf-8').splitlines()]
     assert len(truth) == 3 and {r['who'] for r in truth} == {FRIENDS[0]}
+
+
+def test_eval_cli_requires_truth_before_models(tmp_path, monkeypatch):
+    from skydango import cli
+    monkeypatch.setattr(cli, '_perception', lambda *args: pytest.fail('没有答案时不该加载模型'))
+    with pytest.raises(SystemExit, match='先跑'):
+        cli.main(['perception', 'identity-eval', str(tmp_path)])
+
+
+def test_eval_cli_writes_report_summary_and_replay_frames(tmp_path, monkeypatch):
+    import pickle
+    from skydango import cli
+    from test_perception import FRIENDS, player, tag
+    from test_perception_appearance import paint, PINK
+    from test_perception_identity import make
+
+    source = tmp_path / 'recording'
+    source.mkdir()
+    truth = []
+    for n, t in enumerate((0, 0.3, 0.6)):
+        name = f'{n}_{t:.2f}s.jpg'
+        imwrite(source / name, paint((player(1000), PINK)))
+        b = player(1000).box
+        truth.append({'frame': name, 'box': [b.x, b.y, b.w, b.h], 'who': FRIENDS[0]})
+    (source / 'truth.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in truth), encoding='utf-8')
+
+    def watcher(cfg, args):
+        w, det = make(identity=cfg.identity.enabled)
+        det.frames = [[player(1000), tag(990, 110)]]
+        return det, w
+
+    monkeypatch.setattr(cli, '_perception', watcher)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / 'report'
+    cli.main(['perception', 'identity-eval', str(source), '-o', str(out)])
+    summary = json.loads((out / 'summary.json').read_text(encoding='utf-8'))
+    assert summary['baseline']['friend_right'] == 1.0
+    assert summary['current']['n']['friend'] == 3
+    with (out / 'frames.pkl').open('rb') as fh:
+        frames = pickle.load(fh)
+    assert len(frames) == 3 and [f.tag for f in frames] == [r['frame'] for r in truth]
+    assert '喊了都不亮' in (out / 'report.md').read_text(encoding='utf-8')

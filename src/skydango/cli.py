@@ -1056,6 +1056,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_track_eval(cfg, args)
     elif args.action == 'identity-truth':
         _perception_identity_truth(cfg, args)
+    elif args.action == 'identity-eval':
+        _perception_identity_eval(cfg, args)
 
 
 def _existing_clips(dataset: Path, out: Path, recording: str) -> dict[Path, list[str]]:
@@ -1815,6 +1817,74 @@ def _perception_identity_truth(cfg: Config, args) -> None:
     write_draft(draft, draft_identities(logs, c.identity.tag_hold), logs)
     write_sheet(out / 'sheet.jpg', logs, source)
     print(f'对着 {out / "sheet.jpg"} 改 {draft}，然后加 --apply 展开成答案')
+
+
+def _perception_identity_eval(cfg: Config, args) -> None:
+    import copy
+    import json
+    import pickle
+    from .vision.identity_eval import collect_predictions, read_truth, replay_board, report_md, score_frames, sweep
+    from .vision.perception import STRANGER_GRACE
+
+    source = Path(args.source)
+    if not (source / 'truth.jsonl').is_file():
+        raise SystemExit('没有 truth.jsonl：先跑 perception identity-truth，核对草稿后加 --apply')
+    try:
+        truth = read_truth(source / 'truth.jsonl')
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    c = copy.deepcopy(cfg)
+    c.identity.enabled = True
+    _, current = _perception(c, args)
+    if current.identity is None:
+        _, note = _identity_board(c, current.dino)
+        raise SystemExit(note or '身份板没建起来')
+    current.identity_log = []
+    legacy_cfg = copy.deepcopy(c)
+    legacy_cfg.identity.enabled = False
+    _, baseline = _perception(legacy_cfg, args)
+    kept, items = _identity_recording(c, args)
+    names = {p.name for _, p in kept}
+    truth = {name: boxes for name, boxes in truth.items() if name in names}
+    if not any(truth.values()):
+        raise SystemExit('抽到的帧里没有标准答案：核对 truth.jsonl 的文件名或提高 --fps')
+    out = Path(args.output or f'tmp/identity-eval/{time.strftime("%Y%m%d-%H%M%S")}')
+    out.mkdir(parents=True, exist_ok=True)
+    print(f'{len(kept)} 帧，旧流程 / 身份板各跑一遍 → {out}')
+    try:
+        print('旧流程')
+        old_pred, old_ids = collect_predictions(items(), baseline)
+        print('身份板')
+        new_pred, new_ids = collect_predictions(items(), current)
+    finally:
+        baseline.stop()
+        current.stop()
+    frames = current.identity_log
+    with (out / 'frames.pkl').open('wb') as fh:
+        pickle.dump(frames, fh)
+    base_scores, new_scores = score_frames(old_pred, truth), score_frames(new_pred, truth)
+    p, a, i = c.perception, c.appearance, c.identity
+    board_kw = dict(stranger_after=p.stranger_after, grace=STRANGER_GRACE,
+        stranger_min_height=p.stranger_min_height, track_buffer=p.track_buffer, call_window=c.call.window)
+    calls = {}
+    for mode in ('shown', 'dark'):
+        stats = {}
+        guessed = replay_board(frames, i, a, call_mode=mode, stats=stats, call_gap=c.call.min_gap,
+            auto_window=c.call.auto_window, auto_quota=c.call.auto_quota, **board_kw)
+        calls[mode] = stats | {'metrics': score_frames(guessed, truth)}
+    grid = {'match': [a.match - 0.03, a.match, a.match + 0.03], 'unsure': [a.unsure - 0.03, a.unsure],
+        'friend_feature': ['dino', 'color', 'both'], 'tag_hold': [i.tag_hold, i.tag_hold * 1.5],
+        'dango_w_pos': [i.dango_w_pos, i.dango_w_pos * 0.5],
+        'dango_w_look': [i.dango_w_look, i.dango_w_look * 1.5],
+        'dango_w_self': [i.dango_w_self, i.dango_w_self * 0.5],
+        'dango_w_pivot': [i.dango_w_pivot, i.dango_w_pivot * 1.5]}
+    print('只重放 FrameIn 扫门槛')
+    rows = sweep(frames, truth, i, a, grid, **board_kw)
+    meta = dict(source=str(source), frames=len(kept), fps=args.fps, baseline_ids=old_ids, current_ids=new_ids, calls=calls)
+    (out / 'summary.json').write_text(json.dumps({'baseline': base_scores, 'current': new_scores,
+        'sweep': rows, 'meta': meta}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    (out / 'report.md').write_text(report_md(base_scores, new_scores, rows, meta), encoding='utf-8')
+    print(f'报告：{out / "report.md"}')
 
 
 def _perception_track_eval(cfg: Config, args) -> None:
@@ -3704,6 +3774,13 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument('--imgsz', type=int)
     q.add_argument('--fps', type=float, default=6.5)
     q.add_argument('--apply', action='store_true', help='把核对好的草稿展开到录像目录的 truth.jsonl')
+    q = psub.add_parser('identity-eval', help='按框对答案，对比旧流程和身份板，只重放身份板扫门槛')
+    q.add_argument('source', help='record 录像目录（含人工核对的 truth.jsonl）')
+    q.add_argument('--model', help='YOLO 模型文件')
+    q.add_argument('--device', choices=['cuda', 'dml', 'cpu'])
+    q.add_argument('--imgsz', type=int)
+    q.add_argument('--fps', type=float, default=6.5)
+    q.add_argument('-o', '--output', help='报告目录（默认 tmp/identity-eval/<时间>）')
     q = psub.add_parser("track-eval", help="同一批录像上对比追踪升级前后：轨迹断开和原因、假走开、确认冤枉、接回对错、运动方向")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="模型文件（默认 perception.model）")
