@@ -4,10 +4,85 @@ from skydango.config import AppearanceConfig, EnvConfig, IdentityConfig, Percept
 from skydango.vision.appearance import AppearanceBook, ColorEmbedder
 from skydango.vision.bubbles import Rect
 from skydango.vision.identity import CallEnd, FrameIn, IdentityBoard
+from skydango.vision.detect import Detection
 from skydango.vision.perception import PerceptionWatcher
 from skydango.vision.track import Track
 from test_perception import FRIENDS, FakeDetector, FakeOcr, player, tag
-from test_perception_appearance import PINK, WHITE, OCR, XIAOMING, FANQIE, FakeHard, FakeDino, paint, run, players
+from test_perception_appearance import PINK, WHITE, GREEN, OCR, XIAOMING, FANQIE, FakeHard, FakeDino, paint, run, players
+
+
+def test_flipping_tag_between_crowded_friends_makes_no_stranger():
+    w, det = make(identity=True)
+    a, b = player(1000), player(1060)
+    for i in range(40):
+        t = round(i * 0.1, 3)
+        tg = tag(1000 if i % 2 else 1060, 110)
+        run(w, det, [(a, PINK), (b, GREEN), (tg, None)], t, t)
+    assert w.strangers(t) == 0
+
+
+def test_dango_found_without_self_box():
+    w, det = make(identity=True)
+    me = player(915)
+    run(w, det, [(me, WHITE), (Detection('self', me.box, 0.9), None)], 0.0, 0.3)
+    t = run(w, det, [(me, WHITE), (player(1400), GREEN)], 0.4, 3.0)
+    (d,) = [p for p in w.last_tracks if p.data.get('dango')]
+    assert d.box.x == 915 and w.strangers(t) == 1
+    assert w.identity.dango_id == d.id
+
+
+def test_self_only_detection_is_evidence_for_board():
+    w, det = make(identity=True)
+    me = Detection('self', player(915).box, 0.9)
+    run(w, det, [(me, WHITE)], 0, 0.3)
+    assert w.identity.dango_id is not None
+    assert w.appearance.me is not None
+
+
+def test_legacy_path_unchanged_when_identity_off():
+    w, _ = make()
+    assert w.identity is None
+
+
+def test_board_errors_fall_back_to_legacy(monkeypatch):
+    w, det = make(identity=True)
+    monkeypatch.setattr(w.identity, 'step', lambda fi: (_ for _ in ()).throw(RuntimeError('坏了')))
+    run(w, det, [(player(1000), PINK)], 0, 1.2)
+    assert w.identity is None and w.identity_off == '连续出错'
+
+
+def test_identity_log_records_frames():
+    w, det = make(identity=True)
+    w.identity_log = []
+    run(w, det, [(player(1000), PINK)], 0, 0.3)
+    assert len(w.identity_log) == 4 and all(isinstance(f, FrameIn) for f in w.identity_log)
+
+
+def test_pause_does_not_count_towards_unsure_timeout():
+    from skydango.vision.identity import Scores, TrackIn
+    w, det = make(identity=True)
+    run(w, det, [(player(1000), PINK)], 0, 0.2)
+    p = players(w)[0]
+    for t in (0.3, 0.4, 0.5):
+        w.identity.step(FrameIn(t, 1920, 1080, False, False, False,
+            (TrackIn(p.id, p.box, p.first, scores=Scores({XIAOMING: 0.85}, {}, None)),)))
+    now = [0.5]
+    w.clock = lambda: now[0]
+    w.hold('panel')
+    now[0] = 20.5
+    w.release('panel')
+    run(w, det, [(player(1000), PINK)], 20.6, 20.6)
+    assert players(w)[0].data.get('unsure', (None,))[0] == XIAOMING
+
+
+def test_saver_excludes_unconfirmed_tag_frames():
+    from test_perception_appearance import FakeSaver
+    w, det = make(identity=True)
+    w.saver = FakeSaver()
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0, 0.4)
+    assert w.saver.calls == []
+    run(w, det, [(player(1000), PINK), (tag(990, 110), None)], 0.5, 0.7)
+    assert w.saver.calls and all(c[1] == XIAOMING for c in w.saver.calls)
 
 
 def make(identity=False, **kw):

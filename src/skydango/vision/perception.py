@@ -46,6 +46,7 @@ from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_reques
 from .appearance import describe_crop, make_sample
 from .gallery import Sample
 from .identity import CallEnd, FrameIn, IdentityBoard, TagCand, TrackIn
+from . import identity as ident
 from .attrs import unlit_score
 from .candle import black, find_flames, white_ring
 from .bubbles import Rect, roi_rect
@@ -99,6 +100,7 @@ OCCLUSION = "occlusion"  # 多人同时消失 + 画面大变：玩家自己开�
 # 最多再多等这么久照样判
 STRANGER_GRACE = 1.5
 PIVOT_SHIFT = 0.25
+IDENTITY_MAX_ERRORS = 10
 PAN_SCALE = 8  # 估计画面平移用的缩略图缩小这么多倍
 RELINK_EARLY = 0.2  # 接回的候选轨迹最早可以比失踪记录的"最后看到"早这么久冒出来（同一帧里先删后建）
 RELINK_PREDICT = 1.0  # 接回时按速度最多往前推这么久
@@ -398,6 +400,9 @@ class PerceptionWatcher:
         self.appearance = appearance
         self.identity = identity
         self._identity_call_at: float | None = None
+        self.identity_log: list[FrameIn] | None = None
+        self._identity_errors = 0
+        self.identity_off = ''
         self.embedder = embedder
         self.dino = dino
         self.appearance_cfg = appearance_cfg or AppearanceConfig()
@@ -554,6 +559,8 @@ class PerceptionWatcher:
         with self._lock:
             self._strangers = deque((min(t + d, now), n, u) for t, n, u in self._strangers)
         self.tracker.shift(d)
+        if self.identity is not None:
+            self.identity.shift(d)
         with self._lock:
             if self._call is not None and not self._call.ended:  # 呼喊窗口跟着往后挪：暂停期间看不到的不算
                 self._call_span = (self._call_span[0] + d, self._call_span[1] + d)
@@ -701,14 +708,18 @@ class PerceptionWatcher:
     # ---- 一帧 ----
     def process(self, frame: np.ndarray, now: float, panel_visible: bool) -> None:
         started = time.perf_counter()
+        identity_on = self.identity is not None
         height, width = frame.shape[:2]
         self._frame_h, self._frame_w = height, width
         if self._last_panel is not None and panel_visible != self._last_panel:
             self.camera_moved(now, "panel")  # 别处（别人按的 C）开关的面板身体不知道，这里兜底
         self._last_panel = panel_visible
         refs = self._dango_refs(now, panel_visible)
-        dets, flagged = merge_people(one_self(self._filter(self._detect(frame), width, height, panel_visible),
-                                              near=refs, conf=self.cfg.conf))
+        if identity_on:
+            dets, flagged = merge_people(self._filter(self._detect(frame), width, height, panel_visible, drop_self=False))
+        else:
+            dets, flagged = merge_people(one_self(self._filter(self._detect(frame), width, height, panel_visible),
+                                                  near=refs, conf=self.cfg.conf))
         unlit_dup = {id(dets[i]) for i in flagged}  # 压掉过黑影框的检测
         detected = time.perf_counter()
         low_all = [d for d in dets if d.score < self.cfg.conf]
@@ -717,7 +728,10 @@ class PerceptionWatcher:
         floor = detector_conf(self.cfg, attrs=attrs_on)
         low = [d for d in low_all if d.score >= floor]
         near = () if now < self._panel_slide_until else refs  # 面板横移的动画里团子在半路
-        dets = self._steady_self(promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low, near=near), refs, now)
+        if identity_on:
+            dets = [d for d in dets if d.score >= self.cfg.conf]
+        else:
+            dets = self._steady_self(promote_weak_self([d for d in dets if d.score >= self.cfg.conf], low, near=near), refs, now)
         if self._occlusion(frame, dets):
             return
         shift = self._pan_step(frame, panel_visible) if self.cfg.track_pan else None
@@ -744,9 +758,13 @@ class PerceptionWatcher:
         if self.cfg.relink:
             self._note_lost(now)
         selfs = [t for t in tracks if t.cls == "self"]
-        self._mark_dango(tracks, selfs, now, panel_visible)
-        dangos = [t for t in tracks if t.cls in ("player", UNLIT) and t.data.get("dango") and self._admitted(t)]
-        players = [t for t in tracks if t.cls in ("player", UNLIT) and not t.data.get("dango") and self._admitted(t)]
+        if identity_on:
+            dangos = []
+            players = [t for t in tracks if t.cls in ('player', UNLIT) and self._admitted(t)]
+        else:
+            self._mark_dango(tracks, selfs, now, panel_visible)
+            dangos = [t for t in tracks if t.cls in ("player", UNLIT) and t.data.get("dango") and self._admitted(t)]
+            players = [t for t in tracks if t.cls in ("player", UNLIT) and not t.data.get("dango") and self._admitted(t)]
         if self.attrs is not None:
             # 外形是先祖 / 共享空间的：看得到，但不算陌生人、不挂名字、不进接回 / 续命 / 走近 / 运动 / 动作 / 认装扮（spec §3.5）
             others = [t for t in players if self._other_form(t)]
@@ -810,7 +828,14 @@ class PerceptionWatcher:
                         self._report_hard(frame, now, "icon_unknown", f"轨迹 {ring.id} 的图标认不出（{owner_now}）", tracks)
             orphans = [ring for ring in orphans if ring.data["owner"] == "person"]
 
-        tagged = self._assign_tags([p for p in players if not self._unlit(p)], tags)
+        fresh = {}
+        if identity_on:
+            pool = players + [s for s in selfs if not any(same_body(s.box, p.box) for p in players)]
+            tagged, dangos, fresh = self._identity_process(frame, pool, selfs, tags, now, width, height, panel_visible, tracks)
+            players = [p for p in pool if p not in dangos and p.cls != 'self']
+            selfs = [s for s in selfs if any(same_body(s.box, d.box) for d in dangos)]
+        else:
+            tagged = self._assign_tags([p for p in players if not self._unlit(p)], tags)
         assigned = {t.id for t in tagged.values()}
         seen = []
         for tag in tags:
@@ -863,65 +888,69 @@ class PerceptionWatcher:
             self.requests.pop(STRANGER, None)
 
         strangers = unlit = 0
+        if identity_on:
+            strangers = sum(bool(p.data.get('stranger')) for p in players)
+            unlit = sum(bool(p.data.get('stranger')) and self._unlit(p) for p in players)
         shown = {t.data["name"] for t in tags if t.data.get("name")}
-        for player in players:
-            name = player.data.get("name")
-            if name in shown and player.id not in tagged and not self._unlit(player):
-                # 这个名字的标签此刻清清楚楚在别处：之前是挂错了（好友从他身后走过），摘掉。
-                # 标签只是被挡住（这一帧没看到）时不摘；这一帧被认成黑影的也不摘（黑影挂不上标签，gesture-bow-1 23 s）
-                log.debug("轨迹 %d 不是 %s（标签在别处），摘掉名字", player.id, name)
-                for key in ("name", "tagged", "tag_at"):
-                    player.data.pop(key, None)
-            relinked = player.data.get("maybe_by") == "relink"
-            if relinked and (self._unlit(player) or (player.data.get("maybe") in shown and player.id not in tagged)):
-                player.data.pop("maybe", None)  # 接回的人变成黑影 / 他的标签清清楚楚在别处：不是他
-                player.data.pop("maybe_by", None)
-            tag = tagged.get(player.id)
-            if not self._unlit(player) and tag is not None:
-                player.data["tag_at"] = now
-                if tag.data.get("name"):
-                    player.data["name"] = tag.data["name"]
-                    if relinked:  # 名字永远说了算（是不是他都一样）
-                        player.data.pop("maybe", None)
-                        player.data.pop("maybe_by", None)
-                player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
-        if self.cfg.relink:
-            self._relink(players, shown, now)
-        fresh = {}
-        if self.appearance is not None:
-            fresh = self._appearance_features(frame, players, selfs, dangos, now, width, height, panel_visible)
-            self._appearance_identify(frame, players, selfs, dangos, tagged, shown, fresh, now, tracks)
-        for player in players:
+        if not identity_on:
+            for player in players:
+                name = player.data.get("name")
+                if name in shown and player.id not in tagged and not self._unlit(player):
+                    # 这个名字的标签此刻清清楚楚在别处：之前是挂错了（好友从他身后走过），摘掉。
+                    # 标签只是被挡住（这一帧没看到）时不摘；这一帧被认成黑影的也不摘（黑影挂不上标签，gesture-bow-1 23 s）
+                    log.debug("轨迹 %d 不是 %s（标签在别处），摘掉名字", player.id, name)
+                    for key in ("name", "tagged", "tag_at"):
+                        player.data.pop(key, None)
+                relinked = player.data.get("maybe_by") == "relink"
+                if relinked and (self._unlit(player) or (player.data.get("maybe") in shown and player.id not in tagged)):
+                    player.data.pop("maybe", None)  # 接回的人变成黑影 / 他的标签清清楚楚在别处：不是他
+                    player.data.pop("maybe_by", None)
+                tag = tagged.get(player.id)
+                if not self._unlit(player) and tag is not None:
+                    player.data["tag_at"] = now
+                    if tag.data.get("name"):
+                        player.data["name"] = tag.data["name"]
+                        if relinked:  # 名字永远说了算（是不是他都一样）
+                            player.data.pop("maybe", None)
+                            player.data.pop("maybe_by", None)
+                    player.data["tagged"] = True  # 这条轨迹上出现过名字标签：不是陌生人（标签被挡一下不改判）
+            if self.cfg.relink:
+                self._relink(players, shown, now)
+            fresh = {}
             if self.appearance is not None:
-                if self._dangoish(player, now):
-                    player.data["stranger"] = False  # 看着像团子：不判陌生人（同团子标记）
+                fresh = self._appearance_features(frame, players, selfs, dangos, now, width, height, panel_visible)
+                self._appearance_identify(frame, players, selfs, dangos, tagged, shown, fresh, now, tracks)
+            for player in players:
+                if self.appearance is not None:
+                    if self._dangoish(player, now):
+                        player.data["stranger"] = False  # 看着像团子：不判陌生人（同团子标记）
+                        continue
+                    self._unsure_expire(player, now)
+                if self._unlit(player):
+                    # 没点火的黑影是陌生人，远近都算；但也等 stranger_after（好友偶尔被认成黑影一两帧，walkaway-1002-1），
+                    # 挂过名字标签的轨迹不算（好友不会是黑影）
+                    dark = not player.data.get("tagged") and now - player.first >= self.cfg.stranger_after
+                    player.data["stranger"] = dark
+                    strangers += dark
+                    unlit += dark
                     continue
-                self._unsure_expire(player, now)
-            if self._unlit(player):
-                # 没点火的黑影是陌生人，远近都算；但也等 stranger_after（好友偶尔被认成黑影一两帧，walkaway-1002-1），
-                # 挂过名字标签的轨迹不算（好友不会是黑影）
-                dark = not player.data.get("tagged") and now - player.first >= self.cfg.stranger_after
-                player.data["stranger"] = dark
-                strangers += dark
-                unlit += dark
-                continue
-            maybe = player.data.get("maybe")
-            if self._under_panel(player.box, width, height, panel_visible):
-                player.data["panel_at"] = now  # 面板挡着标签：等面板关了、从关的那一刻起再等 stranger_after 才判
-            is_stranger = (
-                not player.data.get("tagged")
-                and not maybe
-                and not self._under_panel(player.box, width, height, panel_visible)
-                and now - self._stranger_base(player) >= self.cfg.stranger_after
-                and player.box.h >= self.cfg.stranger_min_height * height
-                and self._looks_checked(player, now)
-            )
-            player.data["stranger"] = is_stranger
-            strangers += is_stranger
-            if maybe and now - self.last_seen.get(maybe, float("-inf")) <= self.cfg.keep:
-                self.last_seen[maybe] = now  # 好友还在身边、只是名字标签被挡住：别冒出"走开了"（已经走开的不靠外观接回来）
-            if is_stranger and self.appearance is not None:
-                self._appearance_stranger(frame, player, players, fresh.get(player.id), now)
+                maybe = player.data.get("maybe")
+                if self._under_panel(player.box, width, height, panel_visible):
+                    player.data["panel_at"] = now  # 面板挡着标签：等面板关了、从关的那一刻起再等 stranger_after 才判
+                is_stranger = (
+                    not player.data.get("tagged")
+                    and not maybe
+                    and not self._under_panel(player.box, width, height, panel_visible)
+                    and now - self._stranger_base(player) >= self.cfg.stranger_after
+                    and player.box.h >= self.cfg.stranger_min_height * height
+                    and self._looks_checked(player, now)
+                )
+                player.data["stranger"] = is_stranger
+                strangers += is_stranger
+                if maybe and now - self.last_seen.get(maybe, float("-inf")) <= self.cfg.keep:
+                    self.last_seen[maybe] = now  # 好友还在身边、只是名字标签被挡住：别冒出"走开了"（已经走开的不靠外观接回来）
+                if is_stranger and self.appearance is not None:
+                    self._appearance_stranger(frame, player, players, fresh.get(player.id), now)
         if self.cfg.sticky_names:
             self._keep_named(players, now)
         self._call_tick(players, tags, tagged, assigned, now, width, height)
@@ -1196,7 +1225,7 @@ class PerceptionWatcher:
             log.debug("呼喊窗口结束：%s；没挂名字 %d 个", "、".join(c.friends) or "没看到名字", c.unnamed)
             if self.presence is not None:
                 self.presence.call_done(c.at, dict(c.friends))
-            for p in players:  # 为"可能是"喊的这一声：窗口里头上没亮名字（标签挂到别人头上也一样）就是认错了
+            for p in players if self.identity is None else ():  # 新流程由板子收尾
                 if p.data.get("unsure_called") == c.at and not p.data.get("name"):
                     log.info("喊了一声，轨迹 %d 头上没亮名字", p.id)
                     p.data.pop("unsure", None)
@@ -1300,11 +1329,84 @@ class PerceptionWatcher:
                 d.get('sid'), d.get('unsure_called')))
         call_end = None
         c = self._call
-        if c and c.ended and self._identity_call_at != c.at:
+        if c and (c.ended or now > self._call_span[1]) and self._identity_call_at != c.at:
             call_end = CallEnd(c.at, dict(c.tracks))
             self._identity_call_at = c.at
         return FrameIn(now, width, height, panel_visible, now < self._panel_slide_until,
                        now < self._quiet_until, tuple(inputs), call_end)
+
+    def _identity_process(self, frame, players, selfs, tags, now, width, height, panel_visible, tracks):
+        saved = {p.id: dict(p.data) for p in players}
+        if self.cfg.relink:
+            self._relink(players, {t.data['name'] for t in tags if t.data.get('name')}, now)
+        fresh = self._appearance_features(frame, players, selfs, [], now, width, height, panel_visible)
+        try:
+            fi = self._identity_frame(players, selfs, tags, fresh, now, width, height, panel_visible)
+            if self.identity_log is not None:
+                self.identity_log.append(fi)
+            out = self.identity.step(fi)
+        except Exception:
+            log.exception('身份板出错，沿用上一帧结论')
+            self._identity_errors += 1
+            for p in players:
+                p.data = saved[p.id]
+            if self._identity_errors >= IDENTITY_MAX_ERRORS:
+                log.error('身份板连续出错，退回旧流程')
+                self.identity = None
+                self.identity_off = '连续出错'
+            return {}, [p for p in players if p.data.get('dango')], {}
+        self._identity_errors = 0
+        tagged, dangos = self._identity_apply(out, players, tags, fresh, frame, now, tracks)
+        return tagged, dangos, fresh
+
+    def _identity_apply(self, out, players, tags, fresh, frame, now, tracks):
+        bykey = {t.data.get('name') or f'#{t.id}': t for t in tags}
+        tagged = {id: bykey[key] for id, key in out.tags.items() if key in bykey}
+        dangos = []
+        for p in players:
+            d = p.data
+            v = out.verdicts[p.id]
+            old = d.get('identity_verdict')
+            if old and old.kind == ident.FRIEND_LOOK and v.kind == ident.FRIEND_TAG and old.name != v.name:
+                self._report_hard(frame, now, 'identity_conflict', f'按外观认成 {old.name}，名字标签是 {v.name}', tracks)
+            if old is None or (old.kind, old.name) != (v.kind, v.name):
+                log.debug('轨迹 %d：%s %s → %s %s', p.id, old.kind if old else '', old.name if old else '', v.kind, v.name)
+            relinked = d.get('maybe_by') == 'relink' and d.get('maybe') == v.name
+            for key in ('name', 'tagged', 'maybe', 'unsure', 'unsure_first', 'dango', 'stranger', 'dango_look', 'dango_score'):
+                d.pop(key, None)
+            if v.kind != ident.UNSURE:
+                for key in ('unsure_called', 'unsure_miss'):
+                    d.pop(key, None)
+            if not (v.kind == ident.FRIEND_LOOK and relinked):
+                for key in ('maybe_by', 'relink_at'):
+                    d.pop(key, None)
+            if v.kind == ident.FRIEND_TAG:
+                d['tagged'] = True
+                if v.name:
+                    d['name'] = v.name
+                if p.id in tagged:
+                    d['tag_at'] = now
+            elif v.kind == ident.FRIEND_LOOK:
+                d['maybe'] = v.name
+                if now - self.last_seen.get(v.name, float('-inf')) <= self.cfg.keep:
+                    self.last_seen[v.name] = now
+            elif v.kind == ident.UNSURE:
+                d['unsure'] = d['unsure_first'] = (v.name, v.since)
+            elif v.kind == ident.DANGO:
+                d['dango'] = p.box
+                dangos.append(p)
+            elif v.kind == ident.STRANGER:
+                d['stranger'] = True
+                if self.appearance is not None and not self._unlit(p):
+                    self._appearance_stranger(frame, p, players, None, now)
+            if v.kind != ident.STRANGER:
+                d.pop('sid', None)
+            d['identity_verdict'] = v
+            d['identity_learn'] = out.learn.get(p.id)
+        for id, (kind, who) in out.learn.items():
+            if id in fresh:
+                self._learn(kind, who, fresh[id], frame, now)
+        return tagged, dangos
 
     def _appearance_features(self, frame: np.ndarray, players: list[Track], selfs: list[Track], dangos: list[Track], now: float,
                              width: int, height: int, panel_visible: bool) -> dict[int, tuple[Sample, Rect]]:
@@ -1326,7 +1428,8 @@ class PerceptionWatcher:
                 break
             t.data["feat_at"] = now
             mine = t.id in body_ids
-            others = [o.box for o in players + selfs + dangos if o.id != t.id and not (mine and o.id in body_ids)]
+            others = [o.box for o in players + selfs + dangos if o.id != t.id and not (mine and o.id in body_ids)
+                      and not (self.identity is not None and (o.cls == 'self' or t.cls == 'self') and same_body(t.box, o.box))]
             try:
                 sample = make_sample(frame, t.box, others, blocked, acfg, self.embedder, self.dino, now)
             except Exception:
@@ -1346,6 +1449,8 @@ class PerceptionWatcher:
         """这一帧新算出好样本的人（没点火的、团子不要）：裁图连同元数据交给 saver 攒训练数据，出错只记日志。"""
         for p in players:
             if self._unlit(p) or p.id not in fresh:
+                continue
+            if self.identity is not None and not p.data.get('identity_learn'):
                 continue
             sample, box = fresh[p.id]
             feat = sample.color
@@ -2735,6 +2840,8 @@ class PerceptionWatcher:
 
     def describe(self, now: float) -> str:
         parts = []
+        if self.identity_off:
+            parts.append(f'- 身份板已关：{self.identity_off}，沿用原来的认法')
         if self.place and self._frozen(now) - self.place_at <= self.env_cfg.place_keep:
             parts.append(f"- 看起来在：{self.place}（按画面认的，可能不准）")
         people = self.in_view(now)

@@ -1,6 +1,6 @@
 """身份板：只吃证据，不碰画面、模型和墙钟，可按帧重放。"""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import median
 
 from skydango.config import AppearanceConfig, IdentityConfig
@@ -275,6 +275,21 @@ class IdentityBoard:
 
     def dango_spot(self, panel: bool) -> Rect | None:
         return self._spots.get(panel)
+
+    def shift(self, seconds: float) -> None:
+        """暂停期间没看见的时间不算证据持续时间。呼喊 at 是标识，不挪。"""
+        for e in self._evidence.values():
+            e.last += seconds
+            e.tag_start += seconds
+            e.tag_last += seconds
+            e.panel_at += seconds
+            e.verdict = replace(e.verdict, since=e.verdict.since + seconds)
+            if e.nearby_name:
+                e.nearby_name = (e.nearby_name[0] + seconds, e.nearby_name[1])
+        if self._challenger:
+            self._challenger = (self._challenger[0], self._challenger[1] + seconds)
+        if self._weak_since is not None:
+            self._weak_since += seconds
 
     def _dango(self, frame: FrameIn):
         candidates = []
