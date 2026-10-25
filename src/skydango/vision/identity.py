@@ -1,6 +1,7 @@
 """身份板：只吃证据，不碰画面、模型和墙钟，可按帧重放。"""
 
 from dataclasses import dataclass, field
+from statistics import median
 
 from skydango.config import AppearanceConfig, IdentityConfig
 from .bubbles import Rect
@@ -84,6 +85,7 @@ class Evidence:
     tag_last: float = float('-inf')
     stable: TagCand | None = None
     verdict: Verdict = field(default_factory=lambda: Verdict(PENDING))
+    samples: list[dict[str, float]] = field(default_factory=list)
 
 
 class IdentityBoard:
@@ -137,5 +139,54 @@ class IdentityBoard:
             e = self._evidence[t.id]
             if e.stable:
                 self._set(e, FRIEND_TAG, e.stable.name, now)
+        self._friends(frame)
         return StepOut({id: c.key for id, c in assigned.items()},
                        {t.id: self._evidence[t.id].verdict for t in frame.tracks}, {})
+
+    def _scores(self, scores: Scores) -> dict[str, float]:
+        if self.cfg.friend_feature == 'both':
+            return {name: (sum(v[name] for v in (scores.dino, scores.color) if name in v)
+                           / sum(name in v for v in (scores.dino, scores.color)))
+                    for name in scores.dino.keys() | scores.color.keys()}
+        return dict(scores.color if self.cfg.friend_feature == 'color' else scores.dino)
+
+    def _medians(self, e: Evidence) -> dict[str, float]:
+        if len(e.samples) < self.cfg.min_samples:
+            return {}
+        names = set().union(*e.samples)
+        return {name: median(s.get(name, 0.0) for s in e.samples) for name in names}
+
+    def _friends(self, frame: FrameIn):
+        claimed = {e.stable.name for e in self._evidence.values() if e.stable and e.stable.name}
+        candidates = []
+        for t in frame.tracks:
+            e = self._evidence[t.id]
+            if t.scores is not None:
+                e.samples.append(self._scores(t.scores))
+                e.samples = e.samples[-self.cfg.window:]
+            if e.stable:
+                continue
+            scores = self._medians(e)
+            ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+            name, score = ranked[0] if ranked else (None, 0.0)
+            second = ranked[1][1] if len(ranked) > 1 else 0.0
+            old = e.verdict
+            if (old.kind == FRIEND_LOOK and old.name in scores
+                    and scores[old.name] >= self.acfg.match - self.cfg.drop):
+                candidates.append((scores[old.name], t.id, old.name))
+            elif name and score >= self.acfg.match and score - second >= self.acfg.margin:
+                candidates.append((score, t.id, name))
+            elif t.relink and (len(e.samples) < self.cfg.min_samples
+                               or scores.get(t.relink, 0.0) >= self.acfg.unsure):
+                candidates.append((scores.get(t.relink, 0.0), t.id, t.relink))
+            elif name and score >= self.acfg.unsure:
+                self._set(e, UNSURE, name, frame.now, score)
+            elif old.kind != UNSURE:
+                self._set(e, PENDING, None, frame.now)
+        for score, id, name in sorted(candidates, key=lambda item: (-item[0], item[1])):
+            e = self._evidence[id]
+            if name not in claimed:
+                self._set(e, FRIEND_LOOK, name, frame.now, score)
+                claimed.add(name)
+            else:
+                self._set(e, UNSURE, name, frame.now, score)

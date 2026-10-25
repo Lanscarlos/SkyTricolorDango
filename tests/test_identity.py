@@ -62,3 +62,50 @@ def test_identity_config_defaults():
     assert (c.enabled, c.tag_hold, c.window, c.friend_feature, c.dango_min) == (False, 0.5, 5, "dino", 0.5)
 
 
+def test_look_alike_after_min_samples():
+    b = board()
+    for i, t in enumerate((0.0, 0.1, 0.2)):
+        out = b.step(frame(t, tr(1, 1000, scores=sc(小明=0.93, 番茄=0.70))))
+    assert out.verdicts[1].kind == FRIEND_LOOK and out.verdicts[1].name == "小明"
+
+def test_one_outlier_sample_does_not_flip_look():
+    b = board()
+    for t, s in ((0.0, 0.93), (0.1, 0.93), (0.2, 0.93), (0.3, 0.40), (0.4, 0.93)):
+        out = b.step(frame(t, tr(1, 1000, scores=sc(小明=s, 番茄=0.7))))
+        assert t < 0.2 or out.verdicts[1].kind == FRIEND_LOOK
+
+def test_margin_too_small_is_unsure_not_look():
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        out = b.step(frame(t, tr(1, 1000, scores=sc(小明=0.90, 番茄=0.88))))
+    assert out.verdicts[1].kind == UNSURE and out.verdicts[1].name == "小明"
+
+def test_name_given_to_one_track_only():
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        out = b.step(frame(t, tr(1, 1000, scores=sc(小明=0.95)), tr(2, 1400, scores=sc(小明=0.91))))
+    assert out.verdicts[1].kind == FRIEND_LOOK and out.verdicts[2].kind != FRIEND_LOOK
+
+def test_stable_tag_beats_look():
+    b = board()
+    for t in (0.0, 0.3, 0.6):
+        out = b.step(frame(t, tr(1, 1000, tags=(TagCand("番茄", "番茄", 3.0),), scores=sc(小明=0.95, 番茄=0.5))))
+    assert out.verdicts[1].kind == FRIEND_TAG and out.verdicts[1].name == "番茄"
+
+def test_flipping_tag_never_makes_a_stranger():  # 10-22 轨迹 6
+    b = board()
+    for i in range(30):
+        t = i * 0.1
+        a, c = (3.0, 5.0) if i % 2 else (5.0, 3.0)  # 5 × tag_stick 0.5 = 2.5 < 3：黏在先拿到的那条上
+        out = b.step(frame(t, tr(1, 1000, tags=(TagCand("饶总", "饶总", a),)), tr(2, 1080, tags=(TagCand("饶总", "饶总", c),))))
+        assert all(v.kind != STRANGER for v in out.verdicts.values()) and out.learn == {}
+
+def test_relink_counts_as_look_unless_appearance_disagrees():
+    b = board()
+    out = b.step(frame(0.0, tr(1, 1000, relink="小明")))
+    assert out.verdicts[1].kind == FRIEND_LOOK
+    for t in (0.1, 0.2, 0.3):
+        out = b.step(frame(t, tr(1, 1000, relink="小明", scores=sc(小明=0.50, 番茄=0.6))))
+    assert out.verdicts[1].kind != FRIEND_LOOK
+
+
