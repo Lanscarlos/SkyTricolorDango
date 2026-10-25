@@ -154,8 +154,23 @@ class IdentityBoard:
         self._strangers(frame)
         self._dango(frame)
         assigned.pop(self.dango_id, None)
+        learn = {}
+        for t in frame.tracks:
+            if t.scores is None:
+                continue
+            e = self._evidence[t.id]
+            v = e.verdict
+            confirmed = frame.call_end and frame.call_end.shown.get(t.id) == v.name
+            if (v.kind == FRIEND_TAG and v.name and
+                    (confirmed or (t.id in assigned and assigned[t.id].key == e.stable.key
+                                   and now - e.tag_start + 1e-9 >= self.cfg.tag_hold))):
+                learn[t.id] = ('friend', v.name)
+            elif v.kind == DANGO and v.score >= self.cfg.dango_learn:
+                learn[t.id] = ('me', '')
+            elif v.kind == STRANGER and t.sid:
+                learn[t.id] = ('stranger', t.sid)
         return StepOut({id: c.key for id, c in assigned.items()},
-                       {t.id: self._evidence[t.id].verdict for t in frame.tracks}, {})
+                       {t.id: self._evidence[t.id].verdict for t in frame.tracks}, learn)
 
     def _scores(self, scores: Scores) -> dict[str, float]:
         if self.cfg.friend_feature == 'both':

@@ -205,3 +205,27 @@ def test_challenger_needs_dango_switch_seconds():
     assert b.dango_id == 2
 
 
+def test_learn_only_stable_tag_frames_with_samples():
+    b = board()
+    s = sc(小明=0.9)
+    outs = [b.step(frame(t, tr(1, 1000, tags=(TagCand("小明", "小明", 3.0),), scores=s))) for t in (0.0, 0.3, 0.6)]
+    assert outs[0].learn == {} and outs[1].learn == {} and outs[2].learn == {1: ("friend", "小明")}
+    out = b.step(frame(0.7, tr(1, 1000, scores=s)))  # 标签被挡：不学
+    assert out.learn == {}
+
+def test_learn_dango_and_stranger():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=1.0)))
+    out = b.step(frame(0.1, tr(1, 960, self_score=1.0, scores=sc(me=0.9))))
+    assert out.learn == {1: ("me", "")}
+    for t in (0.0, 0.5, 1.0):
+        out = b.step(frame(t, tr(5, 1500, sid="陌生人A", scores=sc(me=0.2, 小明=0.3))))
+    assert out.learn[5] == ("stranger", "陌生人A")
+
+def test_look_alike_and_unsure_never_learn():
+    b = board()
+    for t in (0.0, 0.1, 0.2, 0.3):
+        out = b.step(frame(t, tr(1, 1000, scores=sc(小明=0.95)), tr(2, 1300, scores=sc(番茄=0.85, 小明=0.5))))
+    assert out.learn == {}
+
+
