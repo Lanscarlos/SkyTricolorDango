@@ -83,6 +83,57 @@ def logs():
     }
 
 
+@pytest.mark.parametrize('tail,want', [('陌生人', ['小明', '小明', '陌生人', '陌生人']),
+                                     ('?', ['小明', '小明']), ('不要', ['小明', '小明'])])
+def test_apply_segments_cut_on_frame(tmp_path, tail, want):
+    seen, draft, out = (tmp_path / n for n in ('logs.json', 'draft.toml', 'truth.jsonl'))
+    log = TrackLog([(f'{i}_{i:.2f}s.jpg', R) for i in range(4)], times=[0, 1, 2, 3])
+    save_logs(seen, {1: log})
+    draft.write_text(f't1 = [[0, "小明"], [2.0, "{tail}"]]\n', encoding='utf-8')
+    assert apply_draft(draft, seen, out, friends=['小明']) == len(want)
+    assert [json.loads(r)['who'] for r in out.read_text(encoding='utf-8').splitlines()] == want
+
+
+@pytest.mark.parametrize('value', ['[[0, "小明"], [0, "陌生人"]]', '[[1.5, "小明"]]',
+    '[["小明", 0]]', '[]', '[[true, "小明"]]', '[[nan, "小明"]]', '[[inf, "小明"]]'])
+def test_apply_segment_errors_have_line_and_keep_old(tmp_path, value):
+    seen, draft, out = (tmp_path / n for n in ('logs.json', 'draft.toml', 'truth.jsonl'))
+    save_logs(seen, logs())
+    draft.write_text('# 注释\nt1 = ' + value, encoding='utf-8')
+    out.write_text('保留', encoding='utf-8')
+    with pytest.raises(ValueError, match='第 2 行'):
+        apply_draft(draft, seen, out, friends=['小明'])
+    assert out.read_text(encoding='utf-8') == '保留'
+
+
+def test_frame_times_fallback_to_filename():
+    from skydango.vision.identity_eval import frame_times
+    log = TrackLog(frames=[('0003_000.46s.jpg', R), ('0005_000.77s.jpg', R)])
+    assert frame_times(log) == [0.46, 0.77]
+    log.frames.append(('坏帧名.jpg', R))
+    with pytest.raises(ValueError):
+        frame_times(log)
+
+
+def test_render_round_trip_odd_names(tmp_path):
+    from skydango.vision.identity_eval import render_draft, read_draft
+    labels = {1: [(0.0, '小"明\\'), (2.5, '陌生人')], 2: [(0.0, '团 子')]}
+    path = tmp_path / 'draft.toml'
+    path.write_text(render_draft(labels, logs()), encoding='utf-8')
+    assert read_draft(path)[0] == labels
+    assert 't1 = [[0, ' in path.read_text(encoding='utf-8')
+
+
+def test_write_draft_output_unchanged(tmp_path):
+    path = tmp_path / 'draft.toml'
+    write_draft(path, draft_identities(logs(), 0.5), logs())
+    assert path.read_text(encoding='utf-8') == (
+        '# 初判不是标准答案：请对着 sheet.jpg 改成好友名 / 团子 / 陌生人 / 不要 / ?。\n'
+        't1 = "小明"  # 出现 0.0~0.6 s，3 帧\n'
+        't2 = "?"  # 出现 0.0~0.6 s，3 帧\n'
+        't3 = "团子"  # 出现 0.0~0.3 s，2 帧\n')
+
+
 def test_draft_identities_stable_flash_and_self():
     assert draft_identities(logs(), 0.5) == {1: '小明', 2: '?', 3: '团子'}
 

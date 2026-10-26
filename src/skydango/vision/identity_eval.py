@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import tomllib
 from collections import Counter
@@ -15,6 +16,7 @@ from .bubbles import Rect
 from .identity import DANGO, FRIEND_LOOK, FRIEND_TAG, STRANGER, UNSURE, CallEnd, IdentityBoard
 
 RESERVED = {'团子', '陌生人', '拿不准', '未定', '?', '不要'}
+Segments = list[tuple[float, str]]
 
 
 @dataclass
@@ -55,15 +57,85 @@ def draft_identities(tracks_seen: dict[int, TrackLog], tag_hold: float) -> dict[
     return identities
 
 
+def frame_times(log: TrackLog) -> list[float]:
+    if len(log.times) == len(log.frames):
+        return log.times
+    times = []
+    for name, _ in log.frames:
+        match = re.search(r'_(\d+(?:\.\d+)?)s\.jpg$', name)
+        if not match:
+            raise ValueError(f'帧名里没有时间：{name}')
+        times.append(float(match[1]))
+    return times
+
+
+def parse_label(value, line: int) -> Segments:
+    if isinstance(value, str):
+        return [(0.0, value)]
+    if not isinstance(value, list) or not value:
+        raise ValueError(f'第 {line} 行：分段应为非空的 [开始秒数, 名字] 数组')
+    segs = []
+    for item in value:
+        if (not isinstance(item, list) or len(item) != 2
+                or type(item[0]) not in (int, float) or not math.isfinite(item[0])
+                or not isinstance(item[1], str)):
+            raise ValueError(f'第 {line} 行：每段必须是 [数字, 字符串]，时间须有限')
+        if segs and item[0] <= segs[-1][0]:
+            raise ValueError(f'第 {line} 行：分段开始时间必须严格递增')
+        segs.append((float(item[0]), item[1]))
+    return segs
+
+
+def check_label(segs: Segments, log: TrackLog, allowed: set[str], line: int, key: str) -> None:
+    for _, who in segs:
+        if who not in allowed:
+            raise ValueError(f'第 {line} 行：{who!r} 不是好友名，也不是团子 / 陌生人 / 不要 / ?')
+    times = frame_times(log)
+    if times and segs[0][0] > times[0]:
+        raise ValueError(f'第 {line} 行：{key} 第一段要从 0 开始')
+
+
+def label_at(segs: Segments, at: float) -> str:
+    return next((who for start, who in reversed(segs) if start <= at), segs[0][1])
+
+
+def read_draft(path: Path) -> tuple[dict[int, Segments], dict[int, int]]:
+    text = Path(path).read_text(encoding='utf-8')
+    try:
+        values = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        line = getattr(exc, 'lineno', None) or text.count('\n') + 1
+        raise ValueError(f'第 {line} 行：草稿 TOML 格式有误：{exc}') from exc
+    lines = {m[1]: n for n, row in enumerate(text.splitlines(), 1)
+             if (m := re.match(r'\s*"?(t\d+)"?\s*=', row))}
+    labels, numbers = {}, {}
+    for key, value in values.items():
+        line = lines.get(key, 1)
+        if not re.fullmatch(r't\d+', key):
+            raise ValueError(f'第 {line} 行：没有轨迹 {key}')
+        id = int(key[1:])
+        if id in labels:
+            raise ValueError(f'第 {line} 行：重复轨迹 {key}')
+        labels[id], numbers[id] = parse_label(value, line), line
+    return labels, numbers
+
+
+def render_draft(labels: dict[int, Segments], logs: dict[int, TrackLog]) -> str:
+    lines = ['# 初判不是标准答案：请对着 sheet.jpg 改成好友名 / 团子 / 陌生人 / 不要 / ?。']
+    for id, segs in sorted(labels.items()):
+        log = logs[id]
+        times = log.times or [t for t, _ in log.names] or [0.0]
+        quoted = lambda who: json.dumps(who, ensure_ascii=False)
+        value = quoted(segs[0][1]) if len(segs) == 1 else '[' + ', '.join(
+            f'[{start:g}, {quoted(who)}]' for start, who in segs) + ']'
+        lines.append(f't{id} = {value}  # 出现 {min(times):.1f}~{max(times):.1f} s，{len(log.frames)} 帧')
+    return '\n'.join(lines) + '\n'
+
+
 def write_draft(path: Path, ids: dict[int, str], logs: dict[int, TrackLog]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ['# 初判不是标准答案：请对着 sheet.jpg 改成好友名 / 团子 / 陌生人 / 不要 / ?。']
-    for id, who in sorted(ids.items()):
-        log = logs[id]
-        times = log.times or [t for t, _ in log.names] or [0.0]
-        lines.append(f't{id} = {json.dumps(who, ensure_ascii=False)}  # 出现 {min(times):.1f}~{max(times):.1f} s，{len(log.frames)} 帧')
-    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    path.write_text(render_draft({id: [(0.0, who)] for id, who in ids.items()}, logs), encoding='utf-8')
 
 
 def save_logs(path: Path, logs: dict[int, TrackLog], **meta) -> None:
@@ -81,24 +153,21 @@ def load_logs(path: Path) -> dict[int, TrackLog]:
 
 
 def apply_draft(draft: Path, logs_path: Path, out: Path, *, friends: list[str]) -> int:
-    text = Path(draft).read_text(encoding='utf-8')
-    ids = tomllib.loads(text)
+    ids, lines = read_draft(draft)
     logs = load_logs(logs_path)
-    lines = {m.group(1): n for n, line in enumerate(text.splitlines(), 1)
-             if (m := re.match(r'\s*"?(t\d+)"?\s*=', line))}
     allowed = set(friends) | {'团子', '陌生人', '不要', '?'}
     rows = []
     # 先把整份草稿验完，再写文件，错一行也不盖掉旧答案。
-    for key, who in ids.items():
-        line = lines.get(key, 1)
-        if not re.fullmatch(r't\d+', key) or int(key[1:]) not in logs:
-            raise ValueError(f'第 {line} 行：没有轨迹 {key}')
-        if not isinstance(who, str) or who not in allowed:
-            raise ValueError(f'第 {line} 行：{who!r} 不是好友名，也不是团子 / 陌生人 / 不要 / ?')
-        if who in ('不要', '?'):
-            continue
-        rows.extend({'frame': name, 'box': [b.x, b.y, b.w, b.h], 'who': who}
-                    for name, b in logs[int(key[1:])].frames)
+    for id, segs in ids.items():
+        line = lines[id]
+        if id not in logs:
+            raise ValueError(f'第 {line} 行：没有轨迹 t{id}')
+        log = logs[id]
+        check_label(segs, log, allowed, line, f't{id}')
+        for (name, b), at in zip(log.frames, frame_times(log)):
+            who = label_at(segs, at)
+            if who not in ('不要', '?'):
+                rows.append({'frame': name, 'box': [b.x, b.y, b.w, b.h], 'who': who})
     Path(out).write_text(''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in rows), encoding='utf-8')
     return len(rows)
 
