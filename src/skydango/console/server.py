@@ -461,6 +461,13 @@ class ConsoleServer:
         cfg = self.store._fallback()
         return FramesApi(Path(cfg.inbox.dir), Path(ATTRS_ROOT), Path("datasets/sky"), cfg.perception.classes)
 
+    def identity_truth(self):
+        from .identity_truth import IdentityTruth
+        from ..cli import _friend_names
+
+        cfg = self.store._fallback()
+        return IdentityTruth(Path("tmp/identity-truth"), _friend_names(cfg), cfg.identity.tag_hold)
+
     def retrain_view(self) -> RetrainView:
         return RetrainView(Path("tmp/retrain"), self.store)
 
@@ -859,6 +866,28 @@ class ConsoleServer:
                         self._send(200, "image/jpeg", data)
                 elif url.path == "/api/retrain/latest":
                     self._json(200, console.retrain_view().latest())
+                elif url.path == "/api/identity/runs":
+                    self._json(200, console.identity_truth().runs())
+                elif url.path == "/api/identity/state":
+                    self._json(*console.identity_truth().state(parse_qs(url.query).get("run", [""])[0]))
+                elif url.path in ("/api/identity/crop", "/api/identity/frame"):
+                    q = parse_qs(url.query)
+                    api = console.identity_truth()
+                    run, frame = q.get("run", [""])[0], q.get("frame", [""])[0]
+                    if url.path.endswith("/crop"):
+                        try:
+                            track = int(q.get("track", [""])[0])
+                        except ValueError:
+                            track = -1
+                        data = api.crop(run, track, frame)
+                    else:
+                        data = api.frame(run, frame)
+                    if data is None:
+                        code, state = api.state(run)
+                        text = f'录像目录不在了：{state["source"]}' if state.get("source_missing") else "没有这一帧"
+                        self._json(404, {"ok": False, "text": text})
+                    else:
+                        self._send(200, "image/jpeg", data)
                 elif url.path == "/api/frames/state":
                     self._json(200, console.frames_api().state())
                 elif url.path == "/api/frames/image":
@@ -925,6 +954,8 @@ class ConsoleServer:
                     "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or "")),
                     "/api/form/undo": lambda body: console.form_labels().undo(),
                     "/api/frames/act": lambda body: console.frames_api().act(body),
+                    "/api/identity/label": lambda body: console.identity_truth().label(body),
+                    "/api/identity/undo": lambda body: console.identity_truth().undo(body),
                     "/api/retrain/adopt": lambda body: console.retrain_view().adopt(str(body.get("what") or ""), console._busy()),
                     "/api/retrain/rollback": lambda body: console.retrain_view().rollback(str(body.get("what") or ""), console._busy()),
                     "/api/emotes/name": lambda body: console.emote_names().name(body.get("id"), body.get("name")),

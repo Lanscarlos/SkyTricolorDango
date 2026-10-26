@@ -8,6 +8,7 @@ import pytest
 from skydango.console.identity_truth import IdentityTruth
 from skydango.vision.identity_eval import TrackLog, save_logs, write_draft, draft_identities, read_draft
 from skydango.vision.bubbles import Rect
+from test_console_server import GOOD, make_server, request, upstream  # noqa: F401
 
 
 def make(tmp_path, root=None):
@@ -147,3 +148,34 @@ def test_write_failure_keeps_draft_and_reviewed(tmp_path, monkeypatch):
     monkeypatch.setattr(identity_truth.os, 'replace', fail)
     assert label(api, [[0, '陌生人']])[0] == 400
     assert {p.name: p.read_bytes() for p in run.iterdir() if p.is_file()} == before
+
+
+def test_identity_routes(tmp_path, upstream, monkeypatch):
+    import urllib.request
+    make(tmp_path, tmp_path / 'tmp/identity-truth')
+    (tmp_path / 'config.toml').write_text('[reply]\nmemory_dir = "mem"\n', encoding='utf-8')
+    (tmp_path / 'mem').mkdir()
+    (tmp_path / 'mem/friends.md').write_text('## 小明\n## 小红\n', encoding='utf-8')
+    monkeypatch.chdir(tmp_path)
+    server = make_server(tmp_path, upstream)
+    try:
+        url = server.url + 'api/identity/'
+        assert request(url + 'runs') == (200, {'runs': ['r1']})
+        code, state = request(url + 'state?run=r1')
+        assert code == 200 and state['friends'] == ['小明', '小红']
+        for suffix in ('crop?run=r1&track=1&frame=0_0.00s.jpg', 'frame?run=r1&frame=0_0.00s.jpg'):
+            with urllib.request.urlopen(url + suffix, timeout=10) as response:
+                assert response.headers['Content-Type'] == 'image/jpeg'
+                assert response.read().startswith(b'\xff\xd8')
+        assert request(url + 'state?run=..%2Fx')[0] == 404
+        assert request(url + 'crop?run=r1&track=x&frame=0_0.00s.jpg')[0] == 404
+        assert request(url + 'runs', headers={'Host': f'evil.com:{server.port}'})[0] == 403
+        body = json.dumps({'run': 'r1', 'track': 1, 'segments': [[0, '陌生人']], 'mtime': state['mtime']}).encode()
+        assert request(url + 'label', body, {'Content-Type': 'application/json'})[0] == 403
+        assert request(url + 'label', body, GOOD)[0] == 200
+        code, state = request(url + 'state?run=r1')
+        assert state['tracks'][0]['reviewed'] is True
+        assert request(url + 'undo', json.dumps({'run': 'r1', 'mtime': state['mtime']}).encode(), GOOD)[0] == 200
+        assert request(url + 'state?run=r1')[1]['tracks'][0]['reviewed'] is False
+    finally:
+        server.stop()
