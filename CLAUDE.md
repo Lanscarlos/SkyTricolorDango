@@ -97,6 +97,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/attrs.py` | 感知层第二层运行时（见「感知层第二层」）：`AttrModel`（冻住的 DINOv2 + `.npz` 线性头）、`PersonAttrs`（按轨迹裁图、投票、放行 / 撤下、点没点火）、`load_model`、`crop` |
 | `src/skydango/vision/identity.py` | 身份板（默认关）：纯计算 `step(FrameIn)`，攒名字 / 外观 / 团子线索，输出身份与干净帧的学习许可 |
 | `src/skydango/vision/identity_eval.py` | 身份板离线工具：标签稳定的轨迹初判、草稿 / 拼图 / 展开标准答案、按框对答案、新旧对比、重放证据扫门槛 |
+| `src/skydango/console/identity_truth.py` `console/static/identity.js` | 管理面板「标注 → 认人」：按轨迹标身份答案、按帧切段、裁图 / 整帧、撤销与覆盖率 |
 | `src/skydango/vision/attrs_data.py` | 第二层的数据：`perception crops`（数据集 / 难例 / 图片目录 → `datasets/attrs/`）、`--writeback`（标注页确认过的写回 `datasets/sky`：补漏标的人、改点没点火、删不是人，增强图一起改）、`perception attrs-label`（Claude 初分，复用 `assist.Reviewer`） |
 | `src/skydango/vision/attrs_train.py` | 第二层的训练和评估：`perception attrs-train`（提特征 + 线性头 → `models/attrs-<日期>.npz` + 报告）、`attrs-eval`、`bench --attrs` |
 | `src/skydango/vision/trackeval.py` | 追踪和接回的离线评估（`perception track-eval`）：基线（升级开关全关）vs 当前配置，断开原因、假走开、确认冤枉、接回对错、运动方向 |
@@ -344,6 +345,7 @@ dir = "private/sandbox"
 - 底库只学标签稳定的好友、证据够强的团子、已经编号的陌生人；像好友 / 拿不准 / 接回 / 未定不学。暂停时证据计时也暂停。
 - 管理面板「设置」的「身份板」开关写 `console.toml`；要先开 YOLO、认装扮并加载 DINOv2。依赖不齐时启动日志说明原因、沿用旧流程；身份板连续 10 帧出错也自动退回，status 说明。
 - 离线：`perception identity-truth <录像>` 生成 `tmp/identity-truth/<录像名>/truth-draft.toml`、`logs.json`、`sheet.jpg`；对着拼图改为好友名 / 团子 / 陌生人 / 不要 / ?，再加 `--apply` 写 `<录像>/truth.jsonl`。`identity-eval <录像>` 生成新旧指标、呼喊全亮 / 全不亮两种假设、门槛建议与 `frames.pkl`；按框 IoU 对答案，扫门槛不再跑模型，也不自动改配置。
+  草稿也可在管理面板「标注 → 认人」里标；`t528 = [[0, "玛卡巴卡"], [150.3, "懒洋洋大王"]]` 按帧时间切段，`不要` / `?` 段不落帧。页面看过的记在 `reviewed.json`，覆盖率到 90% 提示去命令行 `--apply`，再跑 `identity-eval`；生成草稿和评估仍在命令行。
 
 ## 认装扮（`[appearance]`，要配合 `[perception]`）
 
@@ -439,6 +441,7 @@ dir = "private/sandbox"
   哪个扫描图标叫什么按剪影配（门槛 0.7、每张库图只配一个），不靠编号，重扫不错位。**只起名**，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动生效；
   改名 / 清除时旧名字还被 `social.after_light` / `emotes.extra` / `gesture.names` / `reflex` 清单引用的只提示、不自动改。没有“重新扫描”按钮（要往游戏里按键，终端跑 `emotes scan`）
 - **「整帧」标签页**（标注页第四个标签，`console/static/frames.js`，后端 `console/frames.py`，难例收件箱，见「YOLO 感知层」）：整理好的整帧过目 / 编辑、重训区（`retrain.js`）；侧栏有「素材没整理」一行（点了起整理），团子停下时若有难例会问「现在整理吗」；整理 / 重训期间起团子会先问要不要停任务
+- **「认人」标签页**（标注页第五个标签）：从 `tmp/identity-truth/<录像>/` 读草稿，按框数排序看轨迹、名字时间线、人物裁图和整帧；`1~9` 好友 / `D` 团子 / `S` 陌生人 / `X` 不要 / `0` 问号，回车采纳初判，`/` 切段、Backspace 删切点、`J/K` 换轨迹、`←/→` 逐帧、`Z` 撤销。好友超过 9 个可点名字按钮；保存遇到外部编辑会报冲突，须刷新，不覆盖。只读写离线草稿，团子运行时也能标。
 - **三个文件**：`config.toml` 面板只读不写；面板改的设置写 `console.toml`、密钥按环境变量名写 `secrets.toml`（明文，都 gitignore，和 config.toml 同目录）。
   加载顺序 默认值 → config.toml → console.toml；`secrets.toml` **覆盖**已有环境变量。终端直接跑命令也读这两个文件（启动时日志里打「console.toml 覆盖了 N 项」）；
   `console` 自己不把密钥写进自己的环境变量（页面上「清除」之后子进程才不会继承旧 Key），只注入它起的子进程
