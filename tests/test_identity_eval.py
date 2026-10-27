@@ -124,6 +124,16 @@ def test_render_round_trip_odd_names(tmp_path):
     assert 't1 = [[0, ' in path.read_text(encoding='utf-8')
 
 
+def test_render_preserves_precise_cut_and_frame_label(tmp_path):
+    from skydango.vision.identity_eval import render_draft, read_draft, label_at
+    path = tmp_path / 'draft.toml'
+    path.write_text(render_draft({1: [(0., '小明'), (150.300123, '?')]}, logs()), encoding='utf-8')
+    segs = read_draft(path)[0][1]
+    assert label_at(segs, 150.3) == '小明'
+    assert label_at(segs, 150.300123) == '?'
+    assert segs[1][0] == 150.300123
+
+
 def test_write_draft_output_unchanged(tmp_path):
     path = tmp_path / 'draft.toml'
     write_draft(path, draft_identities(logs(), 0.5), logs())

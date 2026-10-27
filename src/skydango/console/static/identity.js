@@ -48,7 +48,7 @@ if (typeof module !== "undefined") module.exports = {splitAt, removeCut, relabel
 if (typeof document === "undefined") return;
 
 const ID = {data: null, run: "", cur: null, i: 0, filter: "all", expanded: false, stack: [], busy: false,
-  active: false, epoch: 0, imageEpoch: 0, imageURL: null};
+  active: false, epoch: 0, imageEpoch: 0, imageURL: null, fallbackUndo: true};
 const current = () => ID.data && ID.data.tracks.find(t => t.id === ID.cur);
 const uri = (kind, values) => "api/identity/" + kind + "?" + new URLSearchParams({run: ID.run, ...values});
 function button(text, fn, cls = "btn sm") {
@@ -186,7 +186,7 @@ async function readState(run, epoch) {
 async function load() {
   if (ID.busy) return;
   ID.active = true; const epoch = ++ID.epoch;
-  ID.stack = []; ID.data = null;
+  ID.stack = []; ID.data = null; ID.fallbackUndo = true;
   $("id-cols").hidden = true; notice("正在读身份草稿…");
   try {
     const response = await fetch("api/identity/runs", {cache: "no-store"}), data = await response.json();
@@ -198,7 +198,7 @@ async function load() {
     ID.run = runs.includes(ID.run) ? ID.run : runs[0]; select.value = ID.run;
     select.onchange = async () => {
       if (ID.busy) { select.value = ID.run; return; }
-      ID.run = select.value; ID.cur = null; ID.stack = []; ID.imageEpoch++; ID.data = null;
+      ID.run = select.value; ID.cur = null; ID.stack = []; ID.fallbackUndo = true; ID.imageEpoch++; ID.data = null;
       select.blur(); $("id-cols").hidden = true;
       try { await readState(ID.run, ++ID.epoch); } catch (err) { notice(err.message); }
     };
@@ -207,15 +207,16 @@ async function load() {
     await readState(ID.run, epoch);
   } catch (err) { if (epoch === ID.epoch && ID.active) notice(err.message); }
 }
-async function save(t, segments, remember = true, advance = false) {
+async function save(t, segments, remember = true, advance = false, restoreReviewed = true, nextUndo = null) {
   if (ID.busy || !ID.data) return false;
   ID.busy = true; $("id-run").disabled = true;
-  const before = clone(t.segments), state = ID.data;
+  const before = clone(t.segments), wasReviewed = t.reviewed, state = ID.data;
   try {
-    const {status, data} = await post("api/identity/label", {run: ID.run, track: t.id, segments, mtime: state.mtime});
+    const {status, data} = await post("api/identity/label", {run: ID.run, track: t.id, segments, mtime: state.mtime,
+      reviewed: restoreReviewed, record_undo: remember, next_undo: nextUndo});
     if (status !== 200 || !data.ok) throw new Error(data.text || "保存失败");
-    state.mtime = data.mtime; t.segments = clone(segments); t.reviewed = true;
-    if (remember) ID.stack.push({track: t.id, segments: before});
+    state.mtime = data.mtime; t.segments = clone(segments); t.reviewed = restoreReviewed; ID.fallbackUndo = false;
+    if (remember) ID.stack.push({track: t.id, segments: before, reviewed: wasReviewed});
     if (advance && !segments.some(s => s[1] === "?")) {
       const tracks = state.tracks, at = tracks.indexOf(t);
       const next = [...tracks.slice(at + 1), ...tracks.slice(0, at)].find(x => !reviewed(x) && matches(x));
@@ -235,13 +236,16 @@ async function undo() {
   const item = ID.stack[ID.stack.length - 1];
   if (item) {
     const t = ID.data.tracks.find(t => t.id === item.track);
-    if (await save(t, item.segments, false)) { ID.stack.pop(); ID.cur = t.id; ID.i = 0; if (ID.active) { renderList(); renderTrack(); } }
+    const previous = ID.stack[ID.stack.length - 2] || null;
+    if (await save(t, item.segments, false, false, item.reviewed, previous)) { ID.stack.pop(); ID.cur = t.id; ID.i = 0; if (ID.active) { renderList(); renderTrack(); } }
     return;
   }
+  if (!ID.fallbackUndo) { toast("没有可以撤销的", "warn"); return; }
   ID.busy = true;
   try {
     const {status, data} = await post("api/identity/undo", {run: ID.run, mtime: ID.data.mtime});
     if (status !== 200 || !data.ok) throw new Error(data.text || "撤销失败");
+    ID.fallbackUndo = false;
     if (ID.active) await readState(ID.run, ++ID.epoch);
   } catch (err) { toast(err.message, "bad"); if (ID.active) notice(err.message); }
   finally { ID.busy = false; }

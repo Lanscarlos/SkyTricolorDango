@@ -98,9 +98,48 @@ def test_undo_restores_one_step(tmp_path):
 def test_friends_missing_note(tmp_path, friends):
     api, run, _ = make(tmp_path)
     api.friends = friends
-    (run / 'truth-draft.toml').write_text('t1 = "?"\nt2 = "团子"', encoding='utf-8')
     assert '读不到好友名单' in api.state('r1')[1]['friends_note']
     assert label(api, [[0, '小明']])[0] == 400
+    assert label(api, [[0, '陌生人']], track=2)[0] == 200
+    assert read_draft(run / 'truth-draft.toml')[0][1] == [(0, '小明')]
+
+
+@pytest.mark.parametrize('key', ["'t1'", '"t1"', '"t\\u0031"'])
+def test_save_quoted_key_preserves_readable_draft(tmp_path, key):
+    api, run, _ = make(tmp_path)
+    path = run / 'truth-draft.toml'
+    path.write_text(f'# 人工说明\n{key} = "小明"  # 人工备注\n', encoding='utf-8')
+    assert api.state('r1')[0] == 200
+    assert label(api, [[0, '陌生人']])[0] == 200
+    assert api.state('r1')[0] == 200
+    assert path.read_text(encoding='utf-8') == '# 人工说明\nt1 = "陌生人"  # 人工备注\n'
+
+
+def test_history_restore_reviewed_without_redo_backup(tmp_path):
+    api, run, _ = make(tmp_path)
+    assert label(api, [[0, '小明']])[0] == 200
+    assert label(api, [[0, '小明']], reviewed=False, record_undo=False)[0] == 200
+    state = api.state('r1')[1]
+    assert not state['tracks'][0]['reviewed'] and state['coverage']['done'] == 0
+    assert api.undo({'run': 'r1', 'mtime': state['mtime']})[0] == 400
+
+
+def test_identity_frontend_undo_history(tmp_path, upstream, monkeypatch):
+    import subprocess
+    import shutil
+    from pathlib import Path
+    node = shutil.which('node') or pytest.skip('没有 node')
+    static = Path(__file__).resolve().parents[1] / 'src/skydango/console/static/identity.js'
+    harness = Path(__file__).parent / 'js/identity_history.cjs'
+    make(tmp_path, tmp_path / 'tmp/identity-truth')
+    (tmp_path / 'config.toml').write_text('[reply]\nfriends = ["小明", "小红"]\nmemory_dir = "mem"\n', encoding='utf-8')
+    monkeypatch.chdir(tmp_path)
+    server = make_server(tmp_path, upstream)
+    try:
+        result = subprocess.run([node, str(harness), str(static), server.url], capture_output=True, text=True, encoding='utf-8', timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+    finally:
+        server.stop()
 
 
 def test_bad_toml_reports_line(tmp_path):

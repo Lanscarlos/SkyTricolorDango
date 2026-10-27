@@ -99,6 +99,17 @@ def label_at(segs: Segments, at: float) -> str:
     return next((who for start, who in reversed(segs) if start <= at), segs[0][1])
 
 
+def draft_key(row: str) -> str | None:
+    """读取赋值行的轨迹键，兼容 TOML 的裸键与两种引号。"""
+    if '=' not in row:
+        return None
+    try:
+        key = next(iter(tomllib.loads(row.split('=', 1)[0] + '= ""')))
+    except (tomllib.TOMLDecodeError, StopIteration):
+        return None
+    return key if re.fullmatch(r't\d+', key) else None
+
+
 def read_draft(path: Path) -> tuple[dict[int, Segments], dict[int, int]]:
     text = Path(path).read_text(encoding='utf-8')
     try:
@@ -106,8 +117,7 @@ def read_draft(path: Path) -> tuple[dict[int, Segments], dict[int, int]]:
     except tomllib.TOMLDecodeError as exc:
         line = getattr(exc, 'lineno', None) or text.count('\n') + 1
         raise ValueError(f'第 {line} 行：草稿 TOML 格式有误：{exc}') from exc
-    lines = {m[1]: n for n, row in enumerate(text.splitlines(), 1)
-             if (m := re.match(r'\s*"?(t\d+)"?\s*=', row))}
+    lines = {key: n for n, row in enumerate(text.splitlines(), 1) if (key := draft_key(row))}
     labels, numbers = {}, {}
     for key, value in values.items():
         line = lines.get(key, 1)
@@ -126,8 +136,9 @@ def render_draft(labels: dict[int, Segments], logs: dict[int, TrackLog]) -> str:
         log = logs[id]
         times = log.times or [t for t, _ in log.names] or [0.0]
         quoted = lambda who: json.dumps(who, ensure_ascii=False)
+        seconds = lambda start: str(int(start)) if float(start).is_integer() else repr(float(start))
         value = quoted(segs[0][1]) if len(segs) == 1 else '[' + ', '.join(
-            f'[{start:g}, {quoted(who)}]' for start, who in segs) + ']'
+            f'[{seconds(start)}, {quoted(who)}]' for start, who in segs) + ']'
         lines.append(f't{id} = {value}  # 出现 {min(times):.1f}~{max(times):.1f} s，{len(log.frames)} 帧')
     return '\n'.join(lines) + '\n'
 

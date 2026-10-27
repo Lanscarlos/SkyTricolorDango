@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from ..vision.identity_eval import (
-    check_label, draft_identities, frame_times, label_at, load_logs,
+    check_label, draft_identities, draft_key, frame_times, label_at, load_logs,
     parse_label, read_draft, render_draft,
 )
 
@@ -61,8 +61,8 @@ def _keep_comments(rendered: str, original: str) -> str:
     header, comments = [], {}
     started = False
     for row in original.splitlines():
-        match = re.match(r'\s*"?t(\d+)"?\s*=', row)
-        if match:
+        key = draft_key(row)
+        if key:
             started = True
             for at, char in enumerate(row):
                 if char != '#':
@@ -71,10 +71,10 @@ def _keep_comments(rendered: str, original: str) -> str:
                     tomllib.loads(row[:at])
                 except tomllib.TOMLDecodeError:
                     continue
-                comments[int(match[1])] = row[at:]
+                comments[int(key[1:])] = row[at:]
                 break
             else:
-                comments[int(match[1])] = ''
+                comments[int(key[1:])] = ''
         elif not started:
             header.append(row)
     rows = header if header else rendered.splitlines()[:1]
@@ -115,10 +115,12 @@ class IdentityTruth:
         labels, lines = read_draft(draft)
         logs = load_logs(path / 'logs.json')
         friends = self._friends()
+        # 名单暂时不可用时仍可看旧答案；本次新标签在 _edit 另按当前名单校验。
+        readable_names = set(friends) if friends else {who for segs in labels.values() for _, who in segs}
         for id, segs in labels.items():
             if id not in logs:
                 raise ValueError(f'第 {lines[id]} 行：没有轨迹 t{id}')
-            check_label(segs, logs[id], set(friends) | _RESERVED, lines[id], f't{id}')
+            check_label(segs, logs[id], readable_names | _RESERVED, lines[id], f't{id}')
         reviewed = path / 'reviewed.json'
         seen = set(json.loads(reviewed.read_text(encoding='utf-8'))['tracks']) if reviewed.exists() else set()
         if draft.stat().st_mtime_ns != mtime:
@@ -237,12 +239,37 @@ class IdentityTruth:
                     labels[id] = segs
                     original = draft.read_text(encoding='utf-8')
                     text = _keep_comments(render_draft(labels, logs), original)
+                    tomllib.loads(text)  # 保留注释之后仍须是可读草稿，失败不得覆盖。
                     if b'\r\n' in draft.read_bytes():
                         text = text.replace('\n', '\r\n')
-                    seen.add(id)
-                    files = {bak: draft.read_bytes(), rbak: reviewed.read_bytes() if reviewed.exists() else b'{"tracks": []}',
+                    mark_reviewed, record_undo = body.get('reviewed', True), body.get('record_undo', True)
+                    if type(mark_reviewed) is not bool or type(record_undo) is not bool:
+                        return _error(400, '审核状态和撤销标记必须是布尔值')
+                    if mark_reviewed:
+                        seen.add(id)
+                    else:
+                        seen.discard(id)
+                    # 前端逆向恢复历史时不生成“重做”备份，避免刷新后又恢复误操作。
+                    files = {bak: draft.read_bytes() if record_undo else None,
+                             rbak: (reviewed.read_bytes() if reviewed.exists() else b'{"tracks": []}') if record_undo else None,
                              reviewed: json.dumps({'tracks': sorted(seen)}, ensure_ascii=False).encode('utf-8'),
                              draft: text.encode('utf-8')}
+                    previous = body.get('next_undo')
+                    if not record_undo and previous is not None:
+                        if not isinstance(previous, dict) or type(previous.get('track')) is not int or previous['track'] not in logs:
+                            return _error(400, '撤销历史里没有这条轨迹')
+                        prior_id = previous['track']
+                        prior_segs = parse_label(previous.get('segments'), 1)
+                        check_label(prior_segs, logs[prior_id], set(friends) | _RESERVED, 1, f't{prior_id}')
+                        if type(previous.get('reviewed')) is not bool:
+                            return _error(400, '撤销历史缺少审核状态')
+                        prior_seen = seen | {prior_id} if previous['reviewed'] else seen - {prior_id}
+                        prior_text = _keep_comments(render_draft(labels | {prior_id: prior_segs}, logs), original)
+                        tomllib.loads(prior_text)
+                        if b'\r\n' in draft.read_bytes():
+                            prior_text = prior_text.replace('\n', '\r\n')
+                        files[bak] = prior_text.encode('utf-8')
+                        files[rbak] = json.dumps({'tracks': sorted(prior_seen)}).encode('utf-8')
                 if draft.stat().st_mtime_ns != mtime:
                     return _error(409, '草稿在别处改过，刷新一下')
                 _replace_files(files)
