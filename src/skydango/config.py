@@ -940,6 +940,9 @@ class ConsoleConfig:
     """管理面板（`console`，见 docs/superpowers/specs/2026-09-29-console-design.md）。启动选项由面板写进 console.toml，只影响面板启动的团子。"""
 
     port: int = 19390  # 面板端口（团子的接口端口是 [viewer] port）
+    # 监听地址：127.0.0.1 = 只有本机能用；0.0.0.0 = 局域网里别的设备也能打开（要先在 secrets.toml 设 SKYDANGO_CONSOLE_PASSWORD，
+    # 没设就退回只听本机）。只在配置文件里写，设置页不给改
+    host: str = "127.0.0.1"
     stop_timeout: float = 60.0  # 停止时最多等几秒（live 大脑退出前要写记忆），超了强杀
     log_lines: int = 500  # 日志尾巴保留几行
     # 上次的启动选项，面板写

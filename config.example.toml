@@ -615,6 +615,9 @@ close_with_back = true         # 发完按 BACK 关掉输入框，否则头顶�
 # 管理面板（python -m skydango console）。其余项（上次的启动选项等）由面板写进 console.toml，
 # 面板里改的设置也写在 console.toml（叠加在本文件之后），密钥写在 secrets.toml；两个文件都不进 git
 # port = 19390        # 面板端口（团子的接口端口是 [viewer] port）
+# host = "127.0.0.1"  # 改成 "0.0.0.0" = 局域网里的手机 / 别的电脑也能打开面板。要先在 secrets.toml 写
+#                     # [env] SKYDANGO_CONSOLE_PASSWORD = "…"（没设就退回只听本机）；本机直接用，别的设备先输密码。
+#                     # 同一个网络里的人都能打开这个地址、看到好友聊天，别在单位网络里开
 
 # [usage]
 # 模型用量和额度（管理面板「模型用量」卡片，spec 2026-10-06-model-usage）

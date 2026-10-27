@@ -2578,12 +2578,21 @@ def cmd_console(cfg: Config, args) -> None:
     config_path = Path(args.config)
     port = args.port or cfg.console.port
     runner = runner_mod.Runner(Path.cwd(), cfg.viewer.port, cfg.console.stop_timeout, cfg.console.log_lines)
-    server = server_mod.ConsoleServer(config_path, SettingsStore(config_path), runner, port, cfg.viewer.port)
+    server = server_mod.ConsoleServer(config_path, SettingsStore(config_path), runner, port, cfg.viewer.port,
+                                      host=cfg.console.host)
     try:
         url = server.start()
     except OSError as exc:
-        raise SystemExit(f"管理面板起不来（127.0.0.1:{port}）：{exc}\n端口可能被占用了，用 console --port 换一个") from exc
-    print(f"管理面板：{url}（只有本机能看）；Ctrl+C 结束（会先停掉团子）")
+        raise SystemExit(f"管理面板起不来（{cfg.console.host}:{port}）：{exc}\n端口可能被占用了，用 console --port 换一个") from exc
+    if server.lan:
+        print(f"管理面板：{url}；Ctrl+C 结束（会先停掉团子）")
+        urls = server_mod.lan_urls(server.port)
+        print("局域网里别的设备打开：" + ("、".join(urls) if urls else f"http://<这台电脑的 IP>:{server.port}/") + "（要输面板密码）")
+        print("注意：同一个网络里的人都能打开这个地址，能看到好友聊天、操作团子；不用时把 [console] host 改回 127.0.0.1")
+    else:
+        if server.lan_note:
+            print(server.lan_note)
+        print(f"管理面板：{url}（只有本机能看）；Ctrl+C 结束（会先停掉团子）")
     st = runner.status()
     if st["state"] == "running" and st.get("source") == "terminal":
         print(f"接上了终端起的团子（pid {st['pid']}，运行目录 {st['run_dir']}）")

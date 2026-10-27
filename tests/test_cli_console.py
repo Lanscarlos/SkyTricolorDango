@@ -5,10 +5,20 @@ import pytest
 from skydango import cli
 
 
+HOSTS = []  # 假面板服务收到的 host 参数
+
+
 def fake_console(monkeypatch, events):
+    HOSTS.clear()
     class FakeServer:
         def __init__(self, *a, **k):
             self.orphan = False
+            self.host, self.lan_note, self.port = k.get("host", "127.0.0.1"), None, 19390
+            HOSTS.append(self.host)
+
+        @property
+        def lan(self):
+            return self.host != "127.0.0.1"
 
         def start(self):
             events.append("start")
@@ -45,8 +55,38 @@ def test_console_starts_server_and_stops_runner_on_ctrl_c(tmp_path, monkeypatch,
     fake_console(monkeypatch, events)
     monkeypatch.chdir(tmp_path)
     cli.main(["console", "--no-browser"])
-    assert events == ["start", "runner.close", "server.stop"]
-    assert "管理面板：http://127.0.0.1:19390/" in capsys.readouterr().out
+    assert events == ["start", "runner.close", "server.stop"] and HOSTS == ["127.0.0.1"]
+    out = capsys.readouterr().out
+    assert "管理面板：http://127.0.0.1:19390/" in out and "局域网" not in out
+
+
+def test_console_lan_prints_addresses(tmp_path, monkeypatch, capsys):
+    events = []
+    fake_console(monkeypatch, events)
+    monkeypatch.setattr("skydango.console.server.lan_urls", lambda port: ["http://192.168.1.5:19390/"])
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.toml").write_text('[console]\nhost = "0.0.0.0"\n', encoding="utf-8")
+    cli.main(["console", "--no-browser"])
+    assert HOSTS == ["0.0.0.0"]
+    out = capsys.readouterr().out
+    assert "http://192.168.1.5:19390/" in out and "密码" in out
+
+
+def test_console_lan_without_password_says_so(tmp_path, monkeypatch, capsys):
+    events = []
+    fake_console(monkeypatch, events)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.toml").write_text('[console]\nhost = "0.0.0.0"\n', encoding="utf-8")
+    import skydango.console.server as srv_mod
+
+    class NoPassword(srv_mod.ConsoleServer):  # 已经被 fake_console 换成假的了
+        def start(self):
+            self.host, self.lan_note = "127.0.0.1", "要先设面板密码"
+            return super().start()
+    monkeypatch.setattr("skydango.console.server.ConsoleServer", NoPassword)
+    cli.main(["console", "--no-browser"])
+    out = capsys.readouterr().out
+    assert "要先设面板密码" in out and "192.168" not in out
 
 
 def test_console_does_not_load_secrets_into_its_own_environment(tmp_path, monkeypatch, caplog):

@@ -13,6 +13,7 @@ spec docs/superpowers/specs/2026-10-04-console-attach-design.md），框和中�
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -44,22 +45,31 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
-def is_local_host(host_header: str, port: int) -> bool:
-    """Host 头必须是本机地址 + 这个服务的端口（防 DNS 重绑定：恶意域名解析到 127.0.0.1）。管理面板共用。"""
+def is_local_host(host_header: str, port: int, allow_ip: bool = False) -> bool:
+    """Host 头必须是本机地址 + 这个服务的端口（防 DNS 重绑定：恶意域名解析到 127.0.0.1）。管理面板共用。
+    allow_ip：管理面板开放给局域网时也认 IP 写法（192.168.1.5:19390）；域名照样不认，重绑定靠的是域名。"""
     host = host_header or ""
     if host.startswith("["):
         name, _, rest = host[1:].partition("]")
         got = rest.removeprefix(":")
     else:
         name, _, got = host.rpartition(":")
-    return name.lower() in LOCAL_HOSTS and got == str(port)
+    if got != str(port):
+        return False
+    if name.lower() in LOCAL_HOSTS:
+        return True
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return allow_ip
 
 
-def post_guard(headers, port: int, max_body: int) -> tuple[int, str] | None:
+def post_guard(headers, port: int, max_body: int, allow_ip: bool = False) -> tuple[int, str] | None:
     """POST 的防护：本机 Host、带 X-Skydango 头、JSON、不超过 max_body（别的网页借浏览器发不过来：要先预检，我们不应答）。
     不通过返回 (状态码, 原因)，通过返回 None；不读请求体。管理面板共用。"""
     ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
-    if not is_local_host(headers.get("Host") or "", port) or headers.get("X-Skydango") != "1" or ctype != "application/json":
+    if not is_local_host(headers.get("Host") or "", port, allow_ip) or headers.get("X-Skydango") != "1" or ctype != "application/json":
         return 403, "只接受本机网页发来的请求"
     try:
         length = int(headers.get("Content-Length") or -1)

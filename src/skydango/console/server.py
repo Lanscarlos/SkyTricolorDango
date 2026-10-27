@@ -1,20 +1,26 @@
 """管理面板的 HTTP 服务：页面、设置、设备检测、启停团子 / 大脑沙盒，/live/* 转发到团子子进程的 viewer，
 /sandbox/* 转发到沙盒子进程的接口（团子和沙盒同一时间只能有一个）。
 
-只监听 127.0.0.1。除了页面本身，所有请求都校验 Host（防 DNS 重绑定）；POST 还要 X-Skydango 头 + JSON + 大小上限
+默认只监听 127.0.0.1。除了页面本身，所有请求都校验 Host（防 DNS 重绑定）；POST 还要 X-Skydango 头 + JSON + 大小上限
 （别的网页借浏览器发不过来）。防护函数和 vision/viewer.py 共用。
+[console] host = "0.0.0.0" 时开放给局域网：要设面板密码（secrets.toml 的 SKYDANGO_CONSOLE_PASSWORD，没设就退回只听本机），
+本机连的照旧直接用，别的设备先在 /login 输密码（cookie 记 30 天）；Host 多认 IP 写法、仍不认域名。
 """
 
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import hmac
 import http.client
 import importlib.resources
 import importlib.util
 import json
 import logging
 import os
+import ipaddress
 import re
+import socket
 import sys
 import threading
 import time
@@ -56,6 +62,53 @@ log = logging.getLogger(__name__)
 
 MAX_BODY = 65536  # 设置可能比手动控制大
 PROXY_TIMEOUT = 5.0  # 长轮询 2 秒 + 余量
+PASSWORD_ENV = "SKYDANGO_CONSOLE_PASSWORD"  # 局域网访问的面板密码（secrets.toml 的 [env] 或环境变量）
+COOKIE = "skydango_console"
+COOKIE_DAYS = 30
+LOGIN_MAX = 4096  # 登录表单上限（字节）
+LOGIN_DELAY = 1.0  # 密码不对多等一会儿，别让人一秒试几百次
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def bind_host(host: str, password: str) -> tuple[str, str | None]:
+    """实际监听的地址和要提醒的话：开放给局域网却没设密码时退回只听本机。"""
+    if (host or "127.0.0.1") in LOOPBACK_HOSTS:
+        return host or "127.0.0.1", None
+    if not password:
+        return "127.0.0.1", (f"[console] host = {host!r} 要先设面板密码（secrets.toml 的 [env] {PASSWORD_ENV}），"
+                             "现在只有本机能用")
+    return host, None
+
+
+def auth_token(password: str) -> str:
+    """登录 cookie 的值：由密码算出来，改了密码旧 cookie 自然失效；面板重启不用重新登录。"""
+    return hmac.new(password.encode("utf-8"), b"skydango-console", hashlib.sha256).hexdigest()
+
+
+def lan_urls(port: int) -> list[str]:
+    """本机在局域网里的 IPv4 地址（启动时打印给别的设备用）；查不到就空。"""
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        return []
+    ips = sorted({i[4][0] for i in infos if not ipaddress.ip_address(i[4][0]).is_loopback})
+    return [f"http://{ip}:{port}/" for ip in ips]
+
+
+def _login_page(note: str = "") -> bytes:
+    """别的设备的登录页：不带脚本、不引外部资源，表单直接 POST /login。"""
+    tip = f'<p class="bad">{note}</p>' if note else ""
+    return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1"><title>三彩团子 · 登录</title>'
+            '<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f3f0f6;color:#4a3340;'
+            'font:16px system-ui,sans-serif}form{background:#fffdfb;border:1px solid #e3dbe6;border-radius:16px;padding:24px;'
+            'width:min(320px,calc(100vw - 32px));box-sizing:border-box}h1{font-size:20px;margin:0 0 12px}'
+            'input,button{width:100%;box-sizing:border-box;font:inherit;padding:10px;border-radius:10px;margin-top:10px}'
+            'input{border:1px solid #e3dbe6}button{border:0;background:#ee8fb0;color:#fff;cursor:pointer}'
+            '.bad{color:#9a3460;margin:8px 0 0}</style></head><body>'
+            '<form method="post" action="/login"><h1>三彩团子管理面板</h1>'
+            '<label for="pw">面板密码</label><input id="pw" name="password" type="password" autocomplete="current-password" autofocus>'
+            f'{tip}<button type="submit">进入</button></form></body></html>').encode("utf-8")
 BUSY = ("starting", "running", "stopping")
 LIVE = ("running", "stopping")
 NOT_RUNNING = {"ok": False, "text": "团子没在运行"}
@@ -136,8 +189,11 @@ class ConsoleServer:
         find_spec: Callable[[str], object] = importlib.util.find_spec,
         probe: Callable[[int], dict | None] = probe_run,
         port_free: Callable[[int], bool] = port_free,
+        host: str = "127.0.0.1",
     ) -> None:
         self.config_path, self.store, self.runner = Path(config_path), store, runner
+        self.host, self.lan_note = host, None  # lan_note：开放给局域网却没设密码时 start() 写的提醒
+        self.login_delay = LOGIN_DELAY
         self._usage_view = None  # console.usage_view.UsageView：第一次要时才建（余额缓存在它身上）
         self.port, self.child_port = port, child_port
         self.device_checks, self.make_device, self.find_spec = device_checks, make_device, find_spec
@@ -460,6 +516,24 @@ class ConsoleServer:
     def frames_api(self) -> FramesApi:
         cfg = self.store._fallback()
         return FramesApi(Path(cfg.inbox.dir), Path(ATTRS_ROOT), Path("datasets/sky"), cfg.perception.classes)
+
+    @property
+    def lan(self) -> bool:
+        return self.host not in LOOPBACK_HOSTS
+
+    def password(self) -> str:
+        """面板密码：每次现读，改了 secrets.toml 不用重启。"""
+        try:
+            return self.store.secret_env(PASSWORD_ENV)
+        except (OSError, ValueError):
+            return ""
+
+    def trusted_client(self, ip: str) -> bool:
+        """本机连的不用登录（测试换掉它来假装别的设备）。"""
+        try:
+            return ipaddress.ip_address(ip.removeprefix("::ffff:")).is_loopback
+        except ValueError:
+            return False
 
     def identity_truth(self):
         from .identity_truth import IdentityTruth
@@ -823,8 +897,64 @@ class ConsoleServer:
         console = self
 
         class Handler(BaseHTTPRequestHandler):
+            def _host_ok(self) -> bool:
+                return is_local_host(self.headers.get("Host") or "", console.port, console.lan)
+
+            def _locked(self, path: str) -> bool:
+                """别的设备没登录：挡下来并回应（True）。本机、没开放局域网时都放行。"""
+                if not console.lan or console.trusted_client(self.client_address[0]):
+                    return False
+                password = console.password()
+                if not password:
+                    self._json(403, {"ok": False, "text": "面板没设密码，别的设备不能用"})
+                    return True
+                if not self._host_ok():
+                    self._json(403, {"ok": False, "text": "Host 不对"})
+                    return True
+                if path == "/login":
+                    return False
+                jar = {}
+                for part in (self.headers.get("Cookie") or "").split(";"):
+                    name, _, value = part.strip().partition("=")
+                    jar[name] = value
+                if hmac.compare_digest(jar.get(COOKIE, "").encode("utf-8"), auth_token(password).encode("utf-8")):
+                    return False
+                if self.command == "GET" and path == "/":
+                    self._send(303, "text/plain; charset=utf-8", b"", {"Location": "/login"})
+                else:
+                    self._json(401, {"ok": False, "text": "要先登录"})
+                return True
+
+            def _login(self) -> None:
+                if self.command == "GET":
+                    self._send(200, "text/html; charset=utf-8", _login_page())
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length") or -1)
+                except ValueError:
+                    length = -1
+                if not 0 <= length <= LOGIN_MAX:
+                    self._drain()
+                    self._json(413, {"ok": False, "text": "请求太大"})
+                    return
+                form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
+                password = console.password()
+                given = (form.get("password") or [""])[0]
+                if not password or not hmac.compare_digest(given.encode("utf-8"), password.encode("utf-8")):
+                    time.sleep(console.login_delay)
+                    self._send(401, "text/html; charset=utf-8", _login_page("密码不对"))
+                    return
+                cookie = (f"{COOKIE}={auth_token(password)}; Path=/; Max-Age={COOKIE_DAYS * 86400}; "
+                          "HttpOnly; SameSite=Strict")
+                self._send(303, "text/plain; charset=utf-8", b"", {"Location": "/", "Set-Cookie": cookie})
+
             def do_GET(self) -> None:  # noqa: N802
                 url = urlparse(self.path)
+                if self._locked(url.path):
+                    return
+                if url.path == "/login":
+                    self._login()
+                    return
                 if url.path == "/":
                     self._send(200, "text/html; charset=utf-8", _page())
                     return
@@ -835,7 +965,7 @@ class ConsoleServer:
                     else:
                         self._send(200, *asset)
                     return
-                if not is_local_host(self.headers.get("Host") or "", console.port):
+                if not self._host_ok():
                     self._json(403, {"ok": False, "text": "只接受本机地址（Host 不对）"})
                 elif url.path == "/api/sandbox/reports":
                     self._json(200, {"reports": list_reports(console.sandbox_dir() / "reports")})
@@ -941,6 +1071,16 @@ class ConsoleServer:
 
             def do_POST(self) -> None:  # noqa: N802
                 path = urlparse(self.path).path
+                if self._locked(path):
+                    self._drain()
+                    return
+                if path == "/login":
+                    if not self._host_ok():
+                        self._drain()
+                        self._json(403, {"ok": False, "text": "Host 不对"})
+                    else:
+                        self._login()
+                    return
                 routes = {
                     "/api/settings": console.save_settings,
                     "/api/models": lambda body: console.models().save(body),
@@ -977,7 +1117,7 @@ class ConsoleServer:
                     self._drain()
                     self._json(404, {"ok": False, "text": "没有这个地址"})
                     return
-                refused = post_guard(self.headers, console.port, MAX_BODY)
+                refused = post_guard(self.headers, console.port, MAX_BODY, console.lan)
                 if refused is not None:
                     self._drain()
                     self._json(refused[0], {"ok": False, "text": refused[1]})
@@ -1040,7 +1180,8 @@ class ConsoleServer:
             def log_message(self, *args) -> None:
                 pass
 
-        self._server = _Server(("127.0.0.1", self.port), Handler)
+        self.host, self.lan_note = bind_host(self.host, self.password())
+        self._server = _Server((self.host, self.port), Handler)
         self.port = self._server.server_address[1]
         threading.Thread(target=self._server.serve_forever, name="console", daemon=True).start()
         return f"http://127.0.0.1:{self.port}/"

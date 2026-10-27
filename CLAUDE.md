@@ -403,7 +403,7 @@ dir = "private/sandbox"
   画面、大脑、聊天、手动控制、内心页实时合并、停止都照常（停止先 `/shutdown`，`stop_timeout` 还在就按 pid 杀进程树）；连续 3 次探不通 = 退出了；
   日志抽屉读那次运行目录 `agent.log` 的 INFO 以上（拿不到终端输出）；**面板退出不停它**（不是面板的子进程）
 - 身体 / Agent 每圈把这一帧交给接口（限 `viewer.fps`，没人看不压 JPEG），出错只记 DEBUG 日志；大脑时间线数据在 `brain/trace.py`（只在内存里），手动控制 `brain/manual.py` **总是真执行**（大脑 dry-run 也一样）、照样过身体的护栏，做成后放 `manual` 事件告诉大脑
-- 只听本机（画面里有好友昵称和聊天）：`viewer.host`、`console.child_port` 已废弃（读到只警告），局域网 / 手机看画面的用法取消了
+- 只听本机（画面里有好友昵称和聊天）：`viewer.host`、`console.child_port` 已废弃（读到只警告），团子的接口自己不开放给局域网；要在手机上看，开管理面板的局域网访问（见「管理面板」的安全一条）
 - `run --view` 的 `--view` 留成隐藏参数，给了只打一行提示；`run --no-browser` 也一样留成隐藏的空参数；`--viewer-port` 删了
 
 ## 面板识别（`[panels]`，大脑模式）
@@ -452,7 +452,10 @@ dir = "private/sandbox"
   面板终端里等收尾时再按一次 Ctrl+C = 强杀。19391 上已经有团子（终端起的、上次留下的）就**接管**它、不起新的；端口被别的程序占着时叫醒会报出来
 - Windows 上子进程用 `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`：有自己的隐藏控制台，关掉面板终端窗口不会把团子直接结束（**未在真机验证**）。
   面板到子进程的本机请求都**不走代理**（开着 Clash 时 urllib 默认会把 127.0.0.1 也转走）；`console.toml` / `secrets.toml` 坏了面板照样能开，在设置页和预检里报错
-- **安全**：只监听 127.0.0.1；`/api/*`、`/live/*` 都校验 Host（防 DNS 重绑定）；POST 要 `X-Skydango: 1` + JSON + ≤ 64 KB（和 viewer 共用 `is_local_host` / `post_guard`）。
+- **安全**：默认只监听 127.0.0.1；`/api/*`、`/live/*` 都校验 Host（防 DNS 重绑定）；POST 要 `X-Skydango: 1` + JSON + ≤ 64 KB（和 viewer 共用 `is_local_host` / `post_guard`）。
+  **开放给局域网**（10-27）：`[console] host = "0.0.0.0"`（只在配置文件里写，设置页不给改）+ `secrets.toml` 的 `[env] SKYDANGO_CONSOLE_PASSWORD`（没设就退回只听本机、终端提醒；运行中删了密码，别的设备一律 403）。
+  本机（回环地址）连的照旧直接用；别的设备先进 `/login` 输密码（不对多等 1 秒），cookie 由密码算出来（改了密码全员重新登录）、记 30 天、HttpOnly + SameSite=Strict。
+  Host 多认 IP 写法（`192.168.1.5:19390`），**域名照样不认**；启动时打印局域网地址。只放开面板，团子的接口（19391）和沙盒（19392）照旧只听本机。**没在真机 / 手机上试过**（第一次开会弹 Windows 防火墙，要允许专用网络）
   浏览器拿不到完整密钥（只显示「已设置（sk-…abcd）」）
 - 团子运行时不能做设备检测、不能切输入法（设备归身体线程独占）；运行中改设置照样保存，提示重启后生效
 - 设备页「输入法」一栏（`POST /api/device/ime`：`{}` 读、`{"set": id}` 切，只能切 `ime list -a -s` 里有的）：列出装了的输入法、标出当前的，点「切到这个」
