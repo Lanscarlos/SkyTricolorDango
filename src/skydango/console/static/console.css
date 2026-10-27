@@ -5,6 +5,9 @@
    各页的样式由各页任务追加到本文件末尾，每页一段 / * ---- 沙盒 ---- * / 这样的注释开头。
    多栏布局请用 .cols（窄屏时 #work 里的 .cols 一律变单列）。 */
 :root{
+  /* 认人：颜色标识名字，沿用团子的樱、艾草、烛光和紫藤。 */
+  --id-c1:var(--sakura);--id-c2:var(--matcha);--id-c3:var(--amber);--id-c4:var(--indigo);--id-c5:var(--wisteria);--id-c6:var(--rice-line);
+  --id-dango:var(--sakura-bg);--id-stranger:var(--matcha-bg);--id-skip:var(--ash);--id-unsure:var(--line);
   /* 云白底、糯米卡片、红豆字 */
   --paper:#f3f0f6;--side:#ebe5f0;--card:#fffdfb;--line:#e3dbe6;--ink:#4a3340;--muted:#7d6a76;
   --sakura:#ee8fb0;--sakura-bg:#fbe2eb;--sakura-ink:#9a3460;--sakura-deep:#d8739a;
@@ -886,3 +889,23 @@ kbd.k{display:inline-block;min-width:1.7em;padding:0 5px;border:1px solid var(--
 .us-line:empty{display:none}
 .us-line .us-totals,.us-line .us-provs{margin:0}
 .us-line .us-provs{display:flex;flex-wrap:wrap;gap:2px 20px}
+
+/* ---- 认人：名字时间线与分段答案上下对照 ---- */
+.id-cols{grid-template-columns:minmax(220px,.8fr) minmax(340px,1.6fr) minmax(270px,1.1fr)}
+.id-cols .pane{min-width:0}.id-cols select{max-width:100%;min-width:0}
+.id-cols h3{flex-wrap:wrap}.id-main{align-self:start}
+.id-item{display:flex;flex-direction:column;align-items:flex-start;width:100%;text-align:left;gap:4px;padding:12px;border:0;border-bottom:1px solid var(--line);background:var(--card);cursor:pointer}
+.id-item[data-selected=true]{background:var(--matcha-bg);box-shadow:inset 4px 0 var(--matcha-deep)}
+.id-warning{color:var(--amber-ink);background:var(--amber-bg);padding:0 7px;border-radius:var(--r-field);font-size:12px}
+.id-tagline{display:flex;min-height:26px;overflow-x:auto;gap:1px;padding:3px 0}
+.id-tick{flex:1 0 4px;min-width:4px;min-height:24px;padding:0;border:0;cursor:pointer}
+.id-tick[data-selected=true]{outline:2px solid var(--ink);outline-offset:-2px}
+.id-strip{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:10px;padding:12px;max-height:60vh;overflow-y:auto}
+.id-crop{padding:4px;border:2px solid var(--line);border-radius:var(--r-field);background:var(--paper);cursor:pointer;display:flex;flex-direction:column;align-items:center;min-width:0}
+.id-crop img{width:100%;height:140px;object-fit:contain}.id-crop span{max-width:100%;overflow-wrap:anywhere}
+.id-crop[data-selected=true]{border-color:var(--matcha-deep);background:var(--matcha-bg)}
+.id-segbar{display:flex;gap:3px;overflow-x:auto}.id-segment{flex-basis:0;min-width:70px;border:1px solid var(--line);border-radius:var(--r-field);padding:6px;cursor:pointer;color:var(--ink)}
+.id-frame{position:relative;margin:12px;min-height:50px;background:var(--paper)}
+.id-frame img{display:block;width:100%;height:auto}.id-frame canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.id-keys{display:flex;flex-wrap:wrap;gap:7px}#id-progress{font-weight:700}#id-progress[data-done="1"]{color:var(--matcha-ink)}
+#id-ready{overflow-wrap:anywhere}

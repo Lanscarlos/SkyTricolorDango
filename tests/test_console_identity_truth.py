@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 
 import cv2
@@ -78,6 +79,7 @@ def test_label_stale_mtime_409(tmp_path):
     mtime = api.state('r1')[1]['mtime']
     path = run / 'truth-draft.toml'
     path.write_text('t1 = "?"\n', encoding='utf-8')
+    os.utime(path, ns=(int(mtime) + 1_000_000, int(mtime) + 1_000_000))
     assert api.label({'run': 'r1', 'track': 1, 'segments': [[0, '小明']], 'mtime': mtime})[0] == 409
     assert path.read_text(encoding='utf-8') == 't1 = "?"\n'
 
@@ -163,9 +165,13 @@ def test_identity_routes(tmp_path, upstream, monkeypatch):
         assert request(url + 'runs') == (200, {'runs': ['r1']})
         code, state = request(url + 'state?run=r1')
         assert code == 200 and state['friends'] == ['小明', '小红']
+        assert state['mtime'] == str((tmp_path / 'tmp/identity-truth/r1/truth-draft.toml').stat().st_mtime_ns)
         for suffix in ('crop?run=r1&track=1&frame=0_0.00s.jpg', 'frame?run=r1&frame=0_0.00s.jpg'):
             with urllib.request.urlopen(url + suffix, timeout=10) as response:
                 assert response.headers['Content-Type'] == 'image/jpeg'
+                if suffix.startswith('frame?'):
+                    assert response.headers['X-Image-Width'] == '1600'
+                    assert response.headers['X-Image-Height'] == '200'
                 assert response.read().startswith(b'\xff\xd8')
         assert request(url + 'state?run=..%2Fx')[0] == 404
         assert request(url + 'crop?run=r1&track=x&frame=0_0.00s.jpg')[0] == 404

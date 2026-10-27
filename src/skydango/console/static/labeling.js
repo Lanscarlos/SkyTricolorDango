@@ -485,14 +485,16 @@ function fmLoad() { return pLoad(F); }
 function fmSetFilter(f) { return pSetFilter(F, f); }
 
 const NOTES = {
+  identity: "答案写回 tmp/identity-truth/<录像>/truth-draft.toml，标过的记在 reviewed.json；写完去命令行 --apply",
   gesture: "确认的片段挪进 datasets/gesture/<动作>/，不要的进 _discard/，每一步记在 _labels.jsonl",
   form: "确认的裁图挪进 datasets/attrs/form/<类别>/，不要的进 _discard/，每一步记在 _labels.jsonl",
   names: "只起名，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动才生效",
   frames: "通过 = 原图和标注复制进 datasets/sky/images|labels/<分边>/；不要的留在收件箱；决定记在收件箱各次运行的 frames.json",
 };
 function setTab(tab) {
+  if (LB.tab === "identity" && tab !== "identity" && window.IdentityTab) window.IdentityTab.hide();
   if (tab === "frames" && LB.framesOn === false) tab = "gesture";  // 难例收件箱关着：没有整帧页
-  LB.tab = tab === "form" || tab === "names" || tab === "frames" ? tab : "gesture";
+  LB.tab = ["form", "names", "frames", "identity"].includes(tab) ? tab : "gesture";
   window.LabelingTab = LB.tab;
   for (const b of $("lb-tabs").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.tab === LB.tab));
   const form = LB.tab === "form", names = LB.tab === "names", gesture = LB.tab === "gesture";
@@ -504,6 +506,8 @@ function setTab(tab) {
   const fr = window.FramesTab, frTab = LB.tab === "frames", fhas = !!(fr && fr.hasData());
   $("fr-train").hidden = !frTab; if (frTab && window.RetrainBox) window.RetrainBox.load();
   $("fr-cols").hidden = !frTab || !fhas; $("fr-empty").hidden = !frTab || fhas;
+  const idTab = LB.tab === "identity", identity = window.IdentityTab, idHas = !!(identity && identity.hasData());
+  $("id-cols").hidden = !idTab || !idHas; $("id-empty").hidden = !idTab || idHas;
   startTimer();  // 动作页之外不放动图
   reload();
 }
@@ -517,7 +521,8 @@ function syncFramesTab(st) {
   if (!on && LB.tab === "frames") setTab("gesture");
 }
 function reload() {
-  if (LB.tab === "form") fmLoad();
+  if (LB.tab === "identity") { if (window.IdentityTab) window.IdentityTab.load(); }
+  else if (LB.tab === "form") fmLoad();
   else if (LB.tab === "names") { if (window.EmoteNamesTab) window.EmoteNamesTab.load(); }
   else if (LB.tab === "frames") { if (window.FramesTab) window.FramesTab.load(); }
   else load();
@@ -533,6 +538,7 @@ function onKey(e) {
   if ((k === "Enter" || k === " ") && t && t.closest && t.closest("button,a,summary")) return;  // 键盘移到按钮上时回车 / 空格交给按钮
   let act = null;
   if (LB.tab === "names") return;  // 动作名页：输入框里回车就是保存，别的键不管
+  if (LB.tab === "identity") { if (window.IdentityTab) window.IdentityTab.key(e); return; }
   if (LB.tab === "frames") { if (window.FramesTab) window.FramesTab.key(e); return; }  // 整帧页自己管按键（过目 / 编辑两套）
   if (LB.tab === "form") {
     if (k === "Enter") act = fmAgree;
@@ -582,6 +588,7 @@ Pages.labeling = {
   },
   hide() {
     LB.active = false;
+    if (window.IdentityTab) window.IdentityTab.hide();
     stopTimer();
     if (window.FramesTab) window.FramesTab.hide();  // 松开空格、丢掉拖到一半的框
     if (LB.keyBound) { document.removeEventListener("keydown", onKey); LB.keyBound = false; }

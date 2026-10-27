@@ -8,7 +8,43 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "dangotrack.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "labeling.js", "models.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "dangotrack.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "identity.js", "labeling.js", "models.js", "settings.js", "device.js"]
+
+
+def _identity_js(expr):
+    node = shutil.which('node') or pytest.skip('没有 node')
+    js = f'const I=require({json.dumps(str(STATIC / "identity.js"))});console.log(JSON.stringify({expr}))'
+    return json.loads(subprocess.run([node, '-e', js], capture_output=True, text=True, encoding='utf-8', check=True).stdout)
+
+
+def test_identity_segments():
+    assert _identity_js('[I.splitAt([[0,"甲"]],2),I.splitAt([[0,"甲"],[2,"乙"]],2),I.splitAt([[0,"甲"]],0),'
+        'I.relabel([[0,"甲"],[2,"甲"]],3,"乙"),I.relabel([[0,"甲"],[2,"乙"]],3,"甲"),'
+        'I.removeCut([[0,"甲"],[2,"乙"],[5,"丙"]],4.2),I.removeCut([[0,"甲"]],1),I.segAt([[0,"甲"],[2,"乙"]],2)]') == [
+        [[0, '甲'], [2, '甲']], [[0, '甲'], [2, '乙']], [[0, '甲']], [[0, '甲'], [2, '乙']],
+        [[0, '甲']], [[0, '甲'], [2, '乙']], [[0, '甲']], 1]
+
+
+def test_identity_sample_and_coverage():
+    indices = _identity_js('I.sampleIdx(100)')
+    assert len(indices) == 12 and indices[0] == 0 and indices[-1] == 99 and indices == sorted(set(indices))
+    assert _identity_js('[I.sampleIdx(5),I.sampleIdx(0),I.sampleIdx(1)]') == [[0, 1, 2, 3, 4], [], [0]]
+    assert _identity_js('I.coverage([{reviewed:true,guess:"甲",segments:[[0,"甲"],[2,"?"]],frames:[0,1,2,3].map(t=>({t}))},'
+        '{reviewed:false,guess:"甲",segments:[[0,"甲"]],frames:[0,1,2].map(t=>({t}))}])') == {'done': 2, 'total': 7}
+    assert _identity_js('I.coverage([{reviewed:false,guess:"甲",segments:[[0,"不要"]],frames:[{t:0}]}])') == {'done': 1, 'total': 1}
+
+
+def test_identity_key_labels():
+    assert _identity_js('["9","0","d","S","x","q"].map(k=>I.keyLabel(k,Array.from({length:10},(_,i)=>"好友"+(i+1))))') == [
+        '好友9', '?', '团子', '陌生人', '不要', None]
+    assert _identity_js('I.keyLabel("1",[])') is None
+
+
+def test_identity_tab_in_page():
+    page = (STATIC / 'console.html').read_text(encoding='utf-8')
+    assert 'data-tab="identity"' in page and 'id="id-cols"' in page
+    assert page.index('static/frames.js') < page.index('static/identity.js') < page.index('static/labeling.js')
+    assert 'IdentityTab' in (STATIC / 'labeling.js').read_text(encoding='utf-8')
 
 
 def bundle() -> str:  # 页面 + 样式 + 全部脚本，页面断言都对它做

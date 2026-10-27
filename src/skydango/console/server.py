@@ -874,6 +874,7 @@ class ConsoleServer:
                     q = parse_qs(url.query)
                     api = console.identity_truth()
                     run, frame = q.get("run", [""])[0], q.get("frame", [""])[0]
+                    image_headers = {}
                     if url.path.endswith("/crop"):
                         try:
                             track = int(q.get("track", [""])[0])
@@ -881,13 +882,16 @@ class ConsoleServer:
                             track = -1
                         data = api.crop(run, track, frame)
                     else:
-                        data = api.frame(run, frame)
+                        view = api.frame_view(run, frame)
+                        data = view[0] if view else None
+                        if view:
+                            image_headers = {"X-Image-Width": str(view[1][0]), "X-Image-Height": str(view[1][1])}
                     if data is None:
                         code, state = api.state(run)
                         text = f'录像目录不在了：{state["source"]}' if state.get("source_missing") else "没有这一帧"
                         self._json(404, {"ok": False, "text": text})
                     else:
-                        self._send(200, "image/jpeg", data)
+                        self._send(200, "image/jpeg", data, image_headers)
                 elif url.path == "/api/frames/state":
                     self._json(200, console.frames_api().state())
                 elif url.path == "/api/frames/image":
@@ -1018,11 +1022,13 @@ class ConsoleServer:
             def _json(self, code: int, data) -> None:
                 self._send(code, "application/json; charset=utf-8", json.dumps(data, ensure_ascii=False).encode(errors="replace"))
 
-            def _send(self, code: int, ctype: str, body: bytes) -> None:
+            def _send(self, code: int, ctype: str, body: bytes, headers=None) -> None:
                 try:
                     self.send_response(code)
                     self.send_header("Content-Type", ctype)
                     self.send_header("Cache-Control", "no-store")
+                    for key, value in (headers or {}).items():
+                        self.send_header(key, value)
                     if code != 204:
                         self.send_header("Content-Length", str(len(body)))
                     self.end_headers()

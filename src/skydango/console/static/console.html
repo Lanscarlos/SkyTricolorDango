@@ -243,7 +243,7 @@
     </div>
   </section>
   <section id="page-labeling" class="page" hidden>
-    <div class="page-title"><h1>标注</h1><span class="seg" id="lb-tabs" role="group" aria-label="标注哪一种"><button type="button" data-tab="gesture" aria-pressed="true">动作</button><button type="button" data-tab="form" aria-pressed="false">外形</button><button type="button" data-tab="names" aria-pressed="false">动作名</button><button type="button" data-tab="frames" aria-pressed="false">整帧</button></span><span class="note" id="lb-note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
+    <div class="page-title"><h1>标注</h1><span class="seg" id="lb-tabs" role="group" aria-label="标注哪一种"><button type="button" data-tab="gesture" aria-pressed="true">动作</button><button type="button" data-tab="form" aria-pressed="false">外形</button><button type="button" data-tab="names" aria-pressed="false">动作名</button><button type="button" data-tab="frames" aria-pressed="false">整帧</button><button type="button" data-tab="identity" aria-pressed="false">认人</button></span><span class="note" id="lb-note">确认的片段挪进 datasets/gesture/&lt;动作&gt;/，不要的进 _discard/，每一步记在 _labels.jsonl</span><span class="grow"></span><button class="btn sm" type="button" id="lb-refresh">刷新</button></div>
     <div class="banner warn" id="lb-empty" hidden></div>
     <div class="cols lb-cols" id="lb-cols">
       <section class="pane lb-listpane" aria-label="片段列表">
@@ -332,6 +332,27 @@
         <div id="fr-train-adopt"></div>
       </div>
     </section>
+    <div class="banner warn" id="id-empty" hidden></div>
+    <div class="cols id-cols" id="id-cols" hidden>
+      <section class="pane lb-listpane" aria-label="身份轨迹列表">
+        <h3>录像 <select id="id-run" aria-label="选择录像"></select></h3>
+        <div class="pane-body"><select id="id-filter" aria-label="筛选身份轨迹"><option value="all">全部</option><option value="todo">没标的</option><option value="two">挂过两个名字</option><option value="unsure">?</option></select>
+          <p id="id-progress" role="status"></p><p class="note" id="id-ready"></p></div>
+        <div class="lb-list" id="id-list"></div>
+      </section>
+      <section class="pane id-main" aria-label="轨迹时间线和裁图">
+        <h3><span id="id-title">选一条轨迹</span><span class="grow"></span><button class="btn sm" id="id-expand" type="button">展开全部帧</button></h3>
+        <div class="pane-body"><p class="note">挂的名字 · 点时间线逐帧看</p><div id="id-tagline" class="id-tagline"></div></div>
+        <div id="id-strip" class="id-strip"></div>
+        <div class="pane-body"><p class="note">当前答案 · / 切开，分别标前后两段</p><div id="id-segbar" class="id-segbar"></div></div>
+      </section>
+      <section class="pane lb-side" aria-label="整帧和身份操作">
+        <h3>选中的人在整帧里</h3>
+        <div id="id-frame" class="id-frame"><img id="id-frame-image" alt="录像整帧" hidden><canvas id="id-frame-boxes" aria-label="选中人物的框加粗" hidden></canvas></div>
+        <h3>标选中帧所在的段</h3><div class="pane-body id-keys" id="id-keys"></div>
+        <p class="pane-body note" id="id-note"></p>
+      </section>
+    </div>
     <div class="banner warn" id="fr-empty" hidden></div>
     <div class="cols fr-cols" id="fr-cols" hidden>
       <section class="pane lb-listpane" aria-label="帧列表">
@@ -432,6 +453,7 @@
 <script src="console/static/emotenames.js"></script>
 <script src="console/static/retrain.js"></script>
 <script src="console/static/frames.js"></script>
+<script src="console/static/identity.js"></script>
 <script src="console/static/labeling.js"></script>
 <script src="console/static/models.js"></script>
 <script src="console/static/settings.js"></script>

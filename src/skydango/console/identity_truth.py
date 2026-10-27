@@ -155,7 +155,7 @@ class IdentityTruth:
                     tracks.append(dict(id=id, frames=frames, guess=guesses[id],
                                        segments=[list(s) for s in segs], reviewed=reviewed,
                                        two_names=len(set(names.values())) >= 2))
-                return 200, dict(ok=True, run=run, mtime=mtime, source=source,
+                return 200, dict(ok=True, run=run, mtime=str(mtime), source=source,
                                  source_missing=not Path(source).is_dir(), friends=friends,
                                  friends_note=None if friends else '读不到好友名单（friends.md），只能标团子 / 陌生人 / 不要 / ?',
                                  coverage=dict(done=done, total=total), tracks=tracks)
@@ -164,7 +164,7 @@ class IdentityTruth:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 return _error(400, str(exc))
 
-    def _image(self, run, frame, track=None):
+    def _image(self, run, frame, track=None, dimensions=False):
         try:
             path = self._run(run)
             logs = load_logs(path / 'logs.json')
@@ -180,6 +180,7 @@ class IdentityTruth:
             if img is None:
                 return None
             h, w = img.shape[:2]
+            original_size = (w, h)
             if track is not None:
                 x1, x2 = max(0, int(box.x - box.w * .15)), min(w, int(box.x2 + box.w * .15))
                 y1, y2 = max(0, int(box.y - box.h * .15)), min(h, int(box.y2 + box.h * .15))
@@ -192,7 +193,9 @@ class IdentityTruth:
             elif w > 1280:
                 img = cv2.resize(img, (1280, max(1, round(h * 1280 / w))))
             ok, encoded = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            return encoded.tobytes() if ok else None
+            if not ok:
+                return None
+            return (encoded.tobytes(), original_size) if dimensions else encoded.tobytes()
         except (OSError, ValueError, KeyError, TypeError, cv2.error):
             return None
 
@@ -202,13 +205,17 @@ class IdentityTruth:
     def frame(self, run: str, frame: str) -> bytes | None:
         return self._image(run, frame)
 
+    def frame_view(self, run: str, frame: str):
+        """整帧及原始尺寸，供缩图上叠加标注框。"""
+        return self._image(run, frame, dimensions=True)
+
     def _edit(self, body, undo=False):
         with _LOCK:
             try:
                 path = self._run(body.get('run'))
                 draft, reviewed = path / 'truth-draft.toml', path / 'reviewed.json'
                 mtime = draft.stat().st_mtime_ns
-                if body.get('mtime') != mtime:
+                if body.get('mtime') != str(mtime):
                     return _error(409, '草稿在别处改过，刷新一下')
                 bak, rbak = path / 'truth-draft.toml.bak', path / 'reviewed.json.bak'
                 if undo:
@@ -239,7 +246,7 @@ class IdentityTruth:
                 if draft.stat().st_mtime_ns != mtime:
                     return _error(409, '草稿在别处改过，刷新一下')
                 _replace_files(files)
-                return 200, {'ok': True, 'mtime': draft.stat().st_mtime_ns}
+                return 200, {'ok': True, 'mtime': str(draft.stat().st_mtime_ns)}
             except FileNotFoundError as exc:
                 return _error(404, str(exc))
             except (OSError, ValueError, KeyError, TypeError) as exc:
