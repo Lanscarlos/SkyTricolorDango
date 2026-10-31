@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from dataclasses import dataclass, replace
@@ -140,3 +141,87 @@ def _when(d: date, today: date) -> str:
 def show(e: Entry, today: date) -> str:
     """给大脑看的样子：去掉方括号，日期写成相对时间；日期不详只给正文。"""
     return e.text if e.date is None else f"{e.text}（{_when(e.date, today)}）"
+
+
+# ---- 写盘前的兜底：取代、补日期、近况淡出、整理把关、常驻切分 ----
+SIMILAR = 0.8  # 补日期时，新旧两条文字相似度的门槛
+_MIN_OLD_FOR_SHRINK = 6  # 旧笔记不到这么多条时不管条目骤减
+
+
+def _redate(e: Entry, d: date) -> Entry:
+    e2 = replace(e, date=d)
+    return replace(e2, raw=entry_line(e2)[2:])
+
+
+def settle(old: list[Entry], new: list[Entry], today: date, recent_days: int) -> tuple[list[Entry], list[tuple[Entry, str]]]:
+    """整理拿到模型输出后、写盘前：补日期 → 同键取代 → 近况淡出。返回（留下的，[(挪走的, 原因)]）。"""
+    gone: list[tuple[Entry, str]] = []
+    # 1. 补日期：模型漏写日期时，借旧笔记同一节里最像的那条的
+    filled: list[Entry] = []
+    for e in new:
+        if e.date is None:
+            best, best_r = None, SIMILAR
+            for o in old:
+                if o.section != e.section or o.date is None:
+                    continue
+                r = difflib.SequenceMatcher(None, o.text, e.text).ratio()
+                if r >= best_r:
+                    best, best_r = o, r
+            if best is not None:
+                e = _redate(e, best.date)
+        filled.append(e)
+    # 2. 同一节、同一个键：留日期最新的（一样新留写得靠后的）
+    winner: dict[tuple[str, str], int] = {}
+    for i, e in enumerate(filled):
+        if not e.key:
+            continue
+        k = (e.section, e.key)
+        j = winner.get(k)
+        if j is None or (e.date or date.min) >= (filled[j].date or date.min):
+            winner[k] = i
+    keep: list[Entry] = []
+    for i, e in enumerate(filled):
+        if e.key and winner[(e.section, e.key)] != i:
+            gone.append((e, f"被取代：{filled[winner[(e.section, e.key)]].text}"))
+        else:
+            keep.append(e)
+    # 3. 近况淡出：长期的不按时间淡出；未来的日期（笔误）不当过期
+    out: list[Entry] = []
+    for e in keep:
+        if not e.pinned and e.date is not None and (today - e.date).days > recent_days:
+            gone.append((e, "近况过期"))
+        else:
+            out.append(e)
+    return out, gone
+
+
+def check_rewrite(old_text: str, new_text: str) -> str | None:
+    """整理结果像不像样；该拒绝就返回原因。"""
+    lines = [ln.strip() for ln in (new_text or "").splitlines() if ln.strip()]
+    body = [ln for ln in lines if not ln.startswith("## ")]
+    junk = [ln for ln in body if not ln.startswith("- ")]
+    if body and len(junk) * 2 > len(body):
+        return f"{len(body)} 行里有 {len(junk)} 行解析不了"
+    n_old, n_new = len(parse_notes(old_text)), len(parse_notes(new_text))
+    if n_old >= _MIN_OLD_FOR_SHRINK and n_new * 2 < n_old:
+        return f"条目从 {n_old} 条骤减到 {n_new} 条"
+    return None
+
+
+def split_pinned(entries: list[Entry], today: date, pinned_max: int) -> tuple[list[Entry], list[Entry]]:
+    """长期条目渲染后超过 pinned_max 字时不删，只把超出的挪出常驻：日期最旧的先挪（日期不详最旧），`自己` 最后。
+    返回（常驻的，挪出常驻的）。"""
+    pinned = [e for e in entries if e.pinned]
+    total = sum(len(entry_line(e)) for e in pinned)
+    moved: list[Entry] = []
+    while pinned and total > pinned_max:
+        pool = [e for e in pinned if e.section != SELF] or pinned
+        victim = min(pool, key=lambda e: e.date or date.min)  # min 取第一个：一样旧的先挪文件里靠前的
+        pinned.remove(victim)
+        moved.append(victim)
+        total -= len(entry_line(victim))
+    return pinned, moved
+
+
+def archive_line(e: Entry, today: date, reason: str) -> str:
+    return f"- 〔挪走 {today.isoformat()}：{reason}〕{e.raw}"
