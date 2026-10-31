@@ -193,6 +193,7 @@ def test_memory_update_uses_memory_model(tmp_path, monkeypatch):
     env.update(FAKE_CLAUDE_MODE="ok", FAKE_CLAUDE_LOG=str(tmp_path / "claude.jsonl"))
     cfg = old_world(monkeypatch, Config(), FAKE, env)  # [models.memory] = claude/sonnet（假 claude 进程）
     cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.memory_entries = False  # 假 claude 把整段材料原样写回，不是条目格式；这里只测走的是 [models.memory]
     MemoryStore(cfg.reply.memory_dir).history.append("懒洋洋大王：「我加班」", "辛苦啦", 1.0)
     cli.cmd_memory(cfg, argparse.Namespace(action="update"))
     assert "我加班" in MemoryStore(cfg.reply.memory_dir).notes()  # 假 claude 把收到的内容原样写回

@@ -3237,6 +3237,16 @@ def _run_brain(
     body.brain_turn = lambda: brain.last_turn  # 替大脑开的输入框：开框之后的那一轮结束了没说话就关
     if cfg.pacing.manner:  # 回法那一行（spec 2026-10-07-chat-pacing §2）：在身体线程里算，等不到就这一轮不加
         brain.manner = lambda batch: body.call(lambda: body.manner_line(batch), timeout=3)
+    if store is not None and cfg.reply.memory_entries:  # 想起来的：按这一轮的人和话从近况里挑几条（spec 2026-10-31-memory-entries §3.2）
+        try:
+            from .brain.recollect import Recollector, friend_matcher
+
+            body.recollector = Recollector(
+                lambda: (store.notes(), store.inbox()), friend_matcher(body.friend_names, store.friends), cfg.reply, body.wall,
+            )
+            brain.recollect = lambda ev, ep: body.call(lambda: body.recollect_line(ev, ep), timeout=3)
+        except Exception:
+            log.warning("想起来的组装出错，这次上线不带", exc_info=True)
     if body.lulls is not None:  # 冷场时大脑心里想的（“心里：”）记到身体那边
         def hand_over(text: str) -> None:
             # 不等身体：身体在自动喊（约 4 秒）时 call 会超时报 ERROR、丢掉这轮的“心里”；退出时身体已停，直接丢掉

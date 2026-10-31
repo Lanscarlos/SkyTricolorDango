@@ -85,6 +85,8 @@ class Brain:
         self.chat_turn = False  # 正在回聊天（这一轮取走了聊天 / 主人命令，还没结束）：身体据此别把聊天面板当成安静关掉
         # 回法（spec 2026-10-07-chat-pacing §2）：这批聊天 (说话人, 原文) → 「回法：…」一行；cli 接成在身体线程里算
         self.manner: Callable[[list[tuple[str, str]]], str | None] | None = None
+        # 想起来的（spec 2026-10-31-memory-entries §3.2）：(这批事件, 压缩换上过几次) → 「想起来的：…」一段；cli 接成在身体线程里算
+        self.recollect: Callable[[list[Event], int], str | None] | None = None
 
     # ---- 什么时候醒 ----
     def offline(self, now: float) -> bool:
@@ -145,9 +147,22 @@ class Brain:
         manner = self._manner(events)
         if manner:
             lines.append(manner)
+        recalled = self._recollect(events)
+        if recalled:
+            lines.append(recalled)
         lines.append("状态：" + self.toolbox.status())
         lines.append(self.eyes.summary(now) if self.eyes is not None else "场景：（没开眼睛）")
         return "\n".join(lines)
+
+    def _recollect(self, events: list[Event]) -> str | None:
+        """「想起来的：」一段；钩子出错不加。压缩换上过几次当 epoch：换一次就可以把带过的再带一遍（原话已经被压没了）。"""
+        if self.recollect is None:
+            return None
+        try:
+            return self.recollect(events, getattr(self.session, "compactions", 0))
+        except Exception as exc:
+            log.warning("想起来的出错，这一轮不加：%s", exc)
+            return None
 
     def _manner(self, events: list[Event]) -> str | None:
         """被聊天叫醒的那一轮（取走了 chat / aside、没有主人命令）才拼「回法」一行；钩子出错不加。"""

@@ -6,7 +6,7 @@ import pytest
 
 from skydango.brain.claude import ClaudeError
 from skydango.models.gate import ProviderGates
-from skydango.brain.events import EventQueue
+from skydango.brain.events import Event, EventQueue
 from skydango.brain.loop import Brain, log_brain_message
 from skydango.brain.prompt import SUMMARY_REQUEST
 from skydango.chat.memory import MemoryStore
@@ -724,3 +724,46 @@ def test_manner_aside_only_gets_empty_batch(clock):
     events.put("aside", "聊天  小明：「哈哈」（跟别人说）", speech=("小明", "哈哈"))
     brain.wake(clock() + 1.0, "events")
     assert got == [[]]
+
+
+# ---- 想起来的（spec 2026-10-31-memory-entries §3.2）----
+def test_message_inserts_recollect_before_status(clock):
+    brain, events, _, _ = make(clock, FakeSession())
+    brain.recollect = lambda ev, ep: "想起来的：\n- 小明：腿摔了（昨天）"
+    events.put("chat", "聊天  小明：「疼死了」", speech=("小明", "疼死了"))
+    text = brain.message(clock(), events.drain())
+    assert text.index("想起来的：") < text.index("状态：")
+
+
+def test_message_recollect_after_manner(clock):
+    brain, _, _, _ = make(clock, FakeSession())
+    brain.manner = lambda batch: "回法：好好说"
+    brain.recollect = lambda ev, ep: "想起来的：\n- 小明：腿摔了（昨天）"
+    ev = [Event("chat", "聊天", 0.0, speech=("小明", "疼"))]
+    text = brain.message(clock(), ev)
+    assert text.index("回法：") < text.index("想起来的：") < text.index("状态：")
+
+
+def test_message_recollect_error_skipped(clock):
+    brain, _, _, _ = make(clock, FakeSession())
+
+    def boom(ev, ep):
+        raise RuntimeError("坏了")
+
+    brain.recollect = boom
+    assert "想起来的" not in brain.message(clock(), [])
+
+
+def test_message_passes_compactions_as_epoch(clock):
+    session = FakeSession()
+    session.compactions = 3
+    brain, _, _, _ = make(clock, session)
+    seen = []
+    brain.recollect = lambda ev, ep: seen.append(ep)
+    brain.message(clock(), [])
+    assert seen == [3]
+
+
+def test_message_without_hook_unchanged(clock):
+    brain, _, _, _ = make(clock, FakeSession())
+    assert "想起来的" not in brain.message(clock(), [])

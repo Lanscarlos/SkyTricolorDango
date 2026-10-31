@@ -42,9 +42,10 @@ from ..vision.icons_map import describe_icons
 from ..vision.people import describe_people, describe_things, side_of
 from .calling import CallResult, call_available, event_text as call_event_text, status_text as call_status_text
 from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
-from .events import EventQueue
+from .events import Event, EventQueue
 from .find import FindSkill
 from .manner import jab_note, manner as manner_text
+from .recollect import Recollector
 from .pacing import Pacer
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
@@ -175,6 +176,7 @@ class Body:
         self._soft_until: dict[str, tuple[float, str]] = {}  # 说了难过的好友 → (收着点到什么时候, 他的原话)
         self.profile_text: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
         self.memory_notes: Callable[[], str] = lambda: ""  # 反思用的笔记（cli 设成 notes.md + inbox.md）
+        self.recollector: Recollector | None = None  # 想起来的（[reply] memory_entries，cli 设）
         self.friends_text: Callable[[], str] = lambda: ""  # 反思用的好友名单（cli 设成 friends.md）：日记里称呼、性别照它
         self.recap_text: Callable[[], str] = lambda: ""  # 大脑这次上线的前情提要（OpenAI 兼容大脑压过历史才有，cli 设），下线反思用
         self.recent_changes: Callable[[], list[str]] | None = None  # introspect(改动)：最近几天的提交（cli 在幕后开着时设）
@@ -665,6 +667,12 @@ class Body:
         self._open_bubble(now)
 
     # ---- 攒话（spec 2026-10-07-chat-pacing §1）----
+    def recollect_line(self, events: list[Event], epoch: int) -> str | None:
+        """唤醒消息里「想起来的：…」那一段（记忆条目化）；没挂 recollector 就没有。cli 让大脑醒来时在身体线程里调。"""
+        if self.recollector is None:
+            return None
+        return self.recollector.line(events, epoch)
+
     def manner_line(self, batch: list[tuple[str, str]]) -> str | None:
         """唤醒消息里「回法：…」那一行（§2）：最近几句贱不贱、心情、困不困；cli 让大脑醒来时在身体线程里调。"""
         mood, sleepy = None, False

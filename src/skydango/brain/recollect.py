@@ -14,6 +14,8 @@ from datetime import datetime
 
 from ..chat.entries import SELF, Entry, pinned_view, show
 from ..config import ReplyConfig
+from ..inner.ledger import match_friend
+from .addressee import parse_aliases
 from .events import Event
 
 log = logging.getLogger(__name__)
@@ -26,6 +28,24 @@ WORD_SCORE = 1.0  # 每个重合的两字片段
 WORD_MAX = 3.0
 NO_DATE_FRESH = 0.3  # 日期不详的新鲜度
 ARRIVE_LATEST = 3  # 好友来了：先带他那一节最新的几条近况
+
+
+def friend_matcher(names: Callable[[], list[str]], friends_md: Callable[[], str]) -> Callable[[str], str | None]:
+    """说话人 → 好友名（对应 notes.md 的 `## 节`）：先按昵称模糊匹配（OCR 错字），再看 friends.md 的 `- 叫法：`（≥ 3 个字的允许错一个字，短的只认原样）。"""
+
+    def match(who: str) -> str | None:
+        who = (who or "").strip()
+        friends = list(names())
+        found = match_friend(who, friends)
+        if found:
+            return found
+        for name, words in parse_aliases(friends_md() or "", friends).items():
+            for a in words[1:]:
+                if who == a or (len(a) >= 3 and match_friend(who, [a])):
+                    return name
+        return None
+
+    return match
 
 
 def bigrams(text: str) -> set[str]:

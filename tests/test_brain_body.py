@@ -2465,3 +2465,29 @@ def test_say_limits_loosened_by_default():
 
     c = Config()
     assert c.reply.max_per_minute == 15 and c.brain.max_says == 4
+
+
+# ---- 想起来的（记忆条目化）----
+def test_recollect_line_none_without_recollector(clock):
+    b, *_ = body(clock)
+    assert b.recollect_line([], 0) is None
+
+
+def test_recollect_line_goes_through_recollector(clock):
+    from skydango.brain.events import Event
+    from skydango.brain.recollect import Recollector
+
+    b, *_ = body(clock)
+    notes = "## 小明\n- 腿摔了 〔2026-10-30〕\n"
+    b.recollector = Recollector(lambda: (notes, ""), lambda w: w, b.cfg.reply, lambda: 1_790_000_000.0)
+    out = b.recollect_line([Event("chat", "x", 0.0, speech=("小明", "腿还疼吗"))], 0)
+    assert out and "腿摔了" in out
+
+
+def test_friend_matcher_nick_typo_alias():
+    from skydango.brain.recollect import friend_matcher
+
+    md = "## 番茄炒蛋盖饭\n- 叫法：番茄、老番茄\n\n## 小明\n- 本名卡洛\n"
+    m = friend_matcher(lambda: ["番茄炒蛋盖饭", "小明"], lambda: md)
+    assert m("番茄炒蛋盖坂") == "番茄炒蛋盖饭" and m("番茄") == "番茄炒蛋盖饭" and m("老番茄") == "番茄炒蛋盖饭"
+    assert m("小明") == "小明" and m("路人甲") is None
