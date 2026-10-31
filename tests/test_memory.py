@@ -1,6 +1,20 @@
 import json
+import logging
+from datetime import datetime
+from pathlib import Path
 
-from skydango.chat.memory import ChatMemory, MemoryStore, NotesKeeper, Turn, format_gap, render_transcript
+from skydango.chat.memory import (
+    MEMO_SYSTEM,
+    MEMO_SYSTEM_ENTRIES,
+    NOTES_SYSTEM,
+    NOTES_SYSTEM_ENTRIES,
+    ChatMemory,
+    MemoryStore,
+    NotesKeeper,
+    Turn,
+    format_gap,
+    render_transcript,
+)
 from skydango.chat.reader import Message
 from skydango.chat.responder import Responder, build_system_prompt
 from skydango.config import ReplyConfig
@@ -239,3 +253,95 @@ def test_update_now_ignores_retry_after(tmp_path):
     keeper = NotesKeeper(llm, store, persona="", every=1, background=False, wall=lambda: 1000.0)
     keeper.maybe_update()
     assert keeper.update_now() is True  # memory update 命令直接调，不看冷却
+
+
+# ---- 记忆条目化（spec 2026-10-31-memory-entries） ----
+BASELINE = Path(__file__).parent / "data" / "memory_prompts_baseline.json"
+
+
+def at(text):
+    t = datetime.strptime(text, "%Y-%m-%d %H:%M").timestamp()
+    return lambda: t
+
+
+def entries_keeper(store, llm, wall, cfg=None):
+    return NotesKeeper(llm, store, persona="", every=100, background=False, wall=wall, entries=cfg or ReplyConfig())
+
+
+def test_entries_off_prompts_unchanged():
+    assert [MEMO_SYSTEM, NOTES_SYSTEM] == json.loads(BASELINE.read_text("utf-8"))["prompts"]
+
+
+def test_entries_off_keeper_uses_old_prompts(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.write_notes("## 自己\n- 旧")
+    store.add_memos(["小明：新事"])
+    for cfg in (None, ReplyConfig(memory_entries=False)):
+        llm = ScriptedLlm(["## 自己\n- 旧\n- 新"])
+        NotesKeeper(llm, store, persona="", background=False, entries=cfg).update_now()
+        assert llm.calls[0][0] == NOTES_SYSTEM
+        store.add_memos(["小明：新事"])
+    llm = ScriptedLlm(["无"])
+    NotesKeeper(llm, store, persona="", background=False, entries=ReplyConfig(memory_entries=False)).jot(Turn(1.0, "a", "b"))
+    assert llm.calls[0][0] == MEMO_SYSTEM
+
+
+def test_update_supersedes_and_archives(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.write_notes("## 番茄\n- 早饭吃榴莲包子 〔2026-10-24｜早饭〕\n")
+    llm = ScriptedLlm(["## 番茄\n- 早饭吃榴莲包子 〔2026-10-24｜早饭〕\n- 早饭吃油条 〔2026-10-31｜早饭〕\n"])
+    k = entries_keeper(store, llm, at("2026-10-31 22:00"))
+    store.add_memos(["番茄：早饭吃油条 〔2026-10-31｜早饭〕"])
+    assert k.update_now()
+    assert llm.calls[0][0] == NOTES_SYSTEM_ENTRIES
+    assert "榴莲" not in store.notes() and "油条" in store.notes()
+    assert "被取代：早饭吃油条" in store.archive_path.read_text("utf-8")
+
+
+def test_update_rejects_bad_rewrite(tmp_path, caplog):
+    old = "## 番茄\n" + "".join(f"- 第{i}条 〔2026-10-31〕\n" for i in range(10))
+    store = MemoryStore(tmp_path)
+    store.write_notes(old)
+    store.add_memos(["番茄：x"])
+    k = entries_keeper(store, ScriptedLlm(["## 番茄\n- 第1条\n"]), at("2026-10-31 22:00"))
+    with caplog.at_level(logging.WARNING):
+        assert not k.update_now()
+    assert store.notes() == old.strip() and store.inbox()  # 拒绝时 inbox 不消化
+    assert "拒绝" in caplog.text and not store.archive_path.exists()
+
+
+def test_first_entries_update_backs_up_once(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.write_notes("## 番茄\n- 旧笔记")
+    store.history.append("a", "b", 100.0)
+    llm = ScriptedLlm(["## 番茄\n- 旧笔记 〔2026-10-31｜长期〕", "## 番茄\n- 旧笔记 〔2026-10-31｜长期〕\n- 新 〔2026-10-31〕"])
+    k = entries_keeper(store, llm, at("2026-10-31 22:00"))
+    assert k.update_now()
+    store.add_memos(["番茄：新"])
+    assert k.update_now()
+    backups = list((tmp_path / "archive").glob("notes-*.md"))
+    assert len(backups) == 1 and backups[0].read_text("utf-8").strip() == "## 番茄\n- 旧笔记"
+    state = json.loads((tmp_path / "notes_state.json").read_text("utf-8"))
+    assert state["until"] == 100.0 and "entries_since" in state  # 合并写，until 没被盖掉
+
+
+def test_update_accepts_fenced_output_with_preamble(tmp_path):
+    out = "好的，以下是更新后的笔记：\n```markdown\n## 番茄\n- 养仓鼠 〔2026-10-31｜长期〕\n" + "".join(
+        f"- 第{i}条 〔2026-10-31〕\n" for i in range(6)) + "```"
+    store = MemoryStore(tmp_path)
+    store.add_memos(["番茄：养仓鼠"])
+    k = entries_keeper(store, ScriptedLlm([out]), at("2026-10-31 22:00"))
+    assert k.update_now()
+    assert "养仓鼠" in store.notes() and "好的" not in store.notes() and "```" not in store.notes()
+
+
+def test_entries_prompts_mention_rules():
+    assert "不同的两天" in NOTES_SYSTEM_ENTRIES and "〔" in NOTES_SYSTEM_ENTRIES and "键" in NOTES_SYSTEM_ENTRIES
+    assert "〔" in MEMO_SYSTEM_ENTRIES and "长期" in MEMO_SYSTEM_ENTRIES
+
+
+def test_jot_entries_uses_entries_prompt(tmp_path):
+    store = MemoryStore(tmp_path)
+    llm = ScriptedLlm(["- 番茄：煮了酸辣粉 〔2026-10-31〕"])
+    entries_keeper(store, llm, at("2026-10-31 22:00")).jot(Turn(1.0, "a", "b"))
+    assert llm.calls[0][0] == MEMO_SYSTEM_ENTRIES and "酸辣粉" in store.inbox()

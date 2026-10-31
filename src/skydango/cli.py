@@ -323,7 +323,7 @@ def cmd_memory(cfg: Config, args) -> None:
         llm = _registry(cfg, Path("tmp/memory-models")).call("memory", timeout=cfg.brain.memory_timeout)
         if not llm.available():
             raise SystemExit("整理记忆的模型用不了：" + _registry(cfg, Path("tmp")).describe("memory"))
-        keeper = NotesKeeper(llm, store, cfg.reply.persona, background=False)
+        keeper = NotesKeeper(llm, store, cfg.reply.persona, background=False, entries=cfg.reply)
         print("长期记忆已更新" if keeper.update_now() else "没有需要整理的内容（或整理失败，见日志）")
 
 
@@ -2791,7 +2791,7 @@ def _run_agent(cfg: Config, run: RunDir, no_emotes: bool = False, duration: floa
             store = command_store
             if not store.profile():
                 log.warning("还没有人设文件 %s/profile.md，先用配置里的 persona；可以运行 memory init 生成", store.dir)
-            notes = NotesKeeper(registry.call("memory", timeout=cfg.brain.memory_timeout), store, cfg.reply.persona, cfg.reply.notes_every)
+            notes = NotesKeeper(registry.call("memory", timeout=cfg.brain.memory_timeout), store, cfg.reply.persona, cfg.reply.notes_every, entries=cfg.reply)
         icons = _icon_classifier(cfg) if cfg.env.enabled else None
         env = _scene_watcher(cfg, icons, dev, run=run) if cfg.env.enabled else None
         social = None
@@ -3104,7 +3104,7 @@ def _run_brain(
             if not cfg.reply.dry_run:
                 # 随手记、整理 notes.md：[models.memory]，在记忆后台线程里跑
                 memory_llm = registry.call("memory", timeout=cfg.brain.memory_timeout)
-                notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every, wall=wall)
+                notes = NotesKeeper(memory_llm, store, cfg.reply.persona, cfg.reply.notes_every, wall=wall, entries=cfg.reply)
         live_store = None if cfg.reply.dry_run else store
         ledger = _inner_ledger(cfg, store, wall())
         mind, reflector = _inner_mind(cfg, ledger, registry, wall(), clock)

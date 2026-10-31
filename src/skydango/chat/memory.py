@@ -17,7 +17,14 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from .entries import archive_line, check_rewrite, parse_notes, render_notes, settle
+
+if TYPE_CHECKING:
+    from ..config import ReplyConfig
 
 log = logging.getLogger(__name__)
 
@@ -157,15 +164,63 @@ class MemoryStore:
         tmp.write_text(text.strip() + "\n", encoding="utf-8")
         tmp.replace(self.dir / "notes.md")  # 先写临时文件再改名，写到一半崩了也不会丢旧笔记
 
+    def _state_dict(self) -> dict:
+        try:
+            d = json.loads(self._state.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError, OSError):
+            return {}
+        return d if isinstance(d, dict) else {}
+
     def notes_until(self) -> float:
         try:
-            return float(json.loads(self._state.read_text(encoding="utf-8"))["until"])
-        except (FileNotFoundError, ValueError, KeyError, TypeError):
+            return float(self._state_dict()["until"])
+        except (KeyError, ValueError, TypeError):
             return float("-inf")
 
     def set_notes_until(self, t: float) -> None:
+        self._merge_state(until=t)
+
+    def _merge_state(self, **kv) -> None:
+        """合并写 notes_state.json：不覆盖别的键。"""
+        d = self._state_dict()
+        d.update(kv)
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._state.write_text(json.dumps({"until": t}), encoding="utf-8")
+        self._state.write_text(json.dumps(d), encoding="utf-8")
+
+    def entries_since(self) -> float | None:
+        """记忆条目化第一次整理的时间（有了就不再备份旧 notes）；没整理过是 None。"""
+        try:
+            return float(self._state_dict()["entries_since"])
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    def set_entries_since(self, t: float) -> None:
+        self._merge_state(entries_since=t)
+
+    @property
+    def archive_path(self) -> Path:
+        return self.dir / "notes_archive.md"
+
+    def archive(self) -> str:
+        return _read(self.archive_path)
+
+    def append_archive(self, lines: list[str]) -> None:
+        """被取代 / 过期的条目挪到这里（recall 翻得到，用户可以手动挪回去）。"""
+        if not lines:
+            return
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with self.archive_path.open("a", encoding="utf-8") as fh:
+            fh.write("".join(f"{ln}\n" for ln in lines))
+
+    def backup_notes(self, stamp: str) -> Path | None:
+        """把 notes.md 复制到 archive/notes-<stamp>.md；没有 notes 返回 None。"""
+        src = self.dir / "notes.md"
+        if not src.is_file():
+            return None
+        dst = self.dir / "archive" / f"notes-{stamp}.md"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+        return dst
 
     def pending_turns(self) -> list[Turn]:
         until = self.notes_until()
@@ -199,6 +254,47 @@ NOTES_SYSTEM = """你负责整理一个《光遇》玩家的长期记忆笔记�
 - 聊天记录是截图识别出来的，可能有错字；拿不准的不记。
 - 不记隐私：年龄、学校、住址、电话、微信 / QQ 等联系方式一律不记（对方可能是未成年人）。
 - 只输出笔记本身，不要解释。"""
+
+
+NOTES_SYSTEM_ENTRIES = """你负责整理一个《光遇》玩家的长期记忆笔记。她用这份笔记在以后的聊天里记住朋友和自己说过的话。
+根据“现有笔记”“聊天时随手记下的”和“新的聊天记录”，输出更新后的完整笔记（Markdown）。格式：
+
+## 自己
+- 在聊天里说过的关于自己的设定、经历、喜好 〔2026-10-31｜长期〕
+## <朋友的游戏昵称>
+- 养仓鼠，叫芝麻球 〔2026-10-31｜长期｜仓鼠.名字〕
+- 下周去青岛出差三天 〔2026-10-31｜出差〕
+
+每条一行，以“- ”开头，行末的方括号（全角〔〕，里面用全角“｜”分开）依次是：
+- 日期（2026-10-31 这种写法）：这件事最后一次被提起或确认的日期。
+- 长期：喜好、习惯、设定、关系、约定才写；一次性的事、最近在忙的事（近况）不写这个字。
+- 键（可选）：这件事属于哪一方面，写“对象.方面”或一个短词（比如 早饭、发型、仓鼠.名字、出差）。同一个人下面键相同的就是同一件事。“长期”不能当键。
+
+要求：
+- 什么才算长期：本人说成习惯、喜好、设定的，或者在不同的两天都提起过的。只说过一次的具体事件一律是近况，不许把几次单独的事合并成喜好（比如两天分别吃了榴莲包子和油条，是两条早饭的近况，不是“爱吃榴莲包子、油条”）。
+- 同一件事再次被提起：只把日期改成最新那天，不要重复写一条。
+- 会变的事（名字、发型、计划、在忙什么、早饭吃了什么……）给一个键；新的说法和旧的同键时，只写新的，旧的不要留。
+- 只记以后聊天用得上的。一次性的斗嘴、玩笑、“某月某日某某说了某句话”这种流水账删掉，除非是以后还会被提起的事。
+- 每条不超过 30 字；长期的条目加起来不超过 1500 字，近况不限（太旧的会由程序自动收走）。
+- 日期写具体日期，不写“今天”“下周”；现有笔记里没有方括号的老条目，按长期处理，日期写今天。
+- 人设和好友资料是用户写好的，不用重复记。
+- 聊天记录是截图识别出来的，可能有错字；拿不准的不记。
+- 不记隐私：年龄、学校、住址、电话、微信 / QQ 等联系方式一律不记（对方可能是未成年人）。
+- 只输出笔记本身，不要解释。"""
+
+
+MEMO_SYSTEM_ENTRIES = """你在帮一个《光遇》玩家记笔记。下面有好友资料、已经记下的内容，以及刚发生的一轮聊天（“我：”后面是她自己说的）。
+只挑出这轮聊天里以后用得上、而且还没记过的新信息，优先记长期成立的：喜好、习惯、关系、约定、近况（在忙什么、身体 / 心情），
+以及“我”新说出口的关于自己的设定、喜好和评价（比如“我说雨林太湿，不喜欢待”；免得以后说法不一致）。
+- 一次性的斗嘴、玩笑、夸奖吐槽、“某某说了某句话”这种流水账不记；好友资料和已经记下的内容里有的不记。
+- 每条一行，以“- ”开头，写成“- 谁：内容 〔日期｜长期｜键〕”：谁用游戏昵称或本名（自己说的用“我”）；内容不超过 30 字；同一件事只记一条。
+- 方括号用全角〔〕，里面用全角“｜”分开：日期必填（2026-10-31 这种写法，就是这轮聊天发生的那天）；
+  是习惯、喜好、设定、关系、约定才写“长期”，一次性的事和近况不写；键可选，会变的事（名字、发型、计划、在忙什么）写一个短词。
+- 看清是谁说的：“名字：”后面是那个人说的，“我：”后面是自己说的。
+- “今天”“明天”“下周六”这类相对时间换成具体日期（比如“9月27日加班到九点”“约好10月3日跑暴风眼”）。
+- 寒暄、玩笑、没信息量的话不记；已经记过的不重复记；拿不准的不记（聊天是截图识别的，可能有错字）。
+- 不记年龄、学校、住址、电话、微信 / QQ 等（对方可能是未成年人）。
+- 没有值得记的，只输出：无"""
 
 
 def _strip_fences(text: str) -> str:
@@ -240,10 +336,13 @@ class NotesKeeper:
 
     def __init__(
         self, llm, store: MemoryStore, persona: str, every: int = 15, background: bool = True, wall: Callable[[], float] = time.time,
+        entries: ReplyConfig | None = None,
     ) -> None:
         self.llm = llm
         self.store = store
         self.wall = wall  # 整理时告诉模型"今天是"哪天：沙盒传模拟时钟
+        # 记忆条目化（[reply] memory_entries）：None 或关着 = 逐字照旧
+        self.entries = entries if entries is not None and entries.memory_entries else None
         self.persona = persona
         self.every = every
         self.background = background
@@ -278,14 +377,18 @@ class NotesKeeper:
     def jot(self, turn: Turn) -> list[str]:
         """随手记：从这一轮里挑出值得记的新信息，写进 inbox。"""
         known = "\n\n".join(p for p in (self.store.notes(), self.store.inbox()) if p)
+        when = format_date(turn.t) + (f"，即 {datetime.fromtimestamp(turn.t).date().isoformat()}" if self.entries else "")
         content = (
-            f"这轮聊天发生在 {format_date(turn.t)}\n\n"
+            f"这轮聊天发生在 {when}\n\n"
             f"## 好友资料\n{self.store.friends() or '（无）'}\n\n"
             f"## 已经记下的\n{known or '（无）'}\n\n"
             f"## 刚发生的一轮聊天\n{render_transcript([turn])}"
         )
         try:
-            raw = self.llm.complete(MEMO_SYSTEM, [{"role": "user", "content": content}], max_tokens=200)
+            if self.entries:  # 方括号多占几十个字，留宽一点免得半截
+                raw = self.llm.complete(MEMO_SYSTEM_ENTRIES, [{"role": "user", "content": content}], max_tokens=300)
+            else:
+                raw = self.llm.complete(MEMO_SYSTEM, [{"role": "user", "content": content}], max_tokens=200)
         except Exception:
             log.exception("随手记失败，跳过这一轮")
             return []
@@ -311,16 +414,19 @@ class NotesKeeper:
         if not turns and not inbox:
             return False
         persona = self.store.profile() or self.persona
+        old_notes = self.store.notes()
+        today = format_date(self.wall()) + (f"，即 {datetime.fromtimestamp(self.wall()).date().isoformat()}" if self.entries else "")
         content = (
-            f"今天是 {format_date(self.wall())}\n\n"
+            f"今天是 {today}\n\n"
             f"## 人设（参考，不用记）\n{persona or '（无）'}\n\n"
             f"## 好友资料（参考，不用记）\n{self.store.friends() or '（无）'}\n\n"
-            f"## 现有笔记\n{self.store.notes() or '（空）'}\n\n"
+            f"## 现有笔记\n{old_notes or '（空）'}\n\n"
             f"## 聊天时随手记下的（归到对应的人下面）\n{inbox or '（无）'}\n\n"
             f"## 新的聊天记录\n{render_transcript(turns) or '（无）'}"
         )
+        system, max_tokens = (NOTES_SYSTEM_ENTRIES, 3000) if self.entries else (NOTES_SYSTEM, 1500)
         try:
-            raw = self.llm.complete(NOTES_SYSTEM, [{"role": "user", "content": content}], max_tokens=1500)
+            raw = self.llm.complete(system, [{"role": "user", "content": content}], max_tokens=max_tokens)
         except Exception:
             self._retry_after = self.wall() + NOTES_RETRY
             log.exception("整理长期记忆失败，%d 分钟后再试", int(NOTES_RETRY // 60))
@@ -330,6 +436,11 @@ class NotesKeeper:
             self._retry_after = self.wall() + NOTES_RETRY
             log.warning("整理长期记忆时模型返回了空内容，保留旧笔记")
             return False
+        if self.entries:
+            notes = self._settle(old_notes, notes)
+            if notes is None:
+                self._retry_after = self.wall() + NOTES_RETRY
+                return False
         self._retry_after = float("-inf")
         self.store.write_notes(notes)
         if turns:
@@ -337,6 +448,27 @@ class NotesKeeper:
         self.store.consume_inbox(inbox)
         log.info("长期记忆已更新（整理了 %d 轮、%d 条随手记）", len(turns), len(inbox.splitlines()))
         return True
+
+    def _settle(self, old_notes: str, raw: str) -> str | None:
+        """条目化的整理结果：剥代码块、把关、取代 / 淡出（被挪走的进 archive）。返回要写盘的文本，拒绝返回 None。"""
+        cleaned = "\n".join(ln for ln in raw.splitlines() if not ln.strip().startswith("```"))
+        why = check_rewrite(old_notes, cleaned)
+        new = parse_notes(cleaned)  # 开头那句“好的，以下是…”不是条目，解析时自然丢掉
+        if why is None and not new and old_notes.strip():
+            why = "没解析出任何条目"
+        if why:
+            log.warning("整理结果不像样，拒绝写盘（%s），保留旧笔记", why)
+            return None
+        now = self.wall()
+        today = datetime.fromtimestamp(now).date()
+        if self.store.entries_since() is None:  # 第一次按条目整理：先留一份旧 notes
+            self.store.backup_notes(datetime.fromtimestamp(now).strftime("%Y%m%d-%H%M%S"))
+            self.store.set_entries_since(now)
+        keep, gone = settle(parse_notes(old_notes), new, today, self.entries.recent_days)
+        self.store.append_archive([archive_line(e, today, why) for e, why in gone])
+        if gone:
+            log.info("记忆整理收走 %d 条：%s", len(gone), "；".join(f"{e.text}（{r}）" for e, r in gone[:5]))
+        return render_notes(keep)
 
     def _update(self) -> None:
         try:

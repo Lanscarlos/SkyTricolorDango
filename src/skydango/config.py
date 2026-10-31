@@ -140,6 +140,14 @@ class ReplyConfig:
     # 为空不启用；dry-run 时不读也不写（dry-run 的回复没真的发出去）
     memory_dir: str = "memory"
     notes_every: int = 15  # 每攒够这么多轮，把聊天记录和随手记整理进长期记忆；0 表示不整理（随手记照常）
+    # 记忆条目化（spec 2026-10-31-memory-entries）：notes / inbox 每条带日期、长期标记和键；关掉逐字照旧
+    memory_entries: bool = True
+    recent_days: int = 30  # 近况这么多天没被提起就挪进 notes_archive.md
+    pinned_max: int = 1500  # 常驻系统提示词的长期条目最多多少字，超出的挪进候选池（不删）
+    recall_per_turn: int = 5  # 每轮唤醒消息「想起来的」最多几条
+    recall_chars: int = 400  # ……最多多少字
+    recall_half_days: float = 14.0  # 新鲜度半衰期（天）
+    recall_min_score: float = 2.0  # 总分低于这个不带
     # 主人（比如卡洛）在游戏里的昵称，和聊天记录面板解析出的 speaker 精确匹配；留空 = 主人命令模式关闭。
     # 只有 vision.mode = "log" 时 speaker 才有值，其他模式下这个功能自动失效。见 chat/commands.py
     owner_name: str = ""
