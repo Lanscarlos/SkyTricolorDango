@@ -492,7 +492,7 @@ dir = "private/sandbox"
   团子 / 沙盒接口 `GET /usage`，面板 `GET /api/usage`（在跑转发，停着读账本 + 面板自己查余额，`console/usage_view.py`）；页面组件 `console/static/usage.js`：真机页、沙盒页左栏「模型用量」卡片（每 5 秒）、模型页顶上一行，模型页每个模型能填单价。
   测试里 `SKYDANGO_USAGE_LEDGER` 设成空（conftest），不往本机账本记假用量；`cli._start_balance` 也被换成空的
 - **OpenAI 兼容大脑的历史压缩**（`[brain.compact]`，spec `docs/superpowers/specs/2026-10-06-brain-compact-design.md`，计划 `docs/superpowers/plans/2026-10-06-brain-compact.md`；**代码 10-06 做完，还没在沙盒 / 真机验证，spec §10 六步没走，预算是粗算的**）：
-  一次上线内历史**只往后接**（两次压缩之间每个请求都是上一个的前缀，DeepSeek 前缀缓存一路命中），不再按 `[brain] history` 截；这一轮最后一次请求的 `prompt_tokens` 到 `budget`（64000）就在后台接着同一份前缀发一次压缩（`tool_choice = "none"`、温度 0.3），把老的部分连同上一份前情提要写成「这次上线到现在的前情提要」（最多 `recap_max` 1500 字），最近 `keep_turns`（6）轮留原话；结果在**下一轮开头**换上，放在历史开头（系统提示词不动，免得它没命中）。
+  一次上线内历史**只往后接**（两次压缩之间每个请求都是上一个的前缀，DeepSeek 前缀缓存一路命中），不再按 `[brain] history` 截；这一轮最后一次请求的 `prompt_tokens` 到 `budget`（64000）就在后台接着同一份历史发一次压缩（`tool_choice = "none"`、温度 0.3；**系统提示词换成 `compact.COMPACT_SYSTEM`**：10-31 沙盒里带着「上次聊到哪」压，上一次上线的事被写成了这次的，只在指令里叮嘱 deepseek-flash 也不听；代价是这一次吃不到前缀缓存），把老的部分连同上一份前情提要写成「这次上线到现在的前情提要」（最多 `recap_max` 1500 字），最近 `keep_turns`（6）轮留原话；结果在**下一轮开头**换上，放在历史开头（系统提示词不动，免得它没命中）。
   压缩失败（撞墙、超时、空的、调了工具）或卡着到 2 × `budget`：退回滑动（system + 前情提要 + 最近 `history` 轮），`retry`（300 秒）后再试（滑动里不看 `prompt_tokens`），成功回到只往后接。中途新记的 inbox 行接在下一轮唤醒消息的事件后面、「状态：」前面（「你刚记下：」，按行内容记、只带一次；接在末尾会被历史截掉）。
   用量记在跟着大脑的用处 `recap`（「压缩」，模型页只显示「跟着大脑」，`[models.recap]` 写了只警告）；时间线一步「── 压缩：… ──」（点开看全文）；下线那次反思材料多一节「这次上线早些时候（前情提要，大脑自己写的）」。前情提要**不写进任何记忆文件**。
   `enabled = false` 逐字照旧（有基准测试 `tests/data/toolloop_baseline.json`）；管理面板设置页有 `brain.compact.enabled` / `budget` / `keep_turns`。Claude 大脑不受影响
@@ -560,7 +560,7 @@ dir = "private/sandbox"
   背景事件（陌生人来去、好友走开 / `return` 回来、互动请求和已接受、牵手 / 松手、画面变化）不单独叫醒，攒够 `brain.background_wait`（20 秒）才兜底叫醒一次。
   同一个人攒着的"走开"和"回来"互相抵消，陌生人事件只留最新的。好友走开后 `brain.rejoin`（60 秒）内又出现发 `return`，不再打招呼。
   2026-09-29 真机 v4 感知层 dry-run：改之前 5 分钟醒 42 次，41 次是背景事件
-- 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火（他举蜡烛给团子点）和点亮（light：团子按 3 举蜡烛给没点火的黑影点）
+- 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 不卡两句的间隔、只管每分钟 `reply.max_per_minute` 句（10-31：同一轮第二句被 3 秒间隔拦成「说得太快了」；`reply.min_interval` 只给 `--no-brain`）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火（他举蜡烛给团子点）和点亮（light：团子按 3 举蜡烛给没点火的黑影点）
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒：聊天交给 `[models.reply]` 的纯文字备用回复。
   **主模型那家额度 / 余额用完或认证出错**（大脑自己撞上，或别的用处先撞上关了那家的闸）切到 `[models.brain] backup`（懒建，可以跨 Claude / OpenAI 兼容），不切回（额度恢复了要重启）；
   没有备用就按 `limit_retry` 退避。`[brain] fallback` / `force_fallback` / `fallback_max_tokens` 删了（读到只警告），`fallback_history` 改名 `history`

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ..models.errors import ModelError
 from ..models.openai_compat import classify
-from .compact import RECAP_ACK, InboxWatch, clean_recap, compact_request, inbox_note, recap_message, until_of, wake_stamp
+from .compact import COMPACT_SYSTEM, RECAP_ACK, InboxWatch, clean_recap, compact_request, inbox_note, recap_message, until_of, wake_stamp
 
 log = logging.getLogger(__name__)
 
@@ -286,6 +286,8 @@ class ToolLoopBrain:
             if last.get("role") == "assistant" and (last.get("tool_calls") or not (last.get("content") or "").strip()):
                 # 轮数到顶、没执行的调用：只留文字；最后什么都没说：占位（空的 assistant 接口可能不收）
                 source[-1] = {"role": "assistant", "content": last.get("content") or SILENT}
+        if source and source[0].get("role") == "system":  # 不带「上次聊到哪」：上次的事会被写成这次的
+            source[0] = {"role": "system", "content": COMPACT_SYSTEM}
         keep = max(1, c.keep_turns)  # 0 / 负数（设置页能填）当 1：至少留这一轮原话
         cut = len(self._past) - keep
         first_kept = self._past[cut][0]

@@ -40,6 +40,14 @@ def test_compact_request_mentions_cut_and_limit():
     assert "最后 6 轮之前" in compact_request("没有时间戳", keep=6, recap_max=1500)
 
 
+def test_compact_request_keeps_last_session_out():
+    """10-31 沙盒：系统提示词「上次聊到哪」里上一次上线的聊天被写成了「这次上线」的事，团子把上次的榴莲包子当成这次的早饭。"""
+    from skydango.brain.compact import compact_request
+
+    q = compact_request(STAMP, keep=6, recap_max=1500)
+    assert "上次聊到哪" in q and "不是这次" in q
+
+
 def test_recap_message_format():
     from skydango.brain.compact import RECAP_ACK, recap_message
 

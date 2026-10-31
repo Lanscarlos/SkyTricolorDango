@@ -262,7 +262,8 @@ class Body:
         self._panel_lost = False
         self._commands: queue.Queue = queue.Queue()
         self._thread = threading.get_ident()  # 身体线程；run() 里会更新成实际跑循环的线程
-        self.limiter = RateLimiter(cfg.reply.min_interval, cfg.reply.max_per_minute)
+        # 不卡两句的间隔（reply.min_interval 只给 --no-brain）：同一轮第二句（「说错了，…」）会被拦；一轮最多 2 句由 ToolBox 管，每分钟上限照旧防刷屏
+        self.limiter = RateLimiter(0, cfg.reply.max_per_minute)
         self._fallback_pending: list[Message] = []
         self._fallback_labels: list[str] = []  # 和 _fallback_pending 一一对应的「跟谁说」标签（addressee 关着时全是 me / unsure）
         self._fallback_last_new = 0.0

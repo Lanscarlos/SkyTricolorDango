@@ -130,7 +130,7 @@ class ReplyConfig:
     # 让对方知道是 AI 在回复。光遇里未成年玩家不少，强烈建议保留
     disclosure_prefix: str = "【AI】"
     max_chars: int = 40
-    min_interval: float = 3.0  # 两次发送之间至少间隔（秒）
+    min_interval: float = 3.0  # 两次发送之间至少间隔（秒）；只管 --no-brain，大脑模式不卡间隔（10-31）
     max_per_minute: int = 8  # 几个人一起聊时 4 句/分钟会让回复拖到 10 多秒
     history_turns: int = 40  # 带给模型的最近几轮对话
     persona: str = DEFAULT_PERSONA

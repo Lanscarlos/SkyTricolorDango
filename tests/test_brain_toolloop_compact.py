@@ -220,7 +220,10 @@ def test_compact_request_shape():                         # §9.2
     brain.jobs[0]()
     req = brain.llm.compact_requests()[0]
     last = reqs_of(brain, 3)[-1]["messages"]
-    assert req["messages"][:-2] == last
+    assert req["messages"][1:-2] == last[1:]
+    # 10-31：系统提示词里有「上次聊到哪」（上一次上线的原话），带着它压，上次的事会被写成这次的；换成整理专用的
+    from skydango.brain.compact import COMPACT_SYSTEM
+    assert last[0]["role"] == "system" and req["messages"][0] == {"role": "system", "content": COMPACT_SYSTEM}
     assert req["messages"][-2] == {"role": "assistant", "content": "说完了3"}
     assert f"{stamp(2)} 那条消息之前" in req["messages"][-1]["content"]
     assert req["tool_choice"] == "none" and req["tools"] == [SAY] and req["temperature"] == 0.3

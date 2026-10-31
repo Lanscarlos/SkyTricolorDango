@@ -425,9 +425,18 @@ def test_say_filters_rate_limits_and_records(clock):
         b.say("我是真人啊")  # 身份底线：硬过滤
     assert b.say("哈哈你猜") == "已发送：哈哈你猜"
     assert ("text", "哈哈你猜") in device.calls
-    with pytest.raises(ToolError, match="太快"):
-        b.say("再说一句")  # reply.min_interval = 3 秒
     assert b.heard == []
+
+
+def test_say_no_min_gap_but_per_minute_cap(clock):
+    """10-31 沙盒：同一轮第二句（「说错了，…」）被 3 秒间隔拦成「说得太快了」。大脑模式不卡间隔（一轮最多 2 句另有 ToolBox 管），每分钟上限照旧防刷屏。"""
+    b, device, _, _ = body(clock, live=True)
+    assert b.limiter.min_interval == 0
+    assert b.limiter.max_per_minute == b.cfg.reply.max_per_minute
+    for _ in range(b.cfg.reply.max_per_minute):
+        b.limiter.record(clock())
+    with pytest.raises(ToolError, match="太快"):
+        b.say("再说一句")
 
 
 def test_say_refuses_what_it_just_said(clock):
@@ -771,8 +780,11 @@ def test_live_say_still_filtered_and_rate_limited(clock):
     with pytest.raises(ToolError, match="真人"):
         b.say("我是真人啊", live=True)
     b.say("你好", live=True)
+    b.say("再说一句", live=True)  # 不卡间隔
+    for _ in range(b.cfg.reply.max_per_minute):
+        b.limiter.record(clock())
     with pytest.raises(ToolError, match="太快"):
-        b.say("再说一句", live=True)
+        b.say("第三句", live=True)  # 每分钟上限照样管手动控制
 
 
 def test_live_emote_and_camera_in_dry_run(clock):
