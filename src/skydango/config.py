@@ -131,7 +131,7 @@ class ReplyConfig:
     disclosure_prefix: str = "【AI】"
     max_chars: int = 40
     min_interval: float = 3.0  # 两次发送之间至少间隔（秒）；只管 --no-brain，大脑模式不卡间隔（10-31）
-    max_per_minute: int = 8  # 几个人一起聊时 4 句/分钟会让回复拖到 10 多秒
+    max_per_minute: int = 15  # 几个人一起聊时 4 句/分钟会让回复拖到 10 多秒；10-31 从 8 放宽
     history_turns: int = 40  # 带给模型的最近几轮对话
     persona: str = DEFAULT_PERSONA
     # 认识的人：游戏昵称 → 说明。更推荐写在记忆目录的 friends.md 里（`skydango memory init` 生成）
@@ -748,7 +748,7 @@ class BrainConfig:
     background_wait: float = 20.0  # 背景事件（陌生人来去、好友走开、已处理的互动请求…）自己不叫醒大脑，攒了这么久还没醒才叫醒一次
     rejoin: float = 60.0  # 好友走开后这么久内又出现算"回来了"（背景事件），不再当成来到身边叫醒大脑打招呼
     max_steps: int = 6  # 每次醒来最多调几次工具
-    max_says: int = 2  # 每次醒来最多说几句
+    max_says: int = 4  # 每次醒来最多说几句（10-31 从 2 放宽；第一句后照样提醒「一句一般就够了」）
     look_min_interval: float = 5.0  # look 最多几秒一次（再调给缓存的描述）
     auto_look_min: float = 20.0  # 眼睛自动看：有人来 / 走 / 画面大变时，距上次看至少这么久
     auto_look_max: float = 180.0  # 超过这么久没看，眼睛一定看一次

@@ -401,7 +401,8 @@ def test_owner_pause_stops_other_peoples_messages(clock, tmp_path):
 def test_owner_status_command_reports_state(clock, tmp_path):
     agent, device, store = owner_agent(clock, [[msg("#status", "懒洋洋大王")]], tmp_path)
     agent.step()
-    assert agent.sent == ["【AI】live｜运行中｜待处理0｜限速8/8"]
+    n = agent.cfg.reply.max_per_minute
+    assert agent.sent == [f"【AI】live｜运行中｜待处理0｜限速{n}/{n}"]
 
 
 def test_unknown_owner_command(clock, tmp_path):

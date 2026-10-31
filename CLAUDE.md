@@ -560,7 +560,7 @@ dir = "private/sandbox"
   背景事件（陌生人来去、好友走开 / `return` 回来、互动请求和已接受、牵手 / 松手、画面变化）不单独叫醒，攒够 `brain.background_wait`（20 秒）才兜底叫醒一次。
   同一个人攒着的"走开"和"回来"互相抵消，陌生人事件只留最新的。好友走开后 `brain.rejoin`（60 秒）内又出现发 `return`，不再打招呼。
   2026-09-29 真机 v4 感知层 dry-run：改之前 5 分钟醒 42 次，41 次是背景事件
-- 身体线程独占设备；每轮最多 6 次工具、2 句话（`ToolBox` 计数）；`say` 不卡两句的间隔、只管每分钟 `reply.max_per_minute` 句（10-31：同一轮第二句被 3 秒间隔拦成「说得太快了」；`reply.min_interval` 只给 `--no-brain`）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火（他举蜡烛给团子点）和点亮（light：团子按 3 举蜡烛给没点火的黑影点）
+- 身体线程独占设备；每轮最多 6 次工具、4 句话（`ToolBox` 计数，10-31 从 2 放宽）；`say` 不卡两句的间隔、只管每分钟 `reply.max_per_minute`（15，10-31 从 8 放宽）句（10-31：同一轮第二句被 3 秒间隔拦成「说得太快了」；`reply.min_interval` 只给 `--no-brain`）；`say` 照样过 `clean_reply`；做动作不会松开牵手（牵着手也照做，只有 `move` 要 `force=true`）；陌生人只能接点火（他举蜡烛给团子点）和点亮（light：团子按 3 举蜡烛给没点火的黑影点）
 - 大脑一轮 120 秒没结果就结束进程、下次 `--resume` 接回；连续失败 120 秒：聊天交给 `[models.reply]` 的纯文字备用回复。
   **主模型那家额度 / 余额用完或认证出错**（大脑自己撞上，或别的用处先撞上关了那家的闸）切到 `[models.brain] backup`（懒建，可以跨 Claude / OpenAI 兼容），不切回（额度恢复了要重启）；
   没有备用就按 `limit_retry` 退避。`[brain] fallback` / `force_fallback` / `fallback_max_tokens` 删了（读到只警告），`fallback_history` 改名 `history`

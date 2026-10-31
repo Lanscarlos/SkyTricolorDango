@@ -2457,3 +2457,11 @@ def test_status_has_models_line(clock):  # spec 2026-10-05-model-providers §4
     assert "模型：" not in plain
     b.models_line = lambda: "大脑 deepseek/deepseek-chat"
     assert "模型：大脑 deepseek/deepseek-chat" in b.status()
+
+
+def test_say_limits_loosened_by_default():
+    """10-31 用户：每分钟 8 句、一轮 2 句太紧，放宽到 15 / 4。"""
+    from skydango.config import Config
+
+    c = Config()
+    assert c.reply.max_per_minute == 15 and c.brain.max_says == 4
