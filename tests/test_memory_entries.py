@@ -9,7 +9,9 @@ from skydango.chat.entries import (
     entry_line,
     parse_inbox,
     parse_notes,
+    pinned_view,
     render_notes,
+    render_shown,
     settle,
     show,
     split_pinned,
@@ -150,3 +152,26 @@ def test_check_rewrite_rejects_shrink_and_garbage():
 def test_archive_line():
     e = E("番茄", "在追长风渡", date(2026, 9, 30))
     assert archive_line(e, T, "近况过期") == "- 〔挪走 2026-10-31：近况过期〕在追长风渡 〔2026-09-30〕"
+
+
+# ---- Task 4：常驻切分 / 全部渲染 ----
+def test_pinned_view_splits():
+    text, pool = pinned_view(NOTES, "- 番茄炒蛋盖饭：煮了酸辣粉 〔2026-10-31〕\n", date(2026, 10, 31), 1500)
+    assert "养仓鼠，叫芝麻球（今天）" in text and "无翼" in text
+    assert "青岛" not in text and "酸辣粉" not in text and "〔" not in text
+    assert {e.text for e in pool} == {"下周去青岛出差三天", "新耳机是粉色猫耳造型", "煮了酸辣粉"}
+
+
+def test_pinned_view_inbox_pinned_merges_into_section():
+    text, pool = pinned_view(NOTES, "- 番茄炒蛋盖饭：爱喝奶茶 〔2026-10-31｜长期〕\n", date(2026, 10, 31), 1500)
+    assert text.count("## 番茄炒蛋盖饭") == 1 and "爱喝奶茶（今天）" in text and pool and all(not e.pinned for e in pool)
+
+
+def test_pinned_view_overflow_goes_to_pool():
+    text, pool = pinned_view(NOTES, "", date(2026, 10, 31), 30)
+    assert "养仓鼠" not in text and any(e.text == "养仓鼠，叫芝麻球" for e in pool)
+
+
+def test_render_shown_all_entries():
+    out = render_shown(NOTES, "- 我：不会吹萨克斯 〔2026-10-30｜长期〕\n", date(2026, 10, 31))
+    assert "青岛出差三天（今天）" in out and "不会吹萨克斯（昨天）" in out and "〔" not in out

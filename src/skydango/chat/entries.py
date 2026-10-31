@@ -225,3 +225,38 @@ def split_pinned(entries: list[Entry], today: date, pinned_max: int) -> tuple[li
 
 def archive_line(e: Entry, today: date, reason: str) -> str:
     return f"- 〔挪走 {today.isoformat()}：{reason}〕{e.raw}"
+
+
+# ---- 给大脑看：常驻的长期条目 / 全部条目 ----
+def _render_shown(entries: list[Entry], today: date) -> str:
+    order: list[str] = []
+    groups: dict[str, list[Entry]] = {}
+    for e in entries:
+        if e.section not in groups:
+            groups[e.section] = []
+            order.append(e.section)
+        groups[e.section].append(e)
+    if "" in groups:
+        order.remove("")
+        order.insert(0, "")
+    blocks = []
+    for sec in order:
+        lines = ([f"## {sec}"] if sec else []) + [f"- {show(e, today)}" for e in groups[sec]]
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def pinned_view(notes: str, inbox: str, today: date, pinned_max: int) -> tuple[str, list[Entry]]:
+    """系统提示词里的「记得的事」：只放长期条目（notes 和 inbox 里标了长期的，按节、相对日期），超过 pinned_max 字的挪出去。
+    返回（正文，候选池）；候选池 = 近况（notes 和 inbox 里没标长期的）+ 挪出常驻的长期条目，给 Recollector 按这一轮的话挑。"""
+    everything = parse_notes(notes) + parse_inbox(inbox)
+    pinned, moved = split_pinned(everything, today, pinned_max)
+    if moved:
+        log.info("长期记忆超过 %d 字，%d 条改成按需想起来（不删）：%s", pinned_max, len(moved), "；".join(e.text[:12] for e in moved[:5]))
+    pool = [e for e in everything if not e.pinned] + moved
+    return _render_shown(pinned, today), pool
+
+
+def render_shown(notes: str, inbox: str, today: date) -> str:
+    """全部条目（笔记 + 随手记）都用相对日期渲染：给 --no-brain 的回复和反思用。"""
+    return _render_shown(parse_notes(notes) + parse_inbox(inbox), today)

@@ -3180,7 +3180,7 @@ def _run_brain(
         cheeky=ledger is not None and _cheeky(cfg),
         appearance=getattr(env, "appearance", None) is not None, backstage=_backstage_prompt(cfg, store, models=registry),
         lull=cfg.lull.enabled, call=_call_enabled(cfg, env), addressee=cfg.addressee.enabled,
-        icons=cfg.perception.enabled and cfg.icons.enabled, manner=cfg.pacing.manner,
+        icons=cfg.perception.enabled and cfg.icons.enabled, manner=cfg.pacing.manner, entries=cfg.reply,
     )
     on_message = trace.chain(log_brain_message) if trace is not None else log_brain_message
     build = functools.partial(make_session, registry, prompt=prompt, toolbox=toolbox, mcp_url=server.url, workdir=work,

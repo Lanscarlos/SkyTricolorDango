@@ -434,3 +434,34 @@ def test_cheeky_first_line_replaced():
         assert kept in text
     plain = brain_prompt(ReplyConfig(), None, manner=True, inner=True, temper=True)
     assert CHEEKY_FIRST_NEW not in plain and "故意曲解、装傻" not in plain
+
+
+# ---- 记忆条目化：系统提示词只常驻长期条目 ----
+def test_memory_prompt_entries_caps_length(tmp_path):
+    from datetime import date
+
+    store = MemoryStore(tmp_path)
+    store.write_notes("## 番茄\n" + "".join(f"- 喜欢第{i}样东西{'很' * 20} 〔2026-10-{i + 1:02d}｜长期〕\n" for i in range(28)))
+    p = memory_prompt(ReplyConfig(), store, entries=ReplyConfig(pinned_max=300), today=date(2026, 10, 31))
+    section = p.split("记得的事")[1]
+    assert len(section) < 600 and "第27样" in section and "第0样" not in section
+
+
+def test_memory_prompt_entries_hides_recent_and_shows_relative(tmp_path):
+    from datetime import date
+
+    store = MemoryStore(tmp_path)
+    store.write_notes("## 番茄\n- 养仓鼠 〔2026-10-31｜长期〕\n- 去青岛出差 〔2026-10-31｜出差〕\n")
+    store.add_memos(["番茄：煮了酸辣粉 〔2026-10-31〕"])
+    p = memory_prompt(ReplyConfig(), store, entries=ReplyConfig(), today=date(2026, 10, 31))
+    assert "养仓鼠（今天）" in p and "青岛" not in p and "酸辣粉" not in p and "〔" not in p
+
+
+def test_memory_prompt_entries_off_unchanged(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.write_notes("## 番茄\n- 养仓鼠 〔2026-10-31｜长期〕\n- 去青岛出差 〔2026-10-31｜出差〕\n")
+    store.add_memos(["番茄：煮了酸辣粉"])
+    base = memory_prompt(ReplyConfig(), store)
+    assert "〔2026-10-31｜出差〕" in base and "刚记下的：\n- 番茄：煮了酸辣粉" in base
+    assert memory_prompt(ReplyConfig(), store, entries=ReplyConfig(memory_entries=False)) == base
+    assert brain_prompt(ReplyConfig(), store, entries=ReplyConfig(memory_entries=False)) == brain_prompt(ReplyConfig(), store)

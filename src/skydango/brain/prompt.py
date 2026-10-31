@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
+from datetime import date, datetime
 
+from ..chat.entries import pinned_view
 from ..chat.memory import MemoryStore, format_gap
 from ..chat.recall import render_turn
 from ..chat.responder import identity_sections
 from ..config import ReplyConfig
+
+log = logging.getLogger(__name__)
 
 BRAIN_RULES = """
 ## 你在做什么
@@ -240,13 +245,27 @@ def memory_prompt(
     now: float | None = None,
     days: str = "",
     persona_text: str = "",
+    entries: ReplyConfig | None = None,
+    today: date | None = None,
 ) -> str:
-    """人设、好友、长期记忆 + 随手记 + 「你攒下的性格」+「日子」+ 最近几轮原话。只在启动时读：改系统提示词会让后面整段对话的缓存失效。"""
+    """人设、好友、长期记忆 + 随手记 + 「你攒下的性格」+「日子」+ 最近几轮原话。只在启动时读：改系统提示词会让后面整段对话的缓存失效。
+
+    entries：记忆条目化（[reply] memory_entries）开着时传 cfg.reply，只常驻长期条目（相对日期按 today，默认 now 那天）；None 或关着 = 整份原文。"""
     if store is None:
         return "\n\n".join(identity_sections(reply) + [p for p in (persona_text, days) if p])
     notes = store.notes()
     inbox = store.inbox()
-    if inbox:
+    shown = None
+    if entries is not None and entries.memory_entries:
+        try:
+            day = today or (datetime.fromtimestamp(now).date() if now is not None else date.today())
+            body, _pool = pinned_view(notes, inbox, day, entries.pinned_max)
+            shown = ("记得的事（只列长期的；最近发生的事聊到时会另外提醒你）：\n" + body) if body else ""
+        except Exception:
+            log.warning("记忆条目整理成常驻部分时出错，退回整份笔记", exc_info=True)
+    if shown is not None:
+        notes = shown
+    elif inbox:
         notes = (notes + "\n\n" if notes else "") + "刚记下的：\n" + inbox
     parts = identity_sections(reply, store.profile(), store.friends(), notes)
     recent = recent_turns(store, history_turns, now) if history_turns > 0 else ""
@@ -288,6 +307,7 @@ def brain_prompt(
     addressee: bool = False,
     icons: bool = False,
     manner: bool = False,
+    entries: ReplyConfig | None = None,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -305,7 +325,8 @@ def brain_prompt(
     call：有 call 工具（按 Q 喊一声），「视角」一节加一句什么时候喊。
     addressee：身体给聊天标了在跟谁说（[addressee] enabled，换掉“明显不是跟你说的，不用回”，加怎么接的规矩）。
     icons：认地图交互图标开着（[icons] enabled），「光遇常识」加一句图标只说明能互动。
-    manner：回法（[pacing] manner）：「说话」一节加三种回法和 jab，贱兮兮开头那句改成以正常为底色。"""
+    manner：回法（[pacing] manner）：「说话」一节加三种回法和 jab，贱兮兮开头那句改成以正常为底色。
+    entries：记忆条目化（传 cfg.reply；[reply] memory_entries 开着时系统提示词只常驻长期条目）。"""
     rules = static_prompt(reply, proactive)
     if addressee:  # 只换锚点那半句，和 NO_NEW_TOPIC / GO_ON_NEW 的替换互不相干
         rules = rules.replace(ADDRESSEE_ANCHOR, ADDRESSEE_RULES if proactive else ADDRESSEE_RULES_QUIET, 1)
@@ -336,4 +357,4 @@ def brain_prompt(
         rules = rules.replace(REMEMBER_ANCHOR, TEMPER_RULES + (cheeky_rules if cheeky else "") + REMEMBER_ANCHOR, 1)
     if appearance:  # 插在脾气之后
         rules = rules.replace(REMEMBER_ANCHOR, APPEARANCE_RULES + REMEMBER_ANCHOR, 1)
-    return memory_prompt(reply, store, history_turns, now, days, persona_text) + "\n\n" + rules
+    return memory_prompt(reply, store, history_turns, now, days, persona_text, entries) + "\n\n" + rules
