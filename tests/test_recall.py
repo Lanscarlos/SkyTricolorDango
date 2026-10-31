@@ -98,3 +98,24 @@ def test_nothing_found_says_so_and_warns_not_to_make_it_up(tmp_path):
 def test_needs_query_or_who(tmp_path):
     with pytest.raises(ValueError):
         recall(store_with(tmp_path, []), query="  ", who="", now=NOW)
+
+
+def test_recall_renders_entries_and_reads_archive(tmp_path):
+    store = store_with(tmp_path, [(1, "懒洋洋大王：「哈哈」", "嗯")])
+    store.write_notes("## 番茄\n- 养仓鼠 〔2026-09-19〕\n")
+    archive = "- 〔挪走 2026-09-29：近况过期〕在追长风渡 〔2026-08-30〕\n"
+    out = recall(store, query="仓鼠 长风渡", now=NOW, entries=True, archive=archive)
+    assert "番茄：养仓鼠（10 天前）" in out and "（以前的）在追长风渡（上个月 08-30）" in out and "〔" not in out
+
+
+def test_recall_entries_matches_person_section(tmp_path):
+    store = store_with(tmp_path, [])
+    store.write_notes("## 番茄\n- 养仓鼠 〔2026-09-19〕\n## 小明\n- 腿摔了\n")
+    out = recall(store, who="番茄", now=NOW, entries=True)
+    assert "养仓鼠" in out and "腿摔了" not in out
+
+
+def test_recall_entries_off_keeps_raw_lines(tmp_path):
+    store = store_with(tmp_path, [])
+    store.write_notes("## 番茄\n- 养仓鼠 〔2026-09-19〕\n")
+    assert "- 养仓鼠 〔2026-09-19〕" in recall(store, query="仓鼠", now=NOW)

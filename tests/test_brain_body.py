@@ -2491,3 +2491,22 @@ def test_friend_matcher_nick_typo_alias():
     m = friend_matcher(lambda: ["番茄炒蛋盖饭", "小明"], lambda: md)
     assert m("番茄炒蛋盖坂") == "番茄炒蛋盖饭" and m("番茄") == "番茄炒蛋盖饭" and m("老番茄") == "番茄炒蛋盖饭"
     assert m("小明") == "小明" and m("路人甲") is None
+
+
+def test_reflect_materials_notes_by_section(clock):
+    """条目写在 `## 名字` 下面、行里不带名字：按节取（原来按行里有没有名字筛，基本取不到）。"""
+    from datetime import datetime
+
+    from skydango.brain.recollect import Recollector
+
+    wall = datetime(2026, 10, 31, 22, 0).timestamp()
+    b, *_ = body(clock, wall=lambda: wall)
+    notes = "## 番茄\n- 养仓鼠 〔2026-10-31〕\n## 小明\n- 腿摔了 〔2026-10-30〕\n"
+    b.friend_names = lambda: ["番茄", "小明"]
+    b.memory_notes = lambda: notes
+    b._reflect_chat.append((wall, "番茄", "你好"))
+    old = b.reflect_materials(False)
+    assert "养仓鼠" not in old  # 没挂 recollector（记忆条目化关）：照旧按行里有没有名字筛
+    b.recollector = Recollector(lambda: (notes, ""), lambda w: w, b.cfg.reply, lambda: wall)
+    new = b.reflect_materials(False)
+    assert "番茄：养仓鼠（今天）" in new and "腿摔了" not in new

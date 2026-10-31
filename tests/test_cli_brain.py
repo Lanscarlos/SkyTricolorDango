@@ -437,6 +437,26 @@ def test_memory_show_prints_inner(tmp_path, capsys):
     assert "===== 关系卡 =====" in out and "===== 最近 10 次上线 =====" in out
 
 
+def test_memory_show_counts(tmp_path, capsys):
+    import argparse
+    from datetime import date
+
+    from skydango.chat.memory import MemoryStore
+
+    cfg = Config()
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    store = MemoryStore(cfg.reply.memory_dir)
+    today = date.today().isoformat()
+    store.write_notes(f"## 番茄\n- 养仓鼠 〔{today}｜长期〕\n- 去青岛 〔{today}｜出差〕\n")
+    cli.cmd_memory(cfg, argparse.Namespace(action="show"))
+    out = capsys.readouterr().out
+    assert "常驻 1 条" in out and "候选池 1 条" in out and "养仓鼠（今天）" in out and "〔" not in out
+    cfg.reply.memory_entries = False
+    cli.cmd_memory(cfg, argparse.Namespace(action="show"))
+    out = capsys.readouterr().out
+    assert "常驻" not in out and f"- 养仓鼠 〔{today}｜长期〕" in out
+
+
 def _claude_log(log):
     return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
 

@@ -84,7 +84,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/chatlog.py` | 解析聊天记录面板（C）：分行、拆说话人、认自己的消息 / 被屏蔽的消息、前后帧对齐找新消息 |
 | `src/skydango/vision/icons.py` | 动作图标的剪影匹配（多尺度 matchTemplate） |
 | `src/skydango/vision/bubbles.py` | 旧方案：3D 画面里找头顶气泡（不推荐，见 game-ops） |
-| `src/skydango/chat/` | 读消息（`reader.py`）、大模型回复（`responder.py`）、发送（`sender.py`）、聊天面板开关（`panel.py`，见下）、去重、记忆（`memory.py`，见下） |
+| `src/skydango/chat/` | 读消息（`reader.py`）、大模型回复（`responder.py`）、发送（`sender.py`）、聊天面板开关（`panel.py`，见下）、去重、记忆（`memory.py`，见下）、记忆条目（`entries.py`：解析 / 渲染 / 相对日期 / 同键取代 / 近况淡出 / 整理把关 / 常驻切分，纯函数） |
 | `src/skydango/game/wheel.py` | 快捷动作轮盘：图标库、读取 / 编辑轮盘、按数字键做动作、扫描动作列表 |
 | `src/skydango/game/emotes.py` | 聊天时做动作：可用动作 + 限速、轮盘上的直接按键、白名单动作换进 swap_slots、退出恢复 |
 | `src/skydango/agent.py` | 主循环：读 → 攒一会儿 → 回复 → 限速 → 发送；默认 dry-run |
@@ -133,6 +133,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、「模型」页后端（`models_view.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、整理 / 重训的任务槽（`jobs.py`）、整帧页后端（`frames.py`）、重训报告和换上 / 回退（`retrain_view.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`、标注页的整帧页 `frames.js`、重训区 `retrain.js`），左侧栏 + 八页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 模型 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/flow.py` `console/static/dangotrack.js` | 团子跑道（见「管理面板」）：`FlowLog` 记身体 / 大脑每一步的结构化事件（十个节点、五种结果，大脑一轮里的决定排到这一轮结束后），viewer `/flow` 长轮询；前端三颗团子沿闭环跑道按事件走 |
 | `src/skydango/brain/backstage.py` | 幕后（见「幕后」）：拼「幕后」一节、取"卡洛上次以来改了你什么"（git 提交）、读写 `inner/backstage.json` 标记 |
+| `src/skydango/brain/recollect.py` | 想起来的（见「记忆条目化」）：`Recollector` 按这一轮的人和话从候选池挑几条，经 `Brain.recollect` 插进唤醒消息「状态：」前面 |
 | `src/skydango/brain/pacing.py` `manner.py` | 聊天的节奏和分寸（见「聊天的节奏和分寸」）：`Pacer` 攒几句再交给大脑（纯计算）、`manner()` 拼唤醒消息里的「回法：…」和 status 的「最近说的」 |
 | `src/skydango/brain/addressee.py` | 分清好友在跟谁说话（见「分清在跟谁说话」）：`Addressee.judge` 每句判一次（`Verdict`：跟你说 / 跟别人说 / 说给大家 / 拿不准）、`said`、`parse_aliases`（friends.md 的 `- 叫法：`）、`legacy_addressed`（`enabled = false` 时反射用的旧规则）；纯规则、不调模型 |
 | `src/skydango/chat/addressee_eval.py` | 上面规则的离线评估：从 `agent.log` 取多人聊天、Claude 初标、规则重放、`review.md` 给人核对、`report.md` 三条门槛（`addressee label` / `eval`） |
@@ -146,8 +147,9 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 |---|---|---|
 | `profile.md` | 三彩团子的人设（优先于配置里的 `reply.persona`） | 用户 |
 | `friends.md` | 好友：游戏昵称、本名、称呼、关系 | 用户 |
-| `inbox.md` | 随手记：每轮回复后后台单独调一次模型，只挑值得记的新信息，下一句就能用上 | 自动 |
-| `notes.md` | 长期记忆：每 `notes_every` 轮把聊天记录 + inbox 整理进来（合并去重、删过期） | 自动，用户可改 |
+| `inbox.md` | 随手记：每轮回复后后台单独调一次模型，只挑值得记的新信息，下一句就能用上；条目格式 `- 谁：内容 〔日期｜长期｜键〕`（见「条目化」） | 自动 |
+| `notes.md` | 长期记忆：每 `notes_every` 轮把聊天记录 + inbox 整理进来（合并去重、删过期）；条目格式 `- 正文 〔日期｜长期｜键〕`（见「条目化」） | 自动，用户可改 |
+| `notes_archive.md` | 被取代 / 近况过期的条目（`- 〔挪走 日期：原因〕原行`），`recall` 翻得到，可手动挪回 | 自动 |
 | `history.jsonl` | 逐轮聊天记录，重启读回最近 `history_turns` 轮 | 自动 |
 | `inner/` | 内心账本（见「内心层」）：`people.json` 好友关系卡、`days.jsonl` 每次上线一行、`current.json` 这一次（运行中）、`mind.json` 心情 / 别扭 / 心愿、`diary.md` 日记（一天一节）、`persona.json` 性格档案（口头禅 / 老梗 / 看法，可以直接删条目，管理面板「内心」页也能删）、`mind_log.jsonl` 流水账（每次反思改了什么、每 5 分钟一条精力、网页上删的条目；启动时删 30 天前的）、`backstage.json` 幕后告诉过团子的最后一个提交（见「幕后」） | 自动，不用手改 |
 
@@ -163,6 +165,20 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 - 私有仓库：`profile.md` 的说话习惯改成描述 + 真聊天例句（像她的 / 不像她的）；`tools/curate_history.py` 挪走旧的复读、招呼、点名的 AI 味回合（先备份进 `archive/`，默认只列出、`--apply` 才改），**在本机推完新记录、团子下线后跑**
 `memory init` 用配置生成 profile / friends，`memory show` 查看，`memory update` 立刻整理。
 随手记和整理（`NotesKeeper`）走 `[models.memory]`（默认 DeepSeek、备用 Claude sonnet，见「模型供应商」）；`run --no-brain` 的普通 Agent 也一样。
+
+### 条目化（`[reply] memory_entries`，默认开）
+
+设计见 `docs/superpowers/specs/2026-10-31-memory-entries-design.md`，计划 `docs/superpowers/plans/2026-10-31-memory-entries.md`。**代码 10-31 做完；spec §5 的沙盒验收三步（真 DeepSeek）还没走，数字都是估的。**
+起因：沙盒里两次分别说「早饭吃了榴莲包子 / 油条」被整理成「早饭爱油条、榴莲包子」；整理进 notes 后日期丢了；notes 整份常驻系统提示词越长越贵。
+- **条目格式**：`- 正文 〔YYYY-MM-DD｜长期｜键〕`，全角〔〕和｜；日期 = 最后一次被提起 / 确认；`长期` = 喜好 / 习惯 / 设定 / 关系 / 约定，没有这个字的是近况；键可选（同一节内相同的是同一件事），`长期` 不能当键。
+  **没有方括号的行（手写的、旧笔记）= 长期、日期不详**，行为和以前一样；方括号写坏的（`[2026-10-31]`、`【长期】`、半角 `|`、日期解析不了）整行当正文，不丢。
+- **写入**：随手记 / 整理换成条目版提示词（`MEMO_SYSTEM_ENTRIES` / `NOTES_SYSTEM_ENTRIES`，旧的原样留着给开关关时用；「只说过一次的具体事件一律是近况，不许合并成喜好」）。
+  整理拿到模型输出后写盘前过代码兜底（`chat/entries.py`）：剥代码块和开头的客套话 → **把关**（解析不了的行超过一半，或旧笔记 ≥ 6 条而新的不到一半 → 拒绝写盘、保留旧笔记、inbox 不消化、WARNING）→ 第一次按条目整理前把旧 notes 备份到 `memory/archive/notes-<时间>.md`（`notes_state.json` 的 `entries_since`）→ `settle`：补日期（同节相似度 ≥ 0.8 借旧条目的）、同节同键留日期最新的（其余进 `notes_archive.md`，原因「被取代」）、近况超过 `recent_days`（30）天进 archive（长期的、未来日期的不淡出）。
+- **系统提示词只常驻长期条目**（`brain/prompt.py` 的 `memory_prompt(entries=)`，上线时生成一次不变）：`pinned_view` 按节渲染（相对日期按上线那天），长期超过 `pinned_max`（1500 字）时不删、日期最旧的先挪出常驻（`自己` 最后），挪出的和近况一起进候选池。
+- **想起来的**（`brain/recollect.py`）：每次大脑醒来，`Brain.message` 在「回法」后、「状态：」前插一段「想起来的：」，经 `body.call` 在身体线程里算。打分 = 人（说话人 / 刚来的人那一节 +2，`自己` 在有人跟团子说话时 +0.5）+ 话（两字片段重合，每个 +1 最多 +3）+ 新（`0.5^(天数/14)`，日期不详 0.3），门槛 2.0，一轮最多 5 条 400 字，**一次上线同一条只带一次**（大脑历史压缩换上后 `compactions` 变了就清空）；好友 `arrive` / `return` 先带他那节最新 3 条近况。候选池上线时建，notes 被整理改写后重建，**上线中途新记的 inbox 不进池子**（走「你刚记下：」）。说话人对节名用 `friend_matcher`（昵称模糊 + friends.md 的 `- 叫法：`）。
+- **别的地方**：反思材料按节取好友条目（原来按"行里有没有名字"筛，条目写在 `## 名字` 下面基本取不到）；`recall` 附带的笔记行按条目渲染、带上 `notes_archive.md` 里匹配的（「（以前的）」，archive 行不记所在节）；`--no-brain` 的回复整份带但用相对日期；`memory show` 打印渲染后的样子并数常驻 / 候选池。
+- `memory_entries = false`：系统提示词、唤醒消息、整理 / 随手记提示词、反思材料、`recall`、`--no-brain` 回复逐字照旧（`tests/data/memory_prompts_baseline.json` 是旧提示词基准）。管理面板设置页有 `reply.memory_entries` / `recent_days` / `pinned_max` / `recall_per_turn`。
+- 旧 `notes.md` 打开后第一次整理由模型按新格式重写；老条目看不出日期的写那天的日期（提示词要求）。
 
 ### 两台电脑共用记忆（私有仓库）
 

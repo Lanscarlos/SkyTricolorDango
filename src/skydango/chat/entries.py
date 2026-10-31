@@ -260,3 +260,33 @@ def pinned_view(notes: str, inbox: str, today: date, pinned_max: int) -> tuple[s
 def render_shown(notes: str, inbox: str, today: date) -> str:
     """全部条目（笔记 + 随手记）都用相对日期渲染：给 --no-brain 的回复和反思用。"""
     return _render_shown(parse_notes(notes) + parse_inbox(inbox), today)
+
+
+def section_lines(notes: str, inbox: str, names: list[str], today: date, limit: int = 10) -> list[str]:
+    """这些人那几节的条目（笔记 + 随手记），`节：正文（相对日期）`，每人最多 limit 条：反思材料用。
+    条目写在 `## 名字` 下面、行里不带名字，所以要按节取，不能按“行里有没有名字”筛。"""
+    everything = parse_notes(notes) + parse_inbox(inbox)
+    out: list[str] = []
+    for n in names:
+        out += [f"{e.section}：{show(e, today)}" for e in everything if e.section == n][:limit]
+    return out
+
+
+_ARCHIVED = re.compile(r"^-\s*〔挪走\s*([^：〕]*)：([^〕]*)〕(.*)$")
+
+
+def parse_archive(text: str) -> list[tuple[Entry, str]]:
+    """notes_archive.md 的行 → (条目, 挪走的原因)。archive 行不记所在节，section 是 ""。"""
+    out: list[tuple[Entry, str]] = []
+    for line in (text or "").splitlines():
+        m = _ARCHIVED.match(line.strip())
+        if m and m.group(3).strip():
+            out.append((_parse_body("", m.group(3)), m.group(2).strip()))
+    return out
+
+
+def memory_stats(notes: str, inbox: str, today: date, pinned_max: int) -> tuple[int, int, int]:
+    """（常驻条数，常驻字数，候选池条数）：`memory show` 用。"""
+    text, pool = pinned_view(notes, inbox, today, pinned_max)
+    n = sum(1 for ln in text.splitlines() if ln.startswith("- "))
+    return n, len(text), len(pool)

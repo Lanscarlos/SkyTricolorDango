@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
+from .entries import parse_archive, parse_inbox, parse_notes, show
 from .memory import SKIP, MemoryStore, Turn
 
 MAX_DAYS = 90
@@ -31,10 +33,25 @@ def render_turn(turn: Turn) -> str:
     return f"{d.tm_mon}月{d.tm_mday}日 {d.tm_hour:02d}:{d.tm_min:02d}  {text}"
 
 
+def _entry_notes(store: MemoryStore, archive: str, keys: list[str], now: float) -> list[str]:
+    """记忆条目化：笔记 / 随手记按条目匹配（节名或正文），用相对日期渲染；archive 里挪走的前缀「（以前的）」。"""
+    today = datetime.fromtimestamp(now).date()
+    out = []
+    for e in parse_notes(store.notes()) + parse_inbox(store.inbox()):
+        if any(k in (e.section + e.text).lower() for k in keys):
+            out.append(f"{e.section}：{show(e, today)}" if e.section else show(e, today))
+    out = out[:MAX_NOTE_LINES]
+    old = [f"（以前的）{show(e, today)}" for e, _why in parse_archive(archive) if any(k in e.text.lower() for k in keys)]
+    return out + old[:MAX_NOTE_LINES]
+
+
 def recall(
-    store: MemoryStore, query: str = "", who: str = "", days: int = 14, now: float | None = None, limit: int = 8
+    store: MemoryStore, query: str = "", who: str = "", days: int = 14, now: float | None = None, limit: int = 8,
+    entries: bool = False, archive: str = "",
 ) -> str:
-    """query：空格分开的关键词，中任意一个就算；who：只看这个人说的 / 对他说的（子串）；days：往前查几天（1~90）。"""
+    """query：空格分开的关键词，中任意一个就算；who：只看这个人说的 / 对他说的（子串）；days：往前查几天（1~90）。
+
+    entries：记忆条目化开着——附带的笔记行按条目渲染（去掉方括号、相对日期），archive（notes_archive.md 原文）里匹配的也带上。"""
     words = [w.lower() for w in query.split() if w]
     who = who.strip().lower()
     if not words and not who:
@@ -56,10 +73,13 @@ def recall(
     found = sorted((s[2] for s in scored[:limit]), key=lambda t: t.t)
 
     keys = words or [who]
-    notes = [
-        line.strip() for line in f"{store.notes()}\n{store.inbox()}".splitlines()
-        if line.strip() and not line.startswith("#") and any(k in line.lower() for k in keys)
-    ][:MAX_NOTE_LINES]
+    if entries:
+        notes = _entry_notes(store, archive, keys, now)
+    else:
+        notes = [
+            line.strip() for line in f"{store.notes()}\n{store.inbox()}".splitlines()
+            if line.strip() and not line.startswith("#") and any(k in line.lower() for k in keys)
+        ][:MAX_NOTE_LINES]
 
     what = "、".join(filter(None, [" ".join(words) and f"“{' '.join(words)}”", who and f"和“{who}”有关的"]))
     parts = []

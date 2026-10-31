@@ -345,3 +345,17 @@ def test_jot_entries_uses_entries_prompt(tmp_path):
     llm = ScriptedLlm(["- 番茄：煮了酸辣粉 〔2026-10-31〕"])
     entries_keeper(store, llm, at("2026-10-31 22:00")).jot(Turn(1.0, "a", "b"))
     assert llm.calls[0][0] == MEMO_SYSTEM_ENTRIES and "酸辣粉" in store.inbox()
+
+
+def test_responder_renders_entries(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.write_notes("## 番茄\n- 养仓鼠 〔2026-10-31｜长期〕\n- 去青岛 〔2026-10-31｜出差〕\n")
+    store.add_memos(["番茄：煮了酸辣粉 〔2026-10-30〕"])
+    t = datetime.strptime("2026-10-31 22:00", "%Y-%m-%d %H:%M").timestamp()
+    llm = ScriptedLlm(["嗯", "嗯"])
+    Responder(llm, ReplyConfig(), store=store, clock=lambda: t).reply([msg("在吗")])
+    on = llm.calls[0][0]
+    assert "养仓鼠（今天）" in on and "酸辣粉（昨天）" in on and "〔" not in on
+    Responder(llm, ReplyConfig(memory_entries=False), store=store, clock=lambda: t).reply([msg("在吗")])
+    off = llm.calls[1][0]
+    assert "- 养仓鼠 〔2026-10-31｜长期〕" in off and "刚记下的：\n- 番茄：煮了酸辣粉" in off

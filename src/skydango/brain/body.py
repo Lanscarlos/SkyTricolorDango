@@ -19,11 +19,13 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from datetime import datetime
 from typing import Any
 
 import cv2
 
 from ..agent import RateLimiter
+from ..chat.entries import section_lines
 from ..chat.memory import Turn
 from ..chat.panel import PanelManager
 from ..chat.reader import Message, with_speaker_hint
@@ -3093,8 +3095,16 @@ class Body:
             card = self.ledger.card(n) if self.ledger is not None else None
             if card is not None:
                 cards.append(card_line(n, card, wall))
-        notes = [line.strip() for line in (self.memory_notes() or "").splitlines()
-                 if line.strip() and not line.startswith("#") and any(n in line for n in names)][:10]
+        notes = None
+        if self.recollector is not None:  # 记忆条目化：条目写在 `## 名字` 下面、行里不带名字，按节取（原来按"行里有名字"基本取不到）
+            try:
+                n_text, i_text = self.recollector.load()
+                notes = section_lines(n_text, i_text, names, datetime.fromtimestamp(wall).date())
+            except Exception:
+                log.warning("反思材料按节取笔记出错，退回按名字筛", exc_info=True)
+        if notes is None:
+            notes = [line.strip() for line in (self.memory_notes() or "").splitlines()
+                     if line.strip() and not line.startswith("#") and any(n in line for n in names)][:10]
         mind_line = self.mind.line(wall, self._energy) if self.mind is not None else ""
         if self.mind is not None and self.mind.updated is not None:
             mind_line += f"（{ago(wall - self.mind.updated)}前想的）"

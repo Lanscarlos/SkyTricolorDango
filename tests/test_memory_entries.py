@@ -11,7 +11,10 @@ from skydango.chat.entries import (
     parse_notes,
     pinned_view,
     render_notes,
+    memory_stats,
+    parse_archive,
     render_shown,
+    section_lines,
     settle,
     show,
     split_pinned,
@@ -175,3 +178,25 @@ def test_pinned_view_overflow_goes_to_pool():
 def test_render_shown_all_entries():
     out = render_shown(NOTES, "- 我：不会吹萨克斯 〔2026-10-30｜长期〕\n", date(2026, 10, 31))
     assert "青岛出差三天（今天）" in out and "不会吹萨克斯（昨天）" in out and "〔" not in out
+
+
+# ---- Task 7 ----
+def test_reflect_notes_by_section():  # 现有 bug 的回归：条目行里不带名字
+    lines = section_lines("## 番茄\n- 养仓鼠 〔2026-10-31〕\n## 小明\n- 腿摔了\n", "", ["番茄"], date(2026, 10, 31))
+    assert lines == ["番茄：养仓鼠（今天）"]
+
+
+def test_section_lines_limit_per_person_and_inbox():
+    notes = "## 番茄\n" + "".join(f"- 第{i}条 〔2026-10-31〕\n" for i in range(15))
+    lines = section_lines(notes, "- 番茄：随手记的 〔2026-10-30〕\n- 小明：别人的\n", ["番茄"], date(2026, 10, 31))
+    assert len(lines) == 10 and lines[0] == "番茄：第0条（今天）"
+
+
+def test_parse_archive():
+    ((e, why),) = parse_archive("- 〔挪走 2026-10-31：近况过期〕在追长风渡 〔2026-09-30〕\n乱写的一行\n")
+    assert (e.text, e.date, why) == ("在追长风渡", date(2026, 9, 30), "近况过期")
+
+
+def test_memory_stats():
+    n, chars, pool = memory_stats(NOTES, "- 番茄炒蛋盖饭：煮了酸辣粉 〔2026-10-31〕\n", date(2026, 10, 31), 1500)
+    assert n == 2 and chars > 0 and pool == 3

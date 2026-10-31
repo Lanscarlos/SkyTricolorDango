@@ -303,13 +303,34 @@ def cmd_memory(cfg: Config, args) -> None:
             print("提示：friends.md 已包含配置里的 [reply.friends]，可以把 config.toml 里那一节删掉，免得重复")
     elif args.action == "show":
         print(f"记忆目录: {store.dir.resolve()}")
+        notes_text, inbox_text = store.notes(), store.inbox()
+        stats = ""
+        if cfg.reply.memory_entries:  # 记忆条目化：打印大脑看到的样子（去方括号、相对日期），再数常驻 / 候选池
+            from datetime import date as _date
+
+            from .chat.entries import memory_stats, parse_notes, render_shown
+
+            today = _date.today()
+            try:
+                n, chars, pool = memory_stats(notes_text, inbox_text, today, cfg.reply.pinned_max)
+                stats = f"\n记忆条目：常驻 {n} 条 / {chars} 字（上限 {cfg.reply.pinned_max}），候选池 {pool} 条（近况和挪出常驻的，按聊天内容想起来）"
+                archived = store.archive()
+                if archived:
+                    stats += f"；notes_archive.md 里 {sum(1 for ln in archived.splitlines() if ln.startswith('- '))} 条"
+                notes_text = render_shown(notes_text, "", today) if parse_notes(notes_text) else notes_text
+                inbox_text = render_shown("", inbox_text, today) if inbox_text else inbox_text
+            except Exception:
+                log.warning("记忆条目渲染出错，打印原文", exc_info=True)
+                notes_text, inbox_text = store.notes(), store.inbox()
         for title, text in (
             ("人设 profile.md", store.profile()),
             ("好友 friends.md", store.friends()),
-            ("长期记忆 notes.md", store.notes()),
-            ("随手记 inbox.md", store.inbox()),
+            ("长期记忆 notes.md", notes_text),
+            ("随手记 inbox.md", inbox_text),
         ):
             print(f"\n===== {title} =====\n{text or '（空）'}")
+        if stats:
+            print(stats)
         print(f"\n聊天记录 {len(store.history.all())} 轮，其中 {len(store.pending_turns())} 轮还没整理进长期记忆")
         if cfg.inner.enabled:
             from .inner import show_lines

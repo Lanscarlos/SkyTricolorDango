@@ -7,8 +7,10 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from ..config import ReplyConfig
+from .entries import render_shown
 from .llm import ChatMessage, LlmClient
 from ..vision.envdiff import EnvSnapshot, diff_line
 from .memory import GAP_NOTE_AFTER, MemoryStore, NotesKeeper, Turn, format_gap
@@ -216,7 +218,15 @@ class Responder:
             return build_system_prompt(self.cfg, env=env, emotes=emotes)
         notes = self.store.notes()
         inbox = self.store.inbox()
-        if inbox:
+        shown = None
+        if self.cfg.memory_entries:  # 记忆条目化：整份带，去掉方括号、日期写成相对时间（--no-brain 不分常驻 / 想起来）
+            try:
+                shown = render_shown(notes, inbox, datetime.fromtimestamp(self.clock()).date())
+            except Exception:
+                log.warning("记忆条目渲染出错，退回原文", exc_info=True)
+        if shown is not None:
+            notes = shown
+        elif inbox:
             notes = (notes + "\n\n" if notes else "") + "刚记下的：\n" + inbox
         return build_system_prompt(self.cfg, self.store.profile(), self.store.friends(), notes, env, emotes)
 

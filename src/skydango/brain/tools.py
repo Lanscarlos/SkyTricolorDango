@@ -246,7 +246,9 @@ class ToolBox:
             query, who, days = _str(a, "query", ""), _str(a, "who", ""), _int(a, "days", 14)
             wall = getattr(b, "wall", None)  # 身体的墙上时间：沙盒快进之后"往前几天"按沙盒时间算
             try:
-                return recall(self.memory, query, who, days, now=wall() if callable(wall) else None)
+                entries = bool(getattr(getattr(getattr(b, "cfg", None), "reply", None), "memory_entries", False))
+                return recall(self.memory, query, who, days, now=wall() if callable(wall) else None,
+                              entries=entries, archive=self.memory.archive() if entries else "")
             except ValueError as exc:
                 raise ToolError(str(exc)) from None
         if name == "look_around":
