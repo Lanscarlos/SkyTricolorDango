@@ -474,6 +474,7 @@ class IdentityConfig:
     dango_min: float = 0.5
     dango_switch: float = 1.0
     dango_learn: float = 0.75
+    look_keep: float = 0.5  # 团子的长相分沿用几秒（样本隔几帧才裁一次）；11-01 在 10-26 录像上重放挑的：一直留着团子 70%，0.5 秒 84%
 
 
 @dataclass

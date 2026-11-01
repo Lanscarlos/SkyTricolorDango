@@ -94,6 +94,7 @@ class Evidence:
     nearby_name: tuple[float, str] | None = None
     me_samples: list[float | None] = field(default_factory=list)
     look: float | None = None
+    look_at: float = float('-inf')
     smooth: float | None = None
     call_mark: tuple[float, float] | None = None  # (这一声的 at, 算宽限的起点；暂停时往后挪)
 
@@ -300,6 +301,7 @@ class IdentityBoard:
             e.tag_start += seconds
             e.tag_last += seconds
             e.panel_at += seconds
+            e.look_at += seconds
             e.verdict = replace(e.verdict, since=e.verdict.since + seconds)
             if e.nearby_name:
                 e.nearby_name = (e.nearby_name[0] + seconds, e.nearby_name[1])
@@ -326,7 +328,9 @@ class IdentityBoard:
                 # 好友底库还空着时也要够像自己才有分，不然谁都满分
                 base = max(max(t.scores.dino.values(), default=0.0), self.acfg.dango_match - LOOK_SPAN)
                 e.look = min(1.0, max(0.0, (t.scores.me - base) / LOOK_SPAN))
-            if e.look is not None:
+                e.look_at = frame.now
+            # 样本隔几帧才裁一次，长相分沿用 look_keep 秒；一直留着的旧 0 分会把真团子压在 dango_min 以下
+            if e.look is not None and frame.now - e.look_at <= self.cfg.look_keep + 1e-9:
                 parts.append(('look', self.cfg.dango_w_look, e.look))
             if t.self_score is not None:
                 parts.append(('self', self.cfg.dango_w_self, t.self_score))

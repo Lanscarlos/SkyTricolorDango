@@ -242,6 +242,15 @@ def test_dango_learns_only_frames_with_own_cue():  # 10-26 录像：self 框打�
     out = b.step(frame(0.5, tr(1, 960, with_bg=False, scores=sc(小明=0.3))))  # 不跟背景走也算
     assert out.learn == {1: ("me", "")}
 
+def test_stale_look_expires_after_look_keep():  # 10-26 录像：底库歪了时算出的 0 分一直压着真团子
+    b = board()
+    b.step(frame(0.0, tr(1, 960, scores=sc(me=0.5, 小明=0.9))))  # 这一刻不像团子
+    out = b.step(frame(0.2, tr(1, 960, self_score=0.9)))
+    assert b.dango_id is None  # 0.5 秒内旧的长相分还算
+    for t in (0.6, 0.7, 0.8, 0.9):
+        out = b.step(frame(t, tr(1, 960, self_score=0.9)))
+    assert b.dango_id == 1 and out.verdicts[1].kind == DANGO
+
 def test_look_alike_and_unsure_never_learn():
     b = board()
     for t in (0.0, 0.1, 0.2, 0.3):
