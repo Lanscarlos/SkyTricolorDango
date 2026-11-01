@@ -23,7 +23,7 @@ FEEL_MAX = 40  # 印象最多几个字，超了整条不收
 FEEL_PAST = 3  # 留最近几版旧印象
 SAME = 0.9  # 新旧印象像到这个算没改
 # 不写依恋、吃醋（好友里可能有未成年人，感情不往这边推）
-CLINGY = ("离不开", "只喜欢", "只要他", "只要她", "吃醋", "嫉妒", "独占", "最爱")
+CLINGY = ("离不开", "只喜欢", "只要他", "只要她", "吃醋", "嫉妒", "独占", "最爱他", "最爱她", "舍不得他", "舍不得她", "依赖他", "依赖她")
 # 说过难过的人：印象里不许带埋怨
 GRUMBLE = ("烦", "讨厌", "放鸽子", "迟到", "没良心", "气死", "不理我")
 
@@ -82,13 +82,15 @@ def apply_feelings(
         old = card.feeling or {}
         old_text, old_close = old.get("text", ""), old.get("close")
         want = CLOSE_LEVELS.index(close)
-        if old_close in CLOSE_LEVELS:  # 一次最多变一档
-            base = CLOSE_LEVELS.index(old_close)
+        base = CLOSE_LEVELS.index(old_close) if old_close in CLOSE_LEVELS else None
+        if base is not None:  # 一次最多变一档
             want = max(base - 1, min(base + 1, want))
         cap = _close_cap(card, cfg)
         if want > cap:
-            dropped.append(f"感觉：{name} 一起玩过 {len(card.days)} 天，{CLOSE_LEVELS[want]} 压回 {CLOSE_LEVELS[cap]}")
-            want = cap
+            floor = cap if base is None else max(cap, base - 1)  # 天数不够也只往下压一档（旧的很铁别一次掉成刚认识）
+            if floor < want:
+                dropped.append(f"感觉：{name} 一起玩过 {len(card.days)} 天，{CLOSE_LEVELS[want]} 压回 {CLOSE_LEVELS[floor]}")
+                want = floor
         close = CLOSE_LEVELS[want]
         if name in soft:  # 这次说过难过：不写生疏、不收埋怨
             if trend == "有点生疏":

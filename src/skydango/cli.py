@@ -3521,7 +3521,12 @@ def _final_reflection(cfg: Config, body, reflector, ledger, live_store, now: flo
     try:
         if hasattr(reflector.llm, "timeout"):  # GatedCall：主和备一起缩短，备用不重试
             reflector.llm.timeout = _final_timeout(cfg)
-        context = body.feeling_context() if hasattr(body, "feeling_context") else None  # 对每个人的感觉：只有下线这次改
+        context = None  # 对每个人的感觉：只有下线这次改；出错只丢感觉，日记照写
+        if hasattr(body, "feeling_context"):
+            try:
+                context = body.feeling_context()
+            except Exception:
+                log.exception("对每个人的感觉：取上下文出错，这次不改")
         result = reflector.final(body.reflect_materials(True), extra=FEELINGS_SYSTEM if context else "")
         return finish_reflection(
             result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist,

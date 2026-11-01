@@ -74,6 +74,22 @@ def test_close_needs_days():
     assert len(dropped) == 2
 
 
+def test_cap_still_one_step_down():  # 终审：旧「很铁」但天数不够时别一次掉两档
+    old = {"text": "嘴贫但靠谱", "close": "很铁", "trend": "平稳", "since": "2026-10-20", "past": []}
+    cards = {"小明": card(days=2, feeling=old)}
+    apply(cards, [feel(close="很铁")])
+    assert cards["小明"].feeling["close"] == "熟了"
+
+
+def test_favorite_thing_is_not_clingy():  # 终审：「最爱吃辣」不是依恋
+    cards = {"小明": card()}
+    apply(cards, [feel(text="最爱吃辣，嘴还硬")])
+    assert cards["小明"].feeling["text"] == "最爱吃辣，嘴还硬"
+    cards = {"小明": card()}
+    apply(cards, [feel(text="我最爱他了")])
+    assert cards["小明"].feeling == {}
+
+
 def test_bad_level_dropped():
     cards = {"小明": card(), "阿花": card()}
     changes, dropped = apply(cards, [feel(close="好朋友"), feel(who="阿花", trend="变远")])

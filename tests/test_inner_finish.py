@@ -121,6 +121,26 @@ def test_finish_applies_feelings():  # spec 2026-11-01-friend-feelings §2
     assert cards["小明"].feeling == {}
 
 
+def test_final_reflection_survives_feeling_context_error():  # 终审：感觉出错只丢感觉，日记照写
+    from types import SimpleNamespace
+
+    from skydango import cli
+    from skydango.config import Config
+
+    def boom():
+        raise RuntimeError("坏了")
+
+    calls = []
+    body = SimpleNamespace(
+        quiet_session=lambda: False, feeling_context=boom, reflect_materials=lambda final: "材料", mind=Mind(),
+        _safe_friends=lambda: [], persona=None, soft_names_this_session=lambda: set(), mind_log=None, _energy=None,
+        said_this_session=lambda: [])
+    reflector = SimpleNamespace(llm=SimpleNamespace(), final=lambda content, extra="": calls.append(extra) or {"diary": "今天不错。"})
+    ledger = SimpleNamespace(store=None, cards={}, persist=False)
+    assert cli._final_reflection(Config(), body, reflector, ledger, None, T0) == "今天不错。"
+    assert calls == [""]
+
+
 def test_finish_bad_feelings_still_writes_diary(tmp_path):  # Review Focus 2
     st = InnerStore(tmp_path / "inner")
     finish_reflection({"diary": "今天不错。", "feelings": "坏的"}, Mind(), st, None, _cards(), ["小明"], True, T0, InnerConfig(),
