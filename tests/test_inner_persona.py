@@ -208,3 +208,32 @@ def test_remove_each_kind():
     assert not p.remove("joke", "梗", who="阿花")
     assert not p.remove("opinion", "", topic="雨林")
     assert not p.remove("xx", "梗")
+
+
+# ---- 11-01：性格档案没用上——用了几次由代码按团子说出口的话数；口头禅要说过两次才收 ----
+def test_said_bumps_matching_traits():
+    p = Persona(catchphrases=[Trait("翅膀硬不了，我本来就没翅膀")], jokes=[Trait("路痴带路", who="小明")],
+                opinions=[Trait("无翼不敢进，怕坠机", topic="霞谷")])
+    assert p.said("哈哈翅膀硬不了，我本来就没翅膀嘛", T0 + 5) == ["翅膀硬不了，我本来就没翅膀"]
+    assert (p.catchphrases[0].hits, p.catchphrases[0].last_used) == (1, T0 + 5)
+    assert p.said("又是你路痴带路？", T0 + 6) == ["路痴带路"]
+    assert p.said("霞谷？我无翼不敢进，怕坠机", T0 + 7) == ["霞谷"]
+    assert p.said("今天天气不错", T0 + 8) == [] and p.opinions[0].hits == 1
+
+
+def test_catchphrase_needs_two_times_when_said_given():
+    p = Persona()
+    dropped = p.apply(add(catchphrases=["我那是可爱，不是笨"]), CARDS, FRIENDS, T0, CFG, said=["我那是可爱，不是笨", "嗯"])
+    assert p.catchphrases == [] and any("只说过一次" in d for d in dropped)
+    p.apply(add(catchphrases=["我那是可爱，不是笨"]), CARDS, FRIENDS, T0, CFG,
+            said=["我那是可爱，不是笨", "说了我那是可爱不是笨嘛"])
+    assert [t.text for t in p.catchphrases] == ["我那是可爱，不是笨"]
+    p2 = Persona()
+    p2.apply(add(catchphrases=["害，懒得动"]), CARDS, FRIENDS, T0, CFG)  # 不给 said：照旧（没有材料可数）
+    assert [t.text for t in p2.catchphrases] == ["害，懒得动"]
+
+
+def test_persona_used_ignored_when_code_counts():
+    p = Persona(catchphrases=[Trait("害，懒得动", since=T0)])
+    p.apply({"persona_used": ["害，懒得动"]}, CARDS, FRIENDS, T0 + 5, CFG, said=["害，懒得动"])
+    assert p.catchphrases[0].hits == 0  # 代码已经在 say 时数过了，模型报的不再加一遍

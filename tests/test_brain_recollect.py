@@ -114,3 +114,21 @@ def test_error_returns_none():
     r = make(NOTES)
     r.load = boom
     assert r.line([chat("番茄炒蛋盖饭", "青岛")], 0) is None
+
+
+# ---- 11-01：聊到了就提醒性格里的看法 / 老梗 ----
+def test_persona_cues_by_topic_and_friend():
+    from skydango.brain.recollect import persona_cues
+    from skydango.inner.persona import Persona, Trait
+
+    p = Persona(opinions=[Trait("无翼不敢进，怕坠机", topic="霞谷"), Trait("从来没准过", topic="识别模块")],
+                jokes=[Trait("管我叫沙子团子，我回一句你们嘴都打歪了", who="懒洋洋大王"), Trait("路痴带路", who="小明")])
+    skip: set = set()
+    assert persona_cues(p, ["走，去霞谷跑图"], {"懒洋洋大王"}, skip) == ["- 你对「霞谷」的看法：无翼不敢进，怕坠机"]
+    assert persona_cues(p, ["沙子团子在干嘛"], {"懒洋洋大王"}, skip) == [
+        "- 和懒洋洋大王的老梗：管我叫沙子团子，我回一句你们嘴都打歪了"]
+    assert persona_cues(p, ["霞谷霞谷", "沙子团子"], {"懒洋洋大王"}, skip) == []  # 一次上线同一条只带一次
+    assert persona_cues(p, ["路痴带路"], {"懒洋洋大王"}, set()) == []  # 老梗只在那个好友在说话时带
+    many = persona_cues(Persona(opinions=[Trait("a", topic="雨林"), Trait("b", topic="云野"), Trait("c", topic="禁阁")]),
+                        ["雨林云野禁阁"], set(), set())
+    assert len(many) == 2

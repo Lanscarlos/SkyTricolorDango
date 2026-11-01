@@ -3265,9 +3265,10 @@ def _run_brain(
             body.recollector = Recollector(
                 lambda: (store.notes(), store.inbox()), friend_matcher(body.friend_names, store.friends), cfg.reply, body.wall,
             )
-            brain.recollect = lambda ev, ep: body.call(lambda: body.recollect_line(ev, ep), timeout=3)
         except Exception:
             log.warning("想起来的组装出错，这次上线不带", exc_info=True)
+    if body.recollector is not None or body.persona is not None:  # 记忆条目 + 话题对上的性格（看法 / 老梗）
+        brain.recollect = lambda ev, ep: body.call(lambda: body.recollect_line(ev, ep), timeout=3)
     if body.lulls is not None:  # 冷场时大脑心里想的（“心里：”）记到身体那边
         def hand_over(text: str) -> None:
             # 不等身体：身体在自动喊（约 4 秒）时 call 会超时报 ERROR、丢掉这轮的“心里”；退出时身体已停，直接丢掉
@@ -3511,6 +3512,10 @@ def _final_timeout(cfg: Config) -> float:
 def _final_reflection(cfg: Config, body, reflector, ledger, live_store, now: float | None = None) -> str:
     from .inner import finish_reflection
 
+    quiet = getattr(body, "quiet_session", None)
+    if callable(quiet) and quiet():  # 没听到、没说过、没人来：反思没材料会编出跑图看云的一天（11-01），不写日记
+        log.info("这次上线没人来，不写日记")
+        return "没人来"
     try:
         if hasattr(reflector.llm, "timeout"):  # GatedCall：主和备一起缩短，备用不重试
             reflector.llm.timeout = _final_timeout(cfg)
@@ -3519,6 +3524,7 @@ def _final_reflection(cfg: Config, body, reflector, ledger, live_store, now: flo
             result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist,
             time.time() if now is None else now, cfg.inner,
             persona=body.persona, soft=body.soft_names_this_session(), mind_log=body.mind_log, energy=body._energy,
+            said=body.said_this_session() if hasattr(body, "said_this_session") else None,
         )
     except Exception:
         log.exception("下线前的反思出错")

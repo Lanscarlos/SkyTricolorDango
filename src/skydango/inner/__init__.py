@@ -111,7 +111,7 @@ def _drop_today(memo: str, now: float) -> str:
 
 def finish_reflection(
     result: dict | None, mind, store, memory, cards: dict, friends: list[str], persist: bool, now: float, cfg: InnerConfig,
-    persona=None, soft: set[str] = frozenset(), mind_log=None, energy=None,
+    persona=None, soft: set[str] = frozenset(), mind_log=None, energy=None, said: list[str] | None = None,
 ) -> str:
     """下线前的最终反思（第 2 期 §7）：套进心情、写日记和 mind.json、要点记进 inbox.md。返回存进 days.jsonl 的经过。
     persona（第 3 期）：顺带套进性格档案、写 persona.json（soft = 收着点的好友，不给他们记新老梗）。
@@ -131,7 +131,7 @@ def finish_reflection(
         _log.exception("最终反思的结果套不进心情")
     if persona is not None:
         try:
-            for why in persona.apply(result, cards, friends, now, cfg, soft=soft):
+            for why in persona.apply(result, cards, friends, now, cfg, soft=soft, said=said):
                 _log.info("性格：%s", why)
                 dropped.append(why)
         except Exception:

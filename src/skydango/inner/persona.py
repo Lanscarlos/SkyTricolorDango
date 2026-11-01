@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import difflib
+import re
 from dataclasses import dataclass, field
 
 from ..chat.responder import claims_human
@@ -24,6 +26,23 @@ SENSITIVE = ("胖", "瘦", "丑", "矮", "长相", "身材", "脸", "爸", "妈"
              "年龄", "今年", "岁", "小学生", "初中", "高中", "作业", "老师", "本名", "QQ", "qq", "微信", "哭")
 HEADING = "## 你攒下的性格（慢慢和大家玩出来的；人设里写的优先）"
 TAIL = "用得自然，别每句都用；同一个梗一次上线最多用一两回。"
+
+
+USED = 0.6  # 团子说的这句和条目像到这个（或者整条都在这句里）就算用上了
+CATCHPHRASE_TIMES = 2  # 口头禅要在这次上线里说过这么多句像的才收（11-01：以前收的全是只说过一次的俏皮话）
+_PLAIN = re.compile(r"[\s\W_]+")
+
+
+def _plain(text: str) -> str:
+    return _PLAIN.sub("", text or "")
+
+
+def used_in(line: str, text: str) -> bool:
+    """团子说的这句（line）里用没用上这条（text）。"""
+    a, b = _plain(line), _plain(text)
+    if not a or not b:
+        return False
+    return (len(b) >= 4 and b in a) or difflib.SequenceMatcher(None, a, b).ratio() >= USED
 
 
 def touchy(*texts: str) -> bool:
@@ -86,24 +105,35 @@ class Persona:
 
     # ---- 套进反思结果 ----
     def apply(self, result: dict, cards: dict[str, Card], friends: list[str], now: float, cfg: InnerConfig,
-              soft: set[str] = frozenset()) -> list[str]:
-        """只看 persona_add / persona_used；返回丢掉了哪些（记日志用）。"""
+              soft: set[str] = frozenset(), said: list[str] | None = None) -> list[str]:
+        """只看 persona_add / persona_used；返回丢掉了哪些（记日志用）。
+        said = 团子这次上线说出口的话（身体给）：给了就要求口头禅说过 CATCHPHRASE_TIMES 句像的，
+        而且不再按模型报的 persona_used 加次数（身体 say 时已经按原话数过，见 said()）；None = 照旧。"""
         dropped: list[str] = []
         before = {id(t) for t in self.catchphrases + self.jokes + self.opinions}
         add = result.get("persona_add", {})
+
+        def catchphrase(item) -> None:
+            if said is not None and isinstance(item, str) and item.strip():
+                times = sum(1 for line in said if used_in(line, item))
+                if times < CATCHPHRASE_TIMES:
+                    dropped.append(f"口头禅只说过一次，先不记：{item.strip()}")
+                    return
+            self._add_catchphrase(item, friends, now, dropped)
+
         if isinstance(add, dict):
-            self._add_list(add, "catchphrases", dropped, lambda item: self._add_catchphrase(item, friends, now, dropped))
+            self._add_list(add, "catchphrases", dropped, catchphrase)
             self._add_list(add, "jokes", dropped, lambda item: self._add_joke(item, cards, friends, now, cfg, soft, dropped))
             self._add_list(add, "opinions", dropped, lambda item: self._add_opinion(item, friends, now, dropped))
         else:
             dropped.append("persona_add 不是对象")
         used = result.get("persona_used", [])
-        if isinstance(used, list):
+        if not isinstance(used, list):
+            dropped.append("persona_used 不是列表")
+        elif said is None:  # 身体没按原话数过：照模型报的加
             for item in used:
                 if isinstance(item, str) and item.strip():
                     self._bump(item.strip(), now)
-        else:
-            dropped.append("persona_used 不是列表")
         fresh = {id(t) for t in self.catchphrases + self.jokes + self.opinions} - before
         self._cap(cfg, dropped, fresh)  # 新记的不在这次被挤掉：挤旧的里最没用的（不然满了就再也长不出新的）
         self.fade(now, cfg)
@@ -200,6 +230,19 @@ class Persona:
                     t.text, t.since, t.last_used = stance, now, now  # 刚表过态：算刚用过，别一两天就淡出
                 return
         self.opinions.append(Trait(stance, topic=topic, since=now))
+
+    def said(self, line: str, now: float) -> list[str]:
+        """团子说出口一句（身体 say 时调）：用上的条目记一次。返回用上了哪些（口头禅 / 老梗是原文，看法是话题）。"""
+        hit: list[str] = []
+        for t in self.catchphrases + self.jokes:
+            if used_in(line, t.text):
+                t.hits, t.last_used = t.hits + 1, now
+                hit.append(t.text)
+        for t in self.opinions:
+            if used_in(line, t.text):
+                t.hits, t.last_used = t.hits + 1, now
+                hit.append(t.topic)
+        return hit
 
     def _bump(self, item: str, now: float) -> None:
         for t in self.catchphrases + self.jokes:

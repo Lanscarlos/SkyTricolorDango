@@ -42,6 +42,7 @@ def test_reflection_logs_changes(clock, tmp_path):
 
 def test_reflection_logs_persona_changes_and_dropped(clock, tmp_path):
     b = make(clock, tmp_path)
+    b._session_chat.extend([(WALL, "我", "懒得动"), (WALL, "我", "就是懒得动")])  # 口头禅要说过两次才收（11-01）
     b.apply_reflection({"persona_add": {"catchphrases": ["懒得动"], "jokes": [{"who": "阿花", "text": "梗"}]}})
     r = b.mind_log.recent()[-1]
     assert r["changes"] == ["新口头禅：懒得动"]

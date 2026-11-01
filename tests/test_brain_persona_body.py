@@ -70,6 +70,8 @@ def test_reflection_applies_persona_live_only(clock, tmp_path):
         b, env, reader, _ = make(clock, d, live=live, reflect_reply=reply)
         reader.batches = [[msg("嗨")]]
         b.step()
+        b.say("害，懒得动")
+        b.say("害，懒得动啊今天")  # 口头禅要说过两次才收（11-01）
         clock.advance(1300)
         b.step()
         b.step()
@@ -143,3 +145,34 @@ def test_soft_names_this_session_keeps_expired(clock, tmp_path):  # 终审 I3a
     b.step()
     assert b.soft_names_this_session() == {"懒洋洋大王"}
     assert b.soft_names(WALL + 3600) == set() and b.soft_names_this_session() == {"懒洋洋大王"}
+
+
+# ---- 11-01：性格档案用得上、记得准 ----
+def test_say_counts_persona_hits(clock, tmp_path):
+    b, *_ = make(clock, tmp_path, live=True)
+    b.persona.catchphrases = [Trait("翅膀硬不了，我本来就没翅膀", since=WALL)]
+    b.say("翅膀硬不了，我本来就没翅膀")
+    assert b.persona.catchphrases[0].hits == 1
+
+
+def test_reflection_catchphrase_needs_two_times(clock, tmp_path):
+    reply = '{"persona_add": {"catchphrases": ["我那是可爱，不是笨"]}}'
+    b, env, reader, _ = make(clock, tmp_path, reflect_reply=reply)
+    reader.batches = [[msg("嗨")]]
+    b.step()
+    b.say("我那是可爱，不是笨")  # 只说过一次
+    clock.advance(1300)
+    b.step()
+    b.step()
+    assert b.persona.catchphrases == []
+
+
+def test_recollect_line_brings_persona_cues_without_recollector(clock, tmp_path):
+    from skydango.brain.events import Event
+
+    b, *_ = make(clock, tmp_path)
+    b.persona.opinions = [Trait("无翼不敢进，怕坠机", topic="霞谷", since=WALL)]
+    out = b.recollect_line([Event("chat", "x", 0.0, speech=("懒洋洋大王", "去霞谷不"))], 0)
+    assert out == "想起来的：\n- 你对「霞谷」的看法：无翼不敢进，怕坠机"
+    assert b.recollect_line([Event("chat", "x", 0.0, speech=("懒洋洋大王", "去霞谷不"))], 0) is None  # 带过一次了
+    assert b.recollect_line([Event("chat", "x", 0.0, speech=("懒洋洋大王", "去霞谷不"))], 1) is not None  # 压缩换上后可以再带

@@ -194,3 +194,14 @@ def test_final_reflection_flushes(clock):
     b.reflect_materials(True)
     assert b.lulls.active() == []
     assert any(who == "（冷场）" and "到下线还没结束" in text for _, who, text in b._session_chat)
+
+
+def test_quiet_session(clock):  # 11-01：一两分钟、没人来的上线，下线反思没材料，给她编了跑图看云的一天
+    b, env, reader, events = lb(clock, mind=Mind())
+    b._session_chat.clear(), b._session_comings.clear()
+    assert b.quiet_session()
+    b._session_comings.append("小明 来到身边")
+    assert not b.quiet_session()
+    b._session_comings.clear()
+    chat_then_quiet(b, reader, events, clock)
+    assert not b.quiet_session()

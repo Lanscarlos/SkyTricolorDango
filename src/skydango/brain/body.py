@@ -47,7 +47,7 @@ from .camera import KEYS as CAMERA_KEYS, MAX_STEPS as CAMERA_MAX_STEPS
 from .events import Event, EventQueue
 from .find import FindSkill
 from .manner import jab_note, manner as manner_text
-from .recollect import Recollector
+from .recollect import Recollector, persona_cues
 from .pacing import Pacer
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
@@ -179,6 +179,8 @@ class Body:
         self.profile_text: Callable[[], str] = lambda: cfg.reply.persona  # 反思用的人设（cli 设成 profile.md）
         self.memory_notes: Callable[[], str] = lambda: ""  # 反思用的笔记（cli 设成 notes.md + inbox.md）
         self.recollector: Recollector | None = None  # 想起来的（[reply] memory_entries，cli 设）
+        self._cued: set = set()  # 这次上线「想起来的」里带过的性格条目（压缩换上后清空）
+        self._cued_epoch = 0
         self.friends_text: Callable[[], str] = lambda: ""  # 反思用的好友名单（cli 设成 friends.md）：日记里称呼、性别照它
         self.recap_text: Callable[[], str] = lambda: ""  # 大脑这次上线的前情提要（OpenAI 兼容大脑压过历史才有，cli 设），下线反思用
         self.recent_changes: Callable[[], list[str]] | None = None  # introspect(改动)：最近几天的提交（cli 在幕后开着时设）
@@ -670,10 +672,20 @@ class Body:
 
     # ---- 攒话（spec 2026-10-07-chat-pacing §1）----
     def recollect_line(self, events: list[Event], epoch: int) -> str | None:
-        """唤醒消息里「想起来的：…」那一段（记忆条目化）；没挂 recollector 就没有。cli 让大脑醒来时在身体线程里调。"""
-        if self.recollector is None:
-            return None
-        return self.recollector.line(events, epoch)
+        """唤醒消息里「想起来的：…」那一段：记忆条目（挂了 recollector 才有）+ 话题对上的性格（看法 / 老梗）。cli 让大脑醒来时在身体线程里调。"""
+        line = self.recollector.line(events, epoch) if self.recollector is not None else None
+        cues = self._inner_call(lambda: self._persona_cues(events, epoch), default=[]) if self.persona is not None else []
+        if not cues:
+            return line
+        return (line or "想起来的：") + "\n" + "\n".join(cues)
+
+    def _persona_cues(self, events: list[Event], epoch: int) -> list[str]:
+        if epoch != self._cued_epoch:  # 大脑历史压缩换上了：原话没了，可以再带
+            self._cued_epoch, self._cued = epoch, set()
+        friends = self._safe_friends()
+        said = [ev.speech[1] for ev in events if ev.kind in ("chat", "aside") and ev.speech]
+        people = {match_friend(ev.speech[0], friends) or ev.speech[0] for ev in events if ev.kind in ("chat", "aside") and ev.speech}
+        return persona_cues(self.persona, said, people, self._cued)
 
     def manner_line(self, batch: list[tuple[str, str]]) -> str | None:
         """唤醒消息里「回法：…」那一行（§2）：最近几句贱不贱、心情、困不困；cli 让大脑醒来时在身体线程里调。"""
@@ -2267,6 +2279,10 @@ class Body:
             self._session_chat.append((self.wall(), "我", full))
             if self.reflector is not None:
                 self.reflector.stirred(now)
+        if self.persona is not None:  # 用上了攒下的口头禅 / 老梗 / 看法：按原话数（以前只靠反思报，几乎全是 0）
+            hit = self._inner_call(lambda: self.persona.said(full, self.wall()), default=[])
+            if hit:
+                log.info("用上了性格：%s", "；".join(hit))
         self.said[:] = self.said[-50:]  # 只留最近 50 条，别无限长
         self.chat.append((self.wall(), "我", full))
         if not live:
@@ -3078,6 +3094,10 @@ class Body:
         while self._busy_log and wall - self._busy_log[0][0] > 3600:
             self._busy_log.popleft()
 
+    def quiet_session(self) -> bool:
+        """这次上线什么都没发生（没听到、没说过、没人来去）：下线反思不写日记。"""
+        return not self._session_chat and not self._session_comings
+
     def reflect_materials(self, final: bool) -> str:
         """拼给反思的材料：上次反思以来的聊天和来去、相关好友的关系卡、笔记里提到他们的行。"""
         wall = self.wall()
@@ -3141,11 +3161,16 @@ class Body:
     def _apply_persona(self, result: dict, cards) -> list[str]:
         """反思结果套进性格档案；live 时写 persona.json。返回丢掉了哪些。"""
         wall = self.wall()
-        dropped = self.persona.apply(result, cards, self._safe_friends(), wall, self.cfg.inner, soft=self.soft_names(wall))
+        dropped = self.persona.apply(result, cards, self._safe_friends(), wall, self.cfg.inner, soft=self.soft_names(wall),
+                                     said=self.said_this_session())
         for why in dropped:
             log.info("性格：%s", why)
         self._save_persona()
         return dropped
+
+    def said_this_session(self) -> list[str]:
+        """团子这次上线说出口的话（性格档案数口头禅说过几次用；最多 80 句）。"""
+        return [text for _, who, text in self._session_chat if who == "我"]
 
     def _save_persona(self) -> None:
         if self.persona is not None and self.ledger is not None and self.ledger.persist and self.ledger.store is not None:

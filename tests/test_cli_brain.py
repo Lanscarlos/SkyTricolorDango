@@ -467,6 +467,7 @@ def test_run_brain_live_final_reflection_replaces_farewell(tmp_path, monkeypatch
     from skydango.inner.store import InnerStore
 
     cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("skydango.brain.body.Body.quiet_session", lambda self: False)  # 假会话里没人说话：照样走下线反思
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
@@ -576,6 +577,20 @@ def test_final_reflection_writes_diary_via_backup(tmp_path, monkeypatch, how):  
     assert ledger.store.last_diaries(1) and "今天和阿花去了雨林。" in ledger.store.last_diaries(1)[0]
 
 
+def test_final_reflection_skips_quiet_session(tmp_path, monkeypatch):  # 11-01：没人来的上线不反思、不写日记（以前编出跑图看云）
+    cfg, store, ledger, reflector, body, _, seen = _final_parts(tmp_path, monkeypatch)
+    body.quiet_session = lambda: True
+    assert cli._final_reflection(cfg, body, reflector, ledger, store) == "没人来"
+    assert seen["claude"] == [] and seen["deepseek"] == [] and not ledger.store.last_diaries(1)
+
+
+def test_reflect_prompt_forbids_making_things_up():
+    from skydango.inner.reflect import REFLECT_SYSTEM, materials
+
+    assert "只写材料里真发生的事" in REFLECT_SYSTEM and "不会跑图" in REFLECT_SYSTEM
+    assert "只写材料里真发生的事" in materials(0.0, "", "", [], [], [], [], "", True)
+
+
 def test_profile_template_has_temper():
     for s in ("## 脾气", "毛病", "执念", "雷点"):
         assert s in cli.PROFILE_TEMPLATE
@@ -603,6 +618,7 @@ def test_run_brain_live_persona_on(tmp_path, monkeypatch):
     from skydango.inner.store import InnerStore
 
     cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("skydango.brain.body.Body.quiet_session", lambda self: False)  # 假会话里没人说话：照样走下线反思
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
     InnerStore(tmp_path / "memory" / "inner").write_persona(Persona(catchphrases=[Trait("害，懒得动", since=time.time())]))
@@ -623,6 +639,7 @@ def test_run_brain_persona_off_is_phase2(tmp_path, monkeypatch):
     from skydango.inner.reflect import REFLECT_SYSTEM
 
     cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("skydango.brain.body.Body.quiet_session", lambda self: False)  # 假会话里没人说话：照样走下线反思
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
     cfg.inner.persona = False
@@ -1013,6 +1030,7 @@ def test_run_brain_cheeky_off_is_temper_only(tmp_path, monkeypatch):
     from skydango.inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM
 
     cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("skydango.brain.body.Body.quiet_session", lambda self: False)  # 假会话里没人说话：照样走下线反思
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
     cfg.inner.cheeky = False

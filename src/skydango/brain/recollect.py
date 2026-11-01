@@ -56,6 +56,29 @@ def bigrams(text: str) -> set[str]:
     return out - STOP
 
 
+PERSONA_CUES = 2  # 一轮最多带几条性格（看法 / 老梗）
+
+
+def persona_cues(persona, said: list[str], people: set[str], skip: set) -> list[str]:
+    """聊到了就提醒性格档案里的东西（11-01：攒下的看法、老梗从没用上过）：话题对上的看法、这批里说话的好友的老梗（话对得上）。
+    skip 是这次上线已经带过的（就地加），同一条只带一次。返回「- …」行，最多 PERSONA_CUES 条。"""
+    words = bigrams("\n".join(said))
+    if not words:
+        return []
+    out: list[str] = []
+    for t in persona.opinions:
+        k = ("opinion", t.topic)
+        if k not in skip and bigrams(t.topic) & words:
+            out.append((k, f"- 你对「{t.topic}」的看法：{t.text}"))
+    for t in persona.jokes:
+        k = ("joke", t.who, t.text)
+        if k not in skip and t.who in people and bigrams(t.text) & words:
+            out.append((k, f"- 和{t.who}的老梗：{t.text}"))
+    out = out[:PERSONA_CUES]
+    skip.update(k for k, _ in out)
+    return [line for _, line in out]
+
+
 class Recollector:
     def __init__(
         self,
