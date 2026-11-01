@@ -141,6 +141,19 @@ def feelings_lines(cards: dict[str, Card], names: Sequence[str], now: float, cfg
     return out
 
 
+def introspect_text(cards: dict[str, Card], friends: Sequence[str], now: float, cfg: InnerConfig) -> str:
+    """introspect("关系")：每个有印象的好友一段——现在的印象、档位、走向、哪天写的，下面是以前的（旧到新）。"""
+    out = []
+    for name in friends:
+        card = cards.get(name)
+        if card is None or not card.feeling.get("text"):
+            continue
+        f = card.feeling
+        out.append(f"{name}：{f['text']}（{f['close']}，{trend_shown(card, now, cfg)}，{f.get('since', '')} 写的）")
+        out += [f"  以前（{p.get('date', '')}）：{p.get('text', '')}（{p.get('close', '')}）" for p in f.get("past", [])]
+    return "\n".join(out) if out else "还没对谁有印象"
+
+
 def trend_shown(card: Card, now: float, cfg: InnerConfig) -> str:
     """显示用的走向：太久没在身边见过就是「好久没见了」。"""
     if card.last_seen is not None and now - card.last_seen >= cfg.feel_stale_days * 86400:

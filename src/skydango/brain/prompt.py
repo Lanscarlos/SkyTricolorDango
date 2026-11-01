@@ -147,6 +147,9 @@ LULL_RULES = """## 冷场的时候
 - 是好友说完你没接的那种冷场：是你自己没接，想的是要不要接，而不是“他怎么不理我”。
 - 冷场结束时，聊天后面会附上“你刚才在想：…”，可以顺口接（“我还以为你不理我了”），也可以当没这回事。"""
 
+# 对每个人的感觉（spec 2026-11-01-friend-feelings §4）：接在交情规矩后面
+FEEL_RULE = "- 好友来时事件里写了“你对他：…”，状态里写了你们有多熟：按你对这个人的感觉说话——熟的随意、刚认识的客气点、生疏了可以带点别扭或者想他；别把感觉直接说出口（不说“我觉得我们变近了”）。\n"
+
 INNER_RULES = """- 状态和事件里写了你和每个好友的交情（见过几次、上次什么时候、他上次说了什么）。按交情说话：熟的人随便点，刚认识的客气点；隔了很久见面可以表现出来（“好久不见”“你去哪了”）。
 - 别报数字（不说“我们见过 13 次”“你今天待了 40 分钟”）。
 - 他上次提过的事可以接着问（“考试怎么样了”），拿不准先 recall。
@@ -308,6 +311,7 @@ def brain_prompt(
     icons: bool = False,
     manner: bool = False,
     entries: ReplyConfig | None = None,
+    feelings: bool = False,
 ) -> str:
     """追加给 Claude Code 的系统提示词：先人设和记忆，再规则。启动时读一次（之后靠对话记录）。
 
@@ -348,7 +352,7 @@ def brain_prompt(
     if panel_auto:
         rules = rules.replace(REMEMBER_ANCHOR, PANEL_AUTO_NOTE + REMEMBER_ANCHOR, 1)
     if inner:
-        rules = rules.replace(REMEMBER_ANCHOR, INNER_RULES + REMEMBER_ANCHOR, 1)
+        rules = rules.replace(REMEMBER_ANCHOR, INNER_RULES + (FEEL_RULE if feelings else "") + REMEMBER_ANCHOR, 1)
     if mind:  # 插在交情规矩之后
         rules = rules.replace(REMEMBER_ANCHOR, MIND_RULES + REMEMBER_ANCHOR, 1)
     if temper:  # 插在心情规矩之后

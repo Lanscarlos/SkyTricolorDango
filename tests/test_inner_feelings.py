@@ -160,6 +160,28 @@ def test_feelings_lines():
     ]
 
 
+def test_describe_with_feel():
+    from skydango.inner.ledger import describe
+
+    c = card(days=9)
+    assert describe("小明", c, NOW, feel="熟了").endswith("·一起玩过 9 天·熟了）")
+    assert describe("小明", c, NOW) == describe("小明", c, NOW, feel="")
+    assert "熟了" not in describe("小明", c, NOW)
+
+
+def test_introspect_text():
+    from skydango.inner.feelings import introspect_text
+
+    past = [{"text": "刚认识的时候话少", "close": "刚认识", "date": "2026-10-02"}]
+    cards = {"小明": card(feeling={"text": "嘴贫但靠谱", "close": "熟了", "trend": "平稳", "since": "2026-10-20", "past": past}),
+             "阿花": card()}
+    text = introspect_text(cards, FRIENDS, NOW, cfg)
+    for s in ("小明", "嘴贫但靠谱", "熟了", "平稳", "2026-10-20", "刚认识的时候话少", "2026-10-02"):
+        assert s in text
+    assert "阿花" not in text
+    assert introspect_text({"阿花": card()}, FRIENDS, NOW, cfg) == "还没对谁有印象"
+
+
 def test_stale_shown():
     c = card(feeling={"text": "嘴贫但靠谱", "close": "熟了", "trend": "平稳", "since": TODAY, "past": []}, last_seen=NOW - 86400 * 15)
     assert trend_shown(c, NOW, cfg) == STALE

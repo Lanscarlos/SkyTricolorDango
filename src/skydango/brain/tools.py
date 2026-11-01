@@ -82,9 +82,9 @@ def descriptions(sweep: bool) -> dict[str, str]:
 
 TOOL_NAMES = list(DESCRIPTIONS)
 # 幕后（spec 2026-10-01-backstage §2）：[backstage] enabled 时才注册，不进 DESCRIPTIONS / TOOL_NAMES / ACTIONS
-INTROSPECT_TOPICS = ("精力", "反思", "性格", "日记", "眼睛", "改动")
+INTROSPECT_TOPICS = ("精力", "反思", "性格", "日记", "眼睛", "改动", "关系")
 INTROSPECT_DESCRIPTION = (
-    "查你自己现在的内心细节：精力 / 反思 / 性格 / 日记 / 眼睛 / 改动（最近几天你被改了什么）。"
+    "查你自己现在的内心细节：精力 / 反思 / 性格 / 日记 / 眼睛 / 改动（最近几天你被改了什么）/ 关系（你对每个好友的感觉和它怎么变过来的）。"
     "别人问你为什么困、心情为什么这样、你怎么记事、最近被改了什么时先查再答；"
     "查到的数字别原样念，用自己的话说。"
 )

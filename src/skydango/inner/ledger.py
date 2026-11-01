@@ -108,8 +108,9 @@ def _today_minutes(card: Card, now: float) -> float:
     return card.today_minutes if card.today == day_of(now) else 0.0
 
 
-def describe(name: str, card: Card, now: float, look: str = "") -> str:
-    """小明（今天一起 40 分钟·认识 21 天·一起玩过 9 天）；look：现在的装扮描述，放在最前（小明（粉色长斗篷·今天……））"""
+def describe(name: str, card: Card, now: float, look: str = "", feel: str = "") -> str:
+    """小明（今天一起 40 分钟·认识 21 天·一起玩过 9 天）；look：现在的装扮描述，放在最前（小明（粉色长斗篷·今天……））；
+    feel：对他的感觉（feelings.feeling_bit，「熟了」），放在最后"""
     minutes = _today_minutes(card, now)
     bits = [look] if look else []
     bits.append("今天刚来" if minutes < 1 else f"今天一起 {int(minutes + 1e-6)} 分钟")
@@ -117,6 +118,8 @@ def describe(name: str, card: Card, now: float, look: str = "") -> str:
     bits.append("今天刚认识" if known <= 0 else f"认识 {known} 天")
     if len(card.days) > 1:
         bits.append(f"一起玩过 {len(card.days)} 天")
+    if feel:
+        bits.append(feel)
     return f"{name}（{'·'.join(bits)}）"
 
 
@@ -282,8 +285,10 @@ class Ledger:
             self.history.append(self.session)
 
     # ---- 给大脑看的 ----
-    def status_line(self, names: Sequence[str], now: float, looks: dict[str, str] | None = None) -> str:
-        """status 的“身边的好友”：有卡的带交情，没卡的只写名字；looks：{名字: 装扮描述}，有就放在括号最前。"""
+    def status_line(self, names: Sequence[str], now: float, looks: dict[str, str] | None = None,
+                    feel: Callable[[Card], str] | None = None) -> str:
+        """status 的“身边的好友”：有卡的带交情，没卡的只写名字；looks：{名字: 装扮描述}，有就放在括号最前；
+        feel：卡 → 对他的感觉（放在括号最后），None = 不带。"""
         looks = looks or {}
         with self._lock:
             friends = self.friends()
@@ -293,7 +298,7 @@ class Ledger:
                 card = self.cards.get(name) if name else None
                 look = looks.get(raw) or (looks.get(name, "") if name else "")
                 if card is not None:
-                    parts.append(describe(name, card, now, look))
+                    parts.append(describe(name, card, now, look, feel(card) if feel is not None else ""))
                 else:
                     parts.append(f"{raw}（{look}）" if look else raw)
         return "、".join(parts)

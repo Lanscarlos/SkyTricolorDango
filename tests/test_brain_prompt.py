@@ -175,6 +175,14 @@ def test_bubble_note_only_when_enabled():
     assert BUBBLE not in brain_prompt(ReplyConfig(), None)
 
 
+def test_prompt_feel_rule():  # spec 2026-11-01-friend-feelings §4
+    from skydango.brain.prompt import FEEL_RULE, INNER_RULES
+
+    text = brain_prompt(ReplyConfig(), None, inner=True, feelings=True)
+    assert FEEL_RULE in text and text.index(INNER_RULES) < text.index(FEEL_RULE)
+    assert brain_prompt(ReplyConfig(), None, inner=True, feelings=False) == brain_prompt(ReplyConfig(), None, inner=True)
+
+
 def test_brain_prompt_inner_adds_days_and_rules():
     from skydango.brain.prompt import INNER_RULES
 

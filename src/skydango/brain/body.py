@@ -56,7 +56,7 @@ from .addressee import LABEL_NAMES, Addressee, Verdict, legacy_addressed, parse_
 from .reflex import Reflexes
 from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
 from ..inner.energy import Energy, awake_minutes, energy as inner_energy, energy_parts, format_parts
-from ..inner.feelings import distressed, feelings_lines
+from ..inner.feelings import distressed, feeling_bit, feeling_note, feelings_lines, introspect_text
 from ..inner.ledger import card_line, day_of, match_friend
 from ..inner.ledger import ago
 from ..inner.log import ENERGY_EVERY, diff as diff_inner
@@ -1355,7 +1355,8 @@ class Body:
                 joke = ""
                 if self.persona is not None and name not in self.soft_names(self.wall()):  # 收着点的人：不提老梗
                     joke = self._inner_call(lambda: self.persona.joke_note(name), default="")
-                text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{want or ''}{joke or ''}{back or ''}"
+                feel = self._inner_call(lambda: self._feeling_note(name), default="")
+                text = f"{name} 来到身边{self._arrive_notes.pop(name, '')}{feel or ''}{want or ''}{joke or ''}{back or ''}"
                 self.events.put("arrive", text, who=name)
                 self._arrived_at[name] = self.wall()
                 self._reflect_note(f"{name} 来到身边")
@@ -2089,7 +2090,12 @@ class Body:
         friends = "、".join(f"{n}（{looks[n]}）" if looks.get(n) else n for n in near)
         if near and self.ledger is not None:
             args = (near, self.wall(), looks) if looks else (near, self.wall())
-            friends = self._ledger_call("status_line", *args, default="") or friends
+            if self._feelings_on():  # 对每个人的感觉：括号最后带上有多熟
+                wall = self.wall()
+                friends = self._ledger_call("status_line", near, wall, looks or None,
+                                            lambda c: feeling_bit(c, wall, self.cfg.inner), default="") or friends
+            else:
+                friends = self._ledger_call("status_line", *args, default="") or friends
         parts.append("身边的好友：" + (friends or "没看到"))
         around = self.env.around(now) if self._presence() is not None else []
         if around:
@@ -3011,6 +3017,10 @@ class Body:
                 return "还没写过日记"
             m = re.match(r"(\d+月\d+日：)?(.*)", diaries[-1], re.S)  # 日期不算进 600 字
             return "最近一篇日记：" + (m.group(1) or "") + m.group(2)[:600]
+        if topic == "关系":
+            if not self._feelings_on():
+                return off
+            return introspect_text(self.ledger.cards, self._safe_friends(), wall, self.cfg.inner)
         if topic == "改动":
             if self.recent_changes is None:
                 return off
@@ -3150,6 +3160,13 @@ class Body:
         friends = self._safe_friends()
         seen = [n for n in (match_friend(x, friends) for x in self.ledger.session.friends) if n]
         return list(dict.fromkeys(seen + self._reflect_names(self._session_chat)))
+
+    def _feeling_note(self, name: str) -> str:
+        """arrive 里的「你对他：…」；收着点的人只带亲近度。"""
+        card = self.ledger.card(name) if self._feelings_on() else None
+        if card is None:
+            return ""
+        return feeling_note(card, self.wall(), self.cfg.inner, soft=name in self.soft_names(self.wall()))
 
     def feeling_context(self) -> dict | None:
         """给下线反思套感觉用：{"met", "soft", "today"}；关着 None。"""
