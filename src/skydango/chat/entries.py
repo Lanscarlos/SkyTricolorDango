@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 SELF = "自己"
 PINNED_WORD = "长期"  # 保留字，不能当键
+NOT_KEYS = {"近况", "键"}  # 写了也不算键：同一节的近况会被当成同一件事互相取代
 _BRACKET = re.compile(r"\s*〔([^〔〕]*)〕\s*$")
 _SPEAKER_MAX = 20  # inbox 里「谁：」最长多少字，再长就当正文里的冒号
 _POINTS = re.compile(r"^(\d{4})年(\d{1,2})月(\d{1,2})日.*的要点$")  # 下线反思写进 inbox 的「2026年11月2日（周一） 的要点：…」
@@ -45,7 +46,8 @@ def _parse_body(section: str, body: str) -> Entry:
         if d is not None:
             rest = [f for f in fields[1:] if f]
             pinned = PINNED_WORD in rest
-            key = next((f for f in rest if f != PINNED_WORD), "")
+            keys = (re.sub(r"^键\s*[：:]\s*", "", f) for f in rest if f != PINNED_WORD)  # 模型常照说明写成「键：早饭」
+            key = next((k for k in keys if k and k not in NOT_KEYS), "")
             return Entry(section, body[: m.start()].strip(), d, pinned, key, body)
         log.debug("记忆条目的方括号看不懂，整行当正文: %s", body[:60])
     return Entry(section, body, None, True, "", body)

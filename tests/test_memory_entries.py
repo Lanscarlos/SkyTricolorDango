@@ -55,6 +55,20 @@ def test_other_brackets_are_text():
     assert all(e.pinned and e.date is None for e in es)
 
 
+def test_key_prefix_stripped():
+    # 11-01 沙盒：模型照「键（可选）：…」写成了「〔2026-11-01｜键：早饭〕」，键成了「键：早饭」，和「早饭」对不上
+    es = parse_inbox("- 小明：早饭吃了榴莲包子 〔2026-11-01｜键：早饭〕\n- 小明：换了发型 〔2026-11-01｜长期｜键:发型〕\n")
+    assert [e.key for e in es] == ["早饭", "发型"]
+
+
+def test_recent_is_not_a_key():
+    # 11-01 沙盒：拿「近况」当键，同一节里不相干的近况互相顶掉
+    es = parse_notes("## 自己\n- 散场后站会儿 〔2026-10-26｜近况〕\n- 以为卡洛去刷牙了 〔2026-11-01｜键：近况〕\n")
+    assert [e.key for e in es] == ["", ""]
+    keep, gone = settle([], es, date(2026, 11, 1), 30)
+    assert len(keep) == 2 and gone == []
+
+
 def test_parse_inbox_speaker():
     es = parse_inbox("- 番茄炒蛋盖饭：煮了酸辣粉 〔2026-10-31〕\n- 我：不会吹萨克斯 〔2026-10-31｜长期〕\n- 随手一句\n")
     assert [(e.section, e.text, e.pinned) for e in es] == [
