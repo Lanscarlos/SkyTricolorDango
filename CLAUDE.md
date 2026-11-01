@@ -832,7 +832,7 @@ python -m skydango shot [--grid]          # 截图到 tmp/shot.png
 python -m skydango detect                 # 读一次聊天记录面板（先在游戏里按 C），标注图 tmp/detect.png
 python -m skydango say "【AI】你好"        # 发一句（输入框没开会先按 Enter）
 python -m skydango chat --emotes 鞠躬,害羞  # 终端里和人设聊天，假装轮盘上有这些动作
-python -m skydango console [--port 端口] [--no-browser]  # 管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面；「沙盒」页不开模拟器调大脑
+python -m skydango console [--port 端口] [--no-browser]  # 也可以双击仓库根目录的 启动管理面板.bat（GBK 编码、CRLF，别存成 UTF-8：cmd 会读坏中文行）；管理面板：填密钥、改设置、检测设备、启动 / 停止团子、看实时画面；「沙盒」页不开模拟器调大脑
 python -m skydango sandbox [--port 19392] [--start resume|sleep|HH:MM|"YYYY-MM-DD HH:MM"]  # 大脑沙盒子进程（一般由管理面板起；只有 JSON 接口），记忆只写 sandbox/memory/
 python -m skydango sandbox-ctl say 小明 团子在干嘛   # 冒充发言，等团子反应完，打印聊天新行和大脑的「心里」；另有 come/leave 谁、skip 30、time 23:30、reflect、strangers/place/scene/notice
 python -m skydango sandbox-ctl state | brain --last 3  # 看沙盒现在（时间、精力、身边、最近聊天）/ 大脑最近几轮；--json 放子命令前
