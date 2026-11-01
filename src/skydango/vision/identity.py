@@ -170,12 +170,19 @@ class IdentityBoard:
                     (confirmed or (t.id in assigned and assigned[t.id].key == e.stable.key
                                    and now - e.tag_start + 1e-9 >= self.cfg.tag_hold))):
                 learn[t.id] = ('friend', v.name)
-            elif v.kind == DANGO and v.score >= self.cfg.dango_learn:
+            elif v.kind == DANGO and v.score >= self.cfg.dango_learn and self._own_cue(t):
                 learn[t.id] = ('me', '')
             elif v.kind == STRANGER and t.sid:
                 learn[t.id] = ('stranger', t.sid)
         return StepOut({id: c.key for id, c in assigned.items()},
                        {t.id: self._evidence[t.id].verdict for t in frame.tracks}, learn)
+
+    @staticmethod
+    def _own_cue(t: TrackIn) -> bool:
+        """这一帧它自己有位置以外的团子线索（self 框 / 不跟背景走 / 对团子底库的长相分）。
+        位置参照就是上次认作团子的框，只靠位置分学 = 自己证明自己：10-26 录像 self 框打在陌生人身上一次，
+        之后只剩位置分，学进团子底库的 4 帧全是他。"""
+        return t.self_score is not None or t.with_bg is False or (t.scores is not None and t.scores.me is not None)
 
     def _scores(self, scores: Scores) -> dict[str, float]:
         if self.cfg.friend_feature == 'both':

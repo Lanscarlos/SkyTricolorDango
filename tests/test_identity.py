@@ -231,6 +231,17 @@ def test_learn_dango_and_stranger():
         out = b.step(frame(t, tr(5, 1500, sid="陌生人A", scores=sc(me=0.2, 小明=0.3))))
     assert out.learn[5] == ("stranger", "陌生人A")
 
+def test_dango_learns_only_frames_with_own_cue():  # 10-26 录像：self 框打在陌生人身上一次，之后只剩位置分，学进团子底库的全是他
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    for t in (0.1, 0.2, 0.3):  # 只剩位置分（位置参照就是它自己上次的框）
+        out = b.step(frame(t, tr(1, 960, scores=sc(小明=0.3))))
+        assert out.verdicts[1].kind == DANGO and out.learn == {}
+    out = b.step(frame(0.4, tr(1, 960, self_score=0.9, scores=sc(小明=0.3))))
+    assert out.learn == {1: ("me", "")}
+    out = b.step(frame(0.5, tr(1, 960, with_bg=False, scores=sc(小明=0.3))))  # 不跟背景走也算
+    assert out.learn == {1: ("me", "")}
+
 def test_look_alike_and_unsure_never_learn():
     b = board()
     for t in (0.0, 0.1, 0.2, 0.3):
