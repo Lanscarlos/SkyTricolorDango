@@ -766,7 +766,7 @@ dir = "private/sandbox"
   `[models.brain]` 默认温度同时从 0.8 提到 1.0（只对 OpenAI 兼容的大脑生效）。`memory init` 的人设模板去掉了「不损人」、说话习惯带像 / 不像她的例句；**已有的 `profile.md` 要自己改**（模板那句「吐槽点到为止，不损人」压着别的规则）。
   `cheeky = false`：提示词、幕后、反思提示词逐字照旧；管理面板有 `inner.cheeky` 开关。「身份」「底线」两节和 `_CLAIMS_HUMAN` 不动
 
-**对每个人的感觉**（`[inner] feelings`，默认开，要 `reflect` 开着；设计 `docs/superpowers/specs/2026-11-01-friend-feelings-design.md`，计划 `docs/superpowers/plans/2026-11-01-friend-feelings.md`；**代码 11-01 做完，spec §6 沙盒验收还没走，数字都是估的**）
+**对每个人的感觉**（`[inner] feelings`，默认开，要 `reflect` 开着；设计 `docs/superpowers/specs/2026-11-01-friend-feelings-design.md`，计划 `docs/superpowers/plans/2026-11-01-friend-feelings.md`；**代码 11-01 做完；同天沙盒按 spec §6 走过（真 DeepSeek）：① 下线后卡上有有依据的印象（「写的认人bug老认错人，背背骗了我倒老实道歉，还算靠谱」·熟了·在变近）② 放鸽子后第二天 arrive 带上「你对他：…」、团子语气有余温（「问你难不难受，你就回个早」），但这次印象没改——模型想写他难过，被「难过类的话丢」拦下 ③ 只玩过 2 天的辣椒被模型自己写成刚认识，天数封顶没在沙盒里触发过（只有单元测试）④ 内心页接口有感觉，页面没在浏览器里看过；数字都是估的，还没上真机**）
 - 关系卡（`people.json`）每个好友多 `feeling`：印象 `text`（≤ 40 字）、亲近度 `close`（刚认识 / 熟了 / 很铁）、走向 `trend`（在变近 / 平稳 / 有点生疏）、`since`、最近 3 版旧的 `past`（文字或亲近度变了才推一版）。
   离上次在身边 ≥ `feel_stale_days`（14）天，走向显示成「好久没见了」（现算、不写盘）
 - **只有下线那次的最终反思改**：系统提示词这一次接上 `FEELINGS_SYSTEM`、材料多「你对他们的感觉」，JSON 多一项 `feelings`；在线反思逐字不变
