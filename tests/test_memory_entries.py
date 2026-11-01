@@ -200,3 +200,81 @@ def test_parse_archive():
 def test_memory_stats():
     n, chars, pool = memory_stats(NOTES, "- 番茄炒蛋盖饭：煮了酸辣粉 〔2026-10-31〕\n", date(2026, 10, 31), 1500)
     assert n == 2 and chars > 0 and pool == 3
+
+
+# ---- 11-01 沙盒验收后补的：第一次重写别把日期都改成今天、删掉的条目进 archive ----
+N1 = date(2026, 11, 1)
+
+
+def test_legacy_stamped_today_takes_date_from_text():
+    old = [E("自己", "2026年10月4日：YOLO 一直把卡洛认成陌生人", None, True)]
+    new = [E("自己", "2026年10月4日：YOLO 一直把卡洛认成陌生人", N1, True)]
+    keep, gone = settle(old, new, N1, 30)
+    assert keep[0].date == date(2026, 10, 4) and gone == []
+    assert keep[0].raw == "2026年10月4日：YOLO 一直把卡洛认成陌生人 〔2026-10-04｜长期〕"
+
+
+def test_legacy_stamped_today_without_text_date_stays_unknown():
+    old = [E("自己", "喜欢樱花头，觉得正太头挺可爱", None, True)]
+    keep, _ = settle(old, [E("自己", "喜欢樱花头，觉得正太头挺可爱", N1, True)], N1, 30)
+    assert keep[0].date is None and keep[0].pinned
+    assert entry_line(keep[0]) == "- 喜欢樱花头，觉得正太头挺可爱"  # 没方括号 = 长期、日期不详，和原来一样
+
+
+def test_text_date_beats_today_stamp():  # 随手记里的「2026-10-26 头疼」被模型盖上了今天
+    keep, _ = settle([], [E("懒洋洋大王", "2026-10-26 头疼，在烦心某事", N1)], N1, 30)
+    assert keep[0].date == date(2026, 10, 26)
+    keep, _ = settle([], [E("自己", "10月26日约好一起看云没去成", N1, key="看云")], N1, 30)
+    assert keep[0].date == date(2026, 10, 26)  # 没写年份按今年
+
+
+def test_text_date_kept_when_mentioned_again_today():
+    again = [E("懒洋洋大王", "2026-10-26 说的头疼今天还疼", N1)]
+    keep, _ = settle([], [E("懒洋洋大王", "2026-10-26 说的头疼今天还疼", N1)], N1, 30, inbox=again)
+    assert keep[0].date == N1
+
+
+def test_bracketless_line_with_text_date_gets_that_date_and_stays_pinned():
+    keep, gone = settle([], [E("懒洋洋大王", "2026年10月26日头疼，在烦心某事", None, True),
+                             E("自己", "2026年9月30日和卡洛互相表白喜欢对方", None, True)], N1, 30)
+    assert [(e.date, e.pinned) for e in keep] == [(date(2026, 10, 26), True), (date(2026, 9, 30), True)]
+    assert keep[0].raw == "2026年10月26日头疼，在烦心某事 〔2026-10-26｜长期〕" and gone == []
+
+
+def test_today_stamp_without_any_date_in_text_untouched():
+    keep, _ = settle([], [E("番茄", "早饭吃油条", N1, key="早饭")], N1, 30)
+    assert keep[0].date == N1
+
+
+def test_dropped_old_entries_go_to_archive():
+    old = [E("自己", "无翼，跑图容易出事", None, True), E("自己", "2026年10月22日：被饶总说在卡洛头上", None, True),
+           E("自己", "把飞舞理解成夸我像蝴蝶", date(2026, 10, 26))]
+    new = [E("自己", "无翼，跑图容易出事", None, True)]
+    keep, gone = settle(old, new, N1, 30)
+    assert [e.text for e in keep] == ["无翼，跑图容易出事"]
+    assert [(e.text, why) for e, why in gone] == [
+        ("2026年10月22日：被饶总说在卡洛头上", "整理时删掉"), ("把飞舞理解成夸我像蝴蝶", "整理时删掉")]
+
+
+def test_dropped_old_entry_with_same_key_is_superseded():
+    old = [E("番茄", "早饭吃榴莲包子", date(2026, 10, 24), key="早饭")]
+    keep, gone = settle(old, [E("番茄", "早饭吃油条", N1, key="早饭")], N1, 30)
+    assert gone == [(old[0], "被取代：早饭吃油条")]
+
+
+def test_reworded_old_entry_not_counted_as_dropped():
+    old = [E("懒洋洋大王", "2026年10月26日头疼，在烦心某事", None, True)]
+    _, gone = settle(old, [E("懒洋洋大王", "2026-10-26 头疼，在烦心某事", date(2026, 10, 26))], N1, 30)
+    assert gone == []
+
+
+def test_moved_to_other_section_not_counted_as_dropped():
+    old = [E("", "番茄养了仓鼠叫芝麻球", None, True)]
+    _, gone = settle(old, [E("番茄", "番茄养了仓鼠叫芝麻球", N1, True)], N1, 30)
+    assert gone == []
+
+
+def test_parse_inbox_reflection_points_line():  # 下线反思写进 inbox 的「某天的要点：」
+    es = parse_inbox("- 2026年11月2日（周一） 的要点：零要求夸和损分两条消息发\n")
+    assert [(e.section, e.text, e.date, e.pinned) for e in es] == [
+        ("自己", "零要求夸和损分两条消息发", date(2026, 11, 2), False)]

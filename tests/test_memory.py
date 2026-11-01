@@ -359,3 +359,65 @@ def test_responder_renders_entries(tmp_path):
     Responder(llm, ReplyConfig(memory_entries=False), store=store, clock=lambda: t).reply([msg("在吗")])
     off = llm.calls[1][0]
     assert "- 养仓鼠 〔2026-10-31｜长期〕" in off and "刚记下的：\n- 番茄：煮了酸辣粉" in off
+
+
+# ---- 11-01：整理被 max_tokens 截断时不写盘（10-26 旧代码把截了半截的笔记写了盘，丢了三节） ----
+class TruncatingLlm:
+    """像 GatedCall：有 message()，截断时带 truncated。"""
+
+    def __init__(self, result, truncated=True):
+        self.result, self.truncated, self.calls = result, truncated, []
+
+    def message(self, system, content, *, history=None, max_tokens=None):
+        self.calls.append((system, content, max_tokens))
+        out = {"result": self.result}
+        if self.truncated:
+            out["truncated"] = True
+        return out
+
+
+def test_truncated_update_rejected_in_both_modes(tmp_path, caplog):
+    old = "## 自己\n- 无翼\n\n## 番茄\n- 养仓鼠"
+    for cfg in (ReplyConfig(), ReplyConfig(memory_entries=False)):
+        store = MemoryStore(tmp_path / str(cfg.memory_entries))
+        store.write_notes(old)
+        store.add_memos(["番茄：x"])
+        k = NotesKeeper(TruncatingLlm("## 自己\n- 无翼\n\n## 番"), store, persona="", background=False,
+                        wall=at("2026-11-01 10:00"), entries=cfg)
+        with caplog.at_level(logging.WARNING):
+            assert not k.update_now()
+        assert store.notes() == old and store.inbox()
+    assert "截断" in caplog.text
+
+
+def test_untruncated_message_llm_writes(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.add_memos(["番茄：养仓鼠"])
+    llm = TruncatingLlm("## 番茄\n- 养仓鼠 〔2026-11-01｜长期〕", truncated=False)
+    assert entries_keeper(store, llm, at("2026-11-01 10:00")).update_now()
+    assert "养仓鼠" in store.notes() and llm.calls[0][2] >= 8000  # 条目版整份重写，留足输出
+
+
+def test_truncated_jot_drops_last_line(tmp_path):
+    store = MemoryStore(tmp_path)
+    llm = TruncatingLlm("- 番茄：煮了酸辣粉 〔2026-11-01〕\n- 番茄：明天要去青")
+    assert entries_keeper(store, llm, at("2026-11-01 10:00")).jot(Turn(1.0, "a", "b")) == ["番茄：煮了酸辣粉 〔2026-11-01〕"]
+    assert "青" not in store.inbox()
+
+
+def test_update_unstamps_inbox_points_and_archives_dropped(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.write_notes("## 自己\n- 无翼\n- 2026年10月4日：把陌生人馒头认错点了火")
+    store.add_memos(["2026年10月26日（周一） 的要点：约好一起看云没去成"])
+    llm = ScriptedLlm(["## 自己\n- 无翼 〔2026-11-01｜长期〕\n- 2026-10-26 约好一起看云没去成 〔2026-11-01｜看云〕"])
+    assert entries_keeper(store, llm, at("2026-11-01 10:00")).update_now()
+    notes = store.notes()
+    assert "- 无翼\n" in notes + "\n"  # 照抄的老条目：日期不详，不盖今天
+    assert "看云没去成 〔2026-10-26｜看云〕" in notes
+    assert "整理时删掉〕2026年10月4日：把陌生人馒头认错点了火" in store.archive()
+
+
+def test_entries_prompts_keep_dates():
+    assert "日期写今天" not in NOTES_SYSTEM_ENTRIES and "照抄" in NOTES_SYSTEM_ENTRIES
+    assert "要点" in NOTES_SYSTEM_ENTRIES
+    assert "只说过一次" in MEMO_SYSTEM_ENTRIES and "你自己的回话" in MEMO_SYSTEM_ENTRIES

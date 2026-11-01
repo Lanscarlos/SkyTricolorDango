@@ -114,10 +114,11 @@ class OpenAIBackend:
         usage = getattr(resp, "usage", None)
         choice = resp.choices[0]
         text = choice.message.content or ""
-        if not text.strip() and getattr(choice, "finish_reason", None) == "length":
+        cut = getattr(choice, "finish_reason", None) == "length"
+        if not text.strip() and cut:
             log.warning("%s/%s 正文是空的：输出到了 max_tokens=%d 被截断（多半是思考用光了，这个用处可以设 thinking = false 或调大 max_tokens）",
                         self.provider.id, self.model, limit)
-        return {
+        out = {
             "result": text,
             "usage": {
                 "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
@@ -127,3 +128,6 @@ class OpenAIBackend:
             "provider": self.provider.id,
             "model": self.model,
         }
+        if cut:  # 正文到 max_tokens 被截了半截：整份重写的（整理笔记）不能拿去写盘
+            out["truncated"] = True
+        return out

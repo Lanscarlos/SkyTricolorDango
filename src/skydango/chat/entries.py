@@ -19,6 +19,7 @@ SELF = "自己"
 PINNED_WORD = "长期"  # 保留字，不能当键
 _BRACKET = re.compile(r"\s*〔([^〔〕]*)〕\s*$")
 _SPEAKER_MAX = 20  # inbox 里「谁：」最长多少字，再长就当正文里的冒号
+_POINTS = re.compile(r"^(\d{4})年(\d{1,2})月(\d{1,2})日.*的要点$")  # 下线反思写进 inbox 的「2026年11月2日（周一） 的要点：…」
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,13 @@ def parse_inbox(text: str) -> list[Entry]:
             continue
         body = line[2:].strip()
         who, rest = _split_speaker(body)
-        e = _parse_body(SELF if who == "我" else who, rest)
+        m = _POINTS.match(who)
+        if m:  # 反思的要点：是团子自己那天的近况，日期就是那天
+            e = _parse_body(SELF, rest)
+            if e.date is None and not _BRACKET.search(rest):
+                e = replace(e, date=_ymd(*m.groups()), pinned=False)
+        else:
+            e = _parse_body(SELF if who == "我" else who, rest)
         out.append(replace(e, raw=body))
     return out
 
@@ -145,7 +152,37 @@ def show(e: Entry, today: date) -> str:
 
 # ---- 写盘前的兜底：取代、补日期、近况淡出、整理把关、常驻切分 ----
 SIMILAR = 0.8  # 补日期时，新旧两条文字相似度的门槛
+KEPT = 0.6  # 旧条目和新输出里最像的一条低于这个（去掉日期、标点后比）就算被整理删掉了，挪进 archive
 _MIN_OLD_FOR_SHRINK = 6  # 旧笔记不到这么多条时不管条目骤减
+_FULL_DATE = re.compile(r"(\d{4})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})")
+_MONTH_DAY = re.compile(r"(?<!\d)(\d{1,2})月(\d{1,2})[日号]")
+_PLAIN = re.compile(r"[\s\W_]+")
+
+
+def _ymd(y, m, d) -> date | None:
+    try:
+        return date(int(y), int(m), int(d))
+    except ValueError:
+        return None
+
+
+def text_date(text: str, today: date) -> date | None:
+    """正文里写着的最晚一个不晚于今天的日期（2026-10-26 / 2026年10月26日 / 10月26日，没写年份按今年）。"""
+    found = [_ymd(*m.groups()) for m in _FULL_DATE.finditer(text)]
+    rest = _FULL_DATE.sub(" ", text)
+    found += [_ymd(today.year, *m.groups()) for m in _MONTH_DAY.finditer(rest)]
+    found = [d for d in found if d is not None and d <= today]
+    return max(found, default=None)
+
+
+def _plain(text: str) -> str:
+    """比"是不是同一条"用：去掉日期、标点和空白。"""
+    text = _MONTH_DAY.sub("", _FULL_DATE.sub("", text))
+    return _PLAIN.sub("", text)
+
+
+def _like(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
 
 
 def _redate(e: Entry, d: date) -> Entry:
@@ -153,10 +190,29 @@ def _redate(e: Entry, d: date) -> Entry:
     return replace(e2, raw=entry_line(e2)[2:])
 
 
-def settle(old: list[Entry], new: list[Entry], today: date, recent_days: int) -> tuple[list[Entry], list[tuple[Entry, str]]]:
-    """整理拿到模型输出后、写盘前：补日期 → 同键取代 → 近况淡出。返回（留下的，[(挪走的, 原因)]）。"""
+def _unstamp(e: Entry, old: list[Entry], inbox: list[Entry], today: date) -> Entry:
+    """模型给条目盖了今天的日期、其实不是今天提起的：改回正文里写的日期；照抄的老条目（没方括号）没写日期就还是日期不详。
+    这次随手记里有今天的同一件事（文字像）就是今天又提起了，不改。"""
+    if e.date != today:
+        return e
+    plain = _plain(e.text)
+    if any(i.date == today and _like(_plain(i.text), plain) >= SIMILAR for i in inbox):
+        return e
+    d = text_date(e.text, today)
+    if d is not None and d < today:
+        return _redate(e, d)
+    legacy = any(o.section == e.section and o.date is None and _like(_plain(o.text), plain) >= SIMILAR for o in old)
+    if legacy:
+        return replace(e, date=None, pinned=True, key="", raw=e.text)
+    return e
+
+
+def settle(old: list[Entry], new: list[Entry], today: date, recent_days: int,
+           inbox: list[Entry] = ()) -> tuple[list[Entry], list[tuple[Entry, str]]]:
+    """整理拿到模型输出后、写盘前：补日期 → 改掉误盖的今天 → 同键取代 → 近况淡出 → 被删掉的旧条目。
+    返回（留下的，[(挪走的, 原因)]）。inbox 是这次整理消化的随手记（判断是不是今天又提起了）。"""
     gone: list[tuple[Entry, str]] = []
-    # 1. 补日期：模型漏写日期时，借旧笔记同一节里最像的那条的
+    # 1. 补日期：模型漏写日期时，借旧笔记同一节里最像的那条的；借不到就用正文里写着的日期
     filled: list[Entry] = []
     for e in new:
         if e.date is None:
@@ -169,7 +225,9 @@ def settle(old: list[Entry], new: list[Entry], today: date, recent_days: int) ->
                     best, best_r = o, r
             if best is not None:
                 e = _redate(e, best.date)
-        filled.append(e)
+            elif (d := text_date(e.text, today)) is not None:  # 没方括号、正文里写着日期：用它，照旧算长期（不按近况收走）
+                e = _redate(e, d)
+        filled.append(_unstamp(e, old, list(inbox), today))
     # 2. 同一节、同一个键：留日期最新的（一样新留写得靠后的）
     winner: dict[tuple[str, str], int] = {}
     for i, e in enumerate(filled):
@@ -192,6 +250,17 @@ def settle(old: list[Entry], new: list[Entry], today: date, recent_days: int) ->
             gone.append((e, "近况过期"))
         else:
             out.append(e)
+    # 4. 旧笔记里有、新输出里找不到的（模型删了）：挪进 archive，不悄悄丢掉
+    written = [_plain(e.text) for e in filled]
+    kept_keys = {(e.section, e.key): e.text for e in out if e.key}
+    for o in old:
+        plain = _plain(o.text)
+        if not plain or any(_like(plain, w) >= KEPT for w in written):
+            continue
+        if o.key and (o.section, o.key) in kept_keys:
+            gone.append((o, f"被取代：{kept_keys[(o.section, o.key)]}"))
+        else:
+            gone.append((o, "整理时删掉"))
     return out, gone
 
 

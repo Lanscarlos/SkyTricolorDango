@@ -49,6 +49,15 @@ def test_text_message():
                    "provider": "deepseek", "model": "deepseek-chat"}
 
 
+def test_length_cut_marks_truncated():
+    c = FakeClient()
+    c.create = lambda **kw: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="## 自己\n- 无"), finish_reason="length")], usage=None)
+    c.chat = SimpleNamespace(completions=SimpleNamespace(create=c.create))
+    out = OpenAIBackend(DS, "deepseek-chat", temperature=0.5, max_tokens=10, client=c).message("S", "x")
+    assert out["truncated"] is True and out["result"] == "## 自己\n- 无"
+
+
 def test_image_blocks_become_image_url():
     c = FakeClient()
     OpenAIBackend(DS, "deepseek-chat", temperature=0.8, max_tokens=10, client=c).message(

@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .entries import archive_line, check_rewrite, parse_notes, render_notes, settle
+from .entries import archive_line, check_rewrite, parse_inbox, parse_notes, render_notes, settle
 
 if TYPE_CHECKING:
     from ..config import ReplyConfig
@@ -276,7 +276,11 @@ NOTES_SYSTEM_ENTRIES = """你负责整理一个《光遇》玩家的长期记忆
 - 会变的事（名字、发型、计划、在忙什么、早饭吃了什么……）给一个键；新的说法和旧的同键时，只写新的，旧的不要留。
 - 只记以后聊天用得上的。一次性的斗嘴、玩笑、“某月某日某某说了某句话”这种流水账删掉，除非是以后还会被提起的事。
 - 每条不超过 30 字；长期的条目加起来不超过 1500 字，近况不限（太旧的会由程序自动收走）。
-- 日期写具体日期，不写“今天”“下周”；现有笔记里没有方括号的老条目，按长期处理，日期写今天。
+- 日期写具体日期，不写“今天”“下周”；日期是这件事发生 / 被提起的那天，不是今天整理的日子：正文里写着日期（“2026-10-26 头疼”“10月4日认错人”）的，方括号里就写那个日期。
+- 正文里原有的日期照抄，不许改成别的日期。
+- 现有笔记里没有方括号的老条目：正文里写着日期的，加上方括号写那个日期；看不出日期的照抄原样、不加方括号（程序当它长期、日期不详）。
+- 随手记里“某年某月某日 的要点：”开头的，是她那天下线时给自己记的，归到“自己”下面，日期就是那天。
+- 现有笔记里的条目不要随便删：只删确实过时、作废的，删了的程序会挪进旧笔记存档。
 - 人设和好友资料是用户写好的，不用重复记。
 - 聊天记录是截图识别出来的，可能有错字；拿不准的不记。
 - 不记隐私：年龄、学校、住址、电话、微信 / QQ 等联系方式一律不记（对方可能是未成年人）。
@@ -286,7 +290,9 @@ NOTES_SYSTEM_ENTRIES = """你负责整理一个《光遇》玩家的长期记忆
 MEMO_SYSTEM_ENTRIES = """你在帮一个《光遇》玩家记笔记。下面有好友资料、已经记下的内容，以及刚发生的一轮聊天（“我：”后面是她自己说的）。
 只挑出这轮聊天里以后用得上、而且还没记过的新信息，优先记长期成立的：喜好、习惯、关系、约定、近况（在忙什么、身体 / 心情），
 以及“我”新说出口的关于自己的设定、喜好和评价（比如“我说雨林太湿，不喜欢待”；免得以后说法不一致）。
+- 先记好友说的他自己的事（吃了什么、在忙什么、身体 / 心情、计划）；你自己的回话、接梗、吐槽、损人的话不记，除非说出了关于你自己的新设定。
 - 一次性的斗嘴、玩笑、夸奖吐槽、“某某说了某句话”这种流水账不记；好友资料和已经记下的内容里有的不记。
+- 只说过一次的具体事、这一轮里提的要求不写“长期”；本人明说是习惯、喜好、一直这样的才写。
 - 每条一行，以“- ”开头，写成“- 谁：内容 〔日期｜长期｜键〕”：谁用游戏昵称或本名（自己说的用“我”）；内容不超过 30 字；同一件事只记一条。
 - 方括号用全角〔〕，里面用全角“｜”分开：日期必填（2026-10-31 这种写法，就是这轮聊天发生的那天）；
   是习惯、喜好、设定、关系、约定才写“长期”，一次性的事和近况不写；键可选，会变的事（名字、发型、计划、在忙什么）写一个短词。
@@ -313,6 +319,15 @@ MEMO_SYSTEM = """你在帮一个《光遇》玩家记笔记。下面有好友资
 - 寒暄、玩笑、没信息量的话不记；已经记过的不重复记；拿不准的不记（聊天是截图识别的，可能有错字）。
 - 不记年龄、学校、住址、电话、微信 / QQ 等（对方可能是未成年人）。
 - 没有值得记的，只输出：无"""
+
+
+def _ask(llm, system: str, content: str, max_tokens: int) -> tuple[str, bool]:
+    """（正文，是不是到 max_tokens 被截断了）。GatedCall 有 message()、带得出 truncated；只有 complete() 的（测试、旧客户端）当没截断。"""
+    message = getattr(llm, "message", None)
+    if callable(message):
+        out = message(system, content, max_tokens=max_tokens)
+        return out.get("result") or "", bool(out.get("truncated"))
+    return llm.complete(system, [{"role": "user", "content": content}], max_tokens=max_tokens) or "", False
 
 
 def parse_memos(raw: str) -> list[str]:
@@ -386,13 +401,16 @@ class NotesKeeper:
         )
         try:
             if self.entries:  # 方括号多占几十个字，留宽一点免得半截
-                raw = self.llm.complete(MEMO_SYSTEM_ENTRIES, [{"role": "user", "content": content}], max_tokens=300)
+                raw, cut = _ask(self.llm, MEMO_SYSTEM_ENTRIES, content, 300)
             else:
-                raw = self.llm.complete(MEMO_SYSTEM, [{"role": "user", "content": content}], max_tokens=200)
+                raw, cut = _ask(self.llm, MEMO_SYSTEM, content, 200)
         except Exception:
             log.exception("随手记失败，跳过这一轮")
             return []
         memos = parse_memos(raw)
+        if cut and memos:  # 最后一行多半只写了半截
+            log.warning("随手记被截断，丢掉最后半行：%s", memos[-1])
+            memos = memos[:-1]
         self.store.add_memos(memos)
         return memos
 
@@ -424,20 +442,25 @@ class NotesKeeper:
             f"## 聊天时随手记下的（归到对应的人下面）\n{inbox or '（无）'}\n\n"
             f"## 新的聊天记录\n{render_transcript(turns) or '（无）'}"
         )
-        system, max_tokens = (NOTES_SYSTEM_ENTRIES, 3000) if self.entries else (NOTES_SYSTEM, 1500)
+        # 整份重写：输出不够长会截在半截（10-26 截掉了后面三个好友那几节），条目版还多方括号，留足
+        system, max_tokens = (NOTES_SYSTEM_ENTRIES, 8000) if self.entries else (NOTES_SYSTEM, 4000)
         try:
-            raw = self.llm.complete(system, [{"role": "user", "content": content}], max_tokens=max_tokens)
+            raw, cut = _ask(self.llm, system, content, max_tokens)
         except Exception:
             self._retry_after = self.wall() + NOTES_RETRY
             log.exception("整理长期记忆失败，%d 分钟后再试", int(NOTES_RETRY // 60))
             return False
-        notes = _strip_fences(raw or "")
+        if cut:
+            self._retry_after = self.wall() + NOTES_RETRY
+            log.warning("整理长期记忆的输出到 max_tokens=%d 被截断了，拒绝写盘、保留旧笔记（笔记太长了，删一些或调大上限）", max_tokens)
+            return False
+        notes = _strip_fences(raw)
         if not notes:
             self._retry_after = self.wall() + NOTES_RETRY
             log.warning("整理长期记忆时模型返回了空内容，保留旧笔记")
             return False
         if self.entries:
-            notes = self._settle(old_notes, notes)
+            notes = self._settle(old_notes, notes, inbox)
             if notes is None:
                 self._retry_after = self.wall() + NOTES_RETRY
                 return False
@@ -449,7 +472,7 @@ class NotesKeeper:
         log.info("长期记忆已更新（整理了 %d 轮、%d 条随手记）", len(turns), len(inbox.splitlines()))
         return True
 
-    def _settle(self, old_notes: str, raw: str) -> str | None:
+    def _settle(self, old_notes: str, raw: str, inbox: str = "") -> str | None:
         """条目化的整理结果：剥代码块、把关、取代 / 淡出（被挪走的进 archive）。返回要写盘的文本，拒绝返回 None。"""
         cleaned = "\n".join(ln for ln in raw.splitlines() if not ln.strip().startswith("```"))
         why = check_rewrite(old_notes, cleaned)
@@ -464,7 +487,7 @@ class NotesKeeper:
         if self.store.entries_since() is None:  # 第一次按条目整理：先留一份旧 notes
             self.store.backup_notes(datetime.fromtimestamp(now).strftime("%Y%m%d-%H%M%S"))
             self.store.set_entries_since(now)
-        keep, gone = settle(parse_notes(old_notes), new, today, self.entries.recent_days)
+        keep, gone = settle(parse_notes(old_notes), new, today, self.entries.recent_days, inbox=parse_inbox(inbox))
         self.store.append_archive([archive_line(e, today, why) for e, why in gone])
         if gone:
             log.info("记忆整理收走 %d 条：%s", len(gone), "；".join(f"{e.text}（{r}）" for e, r in gone[:5]))
