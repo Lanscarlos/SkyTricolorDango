@@ -941,6 +941,10 @@ class InnerConfig:
     jokes_max: int = 20
     opinions_max: int = 10
     soft_minutes: float = 30.0  # 好友说难过后多久内对他收着点
+    # 对每个人的感觉（docs/superpowers/specs/2026-11-01-friend-feelings-design.md）
+    feelings: bool = True  # 下线反思改写对每个好友的印象 / 亲近度 / 走向，他来时带给大脑；要 reflect 开着；false = 原样
+    feel_close_days: int = 7  # 「很铁」要一起玩过几天（「熟了」用 grudge_min_days）
+    feel_stale_days: float = 14.0  # 多少天没在身边，走向显示成「好久没见了」
 
 
 @dataclass

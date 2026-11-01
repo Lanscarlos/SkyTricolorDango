@@ -72,6 +72,7 @@ class Card:
     to_me: int = 0  # 其中跟团子说的
     last_line: dict | None = None  # {"t": 时间, "text": 最多 40 字}
     outfits: list[dict] = field(default_factory=list)  # 最近几套装扮（旧到新）{"desc", "feat", "key", "first", "last"}
+    feeling: dict = field(default_factory=dict)  # 对他的感觉（feelings.py）{"text", "close", "trend", "since", "past"}；空 = 还没有
 
     def to_dict(self) -> dict:
         return asdict(self)
