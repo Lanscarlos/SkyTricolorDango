@@ -349,12 +349,21 @@ def sweep(frames, truth, base_cfg, acfg, grid, **board_kw):
                                       r['metrics']['friend_as_stranger'], r['metrics']['friend_wrong']))
 
 
+def _enroll_note(enroll) -> str:
+    if not enroll:
+        return '没有模拟启动登记：团子底库从空开始，团子的指标会比真机差。'
+    pinned = enroll.get('pinned') or {}
+    return (f'模拟启动登记：答案里前 {enroll["seconds"]:g} 秒的团子框钉进团子底库'
+            f'（身份板 {pinned.get("current", 0)} 张、旧流程 {pinned.get("baseline", 0)} 张），这几秒不计分。')
+
+
 def report_md(base, cur, sweep, meta) -> str:
     metrics = [('friend_as_stranger', '好友被判陌生人', '≤ 2%'), ('dango_found', '团子认出', '≥ 90%'),
                ('other_as_dango', '别人被判团子', '≤ 1%'), ('friend_right', '好友认对', '记录'),
                ('friend_wrong', '好友认错', '记录'), ('unsure_rate', '拿不准', '记录')]
     lines = ['# 身份板：新旧对比', '', f'录像：{meta.get("source", "?")}；抽帧 {meta.get("fps", "?")} fps。',
-             '这份报告只评估人工标准答案覆盖的框；自动草稿未经核对不能作为准确率验收。', '',
+             '这份报告只评估人工标准答案覆盖的框；自动草稿未经核对不能作为准确率验收。',
+             _enroll_note(meta.get('enroll')), '',
              '| 指标 | 旧流程 | 身份板 | 目标 |', '|---|---:|---:|---|']
     for key, title, goal in metrics:
         lines.append(f'| {title} | {base[key]:.2%} | {cur[key]:.2%} | {goal} |')
@@ -391,6 +400,20 @@ def read_truth(path: Path):
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError(f'truth.jsonl 第 {n} 行：{exc}') from exc
     return truth
+
+
+def enroll_shots(truth, items, seconds: float) -> list:
+    """模拟启动转圈登记：录像前 seconds 秒里标准答案恰好一个团子的帧 → (截图, 团子框, 别的人物框)。
+    离线评估没有转圈，团子底库从空开始，会被 YOLO 打错的 self 框带歪（10-26 录像学进去的全是一个陌生人）。"""
+    shots = []
+    for at, name, image, _ in items:
+        if at > seconds:
+            break
+        boxes = [(box, who) for box, who in truth.get(name, []) if who != '不要']
+        me = [box for box, who in boxes if who == '团子']
+        if len(me) == 1:
+            shots.append((image, me[0], [box for box, who in boxes if who != '团子']))
+    return shots
 
 
 def collect_predictions(items, watcher):

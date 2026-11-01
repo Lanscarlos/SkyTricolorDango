@@ -2094,6 +2094,25 @@ class PerceptionWatcher:
             sample = make_sample(img, box, others, [], acfg, self.embedder, self.dino, self.clock())
             if sample is not None:
                 got.append((fi, sample, box, img))
+        n = self._pin_me(got)
+        if n:
+            log.info("启动登记团子：转圈 %d 帧里 %d 帧是好样本，入库 %d 张", len(frames), len(got), n)
+        return n
+
+    def enroll_boxes(self, shots: list[tuple[np.ndarray, Rect, list[Rect]]]) -> int:
+        """拿给定的团子框登记（离线评估模拟启动转圈登记）：shots = (截图, 团子框, 别的人物框)，挑样本、钉进底库同 `_enroll_self`。"""
+        if self.appearance is None:
+            return 0
+        got = []
+        for fi, (img, box, others) in enumerate(shots):
+            sample = make_sample(img, box, others, [], self.appearance_cfg, self.embedder, self.dino, self.clock())
+            if sample is not None:
+                got.append((fi, sample, box, img))
+        return self._pin_me(got)
+
+    def _pin_me(self, got: list[tuple[int, Sample, Rect, np.ndarray]]) -> int:
+        """有样本的帧按时间均匀挑最多 enroll_max 张钉进团子底库，裁图存 enroll_dir。"""
+        acfg = self.appearance_cfg
         if not got:
             return 0
         k = min(acfg.enroll_max, len(got))
@@ -2108,7 +2127,6 @@ class PerceptionWatcher:
                     cv2.imwrite(str(self.enroll_dir / f"{n}.jpg"), describe_crop(img, box))
                 except Exception:
                     log.exception("存启动登记的团子裁图出错")
-        log.info("启动登记团子：转圈 %d 帧里 %d 帧是好样本，入库 %d 张", len(frames), len(got), len(picks))
         return len(picks)
 
     @staticmethod

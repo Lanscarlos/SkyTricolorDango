@@ -21,6 +21,20 @@ def test_label_of(data, want):
     assert label_of(Track(1, 'player', R, 0.9, 0, 0, data=data)) == want
 
 
+def test_enroll_shots_takes_dango_boxes_before_cutoff():
+    from skydango.vision.identity_eval import enroll_shots
+    img = np.zeros((4, 4, 3), np.uint8)
+    me, friend, junk = Rect(0, 0, 10, 20), Rect(20, 0, 10, 20), Rect(40, 0, 10, 20)
+    truth = {'a': [(me, '团子'), (friend, '小明'), (junk, '不要')],
+             'b': [(friend, '小明')],                       # 没团子：跳过
+             'c': [(me, '团子'), (friend, '团子')],          # 两个团子：拿不准哪个，跳过
+             'd': [(me, '团子')]}                            # 超过截止时间
+    items = [(1.0, 'a', img, False), (2.0, 'b', img, False), (3.0, 'c', img, False), (25.0, 'd', img, False)]
+    shots = enroll_shots(truth, items, 20.0)
+    assert [(box, others) for _, box, others in shots] == [(me, [friend])]
+    assert enroll_shots(truth, items, 0.0) == []
+
+
 def test_legacy_self_is_labelled_as_dango():
     from skydango.vision.track import Track
     assert label_of(Track(1, 'self', R, 0.9, 0, 0)) == '团子'
@@ -71,6 +85,9 @@ def test_report_contains_comparison_calls_and_thresholds():
     scores = score_frames({'a': [(R, '小明')]}, {'a': [(R, '小明')]})
     text = report_md(scores, scores, [], {'source': 'demo', 'fps': 6.5, 'calls': {'shown': {'calls': 1}, 'dark': {'calls': 2}}})
     assert '好友被判陌生人' in text and '团子认出' in text and '喊了都亮' in text and '门槛' in text
+    assert '没有模拟启动登记' in text
+    text = report_md(scores, scores, [], {'enroll': {'seconds': 20.0, 'pinned': {'current': 16, 'baseline': 16}}})
+    assert '前 20 秒' in text and '身份板 16 张' in text
 
 
 def logs():
@@ -241,11 +258,48 @@ def test_eval_cli_writes_report_summary_and_replay_frames(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, '_perception', watcher)
     monkeypatch.chdir(tmp_path)
     out = tmp_path / 'report'
-    cli.main(['perception', 'identity-eval', str(source), '-o', str(out)])
+    cli.main(['perception', 'identity-eval', str(source), '-o', str(out), '--enroll', '0'])
     summary = json.loads((out / 'summary.json').read_text(encoding='utf-8'))
+    assert summary['meta']['enroll'] is None
     assert summary['baseline']['friend_right'] == 1.0
     assert summary['current']['n']['friend'] == 3
     with (out / 'frames.pkl').open('rb') as fh:
         frames = pickle.load(fh)
     assert len(frames) == 3 and [f.tag for f in frames] == [r['frame'] for r in truth]
     assert '喊了都不亮' in (out / 'report.md').read_text(encoding='utf-8')
+
+
+def test_eval_cli_enrolls_dango_from_truth_and_skips_those_frames(tmp_path, monkeypatch):
+    from skydango import cli
+    from test_perception import FRIENDS, player, tag
+    from test_perception_appearance import paint, PINK
+    from test_perception_identity import make
+
+    source = tmp_path / 'recording'
+    source.mkdir()
+    truth = []
+    for n, t in enumerate((0, 0.3, 0.6)):
+        name = f'{n}_{t:.2f}s.jpg'
+        imwrite(source / name, paint((player(1000), PINK)))
+        b = player(1000).box
+        truth.append({'frame': name, 'box': [b.x, b.y, b.w, b.h], 'who': '团子' if n == 0 else FRIENDS[0]})
+    (source / 'truth.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in truth), encoding='utf-8')
+    watchers = []
+
+    def watcher(cfg, args):
+        w, det = make(identity=cfg.identity.enabled)
+        det.frames = [[player(1000), tag(990, 110)]]
+        watchers.append(w)
+        return det, w
+
+    monkeypatch.setattr(cli, '_perception', watcher)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / 'report'
+    cli.main(['perception', 'identity-eval', str(source), '-o', str(out), '--enroll', '0.1'])
+    summary = json.loads((out / 'summary.json').read_text(encoding='utf-8'))
+    assert summary['meta']['enroll'] == {'seconds': 0.1, 'pinned': {'baseline': 1, 'current': 1}}
+    assert all(w.appearance.me.gallery.pinned_count == 1 for w in watchers)
+    assert summary['current']['n']['total'] == 2  # 登记用的第一帧不计分
+    assert '前 0.1 秒' in (out / 'report.md').read_text(encoding='utf-8')
+    with pytest.raises(SystemExit, match='录像太短'):
+        cli.main(['perception', 'identity-eval', str(source), '-o', str(out), '--enroll', '5'])

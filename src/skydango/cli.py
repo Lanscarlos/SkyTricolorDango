@@ -1844,7 +1844,8 @@ def _perception_identity_eval(cfg: Config, args) -> None:
     import copy
     import json
     import pickle
-    from .vision.identity_eval import collect_predictions, read_truth, replay_board, report_md, score_frames, sweep
+    from .vision.identity_eval import (collect_predictions, enroll_shots, read_truth, replay_board, report_md,
+                                       score_frames, sweep)
     from .vision.perception import STRANGER_GRACE
 
     source = Path(args.source)
@@ -1865,12 +1866,28 @@ def _perception_identity_eval(cfg: Config, args) -> None:
     legacy_cfg.identity.enabled = False
     _, baseline = _perception(legacy_cfg, args)
     kept, items = _identity_recording(c, args)
-    names = {p.name for _, p in kept}
+    if args.enroll < 0:
+        raise SystemExit('--enroll 不能是负数')
+    cutoff = kept[0][0] + args.enroll if kept and args.enroll > 0 else None
+    # 登记用掉的那几秒不计分，免得拿登记样本考它自己
+    names = {p.name for at, p in kept if cutoff is None or at > cutoff}
     truth = {name: boxes for name, boxes in truth.items() if name in names}
     if not any(truth.values()):
+        if cutoff is not None:
+            raise SystemExit(f'前 {args.enroll:g} 秒拿去模拟登记、不计分后就没有标准答案了：录像太短，减小 --enroll 或用 --enroll 0')
         raise SystemExit('抽到的帧里没有标准答案：核对 truth.jsonl 的文件名或提高 --fps')
     out = Path(args.output or f'tmp/identity-eval/{time.strftime("%Y%m%d-%H%M%S")}')
     out.mkdir(parents=True, exist_ok=True)
+    enrolled = None
+    if cutoff is not None:
+        shots = enroll_shots(read_truth(source / 'truth.jsonl'), items(), cutoff)
+        enrolled = {}
+        for label, watcher in (('baseline', baseline), ('current', current)):
+            watcher.clock = lambda: kept[0][0]
+            enrolled[label] = watcher.enroll_boxes(shots)
+        print(f'模拟启动登记：前 {args.enroll:g} 秒 {len(shots)} 帧有团子答案，钉进 {enrolled["current"]} 张')
+        if not enrolled['current']:
+            print('  一张都没登记上（团子框太小或被挡）：团子底库照旧从空开始')
     print(f'{len(kept)} 帧，旧流程 / 身份板各跑一遍 → {out}')
     try:
         print('旧流程')
@@ -1901,7 +1918,8 @@ def _perception_identity_eval(cfg: Config, args) -> None:
         'dango_w_pivot': [i.dango_w_pivot, i.dango_w_pivot * 1.5]}
     print('只重放 FrameIn 扫门槛')
     rows = sweep(frames, truth, i, a, grid, **board_kw)
-    meta = dict(source=str(source), frames=len(kept), fps=args.fps, baseline_ids=old_ids, current_ids=new_ids, calls=calls)
+    meta = dict(source=str(source), frames=len(kept), fps=args.fps, baseline_ids=old_ids, current_ids=new_ids, calls=calls,
+                enroll=dict(seconds=args.enroll, pinned=enrolled) if enrolled is not None else None)
     (out / 'summary.json').write_text(json.dumps({'baseline': base_scores, 'current': new_scores,
         'sweep': rows, 'meta': meta}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     (out / 'report.md').write_text(report_md(base_scores, new_scores, rows, meta), encoding='utf-8')
@@ -3835,6 +3853,8 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument('--imgsz', type=int)
     q.add_argument('--fps', type=float, default=6.5)
     q.add_argument('-o', '--output', help='报告目录（默认 tmp/identity-eval/<时间>）')
+    q.add_argument('--enroll', type=float, default=20.0,
+                   help='模拟启动转圈登记：答案里前几秒的团子框钉进团子底库，这几秒不计分（默认 20，0 = 不登记）')
     q = psub.add_parser("track-eval", help="同一批录像上对比追踪升级前后：轨迹断开和原因、假走开、确认冤枉、接回对错、运动方向")
     q.add_argument("source", help="record 录的目录（文件名里带时间，比如 tmp/record/<时间>）")
     q.add_argument("--model", help="模型文件（默认 perception.model）")

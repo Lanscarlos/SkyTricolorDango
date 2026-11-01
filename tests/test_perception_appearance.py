@@ -1194,6 +1194,26 @@ def test_sweep_without_enroll_learns_nothing():
     assert r.enrolled == 0 and w.appearance.me is None
 
 
+def test_enroll_boxes_pins_given_boxes_and_spreads():
+    """离线评估拿标准答案的团子框登记：挑样本、钉进底库同转圈登记。"""
+    box = Rect(900, 500, 90, 220)
+    shots = [(paint((Detection("self", Rect(900, 500, 90, 200 + i), 1.0), PINK)), Rect(900, 500, 90, 200 + i), [])
+             for i in range(30)]
+    w, _ = _enroll_watcher(1, [[]], enroll_max=4)
+    assert w.enroll_boxes(shots) == 4
+    assert w.appearance.me.gallery.pinned_count == 4
+    picked = sorted(round(s.h * 1080) - 200 for s in w.appearance.me.gallery.samples)
+    assert picked[0] == 0 and picked[-1] == 29
+    blocked = [(paint((Detection("self", box, 1.0), PINK)), box, [Rect(850, 450, 200, 320)])]
+    assert w.enroll_boxes(blocked) == 0  # 被别人挡住的不是好样本
+
+
+def test_enroll_boxes_without_appearance_is_noop():
+    w, _ = make(appearance=False)
+    box = Rect(900, 500, 90, 220)
+    assert w.enroll_boxes([(paint((Detection("self", box, 1.0), PINK)), box, [])]) == 0
+
+
 def test_sweep_enroll_without_appearance_is_noop():
     from skydango.config import SpinConfig
 

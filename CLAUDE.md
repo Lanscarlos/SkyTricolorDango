@@ -364,6 +364,7 @@ dir = "private/sandbox"
 - 团子综合位置 / DINOv2 长相 / YOLO self / 不跟背景走四项，缺失项不计权重；团子只有一个，换人要持续领先，面板横移动画里不换人。底库不到 3 张时不靠长相认自己。
 - 底库只学标签稳定的好友、证据够强的团子、已经编号的陌生人；像好友 / 拿不准 / 接回 / 未定不学。暂停时证据计时也暂停。
 - 管理面板「设置」的「身份板」开关写 `console.toml`；要先开 YOLO、认装扮并加载 DINOv2。依赖不齐时启动日志说明原因、沿用旧流程；身份板连续 10 帧出错也自动退回，status 说明。
+- **11-01 评估结果**（10-26 拥挤录像、答案覆盖 99.5%）：三条线还没过。旧报告团子 0% 是因为离线没有启动登记、团子底库被 YOLO 打错的 self 框带歪（学进去的全是一个陌生人）；`identity-eval --enroll 20`（默认）模拟登记后团子 70.6%、别人被判团子 0%、好友被判陌生人 2.4%。真机登记失败时同样会被带歪，防污染还没做，见进度文档 11-01 一节。
 - 离线：`perception identity-truth <录像>` 生成 `tmp/identity-truth/<录像名>/truth-draft.toml`、`logs.json`、`sheet.jpg`；对着拼图改为好友名 / 团子 / 陌生人 / 不要 / ?，再加 `--apply` 写 `<录像>/truth.jsonl`。`identity-eval <录像>` 生成新旧指标、呼喊全亮 / 全不亮两种假设、门槛建议与 `frames.pkl`；按框 IoU 对答案，扫门槛不再跑模型，也不自动改配置。
   草稿也可在管理面板「标注 → 认人」里标；`t528 = [[0, "玛卡巴卡"], [150.3, "懒洋洋大王"]]` 按帧时间切段，`不要` / `?` 段不落帧。页面看过的记在 `reviewed.json`，覆盖率到 90% 提示去命令行 `--apply`，再跑 `identity-eval`；生成草稿和评估仍在命令行。
 
@@ -868,7 +869,7 @@ python -m skydango perception compare <录像目录> [--model 模型] [--far-cro
 python -m skydango perception halo-eval <录像目录> [--model 模型]  # 呼唤光圈标定：每个人头顶的亮度曲线、建议的 [call] halo_rise → tmp/halo-eval/<时间>/report.md + curves.png
 python -m skydango perception track-eval <录像目录> [--model 模型] [--fps 6.5]  # 追踪升级前后对比：断开和原因、假走开、确认冤枉、接回对错、运动方向 → tmp/track-eval/<时间>/report.md
 python -m skydango perception identity-truth <录像目录> [--fps 6.5] [--apply]  # 身份答案草稿和拼图；人工核对后 --apply 写 truth.jsonl
-python -m skydango perception identity-eval <录像目录> [--fps 6.5] [-o 输出目录]  # 新旧认人对比、呼喊两种假设、只重放身份板扫门槛
+python -m skydango perception identity-eval <录像目录> [--fps 6.5] [-o 输出目录] [--enroll 20]  # 新旧认人对比、呼喊两种假设、只重放身份板扫门槛；--enroll 拿答案前 N 秒的团子框模拟启动登记（这几秒不计分，0 = 不登记）
 python -m skydango perception crops <来源...> [--model 模型] [--conf 0.2] [--out datasets/attrs]  # 第二层的数据：数据集 / 难例目录（支持 runs/*/hard）/ 图片目录 → 人物裁图，已标注的按类别放，对不上的进 _unlabeled/
 python -m skydango perception crops datasets/sky --writeback  # 标注页确认过的写回 datasets/sky 的 labels/：补漏标的人、改点没点火、删确认不是人的框（「不要」和没确认的不动），增强图的标注副本一起改；先备份到 <数据集>/_backup/
 python -m skydango perception attrs-label [datasets/attrs] [--recheck]  # Claude 初分 _unlabeled 裁图（花额度），再去管理面板「标注」页「外形」确认
