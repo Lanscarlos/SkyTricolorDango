@@ -126,6 +126,21 @@ def distressed(chat: Iterable[tuple[float, str, str]], friends: Sequence[str]) -
     return out
 
 
+def feelings_lines(cards: dict[str, Card], names: Sequence[str], now: float, cfg: InnerConfig) -> list[str]:
+    """下线反思材料「你对他们的感觉」：这次见过的好友每人一行（没有卡的不写）。"""
+    out = []
+    for name in names:
+        card = cards.get(name)
+        if card is None:
+            continue
+        f, days = card.feeling, f"一起玩过 {len(card.days)} 天"
+        if f.get("text"):
+            out.append(f"{name}：{f['text']}（{f['close']}，{f['trend']}，{f.get('since', '')} 写的；{days}）")
+        else:
+            out.append(f"{name}：还没有印象（{days}）")
+    return out
+
+
 def trend_shown(card: Card, now: float, cfg: InnerConfig) -> str:
     """显示用的走向：太久没在身边见过就是「好久没见了」。"""
     if card.last_seen is not None and now - card.last_seen >= cfg.feel_stale_days * 86400:

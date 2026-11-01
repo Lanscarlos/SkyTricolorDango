@@ -149,6 +149,17 @@ def test_cooling_shown_in_bit():
     assert feeling_bit(c, NOW, cfg) == "熟了·有点生疏"
 
 
+def test_feelings_lines():
+    from skydango.inner.feelings import feelings_lines
+
+    cards = {"小明": card(days=5, feeling={"text": "嘴贫但靠谱", "close": "熟了", "trend": "平稳", "since": "2026-10-20", "past": []}),
+             "阿花": card(days=1)}
+    assert feelings_lines(cards, ["小明", "阿花", "路人"], NOW, cfg) == [
+        "小明：嘴贫但靠谱（熟了，平稳，2026-10-20 写的；一起玩过 5 天）",
+        "阿花：还没有印象（一起玩过 1 天）",
+    ]
+
+
 def test_stale_shown():
     c = card(feeling={"text": "嘴贫但靠谱", "close": "熟了", "trend": "平稳", "since": TODAY, "past": []}, last_seen=NOW - 86400 * 15)
     assert trend_shown(c, NOW, cfg) == STALE

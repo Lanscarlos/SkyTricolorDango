@@ -56,7 +56,8 @@ from .addressee import LABEL_NAMES, Addressee, Verdict, legacy_addressed, parse_
 from .reflex import Reflexes
 from ..inner.effects import NEUTRAL, Effects, effects as inner_effects
 from ..inner.energy import Energy, awake_minutes, energy as inner_energy, energy_parts, format_parts
-from ..inner.ledger import card_line, match_friend
+from ..inner.feelings import distressed, feelings_lines
+from ..inner.ledger import card_line, day_of, match_friend
 from ..inner.ledger import ago
 from ..inner.log import ENERGY_EVERY, diff as diff_inner
 from ..inner.lull import Lull, LullTracker, parse_musing
@@ -3105,11 +3106,7 @@ class Body:
             for lull in self._lull_call(lambda: self.lulls.flush(wall), []) or []:
                 self._lull_note(lull)
         chat, comings = (self._session_chat, self._session_comings) if final else (self._reflect_chat, self._reflect_comings)
-        friends = self._safe_friends()
-        names = list(dict.fromkeys(  # 下线那次看整次上线的聊天：早先说过话的好友也要有关系卡和名单那一节（日记写得对）
-            [n for n in (match_friend(who, friends) for _, who, _ in chat) if n]
-            + [n for n in (match_friend(x, friends) for x in (self.env.nearby(self.clock()) if self.env is not None else [])) if n]
-        ))
+        names = self._reflect_names(chat)
         cards = []
         for n in names:
             card = self.ledger.card(n) if self.ledger is not None else None
@@ -3132,7 +3129,34 @@ class Body:
             wall, self._energy.note if self._energy is not None else "", mind_line, list(chat), list(comings), cards, notes,
             self.profile_text() or "", final, self._traits(), friend_sections(self.friends_text() or "", names),
             recap=(self._inner_call(self.recap_text, default="") or "") if final else "",
+            feelings=self._inner_call(lambda: feelings_lines(self.ledger.cards, self._met_names(), wall, self.cfg.inner))
+            if final and self._feelings_on() else None,
         )
+
+    def _reflect_names(self, chat) -> list[str]:
+        """反思材料带哪些好友：聊天里说过话的 + 现在在身边的。"""
+        friends = self._safe_friends()
+        return list(dict.fromkeys(  # 下线那次看整次上线的聊天：早先说过话的好友也要有关系卡和名单那一节（日记写得对）
+            [n for n in (match_friend(who, friends) for _, who, _ in chat) if n]
+            + [n for n in (match_friend(x, friends) for x in (self.env.nearby(self.clock()) if self.env is not None else [])) if n]
+        ))
+
+    # ---- 对每个人的感觉（spec 2026-11-01-friend-feelings）----
+    def _feelings_on(self) -> bool:
+        return self.cfg.inner.feelings and self.cfg.inner.reflect and self.ledger is not None and self.mind is not None
+
+    def _met_names(self) -> list[str]:
+        """这次上线见过或聊过的好友（下线反思只改他们的感觉）。"""
+        friends = self._safe_friends()
+        seen = [n for n in (match_friend(x, friends) for x in self.ledger.session.friends) if n]
+        return list(dict.fromkeys(seen + self._reflect_names(self._session_chat)))
+
+    def feeling_context(self) -> dict | None:
+        """给下线反思套感觉用：{"met", "soft", "today"}；关着 None。"""
+        if not self._feelings_on():
+            return None
+        soft = self.soft_names_this_session() | distressed(self._session_chat, self._safe_friends())
+        return {"met": set(self._met_names()), "soft": soft, "today": day_of(self.wall())}
 
     def _traits(self) -> str | None:
         """反思材料里的「你攒下的性格」：性格关着 / 拼出错 → None（不写这一段）。"""

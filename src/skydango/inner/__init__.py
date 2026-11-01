@@ -112,11 +112,13 @@ def _drop_today(memo: str, now: float) -> str:
 def finish_reflection(
     result: dict | None, mind, store, memory, cards: dict, friends: list[str], persist: bool, now: float, cfg: InnerConfig,
     persona=None, soft: set[str] = frozenset(), mind_log=None, energy=None, said: list[str] | None = None,
+    feelings: dict | None = None,
 ) -> str:
     """下线前的最终反思（第 2 期 §7）：套进心情、写日记和 mind.json、要点记进 inbox.md。返回存进 days.jsonl 的经过。
     persona（第 3 期）：顺带套进性格档案、写 persona.json（soft = 收着点的好友，不给他们记新老梗）。
     persist = False（dry-run）时只套进内存里的 Mind / Persona，什么都不写。
-    mind_log（内心页）：套完之后记一条 reflect（final=True），energy 是这时候的精力。"""
+    mind_log（内心页）：套完之后记一条 reflect（final=True），energy 是这时候的精力。
+    feelings（对每个人的感觉）：{"met", "soft", "today"}，顺带把 result["feelings"] 套进 cards（people.json 由 ledger.close 写）；None = 关着。"""
     import copy
 
     from ..chat.memory import format_date
@@ -136,11 +138,23 @@ def finish_reflection(
                 dropped.append(why)
         except Exception:
             _log.exception("最终反思的结果套不进性格档案")
+    feel_changes: list[str] = []
+    if feelings is not None:
+        try:
+            from .feelings import apply_feelings
+
+            feel_changes, why = apply_feelings(cards, result.get("feelings"), met=set(feelings["met"]), soft=set(feelings["soft"]),
+                                               today=feelings["today"], friends=friends, cfg=cfg)
+            for line in feel_changes + why:
+                _log.info("%s", line)
+            dropped += why
+        except Exception:
+            _log.exception("最终反思的结果套不进对每个人的感觉")
     if mind_log is not None:
         try:
             from .log import diff
 
-            mind_log.reflect(now, True, mind, energy, diff(before_mind, mind, before_persona, persona), dropped)
+            mind_log.reflect(now, True, mind, energy, diff(before_mind, mind, before_persona, persona, feel_changes), dropped)
         except Exception:
             _log.exception("最终反思记不进流水账")
     diary = result.get("diary") if isinstance(result.get("diary"), str) else ""

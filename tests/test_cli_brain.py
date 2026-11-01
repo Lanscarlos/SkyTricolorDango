@@ -621,6 +621,7 @@ def test_run_brain_live_persona_on(tmp_path, monkeypatch):
     monkeypatch.setattr("skydango.brain.body.Body.quiet_session", lambda self: False)  # 假会话里没人说话：照样走下线反思
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
+    cfg.inner.feelings = False  # 下线那次不接 FEELINGS_SYSTEM：这里只看性格那段
     InnerStore(tmp_path / "memory" / "inner").write_persona(Persona(catchphrases=[Trait("害，懒得动", since=time.time())]))
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
     prompt = (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
@@ -643,6 +644,7 @@ def test_run_brain_persona_off_is_phase2(tmp_path, monkeypatch):
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
     cfg.inner.persona = False
+    cfg.inner.feelings = False  # 下线那次不接 FEELINGS_SYSTEM：这里只看第 2 期原样
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
     assert TEMPER_RULES not in (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
     assert REFLECT_SYSTEM in _reflect_systems(log)
@@ -1025,6 +1027,18 @@ def test_run_brain_exposes_usage(tmp_path, monkeypatch):   # spec 2026-10-06-mod
     assert parts.usage.__self__ is parts.brain.meter
 
 
+def test_run_brain_final_reflection_asks_feelings(tmp_path, monkeypatch):  # spec 2026-11-01-friend-feelings §2
+    from skydango.inner.reflect import FEELINGS_SYSTEM, REFLECT_SYSTEM
+
+    cfg, run, log = fake_brain_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("skydango.brain.body.Body.quiet_session", lambda self: False)
+    cfg.reply.memory_dir = str(tmp_path / "memory")
+    cfg.reply.dry_run = False
+    cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
+    systems = [s for s in _reflect_systems(log) if s.startswith(REFLECT_SYSTEM)]
+    assert systems and systems[-1].endswith("\n\n" + FEELINGS_SYSTEM)
+
+
 def test_run_brain_cheeky_off_is_temper_only(tmp_path, monkeypatch):
     from skydango.brain.prompt import CHEEKY_RULES, TEMPER_RULES
     from skydango.inner.reflect import PERSONA_SYSTEM, REFLECT_SYSTEM
@@ -1034,6 +1048,7 @@ def test_run_brain_cheeky_off_is_temper_only(tmp_path, monkeypatch):
     cfg.reply.memory_dir = str(tmp_path / "memory")
     cfg.reply.dry_run = False
     cfg.inner.cheeky = False
+    cfg.inner.feelings = False  # 下线那次不接 FEELINGS_SYSTEM：这里只看性格那段
     cli._run_brain(cfg, run, no_emotes=True, duration=3.0)
     prompt = (run.path / "brain" / "session" / "prompt.md").read_text(encoding="utf-8")
     assert TEMPER_RULES in prompt and CHEEKY_RULES not in prompt

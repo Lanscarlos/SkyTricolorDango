@@ -11,7 +11,7 @@ import json
 import logging
 from collections import deque
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from .mind import Mind
 from .persona import Persona
@@ -23,8 +23,10 @@ LOG_DAYS = 30  # 启动时删掉多少天前的行
 MEMORY_MAX = 200  # 内存里最多留几条
 
 
-def diff(before_mind: Mind, after_mind: Mind, before_persona: Persona | None, after_persona: Persona | None) -> list[str]:
-    """反思前后变了什么。顺序固定：心情 → 别扭 → 新心愿 → 心愿了结 → 新口头禅 → 新老梗 → 新看法 → 看法换了 → 淡出。"""
+def diff(before_mind: Mind, after_mind: Mind, before_persona: Persona | None, after_persona: Persona | None,
+         feelings: Sequence[str] = ()) -> list[str]:
+    """反思前后变了什么。顺序固定：心情 → 别扭 → 新心愿 → 心愿了结 → 新口头禅 → 新老梗 → 新看法 → 看法换了 → 淡出 → 感觉。
+    feelings：feelings.apply_feelings 返回的改动说明（下线那次才有），原样接在最后。"""
     out: list[str] = []
     a, b = before_mind.mood, after_mind.mood
     if a.level != b.level:
@@ -60,6 +62,7 @@ def diff(before_mind: Mind, after_mind: Mind, before_persona: Persona | None, af
         out += [f"淡出：{t}" for t in ca if t not in cb]
         out += [f"淡出：{w}——{t}" for w, t in ja if (w, t) not in jb]
         out += [f"淡出：{k}——{v}" for k, v in oa.items() if k not in ob]
+    out += list(feelings)
     return out
 
 

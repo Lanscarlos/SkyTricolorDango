@@ -99,3 +99,30 @@ def test_finish_none_logs_nothing():
     log = MindLog(None, persist=False)
     finish_reflection(None, Mind(), None, None, {}, [], False, T0, InnerConfig(), mind_log=log)
     assert log.recent() == []
+
+
+
+def _cards():
+    from skydango.inner.ledger import Card
+
+    return {"小明": Card(first_met=T0 - 86400 * 30, last_seen=T0, days=["2026-09-25", "2026-09-27", "2026-09-29", "2026-09-30"])}
+
+
+CTX = {"met": {"小明"}, "soft": set(), "today": "2026-09-30"}
+FEEL = [{"who": "小明", "text": "嘴贫但靠谱", "close": "熟了", "trend": "平稳"}]
+
+
+def test_finish_applies_feelings():  # spec 2026-11-01-friend-feelings §2
+    cards = _cards()
+    finish_reflection({"diary": "嗯", "feelings": FEEL}, Mind(), None, None, cards, ["小明"], False, T0, InnerConfig(), feelings=CTX)
+    assert cards["小明"].feeling["text"] == "嘴贫但靠谱"
+    cards = _cards()
+    finish_reflection({"diary": "嗯", "feelings": FEEL}, Mind(), None, None, cards, ["小明"], False, T0, InnerConfig())
+    assert cards["小明"].feeling == {}
+
+
+def test_finish_bad_feelings_still_writes_diary(tmp_path):  # Review Focus 2
+    st = InnerStore(tmp_path / "inner")
+    finish_reflection({"diary": "今天不错。", "feelings": "坏的"}, Mind(), st, None, _cards(), ["小明"], True, T0, InnerConfig(),
+                      feelings=CTX)
+    assert st.last_diaries(1) == ["9月30日：今天不错。"]

@@ -207,3 +207,26 @@ def test_materials_recap_block():   # spec 2026-10-06-brain-compact §7
     text = materials(T0, "", "", chat, [], [], [], "人设", True, recap="小明说下周三考物理")
     head = "## 这次上线早些时候（前情提要，大脑自己写的）\n小明说下周三考物理"
     assert head in text and text.index(head) < text.index("这段时间的聊天")
+
+
+
+def test_materials_feelings_block():  # spec 2026-11-01-friend-feelings §2
+    args = (T0, "", "", [(T0, "小明", "在吗")], [], ["小明（…）"], [], "人设", True)
+    text = materials(*args, feelings=["小明：还没有印象（一起玩过 1 天）"])
+    assert "你对他们的感觉" in text and "小明：还没有印象（一起玩过 1 天）" in text
+    assert materials(*args, feelings=None) == materials(*args)
+
+
+def test_final_extra_system(clock):
+    llm = FakeLlm('{"diary": "嗯"}')
+    r = Reflector(CFG, llm, clock, threaded=False)
+    r._ask("在线")  # 在线反思照旧
+    r.final("最后", extra="感觉X")
+    assert llm.calls[0][0] == REFLECT_SYSTEM
+    assert llm.calls[1][0].startswith(REFLECT_SYSTEM) and llm.calls[1][0].endswith("感觉X")
+
+
+def test_feelings_system_asks_for_key():
+    from skydango.inner.reflect import FEELINGS_SYSTEM
+
+    assert '"feelings"' in FEELINGS_SYSTEM and "close" in FEELINGS_SYSTEM and "trend" in FEELINGS_SYSTEM

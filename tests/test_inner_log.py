@@ -105,3 +105,12 @@ def test_musing_row():  # 冷场时的心理活动 §3
     assert MindLog(None, False).musing(1.0, ["懒洋洋大王"], "silent", "嗯") == {
         "t": 1.0, "kind": "musing", "who": ["懒洋洋大王"], "lull": "silent", "text": "嗯",
     }
+
+
+
+def test_diff_lists_feelings():  # spec 2026-11-01-friend-feelings §5
+    from skydango.inner.log import diff
+    from skydango.inner.mind import Mind
+
+    out = diff(Mind(), Mind(), None, None, feelings=["对小明的感觉：熟了，平稳（嘴贫）"])
+    assert out[-1] == "对小明的感觉：熟了，平稳（嘴贫）"

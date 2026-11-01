@@ -47,6 +47,17 @@ PERSONA_SYSTEM = """顺便想想你自己的性格（材料里“你攒下的性
 在上面那个 JSON 对象里多加两项：
 "persona_add": {"catchphrases": ["..."], "jokes": [{"who": "...", "text": "..."}], "opinions": [{"topic": "...", "stance": "..."}]}, "persona_used": ["..."]"""
 
+# 对每个人的感觉（spec 2026-11-01-friend-feelings §2）：只在下线那次接在系统提示词后面
+FEELINGS_SYSTEM = """下线这次再想想你对这次见过、聊过的好友的感觉（材料里“你对他们的感觉”是现在记着的）：
+- text：对这个人的印象，一句口语（不超过 40 字），在旧印象的基础上改；要有这次或以前的具体依据（“嘴贫但靠谱，骗我背背的账还没算”），不写“人很好”这种空话。
+- close：亲近度，只能是 刚认识 / 熟了 / 很铁 之一；要一起玩好几天慢慢积累才往上走，一次不愉快不降。
+- trend：最近的走向，只能是 在变近 / 平稳 / 有点生疏 之一；一次不愉快改走向或在印象里记一笔就够了。
+- 不写依恋、吃醋、“只有他”这类话；外貌、身材、家里、成绩、年龄不碰；这次说过难过的人，好好记，不埋怨。
+- 没变化的人不写；还没见过的人不写。
+
+在上面那个 JSON 对象里多加一项：
+"feelings": [{"who": 好友名, "text": "...", "close": "...", "trend": "..."}]"""
+
 _PERSONA_STRICT = "- 损人的、拿外貌 / 身材 / 家里 / 成绩 / 年龄开玩笑的一律不记。"
 _PERSONA_CHEEKY = ("- 拿外貌 / 身材 / 家里 / 成绩 / 年龄开玩笑的一律不记；损事的（路痴、手残、放鸽子）可以记。"
                    "带点贱味、有人笑了或者回怼了的口头禅和老梗优先记。")
@@ -88,6 +99,7 @@ def materials(
     traits: str | None = None,  # 第 3 期：已经攒下的性格（Persona.section()）；None = 不写这一段，"" = 还没有
     profiles: list[str] | None = None,  # friends.md 里相关好友那一节（friend_sections）；None = 不写这一段
     recap: str = "",  # 大脑这次上线的前情提要（只给下线那次，spec 2026-10-06-brain-compact §7）；空 = 不写这一段
+    feelings: list[str] | None = None,  # 对这次见过的好友现在的感觉（feelings.feelings_lines，只给下线那次）；None = 不写这一段
 ) -> str:
     """拼给反思的材料（一条 user 消息）。"""
     d = time.localtime(now)
@@ -105,6 +117,7 @@ def materials(
         parts.append("你攒下的性格：\n" + ("\n".join(body) if body else "（还没有）"))
     parts += [
         _block("相关的好友：", cards),
+        *([_block("你对他们的感觉（下线时可以改，见 feelings）：", feelings)] if feelings is not None else []),
         *([_block("好友名单里写的（称呼、性别以这里为准）：", profiles)] if profiles is not None else []),
         _block("笔记里提到他们的：", notes),
     ]
@@ -178,10 +191,11 @@ class Reflector:
         except queue.Empty:
             return None
 
-    def final(self, content: str) -> dict | None:
-        """下线前的最终反思：同步跑（最多 reflect_timeout，由 llm 的超时管），额度暂停中也试一次。"""
+    def final(self, content: str, extra: str = "") -> dict | None:
+        """下线前的最终反思：同步跑（最多 reflect_timeout，由 llm 的超时管），额度暂停中也试一次。
+        extra：只这一次接在系统提示词后面（对每个人的感觉 FEELINGS_SYSTEM）。"""
         self._final = True
-        return self._ask(content)
+        return self._ask(content, self.system + "\n\n" + extra if extra else self.system)
 
     # ---- 内部 ----
     def _run(self, content: str) -> None:
@@ -192,9 +206,9 @@ class Reflector:
         if result is not None and not self._final:
             self._results.put(result)
 
-    def _ask(self, content: str) -> dict | None:
+    def _ask(self, content: str, system: str | None = None) -> dict | None:
         try:
-            raw = self.llm.complete(self.system, [{"role": "user", "content": content}])
+            raw = self.llm.complete(self.system if system is None else system, [{"role": "user", "content": content}])
         except ModelError as exc:
             if exc.down == "limit" or isinstance(exc, ModelUnavailable):
                 self._paused_until = self.clock() + LIMIT_RETRY

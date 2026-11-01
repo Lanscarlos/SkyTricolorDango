@@ -3511,6 +3511,7 @@ def _final_timeout(cfg: Config) -> float:
 
 def _final_reflection(cfg: Config, body, reflector, ledger, live_store, now: float | None = None) -> str:
     from .inner import finish_reflection
+    from .inner.reflect import FEELINGS_SYSTEM
 
     quiet = getattr(body, "quiet_session", None)
     if callable(quiet) and quiet():  # 没听到、没说过、没人来：反思没材料会编出跑图看云的一天（11-01），不写日记
@@ -3519,12 +3520,13 @@ def _final_reflection(cfg: Config, body, reflector, ledger, live_store, now: flo
     try:
         if hasattr(reflector.llm, "timeout"):  # GatedCall：主和备一起缩短，备用不重试
             reflector.llm.timeout = _final_timeout(cfg)
-        result = reflector.final(body.reflect_materials(True))
+        context = body.feeling_context() if hasattr(body, "feeling_context") else None  # 对每个人的感觉：只有下线这次改
+        result = reflector.final(body.reflect_materials(True), extra=FEELINGS_SYSTEM if context else "")
         return finish_reflection(
             result, body.mind, ledger.store, live_store, ledger.cards, body._safe_friends(), ledger.persist,
             time.time() if now is None else now, cfg.inner,
             persona=body.persona, soft=body.soft_names_this_session(), mind_log=body.mind_log, energy=body._energy,
-            said=body.said_this_session() if hasattr(body, "said_this_session") else None,
+            said=body.said_this_session() if hasattr(body, "said_this_session") else None, feelings=context,
         )
     except Exception:
         log.exception("下线前的反思出错")
