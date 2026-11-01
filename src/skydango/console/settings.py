@@ -47,6 +47,7 @@ FIELDS: tuple[Field, ...] = (
     Field("inner.reflect", "反思", "定时想想刚才发生的事：心情、精力、闹别扭、惦记的事，下线写日记；关掉就只记账", "bool", "brain"),
     Field("inner.persona", "性格", "攒口头禅、老梗和看法，敢唱反调、会拒绝、熟人之间互损；关掉就回到第 2 期", "bool", "brain"),
     Field("inner.cheeky", "贱兮兮", "对卡洛和熟好友嘴欠一点（曲解、明褒暗贬、嘴硬、甩锅），反思也攒贱味的口头禅；要开着「性格」，关掉回到原来的脾气", "bool", "brain"),
+    Field("inner.feelings", "对每个人的感觉", "下线反思时改写对每个好友的印象、亲近度和走向，他来时带给大脑；要开着「反思」", "bool", "brain"),
     Field("call.enabled", "按 Q 喊一声", "大脑能按 Q 喊一声找附近的好友（稍远的好友头顶会亮出名字）；要配合 YOLO 感知层", "bool", "brain"),
     Field("call.auto", "自动喊一声", "好友看不到了、或者拿不准某人是谁时，身体自己喊一声确认（1 分钟最多 3 次）", "bool", "brain"),
     Field("attention.search", "有意识地找", "闲着时找刚走开的好友、一个人待着时隔一会儿往没看过的方向看看；关掉只剩“有人说话 / 走近就转过去看”", "bool", "brain"),

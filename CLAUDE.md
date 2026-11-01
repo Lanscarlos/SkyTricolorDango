@@ -128,7 +128,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/candle.py` | 火焰：`find_flames` / `find_flame` 在调用方给的范围（团子周围）里找火焰，`black()` 量人物框有多黑（判点亮用），`white_ring` 分孤儿圆圈是举蜡烛请求（有白圈）还是圆盘；火焰圆盘**绝不点** |
 | `src/skydango/game/friendtree.py` | 点人物打开好友树面板、截图、关掉（大脑的 `check_friend`，默认关，未在真机验证） |
 | `src/skydango/brain/` | 统管大脑：`body.py` 身体（事件、命令队列、工具的护栏）、`loop.py` 大脑循环、`session.py` 常驻 Claude Code、`toolloop.py` OpenAI 兼容的大脑（`ToolLoopBrain`，function-calling 循环）、`compact.py` 它的历史压缩（压缩指令、前情提要格式、中途新记的 inbox，见「统管大脑」的历史压缩）、`sessions.py` 按供应商建大脑会话（`make_session`）、`claude.py` 旧名字的转引（进程、命令都搬到了 `models/claude_code.py`）、`llm_tools.py` OpenAI 兼容大脑的工具 schema（唯一来源）、`trace.py` 大脑时间线（给管理面板）、`manual.py` 手动控制、`mcp_server.py` + `tools.py` 工具、`eyes.py` 眼睛、`camera.py` 视角、`locomotion.py` 小步走（`move`）、`skills.py` 技能层（见「统管大脑」）、`attention.py` 空闲注意力 / `search.py` 有意识地找 / `find.py` 找人技能 / `peek.py` 换角度、`occasion.py` 场合（见「看场合主动开口」）、`reflex.py` 反射（见「身体反射」） |
-| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」） |
+| `src/skydango/inner/` | 内心层（见「内心层」）：`ledger.py` 关系卡和这次上线（纯数据、拼文字）、`store.py` 读写 `memory/inner/`、`days.py`「日子」一节、`backfill.py` 从 history 回填、`open_ledger` / `show_lines`；第 2 期 `energy.py` 精力、`mind.py` 心情 / 别扭 / 心愿、`effects.py` 倍数、`reflect.py` 反思、`finish_reflection`；第 3 期 `persona.py` 性格档案（口头禅 / 老梗 / 看法）；内心页 `log.py` 流水账（`MindLog` + 反思前后 `diff`）、`api.py` `/inner` 接口的解析；`lull.py` 冷场追踪（见「冷场时的心理活动」）；`feelings.py` 对每个人的感觉（见「内心层」） |
 | `src/skydango/models/` | 模型供应商和按用处选模型（见「模型供应商」）：`config.py` 解析 `[providers.*]` / `[models.*]`、旧字段换算、校验；`claude_code.py`（`claude -p`）/ `openai_compat.py`（DeepSeek 等）两种接入方式；`errors.py` `ModelError`（`down` = limit / auth）；`gate.py` 按供应商的闸；`registry.py` `Registry` / `GatedCall`（主 → 备）；`usage.py` `UsageMeter` 用量 / 钱 / 限额、`usage_ledger.py` 今天累计的账本、`balance.py` DeepSeek 余额（见「模型供应商」的用量和额度）。**代码只从这里拿模型** |
 | `src/skydango/console/` | 管理面板（`console`）：设置清单和 `console.toml` / `secrets.toml` 读写（`settings.py` `tomlfile.py`）、「模型」页后端（`models_view.py`）、团子子进程起停（`runner.py`、子进程侧看门狗 `watchdog.py`）、启动预检 / 测试按钮 / 设备检测（`preflight.py` `probes.py` `devicecheck.py`）、HTTP 服务和转发（`server.py`）、接管终端起的团子时读它的 agent.log（`logtail.py`）、内心页数据（`inner_view.py`：读 `memory/inner/`、在跑时合并实时、删性格条目）、沙盒（`sandbox_view.py` 重置记忆 / 起始时间下限、`scenario.py` 剧本格式、`replay.py` 录制回放报告）、报告读取（`reports.py`）、整理 / 重训的任务槽（`jobs.py`）、整帧页后端（`frames.py`）、重训报告和换上 / 回退（`retrain_view.py`）、页面 `static/`（`console.html` + `console.css` + `common.js` / `markdown.js` + 共用的 `brainlog.js`（大脑控制台）/ `chatlog.js`（聊天行）+ 每页一个 js（真机页的手动控制另在 `livectl.js`、标注页的整帧页 `frames.js`、重训区 `retrain.js`），左侧栏 + 八页：沙盒（默认）/ 真机团子（照沙盒三栏：团子 / 画面 + 大脑 / 聊天记录，加日志抽屉）/ 内心 / 剧本和报告 / 标注 / 模型 / 设置 / 设备；见「管理面板」「大脑沙盒」） |
 | `src/skydango/brain/flow.py` `console/static/dangotrack.js` | 团子跑道（见「管理面板」）：`FlowLog` 记身体 / 大脑每一步的结构化事件（十个节点、五种结果，大脑一轮里的决定排到这一轮结束后），viewer `/flow` 长轮询；前端三颗团子沿闭环跑道按事件走 |
@@ -765,6 +765,16 @@ dir = "private/sandbox"
   幕后开着时卡洛那一档多一句 `OWNER_CHEEKY`（`brain/backstage.py`：甩锅给他的代码、嫌他把你改困了，# 命令照做）；反思用 `persona_system(True)`（`inner/reflect.py`：损事的可以记、优先攒带贱味有人接的口头禅和老梗；`Persona.apply` 的敏感词过滤照旧）。
   `[models.brain]` 默认温度同时从 0.8 提到 1.0（只对 OpenAI 兼容的大脑生效）。`memory init` 的人设模板去掉了「不损人」、说话习惯带像 / 不像她的例句；**已有的 `profile.md` 要自己改**（模板那句「吐槽点到为止，不损人」压着别的规则）。
   `cheeky = false`：提示词、幕后、反思提示词逐字照旧；管理面板有 `inner.cheeky` 开关。「身份」「底线」两节和 `_CLAIMS_HUMAN` 不动
+
+**对每个人的感觉**（`[inner] feelings`，默认开，要 `reflect` 开着；设计 `docs/superpowers/specs/2026-11-01-friend-feelings-design.md`，计划 `docs/superpowers/plans/2026-11-01-friend-feelings.md`；**代码 11-01 做完，spec §6 沙盒验收还没走，数字都是估的**）
+- 关系卡（`people.json`）每个好友多 `feeling`：印象 `text`（≤ 40 字）、亲近度 `close`（刚认识 / 熟了 / 很铁）、走向 `trend`（在变近 / 平稳 / 有点生疏）、`since`、最近 3 版旧的 `past`（文字或亲近度变了才推一版）。
+  离上次在身边 ≥ `feel_stale_days`（14）天，走向显示成「好久没见了」（现算、不写盘）
+- **只有下线那次的最终反思改**：系统提示词这一次接上 `FEELINGS_SYSTEM`、材料多「你对他们的感觉」，JSON 多一项 `feelings`；在线反思逐字不变
+- **代码守的规矩**（`inner/feelings.py` 的 `apply_feelings`）：只改这次见过 / 聊过的好友（`Body._met_names`）；亲近度一次最多一档，「很铁」要一起玩过 ≥ `feel_close_days`（7）天、「熟了」≥ `grudge_min_days`；
+  超长整条不收、敏感词 / 依恋吃醋（`CLINGY`）/ 难过类 / 声称真人丢；这次说过难过的人（收着点 ∪ 聊天里 `DISTRESS`）不写「有点生疏」、带埋怨（`GRUMBLE`）的印象不收；丢的原因进流水账
+- **大脑看到**：arrive「。你对他：<印象>（<亲近度>，最近<走向>）」接在交情后、「你惦记着」前（收着点只带亲近度，`return` 不带）；status「身边的好友」括号末尾带亲近度（生疏 / 好久没见才带走向）；「说话」一节多 `FEEL_RULE`；`introspect("关系")`（话题常驻，关着回「没开」）
+- 内心页关系卡多「感觉」一列（旧版本在下面）；管理面板设置页 `inner.feelings`。`feelings = false`：反思提示词和材料、arrive、status、提示词逐字照旧，卡上的 `feeling` 留着
+- 只在 live 写盘（`ledger.close` 写 `people.json`）
 
 ## 幕后（`[backstage]`，大脑模式）
 

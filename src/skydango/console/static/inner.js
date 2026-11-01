@@ -220,7 +220,7 @@ function renderCards(container, cards) {
   container.textContent = "";
   if (!cards.length) { container.append(el("p", "none", "（还没有）")); return; }
   const wrap = el("div", "tbl-wrap"), tb = el("table", "tbl"), head = el("tr"), now = nowSec();
-  for (const h of ["名字", "认识", "一起玩过", "见过", "上次在身边", "说过 / 跟你", "装扮"]) head.append(el("th", "", h));
+  for (const h of ["名字", "认识", "一起玩过", "见过", "上次在身边", "说过 / 跟你", "感觉", "装扮"]) head.append(el("th", "", h));
   tb.append(head);
   for (const c of cards) {
     const tr = el("tr", c.friend ? "" : "stranger");
@@ -228,6 +228,12 @@ function renderCards(container, cards) {
     tr.append(who, el("td", "", `${Math.max(1, Math.ceil((now - c.first_met) / 86400))} 天`),
       el("td", "", `${c.days} 天`), el("td", "", `${c.visits} 次`), el("td", "", c.last_seen ? `${span(now - c.last_seen)}前` : "还没见过"),
       el("td", "", `${c.said} / ${c.to_me}`));
+    const feel = el("td", ""), f = c.feeling || {};  // 对他的感觉：现在的印象 + 以前的（新的在上）
+    if (f.text) {
+      feel.append(el("div", "", f.text), el("div", "note", `${f.close} · ${f.trend} · ${f.since || ""}`));
+      for (const p of (f.past || []).slice().reverse()) feel.append(el("div", "note", `以前（${p.date || ""}）：${p.text}（${p.close}）`));
+    } else feel.append(el("div", "note", "还没有"));
+    tr.append(feel);
     const fit = el("td", "");  // 最近几套装扮（新的在上），来自 main 的认装扮
     for (const o of (c.outfits || []).slice().reverse())
       fit.append(el("div", "note", `${o.desc || "（还没描述）"}（${o.first === o.last ? o.first : o.first + " ~ " + o.last}）`));

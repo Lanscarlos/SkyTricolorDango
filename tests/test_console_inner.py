@@ -49,7 +49,7 @@ def test_files_only(tmp_path):
     assert s["now"]["mood"]["level"] == "开心" and s["now"]["soft"] == [] and s["now"]["grudge"] is None
     assert [c["name"] for c in s["cards"]] == ["阿花", "路人甲"]  # 好友名单里的在前
     assert s["cards"][0] == {"name": "阿花", "friend": True, "first_met": NOW - 5 * 86400, "days": 2, "visits": 4,
-                             "last_seen": NOW - 60, "said": 10, "to_me": 6, "outfits": []}
+                             "last_seen": NOW - 60, "said": 10, "to_me": 6, "outfits": [], "feeling": {}}
     assert s["cards"][1]["friend"] is False
     assert [r["kind"] for r in s["log"]] == ["energy", "reflect"]  # 7 天前的不给
     assert s["persona"]["catchphrases"][0]["text"] == "害"
@@ -230,3 +230,12 @@ def test_live_musing_passes_through(tmp_path):  # 冷场时的心理活动 §3�
     assert s["now"]["musing"] == musing
     s = inner_state(tmp_path, FRIENDS, "idle", lambda: pytest.fail("没在跑不该取实时"), NOW)
     assert s["now"]["musing"] == []
+
+
+def test_inner_cards_feeling(tmp_path):  # spec 2026-11-01-friend-feelings §5
+    st = InnerStore(tmp_path)
+    feel = {"text": "嘴贫但靠谱", "close": "熟了", "trend": "平稳", "since": "2026-10-20",
+            "past": [{"text": "话少", "close": "刚认识", "date": "2026-10-02"}]}
+    st.write_people({"阿花": Card(first_met=NOW, feeling=feel)}, None)
+    s = inner_state(tmp_path, FRIENDS, "idle", lambda: None, NOW)
+    assert s["cards"][0]["feeling"] == feel

@@ -39,6 +39,7 @@ def _cards(store: InnerStore, friends: list[str]) -> list[dict]:
         "last_seen": c.last_seen, "said": c.lines, "to_me": c.to_me,
         "outfits": [{"desc": o.get("desc", ""), "first": o.get("first", ""), "last": o.get("last", "")}
                     for o in c.outfits[-OUTFITS_SHOW:]],  # 最近几套，不带特征向量
+        "feeling": c.feeling,  # 对他的感觉（spec 2026-11-01-friend-feelings §5）；空 = 还没有
     } for n, c in ((n, cards[n]) for n in names)]
 
 
