@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from ..config import VisionConfig
+from ..config import BrainVisionConfig
 from ..vision.people import OBJECT_NAMES
 from .images import encode_jpeg, fit, image_block
 
@@ -93,7 +93,7 @@ def doubtful(boxes: list[dict]) -> bool:
     return any(b.get("kind") in ("maybe", "unsure") or (b.get("kind") == "icon" and b.get("unknown")) for b in boxes)
 
 
-def should_attach(kinds: set[str], doubtful: bool, last_at: float, now: float, cfg: VisionConfig) -> bool:
+def should_attach(kinds: set[str], doubtful: bool, last_at: float, now: float, cfg: BrainVisionConfig) -> bool:
     """这一轮唤醒消息要不要自动附一张图：开着 auto、离上次自动附图够久，且有触发的事件或感知层拿不准。"""
     if not cfg.auto or now - last_at < cfg.min_gap:
         return False
@@ -103,7 +103,7 @@ def should_attach(kinds: set[str], doubtful: bool, last_at: float, now: float, c
 class AutoVision:
     """唤醒消息的自动附图：在身体线程里调 pick（经 body.call），只管挑时机和画图；last_at 记上次自动附图的时间。"""
 
-    def __init__(self, cfg: VisionConfig, quality: int) -> None:
+    def __init__(self, cfg: BrainVisionConfig, quality: int) -> None:
         self.cfg = cfg
         self.quality = quality
         self.last_at = float("-inf")
@@ -120,7 +120,7 @@ class AutoVision:
         return mark_frame(frame, boxes, tuple(self.cfg.size), self.quality, "auto")
 
 
-def brain_sees(session, sees_model: bool, cfg: VisionConfig, text_only: bool) -> bool:
+def brain_sees(session, sees_model: bool, cfg: BrainVisionConfig, text_only: bool) -> bool:
     """大脑现在看不看得了图：Claude Code 大脑照旧看模型勾没勾；OpenAI 兼容的还要 [brain.vision] 开着、不是沙盒、没被接口拒收过。"""
     from .session import BrainSession
 

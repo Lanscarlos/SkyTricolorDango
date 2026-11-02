@@ -16,6 +16,7 @@ from ..models.errors import ModelError, down_kind
 from ..models.gate import ProviderGates
 from .events import Event, EventQueue
 from .prompt import SUMMARY_REQUEST
+from .vision import parse_check
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +88,8 @@ class Brain:
         self.manner: Callable[[list[tuple[str, str]]], str | None] | None = None
         # 想起来的（spec 2026-10-31-memory-entries §3.2）：(这批事件, 压缩换上过几次) → 「想起来的：…」一段；cli 接成在身体线程里算
         self.recollect: Callable[[list[Event], int], str | None] | None = None
+        # 大脑直接看图（spec 2026-11-02-brain-vision §2.2）：这批事件 → 唤醒消息附的编号截图（brain.vision.Attachment）或 None；cli 接成在身体线程里取
+        self.snapshot: Callable[[list[Event]], object | None] | None = None
 
     # ---- 什么时候醒 ----
     def offline(self, now: float) -> bool:
@@ -154,6 +157,16 @@ class Brain:
         lines.append(self.eyes.summary(now) if self.eyes is not None else "场景：（没开眼睛）")
         return "\n".join(lines)
 
+    def _snapshot(self, events: list[Event]):
+        """这一轮要附的图；钩子出错这一轮照常只发文字。"""
+        if self.snapshot is None:
+            return None
+        try:
+            return self.snapshot(events)
+        except Exception as exc:
+            log.warning("取这一轮的截图出错，只发文字：%s", exc)
+            return None
+
     def _recollect(self, events: list[Event]) -> str | None:
         """「想起来的：」一段；钩子出错不加。压缩换上过几次当 epoch：换一次就可以把带过的再带一遍（原话已经被压没了）。"""
         if self.recollect is None:
@@ -196,13 +209,14 @@ class Brain:
         began = self.clock()  # 取事件之前：之后身体才读到的消息不在这一轮里（last_turn 用）
         events = self.events.drain()
         text = self.message(now, events)
+        image = self._snapshot(events)
         self.toolbox.begin_turn()
         self._trace("begin", reason, text)
         self._flow("begin_turn")
         start = self.clock()
         self.chat_turn = any(e.kind in ("chat", "owner_command") for e in events)
         try:
-            result = self.session.send(text)
+            result = self.session.send(text, image=image) if image is not None else self.session.send(text)
         except ModelError as exc:
             self._trace("fail", str(exc), self.clock() - start)
             self._flow("end_turn", self.clock() - start, "", error=str(exc))
@@ -359,6 +373,9 @@ class Brain:
         text = (result.get("result") or "").strip()
         if text:
             log.info("大脑这一轮最后说：%s", text)
+        check = parse_check(text)  # 大脑对身体认的结果的核对（spec 2026-11-02-brain-vision §6）
+        if check:
+            log.info("核对：%s", check)
         if self.run_dir is None:
             return
         try:
@@ -372,7 +389,8 @@ class Brain:
                 "tools": list(self.toolbox.used),
                 "text": text,
                 # OpenAI 兼容大脑的历史（spec 2026-10-06-brain-compact §6）：append / sliding、压过几次
-                **{k: result[k] for k in ("history_mode", "recap") if k in result},
+                **{k: result[k] for k in ("history_mode", "recap", "images") if k in result},
+                **({"check": check} if check else {}),
             })
         except Exception:
             log.exception("记大脑日志出错")

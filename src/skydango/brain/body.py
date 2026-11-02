@@ -50,6 +50,7 @@ from .manner import jab_note, manner as manner_text
 from .recollect import Recollector, persona_cues
 from .pacing import Pacer
 from .occasion import LEVEL_NAMES, Occasion, Spoken, assess, is_friend_fn
+from .vision import mark_frame
 from .images import crop_view, difference, fit, image_block, is_black, label_note, scene_note, thumb
 from .locomotion import KEYS as MOVE_KEYS, MAX_STEPS as MOVE_MAX_STEPS
 from .addressee import LABEL_NAMES, Addressee, Verdict, legacy_addressed, parse_aliases
@@ -1626,13 +1627,19 @@ class Body:
                 self.holding = None
 
     # ---- 给大脑用的：都在身体线程里执行（经 call()） ----
-    def look(self) -> list[dict]:
+    def look(self, marked: bool = False) -> list[dict]:
+        """marked：大脑能直接看图（[brain.vision]）且感知层开着时，给画了编号框的图 + 图例（brain/vision.py），代替干净的图 + 位置说明。"""
         now = self.clock()
         brain = self.cfg.brain
         if now - self.last_look < brain.look_min_interval:
             raise ToolError(f"{brain.look_min_interval:.0f} 秒内刚看过，等一下再看")
         frame = self.device.screenshot()
         self.last_frame, self.last_look, self.look_frame = frame, now, frame
+        if marked and hasattr(self.env, "overlay_fresh"):
+            boxes = self.env.overlay(now) if self.env.overlay_fresh(now) else None  # 感知层结果过时：只给图、不画框
+            att = mark_frame(frame, boxes, tuple(brain.vision.size), brain.jpeg_quality, src="look")
+            legend = att.legend + ("\n画面现在是黑的（可能在切场景）" if self.blackout else "")
+            return [{"type": "text", "text": legend}, att.block]
         view = fit(frame, tuple(brain.image_size))
         scale = view.shape[1] / frame.shape[1]
         if hasattr(self.env, "strangers"):  # YOLO 感知层：好友、陌生人、团子的位置都给

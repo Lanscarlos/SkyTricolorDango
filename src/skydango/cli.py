@@ -3051,6 +3051,9 @@ def _models_line(brain, registry) -> str:
             off.append(f"{label}停用：{u.disabled}")
         elif USE_BY_NAME[name].vision and registry.current(name) is None:
             off.append(f"{label}用不了（{'；'.join(f'{p} {r}' for p, r in closed.items())}）")
+    blind = getattr(brain.session, "vision_off", "")  # 接口拒收过图：这次运行大脑看不了图（spec 2026-11-02-brain-vision §4）
+    if blind:
+        off.append(f"大脑看不了图：{blind}")
     return text + (f"（{'；'.join(off)}）" if off else "")
 
 
@@ -3121,6 +3124,7 @@ def _run_brain(
     from .brain.sessions import make_session
     from .brain.tools import ToolBox
     from .brain.trace import BrainTrace
+    from .brain.vision import AutoVision, brain_sees
     from .brain.world import BrainParts
     from .chat.responder import Responder
     from .models.config import ModelRef
@@ -3200,13 +3204,17 @@ def _run_brain(
         brain_box: list = []  # 大脑建好后放进来：代看要知道大脑现在用的模型看不看得了图
 
         def sees() -> bool:
-            # OpenAI 兼容的大脑一律代看（tool 消息放不了图）；常驻 Claude Code 看模型勾没勾「能看图」
-            session = brain_box[0].session if brain_box else None
-            return isinstance(session, BrainSession) and registry.sees(ModelRef(session.provider, session.model))
+            # 大脑现在用的模型看不看得了图：常驻 Claude Code 看模型勾没勾「能看图」；OpenAI 兼容的还要 [brain.vision] 开着、
+            # 不是沙盒、没被接口拒收过（spec 2026-11-02-brain-vision-design §2.1），看不了就请眼睛代看
+            if not brain_box:
+                return False
+            session = brain_box[0].session
+            return brain_sees(session, registry.sees(ModelRef(session.provider, session.model)), cfg.brain.vision, world.text_only)
 
         toolbox = ToolBox(body, eyes, cfg.brain.max_steps, cfg.brain.max_says, memory=store, text_only=world.text_only,
                           sandbox=world.name == "sandbox", backstage=cfg.backstage.enabled, call=_call_enabled(cfg, env),
-                          proxy=eyes.proxy, sees=sees, eyes_label=registry.describe("eyes"), jab=cfg.pacing.manner)
+                          proxy=eyes.proxy, sees=sees, eyes_label=registry.describe("eyes"), jab=cfg.pacing.manner,
+                          marked=lambda: cfg.brain.vision.enabled and sees())
         wardrobe = _wardrobe(cfg, env, ledger, world, registry, clock)
         server = SkyServer(toolbox)
         server.start()
@@ -3231,7 +3239,7 @@ def _run_brain(
     on_message = trace.chain(log_brain_message) if trace is not None else log_brain_message
     build = functools.partial(make_session, registry, prompt=prompt, toolbox=toolbox, mcp_url=server.url, workdir=work,
                               cfg=cfg.brain, addressee=cfg.addressee.enabled, on_message=on_message,
-                              inbox=store.inbox if store is not None else None, trace=trace)
+                              inbox=store.inbox if store is not None else None, trace=trace, text_only=world.text_only)
     session, backup = _brain_sessions(registry, build)
     brain = Brain(
         cfg.brain, cfg.chat, session, toolbox, events, nearby=env.nearby if env else (lambda now: []),
@@ -3239,6 +3247,12 @@ def _run_brain(
         fallback=backup, gates=registry.gates, meter=registry.meter,
     )
     brain_box.append(brain)
+    if cfg.brain.vision.enabled and not world.text_only:  # 唤醒消息挑时机附一张编号截图（Claude 大脑不收自动图）
+        auto = AutoVision(cfg.brain.vision, cfg.brain.jpeg_quality)
+        brain.snapshot = lambda evs: (
+            body.call(lambda: auto.pick(evs, clock(), body.last_frame, env, body.blackout), timeout=3)
+            if not isinstance(brain.session, BrainSession) and sees() else None
+        )
     body.recap_text = lambda: getattr(brain.session, "recap", "") or ""  # 下线反思带上前情提要（spec 2026-10-06-brain-compact §7）
     body.models_line = lambda: _models_line(brain, registry)
     if viewer is not None:

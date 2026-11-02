@@ -149,12 +149,13 @@ class ToolBox:
         self, body, eyes=None, max_steps: int = 6, max_says: int = 2, memory=None, text_only: bool = False, sandbox: bool = False,
         backstage: bool = False, call: bool = False,
         proxy: Callable[[list[dict], str], str] | None = None, sees: Callable[[], bool] = lambda: True,
-        eyes_label: str = "", jab: bool = False,
+        eyes_label: str = "", jab: bool = False, marked: Callable[[], bool] = lambda: False,
     ) -> None:
         self.eyes_label = eyes_label  # introspect(眼睛) 里说眼睛是哪个模型（registry.describe("eyes")）
         self.body = body
         self.proxy = proxy  # 大脑看不了图时把图交给眼睛代看：(内容块, 想看清什么) → 文字（Eyes.proxy）
         self.sees = sees  # 大脑现在用的模型看不看得了图
+        self.marked = marked  # look 要不要给编号图（大脑能直接看图，[brain.vision]）
         self.backstage = backstage  # 幕后：有 introspect 工具
         self.calling = call  # 按 Q 喊一声：有 call 工具
         self.jab = jab  # say 多一个 jab 参数（[pacing] manner）；关着时 say 逐字照旧
@@ -231,7 +232,7 @@ class ToolBox:
                     and self.eyes.latest is not None and now - self.eyes.last_look < b.cfg.brain.look_min_interval:
                 return self.eyes.summary(now)  # 看不了图、眼睛刚看过：不再起一次代看
             if image or self.eyes is None:
-                return b.call(b.look)
+                return b.call(lambda: b.look(marked=True)) if self.marked() else b.call(b.look)
             if self.eyes.latest is not None and now - self.eyes.last_look < b.cfg.brain.look_min_interval:
                 return self.eyes.summary(now)
             return self.eyes.describe_frame(b.call(b.fresh_frame), now)
