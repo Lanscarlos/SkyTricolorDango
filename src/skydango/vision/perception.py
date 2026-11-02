@@ -46,6 +46,7 @@ from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_reques
 from .appearance import describe_crop, make_sample
 from .gallery import Sample
 from .identity import CallEnd, FrameIn, IdentityBoard, TagCand, TrackIn
+from .identity_log import FrameLog
 from . import identity as ident
 from .attrs import unlit_score
 from .candle import black, find_flames, white_ring
@@ -406,7 +407,7 @@ class PerceptionWatcher:
         self.appearance = appearance
         self.identity = identity
         self._identity_call_at: float | None = None
-        self.identity_log: list[FrameIn] | None = None
+        self.identity_log: list[FrameIn] | FrameLog | None = None  # list = identity-eval 收集；FrameLog = 真机存盘
         self._identity_errors = 0
         self.identity_off = ''
         self.embedder = embedder
@@ -705,6 +706,8 @@ class PerceptionWatcher:
 
     def stop(self) -> None:
         self._stop.set()
+        if self.identity_log is not None and not isinstance(self.identity_log, list):
+            self.identity_log.close()
         if self.catalog is not None:
             try:
                 self.catalog.close()
@@ -1352,8 +1355,10 @@ class PerceptionWatcher:
         call_at = self._identity_call_at
         try:
             fi = self._identity_frame(players, selfs, tags, fresh, now, width, height, panel_visible)
-            if self.identity_log is not None:
+            if isinstance(self.identity_log, list):  # identity-eval 收集
                 self.identity_log.append(fi)
+            elif self.identity_log is not None:  # 真机运行存进 runs/<这次>/identity/（vision/identity_log.py）
+                fi = self.identity_log.record(fi, frame)
             out = self.identity.step(fi)
             tagged, dangos = self._identity_apply(out, players, tags, fresh, frame, now, tracks)
         except Exception:

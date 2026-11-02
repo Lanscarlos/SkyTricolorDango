@@ -570,7 +570,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         from .vision.candle import load_flame
 
         flame = load_flame(cfg.social.flame)
-    return PerceptionWatcher(
+    watcher = PerceptionWatcher(
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=background, capture=dev.screenshot if dev is not None else None,
         scene_change=cfg.brain.scene_change, hardcases=hardcases, unknown=unknown,
@@ -583,6 +583,12 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         presence_call=can_call,
         identity=identity,
     )
+    if identity is not None and run is not None:
+        # 身份板每帧的输入存进 runs/<这次>/identity/，离线逐帧重放（还没在真机上标定过，出问题要能复盘）
+        from .vision.identity_log import FrameLog
+
+        watcher.identity_log = FrameLog(run.path / "identity")
+    return watcher
 
 
 def _person_attrs(cfg: Config, dino_embedder=None):

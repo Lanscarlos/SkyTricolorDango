@@ -222,6 +222,7 @@ dir = "private/sandbox"
 | `config.json` | 本次实际生效的配置（含 `--live` / `--echo` 覆盖） |
 | `hard/*.jpg`、`hard.jsonl` | YOLO 感知层可能认错的画面（难例）和原因、检测框（`[perception] hardcases`，每次最多 200 张）；下线时自动收进 `datasets/inbox`（`[inbox]`，runs/ 轮换不再丢；也能手动 `perception inbox collect`）；旧办法 `perception label runs --from-runs` 仍可用 |
 | `look_person/` | `look_person` 裁给大脑的图（`<时间>-<名字>-crop.jpg`）和画了裁剪范围的整帧（`-frame.jpg`），事后核对它看到的是谁 |
+| `identity/` | 开着身份板（`[identity]`）时每帧交给它的输入：`frames.pkl`（一串 pickle，`vision/identity_log.load_frames` 读回 `FrameIn` 列表，接 `identity_eval.replay_board` 逐帧重放）+ `frames/<秒>.jpg`（每秒一张 960 宽的画面，前 900 张；存了图的那帧 `tag` 就是图名）。约 20 MB / 小时；被强杀时丢掉写了一半的最后一帧 |
 | `spin/<时间>/` | 主人 `#spin` 转一圈的截图：转前 / 转完 / 每帧（文件名带按住后第几秒）和 `summary.json` |
 | `light/<时间>/` | 每次点亮陌生人（`[social]` light）：出请求那一刻 + 举起后每 0.5 秒的截图（每次最多 30 张、每次 run 最多 50 次；所有火焰候选画青圈，他那团画粗）和 `summary.json`（线索、结局、举起时和最后的 `black()`、火焰最后看到的时间和位置、最后在不在边上 `away`） |
 | `unknown_names/` | YOLO 感知层读得清楚、但不在 friends.md 里的名字（`names.jsonl` + 每个名字一张裁剪图）；`perception unknown-names` 汇总，**只列出，不自动写 friends.md** |
@@ -365,6 +366,7 @@ dir = "private/sandbox"
 - 底库只学标签稳定的好友、证据够强的团子、已经编号的陌生人；像好友 / 拿不准 / 接回 / 未定不学。暂停时证据计时也暂停。
 - 管理面板「设置」的「身份板」开关写 `console.toml`；要先开 YOLO、认装扮并加载 DINOv2。依赖不齐时启动日志说明原因、沿用旧流程；身份板连续 10 帧出错也自动退回，status 说明。
 - **11-01 评估结果**（10-26 拥挤录像、答案覆盖 99.5%）：三条线还没过。旧报告团子 0% 是因为离线没有启动登记、团子底库被 YOLO 打错的 self 框带歪（学进去的全是一个陌生人）；`identity-eval --enroll 20`（默认）模拟登记后团子 70.6%、别人被判团子 0%、好友被判陌生人 2.4%。真机登记失败时同样会被带歪：已改成团子只在这一帧有位置以外的线索（self 框 / 不跟背景走 / 长相分）时才学进底库，不登记时团子 0% → 61%；长相分只沿用 `look_keep`（0.5 秒），登记 20 秒时团子 87.4%、别人被判团子 0%、好友被判陌生人 2.4%（只这一段录像，换录像要复验），见进度文档 11-01 一节。
+- **真机复盘**（11-02）：开着身份板的 `run` 每帧输入存进 `runs/<…>/identity/`（见「运行目录」），不用录像也能离线逐帧重放、看团子分各项和判陌生人的时刻。
 - 离线：`perception identity-truth <录像>` 生成 `tmp/identity-truth/<录像名>/truth-draft.toml`、`logs.json`、`sheet.jpg`；对着拼图改为好友名 / 团子 / 陌生人 / 不要 / ?，再加 `--apply` 写 `<录像>/truth.jsonl`。`identity-eval <录像>` 生成新旧指标、呼喊全亮 / 全不亮两种假设、门槛建议与 `frames.pkl`；按框 IoU 对答案，扫门槛不再跑模型，也不自动改配置。
   草稿也可在管理面板「标注 → 认人」里标；`t528 = [[0, "玛卡巴卡"], [150.3, "懒洋洋大王"]]` 按帧时间切段，`不要` / `?` 段不落帧。页面看过的记在 `reviewed.json`，覆盖率到 90% 提示去命令行 `--apply`，再跑 `identity-eval`；生成草稿和评估仍在命令行。
 

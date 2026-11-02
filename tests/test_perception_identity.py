@@ -179,3 +179,16 @@ def test_rejected_self_box_is_not_dango_downstream():
     assert w._ref_height(1080) == me.box.h
     assert [o['x'] for o in w.overlay(0.3) if o['kind'] == 'self'] == [915]
 
+
+
+def test_frame_log_records_live_frames_and_closes_on_stop(tmp_path):
+    from skydango.vision.identity_log import FrameLog, load_frames
+    w, det = make(identity=True)
+    w.identity_log = FrameLog(tmp_path / 'identity', snap_every=1.0)
+    run(w, det, [(player(915), WHITE)], 0.0, 1.5)
+    w.stop()
+    frames = load_frames(tmp_path / 'identity' / 'frames.pkl')
+    assert len(frames) >= 10 and all(len(f.tracks) == 1 for f in frames)
+    snaps = sorted(p.stem for p in (tmp_path / 'identity' / 'frames').iterdir())
+    assert snaps == sorted(f.tag for f in frames if f.tag) and len(snaps) == 2
+    assert w.identity_log._fh.closed

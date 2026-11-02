@@ -41,3 +41,20 @@ def test_identity_setting_loads_from_overlay(tmp_path):
     assert c.identity.enabled
     field = next(f for f in FIELDS if f.key == 'identity.enabled')
     assert field.kind == 'bool'
+
+
+def test_live_run_saves_identity_frames(monkeypatch, tmp_path):
+    from skydango.runlog import RunDir
+    from skydango.vision.identity_log import FrameLog
+    fake_models(monkeypatch)
+    monkeypatch.setattr(cli, '_icon_classifier', lambda cfg: None)
+    monkeypatch.setattr(cli, '_dino_embedder', lambda cfg: FakeDino())
+    c = Config()
+    c.perception.enabled = c.appearance.enabled = True
+    run = RunDir(tmp_path / 'run', c)
+    assert cli._scene_watcher(c, background=False, run=run).identity_log is None  # 身份板关着不存
+    c.identity.enabled = True
+    w = cli._scene_watcher(c, background=False, run=run)
+    assert isinstance(w.identity_log, FrameLog) and w.identity_log.folder == run.path / 'identity'
+    w.stop()
+    assert cli._scene_watcher(c, background=False).identity_log is None  # 没运行目录不存
