@@ -77,6 +77,7 @@ REPEAT_WINDOW = 600.0  # say：这么久内说过几乎一样的话就拦下（1
 REPEAT_SIMILAR = 0.85  # ……"几乎一样"：chat.tracker.similar 的门槛
 FOLLOWUP_GAP = 20.0  # 写聊天历史：上一句记下后这么久内、中间没人说话又说的一句，是接着上一句说的（10-03 晚一轮里的第二句隔 6~16 秒）
 FOLLOWUP_LABEL = "（没人接话，你接着上一句又说）"
+WORLD_TEXT_AGE = 2.0  # 面板识别去掉头顶名字：感知层 / 环境识别这么久内看到的名字标签才算
 PROACTIVE_LABEL = "（没人说话，你主动开口）"
 PANEL_LOST_AFTER = 30.0  # 面板关了这么久（自动重开也没成功）就告诉大脑
 LIGHT_HOLD_MAX = 6.0  # light 请求挂着、身体还没举（刚做完动作 min_gap 4 秒、鞠躬排着、输入框开着……）：最多为它让面板先别动这么久
@@ -160,6 +161,8 @@ class Body:
         self.locomotion = locomotion
         self.friend_checker = friend_checker
         self.panels = panels
+        if panels is not None:  # 通用兜底认面板时去掉头顶名字 / 气泡（11-02 真机：名字标签 + 乱码凑成「不认识的面板」）
+            panels.world_text = self._world_text
         self.panel_ops = panel_ops
         self._panels_held = False
         self._permits: list[tuple[str, float]] = []  # 主人 #允许 的按钮：(文字, 到期时间)
@@ -1177,6 +1180,14 @@ class Body:
         elif self._panel_lost and self.reader.panel_closed_since is None:
             self.events.put("panel", "聊天记录面板又开了")
         self._panel_lost = lost
+
+    def _world_text(self) -> list[Rect]:
+        """3D 画面里的字在哪：无障碍读到的头顶名字和气泡 + 感知层 / OCR 环境识别 2 秒内看到的名字标签。"""
+        boxes = list(self.reader.world_boxes()) if hasattr(self.reader, "world_boxes") else []
+        now = self.clock()
+        labels = dict(getattr(self.env, "labels", None) or {})  # 先拍快照：env 后台线程会改这个 dict
+        boxes += [Rect(x, y, w, h) for x, y, w, h, t in labels.values() if now - t <= WORLD_TEXT_AGE]
+        return boxes
 
     def _watch_panels(self, frame, now: float) -> None:
         """画面上开着哪些面板：开 / 关告诉大脑（聊天记录面板不算，沿用 _watch_panel）；开着时暂停感知计时。"""

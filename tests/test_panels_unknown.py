@@ -294,3 +294,56 @@ def test_ocr_not_used_from_two_threads_at_once(clock):
         assert ocr.most == 1
     finally:
         w.close()
+
+
+# 11-02 真机：头顶名字「懒洋洋大王」+ OCR 从图形里读出的「24」「x」凑成了不认识的面板，大脑 panel_close 真去点了那个「x」
+TAG_JUNK = [line("懒洋洋大王", 400, 200), line("24", 420, 240), line("x", 600, 300)]
+
+
+def tag_box():
+    from skydango.vision.panels import Rect
+
+    return Rect(round(0.15 * 1280) + 395, round(0.08 * 720) + 195, 160, 40)  # 名字在整张图上的位置（OCR 区域偏移 + 行坐标）
+
+
+def test_world_text_lines_are_ignored(clock):
+    w = watcher(ListOcr(TAG_JUNK))
+    w.world_text = lambda: [tag_box()]
+    w.observe(scene(), clock())
+    clock.advance(3)
+    w.observe(changed(), clock())
+    assert w.pop_changes() == [] and w.state.others() == ()
+
+
+def test_without_world_text_same_lines_open(clock):  # 对照：不给头顶文字的框就照旧认成面板
+    w = watcher(ListOcr(TAG_JUNK))
+    w.observe(scene(), clock())
+    clock.advance(3)
+    w.observe(changed(), clock())
+    assert [c.panel.name for c in w.pop_changes()] == [UNKNOWN]
+
+
+def test_present_ignores_world_text(clock):
+    w = watcher(ListOcr(TAG_JUNK))
+    w.observe(scene(), clock())
+    clock.advance(3)
+    w.observe(changed(), clock())
+    [c] = w.pop_changes()
+    from skydango.vision.panels import Rect
+
+    assert w.present(changed(), c.panel)
+    w.world_text = lambda: [Rect(c.panel.box.x + 395, c.panel.box.y + 195, 160, 40)]  # present 只 OCR 面板框：行坐标按它偏移
+    assert not w.present(changed(), c.panel)  # 去掉名字后不像面板：关面板时当它已经不在了
+
+
+def test_world_text_error_is_ignored(clock):
+    w = watcher(ListOcr(DIALOG))
+
+    def broken():
+        raise RuntimeError("坏了")
+
+    w.world_text = broken
+    w.observe(scene(), clock())
+    clock.advance(3)
+    w.observe(changed(), clock())
+    assert [c.panel.name for c in w.pop_changes()] == [UNKNOWN]

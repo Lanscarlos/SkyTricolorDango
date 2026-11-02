@@ -384,6 +384,16 @@ def test_tags_in_view():
     assert r.tags_in_view() == ["小明"]
 
 
+def test_world_boxes_cover_tags_and_bubbles():
+    """头顶名字（名单外的、贴边的也算）和气泡的框：通用兜底认面板时去掉这些位置的 OCR 行。"""
+    r, h, _ = make()
+    assert r.world_boxes() == []
+    h[0] = closed(*head("怎么样"), tag("路人甲", 1500, 200))
+    r.read(None, 1.0)
+    boxes = r.world_boxes()
+    assert len(boxes) == 3 and all(b.w > 0 and b.h > 0 for b in boxes)
+
+
 def test_bubble_traced(tmp_path):
     r, h, _ = make()
     r.trace_path = tmp_path / "rows.log"
@@ -628,6 +638,9 @@ class FakeA11y:
     def want_peek(self):
         return "bubble_text"
 
+    def world_boxes(self):
+        return ["a11y 头顶的字"]
+
 
 def fallback(fail: Exception | None = None, others: bool = False, sleep=None):
     client, a11y, ocr = FakeClient(), FakeA11y(), FakeOcrReader()
@@ -635,6 +648,14 @@ def fallback(fail: Exception | None = None, others: bool = False, sleep=None):
     fb = FallbackReader(client, a11y, ocr, sleep=sleep or (lambda s: None))
     fb.start()
     return fb, client, a11y, ocr
+
+
+def test_fallback_world_boxes_only_when_a11y_ok():
+    fb, client, a11y, ocr = fallback()
+    fb.read(FRAME, 1.0)
+    assert fb.world_boxes() == ["a11y 头顶的字"]
+    fb2, *_ = fallback(others=True)  # 退回 OCR：没有
+    assert fb2.world_boxes() == []
 
 
 def test_another_reader_connected_at_start_uses_ocr():  # 后起的那个退回 OCR，不踢别人

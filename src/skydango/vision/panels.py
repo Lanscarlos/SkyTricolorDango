@@ -426,6 +426,16 @@ class PanelWatcher:
         self._future_gen = 0
         self._gen = 0  # mark_closed 时加 1：关之前提交的后台扫描结果作废（不然会把刚关的面板"复活"）
         self._ocr_lock = threading.Lock()  # 身体线程（read / present）和后台扫描共用一个 OCR 实例
+        # 3D 画面里的字（头顶名字、气泡）在哪：身体给（无障碍节点 / 感知层的名字标签），通用兜底扫描时去掉落在里面的 OCR 行。
+        # 11-02 真机：头顶名字「懒洋洋大王」+ OCR 从图形里读出的两个乱码凑成了「不认识的面板」，大脑一关就点了屏幕
+        self.world_text: Callable[[], list[Rect]] = lambda: []
+
+    def _world_boxes(self) -> list[Rect]:
+        try:
+            return list(self.world_text())
+        except Exception:  # noqa: BLE001 拿不到就当没有，照旧扫
+            log.debug("取头顶文字的位置出错", exc_info=True)
+            return []
 
     # ---- 身体线程 ----
     def observe(self, frame: np.ndarray, now: float) -> PanelState:
@@ -464,7 +474,7 @@ class PanelWatcher:
         """单帧判断这个面板还在不在（不去抖；PanelOps 关面板、按按钮后确认用）。靠文字认的面板要同步 OCR 一次。"""
         card = self.cards.get(panel.name)
         if panel.name == UNKNOWN or (card is not None and card.texts):
-            return looks_like_panel(self._ocr_lines(frame, panel.box, self._chat_box()), self.cfg)
+            return looks_like_panel(self._ocr_lines(frame, panel.box, self._chat_box(), self._world_boxes()), self.cfg)
         if card is None or not card.quick:
             return False
         return all(check_feature(frame, f, self.builtins)[0] for f in card.quick)
@@ -571,14 +581,14 @@ class PanelWatcher:
         small = thumb(frame)
         if self._future is None and self._should_scan(frame, small, now):
             self._last_scan = now
-            chat = self._chat_box()
+            chat, skip = self._chat_box(), self._world_boxes()
             if self.background:
                 if self._executor is None:
                     self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="panels")
-                self._future = self._executor.submit(self._scan, frame.copy(), now, chat)
+                self._future = self._executor.submit(self._scan, frame.copy(), now, chat, skip)
                 self._future_thumb, self._future_gen = small, self._gen
             else:
-                self._apply(self._scan(frame, now, chat), small, now)
+                self._apply(self._scan(frame, now, chat, skip), small, now)
         clean = not any(p.name != CHAT for p in self._open.values()) and self._found is None
         if clean and (self._clean is None or difference(self._clean, small) < self.cfg.change):
             self._clean = small
@@ -601,8 +611,8 @@ class PanelWatcher:
         chat = self._open.get(CHAT)
         return chat.box if chat is not None else None
 
-    def _ocr_lines(self, frame: np.ndarray, area: Rect, chat: Rect | None) -> list[OcrLine]:
-        """OCR 一块区域，坐标换回整张图，去掉空行和落在聊天记录面板里的行。"""
+    def _ocr_lines(self, frame: np.ndarray, area: Rect, chat: Rect | None, skip: Sequence[Rect] = ()) -> list[OcrLine]:
+        """OCR 一块区域，坐标换回整张图，去掉空行、落在聊天记录面板里的行和落在 skip（头顶名字、气泡）里的行。"""
         with self._ocr_lock:
             found = self.ocr.recognize(area.crop(frame))
         lines = [
@@ -610,13 +620,13 @@ class PanelWatcher:
             for ln in found
             if ln.text.strip()
         ]
-        return [ln for ln in lines if chat is None or not _inside(ln.box, chat)]
+        return [ln for ln in lines if (chat is None or not _inside(ln.box, chat)) and not any(_inside(ln.box, r) for r in skip)]
 
-    def _scan(self, frame: np.ndarray, now: float, chat: Rect | None = None):
+    def _scan(self, frame: np.ndarray, now: float, chat: Rect | None = None, skip: Sequence[Rect] = ()):
         """OCR 屏幕中部，认出面板返回 (Panel, PanelReading, 面板区域缩略图)，没有返回 None，出错返回 _FAILED。"""
         try:
             height, width = frame.shape[:2]
-            lines = self._ocr_lines(frame, roi_rect(self.cfg.unknown_roi, width, height), chat)
+            lines = self._ocr_lines(frame, roi_rect(self.cfg.unknown_roi, width, height), chat, skip)
             if not looks_like_panel(lines, self.cfg):
                 return None
             pad = round(self.cfg.unknown_pad * width)
@@ -656,5 +666,8 @@ class PanelWatcher:
             if self._found is not None:
                 self._emit("close", self._found)
             self._emit("open", panel, reading)
+            if panel.name == UNKNOWN:  # 误报时好查：OCR 读到了什么、按钮在哪
+                log.info("通用兜底认出不认识的面板 %s：标题「%s」正文「%s」按钮 %s", panel.box, reading.title,
+                         reading.text.replace(chr(10), " / "), [(b.text, b.kind, b.box) for b in reading.buttons])
         self._found, self._found_thumb, self._confirmed_at = panel, box_thumb, now
         self.readings[panel.name] = reading

@@ -463,3 +463,18 @@ def test_panel_press_uses_fresh_button_box(clock):
     panels.readings[UNKNOWN] = replace(DIALOG_READING, buttons=(moved, JOIN, OK))
     b.panel_press("取消")
     assert ops.last is moved
+
+
+def test_panels_get_world_text_from_reader_and_env(clock):
+    """通用兜底认面板时去掉头顶名字 / 气泡（11-02 真机：名字标签 + 乱码凑成不认识的面板）：无障碍的框 + 感知层 2 秒内的名字标签。"""
+    env = FakeEnv()
+    b, panels, _, reader, _ = setup(clock, env=env)
+    reader.world_boxes = lambda: [Rect(10, 10, 50, 20)]
+    env.labels = {"小明": (100, 200, 80, 30, clock()), "小红": (300, 200, 80, 30, clock() - 10)}
+    boxes = panels.world_text()
+    assert Rect(10, 10, 50, 20) in boxes and Rect(100, 200, 80, 30) in boxes and len(boxes) == 2
+
+
+def test_world_text_without_reader_support(clock):  # OCR 读聊天：reader 没有 world_boxes，只用感知层的
+    _, panels, _, _, _ = setup(clock)
+    assert panels.world_text() == []

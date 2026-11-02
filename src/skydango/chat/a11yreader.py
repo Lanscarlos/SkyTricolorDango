@@ -139,6 +139,10 @@ class A11yChatReader:
         """最近一次 `read()` 看得见的好友名字标签（名单外的、贴在屏幕边上的不算）。"""
         return list(dict.fromkeys(t.name for t in _in_view(self._view)))
 
+    def world_boxes(self) -> list[Rect]:
+        """最近一次 `read()` 里 3D 画面上的字（所有头顶名字、气泡）的框：面板识别的通用兜底不把它们当面板上的字。"""
+        return [_rect(t.box) for t in self._view.tags] + [_rect(b.box) for b in self._view.bubbles]
+
     def typing(self) -> list[str]:
         """最近一次 `read()` 里正在打字的好友：头上有只有点点的气泡，或者某句后面挂上了点点。"""
         return list(self._typing)
@@ -620,6 +624,9 @@ class FallbackReader:
     # ---- 给面板管理器（OCR 模式 / 不健康时没有）----
     def tags_in_view(self) -> list[str]:
         return self.a11y.tags_in_view() if self._ok else []
+
+    def world_boxes(self) -> list:
+        return self.a11y.world_boxes() if self._ok else []
 
     def typing(self) -> list[str]:
         return self.a11y.typing() if self._ok else []
