@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import threading
@@ -14,18 +15,36 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 from ..models.errors import ModelError
-from ..models.openai_compat import classify
+from ..models.openai_compat import classify, to_openai_content
 from .compact import COMPACT_SYSTEM, RECAP_ACK, InboxWatch, clean_recap, compact_request, inbox_note, recap_message, until_of, wake_stamp
 
 log = logging.getLogger(__name__)
 
-BLIND_NOTE = """你看不到画面：判断靠消息里的状态、聊天记录、身边人名地名（身体 OCR / YOLO 认的）和眼睛写的场景描述。
-看图的工具（look(image=true)、look_at、look_person、check_friend、panel_read(image=true)）会请眼睛代看，返回文字；想看清什么写在 question 里。
-- 前面几条消息是你最近几轮收到的和做了的：别重复你刚说过的话（意思一样也不行），接着上一句聊
+_HABITS = """- 前面几条消息是你最近几轮收到的和做了的：别重复你刚说过的话（意思一样也不行），接着上一句聊
 - recall 查不到就说记不清，别顺着别人的话编
 - 嘴上说要做动作（点头、鞠躬……）就真的调 emote，没调就别这么说
 - 单字、语气词（嗯、哦、哈）不用每句都接"""
+
+BLIND_NOTE = """你看不到画面：判断靠消息里的状态、聊天记录、身边人名地名（身体 OCR / YOLO 认的）和眼睛写的场景描述。
+看图的工具（look(image=true)、look_at、look_person、check_friend、panel_read(image=true)）会请眼睛代看，返回文字；想看清什么写在 question 里。
+""" + _HABITS
+
+# 大脑能看图时（[brain.vision]，spec 2026-11-02-brain-vision-design §5）：图是身体挑时机附的，也可以自己调看图的工具
+SIGHTED_NOTE = """你有时会收到当前画面的截图，图上画了身体认出的框和编号，图例写着它认的是谁。
+状态和图例是身体认的，可能错：跟截图对不上时以截图为准（名字以头顶亮着的名字标签为准），在最后的文字里写一行“核对：…”说哪里对不上；认不出的别硬认，可以问。
+看图的工具（look(image=true)、look_at、look_person、check_friend、panel_read(image=true)）的截图会放在紧跟着的下一条消息里。
+""" + _HABITS
+
+TOOL_IMAGE_NOTE = "截图在下一条消息里。"  # 看图工具的 tool 消息（OpenAI 的 tool 消息只收文字）
+IMAGE_HOLDER = "（这时附了一张截图）"  # 历史里唤醒消息的图换成它
+TOOL_IMAGE_HOLDER = "（看了截图）"  # 历史里工具后面那条带图的 user 消息换成它
+VISION_OFF_NOTE = "（现在看不了图了，看图的工具会请眼睛代看）"  # 接口拒收图之后的第一轮开头
+NO_IMAGE = "（图发不过去）"  # 拒收重发时图的位置
+VISION_WORDS = ("image", "vision", "multimodal")  # 400 错误里提到这些才算接口不收图
 
 ASIDE_NOTE = "\n- 标着“跟别人说”的话默认不接"  # [addressee] 开着时接在 BLIND_NOTE 后面（10-03 晚它的说听比 0.9~1.15，比 Claude 更爱接）
 
@@ -44,6 +63,9 @@ def _replay(turn: list[dict], seq: int) -> list[dict]:
     ids: dict[str, str] = {}
     out: list[dict] = []
     for m in turn:
+        if m["role"] == "user":  # 看图工具后面那条带图的 user 消息：历史里不留图
+            out.append({"role": "user", "content": TOOL_IMAGE_HOLDER})
+            continue
         if m["role"] == "tool":
             content = m["content"] if len(m["content"]) <= HISTORY_TOOL else m["content"][:HISTORY_TOOL] + "……"
             out.append({"role": "tool", "tool_call_id": ids[m["tool_call_id"]], "content": content})
@@ -60,6 +82,27 @@ def _replay(turn: list[dict], seq: int) -> list[dict]:
     if not out:  # 什么都没说、没调：也留一条 assistant，别让两条 user 挨着（deepseek-reasoner 不收）
         out.append({"role": "assistant", "content": SILENT})
     return out
+
+
+def _has_images(messages: list[dict]) -> bool:
+    return any(isinstance(m.get("content"), list) and any(p.get("type") == "image_url" for p in m["content"]) for m in messages)
+
+
+def _strip_images(messages: list[dict]) -> None:
+    """接口拒收图时：请求里所有图换成一行文字（原地改）。"""
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            m["content"] = "\n".join(NO_IMAGE if p.get("type") == "image_url" else str(p.get("text") or "") for p in c)
+
+
+def _dims(block: dict) -> dict:
+    """图片块的宽高（给 brain.jsonl 的 images）；解不开记 0。"""
+    try:
+        img = cv2.imdecode(np.frombuffer(base64.b64decode(block["source"]["data"]), np.uint8), cv2.IMREAD_COLOR)
+        return {"w": int(img.shape[1]), "h": int(img.shape[0])}
+    except Exception:  # noqa: BLE001 假数据 / 坏图
+        return {"w": 0, "h": 0}
 
 
 def _size(messages: list[dict]) -> int:
@@ -128,6 +171,8 @@ class ToolLoopBrain:
         self._done: dict | None = None  # 压缩线程放结果的槽，下一次 send 开头换上
         self._pending = False  # 起了压缩、结果还没换上
         self._retry_at = float("-inf")  # 压缩失败后到这个时候（clock）才再试
+        self.vision_off = ""  # 接口拒收过图：原因（≤ 80 字）；非空 = 这次运行不再带图、看图的工具走代看
+        self._off_told = True  # 拒收之后的第一轮开头要提醒一次（拒收时置 False）
 
     def close(self) -> None:
         """同 BrainSession.close：没有常驻进程，什么都不用关。"""
@@ -173,17 +218,28 @@ class ToolLoopBrain:
             return [{"role": "system", "content": self.system}, *self._recap_messages(), *self._history_messages(recent)]
         return self._append_messages()
 
-    def send(self, text: str) -> dict:
+    def send(self, text: str, image=None) -> dict:
+        """image：brain.vision.Attachment，唤醒消息附的编号截图（拒收过图之后忽略）；历史里它换成一行占位。"""
         if self.compact is not None:
             self._take()
+        if self.vision_off:
+            image = None
+            if not self._off_told:
+                self._off_told = True
+                text = f"{VISION_OFF_NOTE}\n{text}"
         mode = "sliding" if self.sliding else "append"
         if self._inbox is not None:
             note = inbox_note(self._inbox.fresh())
             if note:  # 接在事件后面、「状态：」前面：历史里唤醒消息截到 HISTORY_TEXT 字，接在最末尾会被截掉
                 head, sep, tail = text.partition("\n状态：")
                 text = f"{head}\n\n{note}{sep}{tail}" if sep else f"{text}\n\n{note}"
-        messages: list[dict] = [*self._prefix(), {"role": "user", "content": text}]
+        if image is None:
+            wake: str | list[dict] = text
+        else:
+            wake = to_openai_content([{"type": "text", "text": text}, {"type": "text", "text": image.legend}, image.block])
+        messages: list[dict] = [*self._prefix(), {"role": "user", "content": wake}]
         start = len(messages)
+        shots: list[dict] = [{"src": image.src, "w": image.w, "h": image.h}] if image is not None else []
         deadline = self.clock() + self.turn_timeout
         final = ""
         rounds = 0
@@ -194,11 +250,16 @@ class ToolLoopBrain:
             if self.clock() >= deadline:
                 raise ModelError("超时", provider=self.provider)
             try:
-                resp = self.client.chat.completions.create(
-                    model=self.model, messages=messages, tools=self.tools,
-                    temperature=self.temperature, max_tokens=self.max_tokens,
-                )
+                resp = self._create(messages)
             except Exception as exc:  # noqa: BLE001 SDK 的各种错误一律包成 ModelError
+                if self._rejects_images(exc, messages):  # 接口不收图：去掉图重发这一次（不算轮数），之后走代看
+                    self.vision_off = " ".join(str(exc).split())[:80]
+                    self._off_told = False
+                    log.warning("%s 不收图，这次运行改走代看：%s", self.provider, self.vision_off)
+                    shots.clear()
+                    image = None
+                    _strip_images(messages)
+                    continue
                 raise ModelError(f"{self.provider} 出错：{exc}", down=classify(exc), provider=self.provider) from None
             requests += 1
             u = getattr(resp, "usage", None)  # 取不到就不累加；有一次取到就给 dict
@@ -229,6 +290,7 @@ class ToolLoopBrain:
             rounds += 1
             if content.strip() and self.on_message is not None:  # 工具调用前的中间文字：时间线上也要看到
                 self.on_message({"type": "assistant", "message": {"content": [{"type": "text", "text": content}]}})
+            pending: list[tuple[str, dict]] = []  # 这一步里看图工具返回的图 (工具名, 图片块)，所有 tool 消息之后合成一条 user 消息
             for tc in tool_calls:
                 name = tc.function.name
                 try:
@@ -245,13 +307,27 @@ class ToolLoopBrain:
                     out, is_error = "工具参数不是合法 JSON", True
                 else:
                     out, is_error = self.toolbox.run(name, args)
-                if not isinstance(out, str):
+                if isinstance(out, list):  # 看图工具的内容块：文字留在 tool 消息里，图放到后面的 user 消息
+                    blocks = [b for b in out if isinstance(b, dict) and b.get("type") == "image"]
+                    texts = "\n".join(str(b.get("text") or "") for b in out if isinstance(b, dict) and b.get("type") == "text")
+                    pending += [(name, b) for b in blocks]
+                    out = f"{TOOL_IMAGE_NOTE}\n{texts}".rstrip() if blocks else texts
+                elif not isinstance(out, str):
                     out = json.dumps(out, ensure_ascii=False)
                 if self.on_message is not None:
                     self.on_message({"type": "user", "message": {"content": [
                         {"type": "tool_result", "tool_use_id": tc.id, "content": out, "is_error": is_error}
                     ]}})
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+            if pending:  # OpenAI 的 tool 消息放不了图：紧跟着接一条 user 消息，按调用顺序放（探针：接口照收，模型照常调工具）
+                parts: list[dict] = []
+                for name, block in pending:
+                    parts += [{"type": "text", "text": f"（{name} 的截图）"}, block]
+                    shots.append({"src": name, **_dims(block)})
+                messages.append({"role": "user", "content": to_openai_content(parts)})
+        if image is not None:  # 历史里唤醒消息的图换成占位，图例留着（插在「状态：」前面，免得被截掉）
+            head, sep, tail = text.partition("\n状态：")
+            text = f"{head}\n{image.legend}\n{IMAGE_HOLDER}{sep}{tail}"
         if self.compact is not None:
             self._seq += 1
             self._past.append((text, _replay(messages[start:], self._seq)))
@@ -263,7 +339,23 @@ class ToolLoopBrain:
                   "provider": self.provider, "model": self.model}
         if self.compact is not None:
             result.update(history_mode=mode, recap=self.compactions)
+        if shots:
+            result["images"] = shots
         return result
+
+    def _create(self, messages: list[dict]):
+        return self.client.chat.completions.create(
+            model=self.model, messages=messages, tools=self.tools,
+            temperature=self.temperature, max_tokens=self.max_tokens,
+        )
+
+    @staticmethod
+    def _rejects_images(exc: BaseException, messages: list[dict]) -> bool:
+        """带图的请求被 400 打回、错误里提到 image / vision / multimodal：接口不收图。"""
+        if getattr(exc, "status_code", None) != 400 or not _has_images(messages):
+            return False
+        text = str(exc).lower()
+        return any(w in text for w in VISION_WORDS)
 
     # ---- 压缩（spec 2026-10-06-brain-compact §2 §4）：起、跑、换上都在这里；状态只在大脑线程里改 ----
     def _after(self, messages: list[dict], prompt_tokens: int | None) -> None:
