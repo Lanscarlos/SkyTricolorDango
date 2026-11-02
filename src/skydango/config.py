@@ -735,6 +735,17 @@ class CompactConfig:
 
 
 @dataclass
+class VisionConfig:
+    """大脑直接看图（docs/superpowers/specs/2026-11-02-brain-vision-design.md）：OpenAI 兼容的大脑能看图时，工具返回的图直接给它，
+    唤醒消息挑时机附一张画了编号框的截图。enabled = false 逐字照旧（代看、不自动附图）。"""
+
+    enabled: bool = True
+    auto: bool = True  # 唤醒消息自动附图；关掉只剩工具返回的图直接给
+    min_gap: float = 20.0  # 两张自动附图之间至少隔多少秒
+    size: list[int] = field(default_factory=lambda: [960, 540])  # 编号图的尺寸（宽, 高）
+
+
+@dataclass
 class BrainConfig:
     """统管大脑（brain/）：常驻的 Claude Code（订阅）收事件、调身体的工具；眼睛（Haiku）把画面写成文字。`run --brain` 打开。
 
@@ -775,6 +786,7 @@ class BrainConfig:
     owner_window: float = 30.0  # 收到一条 # 开头的命令后，放宽 move/emote/camera 限制多少秒
     history: int = 8  # OpenAI 兼容的大脑带最近几轮（它每轮重发、不是常驻会话；不带就不记得刚说过什么，10-03 晚重复说）；0 = 不带
     compact: CompactConfig = field(default_factory=CompactConfig)  # [brain.compact]：开着时 history 只在压缩失败的滑动模式里用
+    vision: VisionConfig = field(default_factory=VisionConfig)  # [brain.vision]：大脑直接看图
 
 
 @dataclass

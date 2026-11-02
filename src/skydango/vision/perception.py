@@ -2684,6 +2684,10 @@ class PerceptionWatcher:
         return self.ring_icons.classify(region)[0]
 
     # ---- 可视化（vision/viewer.py） ----
+    def overlay_fresh(self, now: float) -> bool:
+        """overlay 画的是不是新鲜的一帧（没暂停、最近一帧没超过 PEOPLE_STALE）：大脑看图时据此决定画不画框。"""
+        return not self.paused and now - self._frame_at <= PEOPLE_STALE
+
     def overlay(self, now: float) -> list[dict]:
         """最近一帧认出了什么：每个框一条 {x, y, w, h, kind, label}（整张截图坐标）。"""
         out = []
