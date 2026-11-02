@@ -429,3 +429,14 @@ def test_track_with_physical_dango_cue_is_not_timed_out_as_stranger():  # 11-02 
         out = b.step(frame(t, tr(1, 960, scores=sc(me=0.95)), tr(2, 1400, first=0.3)))
     assert out.verdicts[2].kind == STRANGER
 
+
+
+def test_challenger_keeps_timer_across_same_body_ids():  # 20:28 真机：真团子的框在 155 / 159 两条轨迹之间来回换
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 960, self_score=0.9, scores=sc(me=0.9))))
+    for i in range(1, 30):  # 编号串了：1 号被长得像的人占着、走到 700；真团子还在原地，编号 2 / 3 隔帧轮换，有 self 框
+        t = round(0.2 + i * 0.1, 2)
+        out = b.step(frame(t, tr(1, max(700, 960 - 40 * i), scores=sc(me=0.9)),
+                           tr(2 if i % 2 else 3, 980, first=0.3, self_score=0.85)))
+    assert b.dango_id in (2, 3)

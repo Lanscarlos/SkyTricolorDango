@@ -118,6 +118,7 @@ class IdentityBoard:
         self._previous: dict[str, int] = {}
         self._spots: dict[bool, Rect] = {}
         self._challenger: tuple[int, float] | None = None
+        self._challenger_box: Rect | None = None
         self._weak_since: float | None = None
 
     @staticmethod
@@ -375,6 +376,11 @@ class IdentityBoard:
                 self.dango_id = twin[1]
                 current = self._evidence[twin[1]]
                 self._challenger = self._weak_since = None
+        if self._challenger and self._challenger[0] not in by_id and self._challenger_box is not None:
+            # 挑战者换了编号（同一个身体 player / self 交替）：计时跟着身体走，不从头算（20:28 真机 155 / 159）
+            twin = max(((iou(by_id[i].box, self._challenger_box), i) for i in free if i != self.dango_id), default=None)
+            if twin and twin[0] >= SAME_BODY:
+                self._challenger = (twin[1], self._challenger[1])
         if not frame.sliding:
             if self.dango_id is not None:
                 if current.smooth is not None and current.smooth < self.cfg.dango_min:
@@ -389,8 +395,11 @@ class IdentityBoard:
                 self.dango_id = best[1] if best else None
                 self._challenger = None
             elif best and best[1] != self.dango_id and best[0] > (current.smooth or 0.0):
-                if self._challenger is None or self._challenger[0] != best[1]:
+                if self._challenger is None or (self._challenger[0] != best[1] and not (
+                        self._challenger_box is not None and iou(by_id[best[1]].box, self._challenger_box) >= SAME_BODY)):
                     self._challenger = (best[1], frame.now)
+                elif self._challenger[0] != best[1]:
+                    self._challenger = (best[1], self._challenger[1])  # 同一个身体换了编号：接着计时
                 elif frame.now - self._challenger[1] >= self.cfg.dango_switch:
                     self.dango_id = best[1]
                     self._challenger = None
@@ -409,3 +418,5 @@ class IdentityBoard:
                 self._spots[frame.panel] = t.box
         for t in frame.tracks:  # 交接看的是上一次的框，用完再记
             self._evidence[t.id].box = t.box
+        self._challenger_box = by_id[self._challenger[0]].box if self._challenger and self._challenger[0] in by_id else (
+            self._challenger_box if self._challenger else None)
