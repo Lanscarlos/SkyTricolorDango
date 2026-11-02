@@ -230,7 +230,7 @@ dir = "private/sandbox"
 | `icons/` | 认交互图标时认不出 / 低分的图标裁图 + `icons.jsonl`（`[icons] save`，每条轨迹 2 秒一张、每次最多 200 张）；难例原因 `icon_unknown` |
 | `appearance/` | 认装扮攒的训练数据：`crops/<身份>/*.jpg`（好友名，或 `t<轨迹>`）+ `appearance.jsonl`（`[appearance] save`，每条轨迹 2 秒一张、每次最多 2000 张） |
 | `../usage.json` | `runs/` 根目录（不随运行目录轮换）：模型用量今天累计的账本，最近 7 天（见「模型供应商」的用量和额度） |
-| `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有大脑模式，`--no-brain` 没有）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md）；OpenAI 兼容的大脑多 `history_mode`（append / sliding）和 `recap`（压过几次）；`brain/recap.jsonl` 是它的历史压缩：每次换上 / 失败一行（第几次、压掉几轮、字数、用时、用量、前情提要全文） |
+| `brain.jsonl` | 大脑每一轮：subtype、轮数、用量、total_cost_usd（订阅不按它收费，参考）、用了哪些工具、最后说了什么（只有大脑模式，`--no-brain` 没有）；`brain/` 下是 Claude Code 的工作目录（mcp.json、prompt.md）；OpenAI 兼容的大脑多 `history_mode`（append / sliding）和 `recap`（压过几次）；`brain/recap.jsonl` 是它的历史压缩：每次换上 / 失败一行（第几次、压掉几轮、字数、用时、用量、前情提要全文）；大脑能直接看图时 `brain/images/` 存附给它的每张图（`<时分秒>-<序号>-<auto|工具名>.jpg` + 同名 `.txt`：图例和唤醒消息 / 工具参数和结果，每次最多 2000 张），文件名记在 `brain.jsonl` 的 `images[].file`，对着那一轮的「核对」看它认错了什么 |
 
 ## 聊天面板（`[panel]`，`chat/panel.py`）
 
@@ -598,7 +598,9 @@ dir = "private/sandbox"
   - 唤醒消息挑时机自动附一张编号图（`AutoVision`，在身体线程里取）：取走了 `chat` / `arrive` / `approach` / `notice` / `lull`，或感知层拿不准（「像谁 / 可能是谁」、认不出的图标），离上次自动附图 ≥ `min_gap`（20 秒），画面不黑、有截图；只有背景事件、心跳不附。感知层结果超过 1 秒没更新只给图不画框
   - **历史不留图**：存进 `_past` 时唤醒消息的图换成「（这时附了一张截图）」（图例留着）、工具后面那条 user 消息换成「（看了截图）」；压缩沿用原样的消息
   - **接口拒收**（400 且错误里有 image / vision / multimodal）：`vision_off = 原因`，这一轮去掉图重发一次（不算轮数）、之后走代看、下一轮开头提醒一次「现在看不了图了」，status「模型：」写「大脑看不了图：…」
-  - 系统提示词按能不能看图选 `SIGHTED_NOTE` / `BLIND_NOTE`（沙盒 `text_only` 永远是后者）；对不上时以截图为准，在最后的文字里写一行「核对：…」→ 日志 INFO 一行 + `brain.jsonl` 的 `check`；`brain.jsonl` 每轮多 `images`（`[{src, w, h}]`，没附就没有这个键）
+  - 系统提示词按能不能看图选 `SIGHTED_NOTE` / `BLIND_NOTE`（沙盒 `text_only` 永远是后者）；对不上时以截图为准，在最后的文字里写一行「核对：…」→ 日志 INFO 一行 + `brain.jsonl` 的 `check`；`brain.jsonl` 每轮多 `images`（`[{src, w, h, file}]`，没附就没有这个键；图存在 `runs/<…>/brain/images/`，见「运行目录」，11-02 加）
+  - **能看图时 `look` 一律给编号图**（11-02，真机 10 次 look 8 次没带图、凭眼睛的文字猜自己进没进水）：`look` 没有 `image` 参数、说明换成「拍一张现在的画面」（`tools.SIGHTED_DESCRIPTIONS`）；看图工具不给 `question`（那是代看时问眼睛的，图直接给大脑时没人回答它）；拒收之后走代看也不带 question，眼睛照常描述。Claude 大脑的 MCP 签名没改，模型能看图时 `look` 同样一律给图
+  - `look_at` / `check_friend` 的坐标按最近一次 `look` 那张图的宽度换算（`Body.look_view_w`：编号图 960、原图 1280；11-02 前一律按 1280，编号图上指的位置裁偏 4/3 倍）
   - 大脑控制台：轮头标「附图·自动 / 附图·look」，点开看缩略图（`BrainTrace` 只在内存里留最近 20 张），「核对」行高亮；管理面板设置页有 `brain.vision.enabled` / `auto`
   - `enabled = false` 逐字照旧（`tests/data/toolloop_baseline.json` 照样过）；Claude 大脑不收自动图。成本：960×540 一张约 300 token（探针），真机每次请求约 6.3 万输入 token，一张约多 0.5%；先不设每小时上限，跑一晚看 `images` 和用量再定。
     配置类叫 `BrainVisionConfig`（`config.VisionConfig` 已经是读聊天的 `[vision]`）

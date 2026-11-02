@@ -58,13 +58,16 @@ def _function(name: str, description: str, params: list[tuple[str, str, object]]
     }
 
 
-def openai_tools(toolbox) -> list[dict]:
-    """OpenAI 兼容大脑的工具 schema：工具全给，会返回图的几个多一个 question（眼睛代看时问什么）。"""
+def openai_tools(toolbox, sighted: bool = False) -> list[dict]:
+    """OpenAI 兼容大脑的工具 schema：工具全给，会返回图的几个多一个 question（眼睛代看时问什么）。
+    sighted：大脑能直接看图（[brain.vision]）：图不交给眼睛，question 没人回答，不给（11-02 真机：问了「我脚下是什么」没人答）；
+    look 一律给图，去掉 image 参数，说明换成 SIGHTED_DESCRIPTIONS。"""
     sweep = hasattr(toolbox.body.env, "sweep")
-    desc = descriptions(sweep)
+    desc = descriptions(sweep, sighted)
     tools = []
     for name in desc:  # descriptions() 的顺序就是注册顺序
-        params = PARAMETERS[name] + ([QUESTION] if name in QUESTION_TOOLS else [])
+        params = [] if sighted and name == "look" else PARAMETERS[name]
+        params = params + ([QUESTION] if not sighted and name in QUESTION_TOOLS else [])
         text = desc[name]
         if name == "say" and getattr(toolbox, "jab", False):  # [pacing] manner：大脑自己标这句贱不贱
             params = params + [("jab", "boolean", False)]

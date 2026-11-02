@@ -120,13 +120,21 @@ def test_tools_track_passes_args():
     assert err and "name" in out
 
 
-def test_look_uses_eyes_unless_image_requested():
+def test_look_uses_eyes_unless_image_requested():  # 大脑看不了图时
     eyes = FakeEyes()
-    tb = ToolBox(FakeBody(), eyes)
+    tb = ToolBox(FakeBody(), eyes, sees=lambda: False)
     assert tb.run("look", {}) == ("描述帧", False)
     assert tb.run("look", {"image": True}) == ([{"type": "image"}], False)
     eyes.latest, eyes.last_look = ("旧", 99.0), 99.0
     assert tb.run("look", {}) == ("旧描述", False)  # 5 秒内刚看过：给缓存，不再花一次
+
+
+def test_look_always_image_when_brain_sees():
+    """大脑能直接看图：look 不再让眼睛写文字，一律给图（11-02 真机：10 次 look 8 次没带图，凭眼睛的文字猜自己进没进水）。"""
+    eyes = FakeEyes()
+    tb = ToolBox(FakeBody(), eyes, sees=lambda: True)
+    assert tb.run("look", {}) == ([{"type": "image"}], False)
+    assert tb.run("look", {"image": False}) == ([{"type": "image"}], False)
 
 
 def test_look_around_gets_longer_timeout():

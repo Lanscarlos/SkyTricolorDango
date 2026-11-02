@@ -187,3 +187,33 @@ def test_make_session_picks_sighted_note(tmp_path):
     off.vision.enabled = False
     assert build(off).system.endswith(BLIND_NOTE)
     assert build(BrainConfig(), text_only=True).system.endswith(BLIND_NOTE)
+
+
+def test_shots_saved_with_legend_and_named_in_images(tmp_path):
+    rec = Recorder([reply(None, [call("look", '{"image": true}')]), reply("核对：①是小明")])
+    brain = make(rec, toolbox({"look": look_result("图例 ①你自己")}), shots_dir=tmp_path / "images", wall=lambda: 1793628000.0)
+    a = att()
+    r = brain.send("[t] 事件：\n- 小明：在吗\n状态：身边 小明", image=a)
+    files = [s["file"] for s in r["images"]]
+    assert [s["src"] for s in r["images"]] == ["auto", "look"] and len(set(files)) == 2
+    for s in r["images"]:
+        jpg = tmp_path / "images" / s["file"]
+        assert jpg.suffix == ".jpg" and jpg.read_bytes()[:2] == b"\xff\xd8"
+    auto_txt = (tmp_path / "images" / files[0]).with_suffix(".txt").read_text(encoding="utf-8")
+    assert a.legend in auto_txt and "小明：在吗" in auto_txt  # 图例 + 唤醒消息
+    look_txt = (tmp_path / "images" / files[1]).with_suffix(".txt").read_text(encoding="utf-8")
+    assert "look" in look_txt and '"image": true' in look_txt and "图例 ①你自己" in look_txt
+
+
+def test_shots_not_saved_without_dir():
+    rec = Recorder([reply("好")])
+    r = make(rec).send("醒来", image=att())
+    assert r["images"] == [{"src": "auto", "w": 960, "h": 540}]
+
+
+def test_shots_stop_at_max(tmp_path):
+    rec = Recorder([reply("好")] * 3)
+    brain = make(rec, shots_dir=tmp_path, shots_max=2)
+    got = [brain.send("醒来", image=att())["images"][0] for _ in range(3)]
+    assert ["file" in g for g in got] == [True, True, False]
+    assert len(list(tmp_path.glob("*.jpg"))) == 2

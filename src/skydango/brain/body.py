@@ -251,6 +251,7 @@ class Body:
         self.last_frame = None
         self.last_look = float("-inf")
         self.look_frame = None  # 最近一次 look（原图）看的那张，look_at 裁它
+        self.look_view_w = 0  # 最近一次 look 给大脑的那张图多宽（编号图 960、原图 1280）：look_at / check_friend 的坐标按它换算；0 = 按 image_size
         self.blackout = False
         self.enroll_note = ""  # 启动登记团子的结果（status 里写一行；空 = 没做 / 不适用）
         self.holding: str | None = None  # 推测正牵着谁的手
@@ -1638,9 +1639,11 @@ class Body:
         if marked and hasattr(self.env, "overlay_fresh"):
             boxes = self.env.overlay(now) if self.env.overlay_fresh(now) else None  # 感知层结果过时：只给图、不画框
             att = mark_frame(frame, boxes, tuple(brain.vision.size), brain.jpeg_quality, src="look")
+            self.look_view_w = att.w
             legend = att.legend + ("\n画面现在是黑的（可能在切场景）" if self.blackout else "")
             return [{"type": "text", "text": legend}, att.block]
         view = fit(frame, tuple(brain.image_size))
+        self.look_view_w = view.shape[1]
         scale = view.shape[1] / frame.shape[1]
         if hasattr(self.env, "strangers"):  # YOLO 感知层：好友、陌生人、团子的位置都给
             note = scene_note(self.env, now, scale)
@@ -1653,12 +1656,16 @@ class Body:
             note += "\n画面现在是黑的（可能在切场景）"
         return [image_block(view, brain.jpeg_quality), {"type": "text", "text": note}]
 
+    def _look_width(self) -> int:
+        """look_at / check_friend 的坐标按哪个宽度换算：最近一次 look 给的那张图（编号图 960 宽、原图 1280 宽）。"""
+        return self.look_view_w or self.cfg.brain.image_size[0]
+
     def look_at(self, x: int, y: int, w: int, h: int) -> list[dict]:
         brain = self.cfg.brain
         # 大脑给的坐标是按上次 look 那张图算的；人会走动，裁新截的图会对不上
         frame = self.look_frame if self.look_frame is not None else self.device.screenshot()
         try:
-            crop, (ax, ay, aw, ah) = crop_view(frame, x, y, w, h, brain.image_size[0], brain.look_at_max)
+            crop, (ax, ay, aw, ah) = crop_view(frame, x, y, w, h, self._look_width(), brain.look_at_max)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
         text = f"原图 {frame.shape[1]}×{frame.shape[0]} 上的 ({ax}, {ay}) 起 {aw}×{ah}"
@@ -2447,10 +2454,10 @@ class Body:
         if self.look_frame is None or now - self.last_look > fc.max_look_age:
             raise ToolError(f"先 look(image=true) 看一眼现在的画面（{fc.max_look_age:.0f} 秒内），坐标按那张图给；人会走动，旧图对不上")
         fh, fw = self.look_frame.shape[:2]
-        scale = fw / self.cfg.brain.image_size[0]
+        scale = fw / self._look_width()
         sx, sy = round(x * scale), round(y * scale)
         if not (0 <= sx < fw and 0 <= sy < fh):
-            raise ToolError("坐标在画面外（按 look(image=true) 那张 1280×720 的图给）")
+            raise ToolError("坐标在画面外（按 look 那张图给）")
         return self.check_friend_at(sx, sy)
 
     def check_friend_at(self, sx: int, sy: int, live: bool = False) -> list[dict] | str:

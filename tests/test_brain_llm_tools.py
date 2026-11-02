@@ -21,6 +21,17 @@ def test_openai_tools_all_present_with_question():
     assert "question" not in _tool("say")["function"]["parameters"]["properties"]
 
 
+def test_sighted_tools_no_question_and_look_always_image():
+    """大脑能直接看图：图不走眼睛代看，question 没人回答，不给；look 一律给图，不要 image 参数。"""
+    tools = {t["function"]["name"]: t for t in openai_tools(fake_toolbox(), sighted=True)}
+    for name in ("look", "look_at", "look_person", "check_friend", "panel_read"):
+        assert "question" not in tools[name]["function"]["parameters"]["properties"]
+    assert tools["look"]["function"]["parameters"]["properties"] == {}
+    assert "眼睛" not in tools["look"]["function"]["description"] and "编号" in tools["look"]["function"]["description"]
+    assert "1280" not in tools["look_at"]["function"]["description"]
+    assert "image" in tools["panel_read"]["function"]["parameters"]["properties"]  # 面板细读默认给文字，照旧
+
+
 def test_backstage_and_call_flags_add_tools():
     tb = fake_toolbox(backstage=True, calling=True)
     names = [t["function"]["name"] for t in openai_tools(tb)]

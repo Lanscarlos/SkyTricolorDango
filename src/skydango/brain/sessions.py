@@ -32,9 +32,11 @@ def make_session(registry: Registry, ref: ModelRef, *, prompt: str, toolbox, mcp
     sighted = cfg.vision.enabled and not text_only and registry.sees(ref)
     return ToolLoopBrain(
         build_client(provider, max_retries=0, environ=registry.environ),
-        prompt + "\n\n" + (SIGHTED_NOTE if sighted else BLIND_NOTE) + (ASIDE_NOTE if addressee else ""), toolbox, openai_tools(toolbox),
+        prompt + "\n\n" + (SIGHTED_NOTE if sighted else BLIND_NOTE) + (ASIDE_NOTE if addressee else ""), toolbox,
+        openai_tools(toolbox, sighted=sighted),
         model=ref.model, temperature=use.temperature, max_tokens=use.max_tokens, max_steps=cfg.max_steps,
         turn_timeout=cfg.turn_timeout, on_message=on_message, history=cfg.history, provider=ref.provider,
         compact=cfg.compact if cfg.compact.enabled else None, inbox=inbox, meter=registry.meter, backup=backup,
         recap_path=Path(workdir) / "recap.jsonl", on_note=trace.note if trace is not None else None,
+        shots_dir=Path(workdir) / "images" if sighted else None,
     )

@@ -20,6 +20,7 @@ DESCRIPTIONS = {  # 顺序固定：MCP 工具列表按这个顺序注册
     "look": "看现在的画面。默认让眼睛马上看一眼，返回文字描述；image=true 时返回原图（1280×720）和认出的名字位置，"
             "只在文字不够用、要自己看细节时才要原图。",
     "look_at": "放大看局部原图：坐标按 look(image=true) 那张 1280×720 的图给（左上角 x、y，宽 w，高 h），裁的就是那一张。",
+    # SIGHTED_DESCRIPTIONS 里有同名的，大脑能直接看图时换成那一份
     "look_person": "看清某个人：身体按名字在画面里找到这个人，裁出来给你看原图。有人问你他的衣服、发型、装扮好不好看时先看再答，别编。"
                    "也可以写「陌生人A」这种状态里的陌生人编号。"
                    "和 look 共用频率限制；画面里没有这个人时会告诉你，可以先 look_around 找找。"
@@ -75,9 +76,25 @@ SWEEP_AROUND = "环顾四周：原地连续转一圈，身体认出每个方向�
 JAB_NOTE = "jab：这句算不算犯贱（损人、故意曲解装傻、甩锅、自恋嘴硬、明褒暗贬都算），照实标。"
 
 
-def descriptions(sweep: bool) -> dict[str, str]:
-    """工具说明；打开感知层（sweep=True）时 look_around 换成 YOLO 环绕扫描的说法。"""
-    return {**DESCRIPTIONS, "look_around": SWEEP_AROUND} if sweep else dict(DESCRIPTIONS)
+# 大脑能直接看图（[brain.vision]）时换掉的几条：look 一律给图、不经眼睛，坐标按最近一次 look 那张图
+SIGHTED_DESCRIPTIONS = {
+    "look": "拍一张现在的画面给你看：图上画着身体认出的人和东西的编号框，前面的图例写着它认的是谁（可能错，以图为准）。"
+            "走了几步、转了镜头、有人问你看到了什么、要判断自己在哪时用；自动附的图不够新就自己拍。",
+    "look_at": "放大看局部原图：坐标按最近一次 look 那张图给（左上角 x、y，宽 w，高 h），裁的就是那一张。",
+    "check_friend": (
+        "确认画面里某个人是不是你的好友：身体点一下这个人，右边会打开好友树面板，截图给你看，看完自动关掉。"
+        "x、y 是这个人身上的一点，按 15 秒内 look 那张图给。"
+        "只在名字标签认不出、又确实需要知道时用（点过火的陌生人和好友长得一样）；点屏幕会暂时关掉聊天记录面板，别常用。"
+    ),
+}
+
+
+def descriptions(sweep: bool, sighted: bool = False) -> dict[str, str]:
+    """工具说明；打开感知层（sweep=True）时 look_around 换成 YOLO 环绕扫描的说法；sighted 时换上 SIGHTED_DESCRIPTIONS。"""
+    out = {**DESCRIPTIONS, "look_around": SWEEP_AROUND} if sweep else dict(DESCRIPTIONS)
+    if sighted:
+        out.update({k: v for k, v in SIGHTED_DESCRIPTIONS.items() if k in out})
+    return out
 
 
 TOOL_NAMES = list(DESCRIPTIONS)
@@ -224,7 +241,8 @@ class ToolBox:
         if self.sandbox and name in SANDBOX_MISSING:
             raise ToolError(f"沙盒里没有这个：{SANDBOX_MISSING[name]}")
         if name == "look":
-            image = _bool(a, "image", False) and not self.text_only
+            # 大脑能直接看图：一律给图，不再让眼睛写文字（11-02 真机：10 次 look 8 次没带图，凭眼睛的文字猜自己进没进水）
+            image = (_bool(a, "image", False) or self.sees()) and not self.text_only
             if self.text_only and self.eyes is None:
                 raise ToolError("沙盒里没开眼睛")
             now = b.clock()

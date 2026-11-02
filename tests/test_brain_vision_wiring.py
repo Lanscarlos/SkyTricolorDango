@@ -43,6 +43,15 @@ def test_body_look_marked_without_perception_is_unchanged(clock):
     assert img["type"] == "image" and "名字" in note["text"]
 
 
+def test_look_at_uses_marked_image_width(clock):
+    """编号图是 960 宽：look_at 的坐标按它换算，不按 1280（11-02 前裁偏 4/3 倍）。"""
+    b, _, _, _ = body(clock, env=MarkedEnv())
+    b.look(marked=True)
+    fw = b.look_frame.shape[1]
+    out = b.look_at(480, 270, 96, 54)
+    assert f"({fw // 2}, " in out[1]["text"]
+
+
 class MarkBody(FakeBody):
     def look(self, marked=False):
         self.calls.append(("look", marked))

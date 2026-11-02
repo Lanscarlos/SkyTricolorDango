@@ -37,7 +37,7 @@ BLIND_NOTE = """你看不到画面：判断靠消息里的状态、聊天记录�
 # 大脑能看图时（[brain.vision]，spec 2026-11-02-brain-vision-design §5）：图是身体挑时机附的，也可以自己调看图的工具
 SIGHTED_NOTE = """你有时会收到当前画面的截图，图上画了身体认出的框和编号，图例写着它认的是谁。
 状态和图例是身体认的，可能错：跟截图对不上时以截图为准（名字以头顶亮着的名字标签为准），在最后的文字里写一行“核对：…”说哪里对不上；认不出的别硬认，可以问。
-看图的工具（look(image=true)、look_at、look_person、check_friend、panel_read(image=true)）的截图会放在紧跟着的下一条消息里。
+看图的工具（look、look_at、look_person、check_friend、panel_read(image=true)）的截图会放在紧跟着的下一条消息里。
 """ + _HABITS
 
 TOOL_IMAGE_NOTE = "截图在下一条消息里。"  # 看图工具的 tool 消息（OpenAI 的 tool 消息只收文字）
@@ -53,6 +53,7 @@ HISTORY_TEXT = 1500  # 历史里每轮的唤醒消息最多留这么多字（状
 SILENT = "（没说话）"  # 历史里一轮什么都没输出时的 assistant 占位
 HISTORY_TOOL = 200  # 历史里每个工具返回最多留这么多字
 HISTORY_CHARS = 12000  # 历史总共最多这么多字，超了从最老的丢
+SHOTS_MAX = 2000  # 一次运行最多存几张附图（960×540 一张约 50~100 KB）
 COMPACT_TEMPERATURE = 0.3  # 写前情提要要稳，不要发挥
 
 
@@ -146,6 +147,8 @@ class ToolLoopBrain:
         on_note: Callable[[str], None] | None = None,  # 大脑时间线上的「── 压缩：… ──」
         wall: Callable[[], float] = time.time,
         spawn: Callable[[Callable[[], None]], None] | None = None,  # 怎么跑压缩任务：默认起一个后台线程（测试注入）
+        shots_dir: Path | None = None,  # runs/<…>/brain/images：附给大脑的每张图存成 jpg + 同名 txt（图例 / 工具结果），None = 不存
+        shots_max: int = SHOTS_MAX,  # 一次运行最多存几张
     ) -> None:
         self.client = client
         self.system = system
@@ -184,6 +187,25 @@ class ToolLoopBrain:
         self._retry_at = float("-inf")  # 压缩失败后到这个时候（clock）才再试
         self.vision_off = ""  # 接口拒收过图：原因（≤ 80 字）；非空 = 这次运行不再带图、看图的工具走代看
         self._off_told = True  # 拒收之后的第一轮开头要提醒一次（拒收时置 False）
+        self.shots_dir = shots_dir
+        self.shots_max = shots_max
+        self._shots = 0  # 已经存了几张（含写失败的，免得一直重试）
+
+    def _save_shot(self, block: dict, src: str, note: str) -> str | None:
+        """把附给大脑的一张图存进 shots_dir，返回文件名（给 brain.jsonl 的 images）；没开 / 到上限 / 写失败是 None。"""
+        if self.shots_dir is None or self._shots >= self.shots_max:
+            return None
+        self._shots += 1
+        stamp = time.strftime("%H%M%S", time.localtime(self.wall()))
+        name = f"{stamp}-{self._shots:04d}-{src}.jpg"
+        try:
+            self.shots_dir.mkdir(parents=True, exist_ok=True)
+            (self.shots_dir / name).write_bytes(base64.b64decode(block["source"]["data"]))
+            (self.shots_dir / name).with_suffix(".txt").write_text(note, encoding="utf-8")
+        except Exception:  # noqa: BLE001 存图只是给事后看的，出错不影响这一轮
+            log.debug("存大脑附图出错", exc_info=True)
+            return None
+        return name
 
     def close(self) -> None:
         """同 BrainSession.close：没有常驻进程，什么都不用关。"""
@@ -250,7 +272,12 @@ class ToolLoopBrain:
             wake = to_openai_content([{"type": "text", "text": text}, {"type": "text", "text": image.legend}, image.block])
         messages: list[dict] = [*self._prefix(), {"role": "user", "content": wake}]
         start = len(messages)
-        shots: list[dict] = [{"src": image.src, "w": image.w, "h": image.h}] if image is not None else []
+        shots: list[dict] = []
+        if image is not None:
+            shots.append({"src": image.src, "w": image.w, "h": image.h})
+            saved = self._save_shot(image.block, image.src, f"{image.legend}\n\n--- 唤醒消息 ---\n{text}")
+            if saved:
+                shots[-1]["file"] = saved
         deadline = self.clock() + self.turn_timeout
         final = ""
         rounds = 0
@@ -301,7 +328,7 @@ class ToolLoopBrain:
             rounds += 1
             if content.strip() and self.on_message is not None:  # 工具调用前的中间文字：时间线上也要看到
                 self.on_message({"type": "assistant", "message": {"content": [{"type": "text", "text": content}]}})
-            pending: list[tuple[str, dict]] = []  # 这一步里看图工具返回的图 (工具名, 图片块)，所有 tool 消息之后合成一条 user 消息
+            pending: list[tuple[str, dict, str]] = []  # 这一步里看图工具返回的图 (工具名, 图片块, 存图时的说明)，所有 tool 消息之后合成一条 user 消息
             for tc in tool_calls:
                 name = tc.function.name
                 try:
@@ -321,7 +348,7 @@ class ToolLoopBrain:
                 if isinstance(out, list):  # 看图工具的内容块：文字留在 tool 消息里，图放到后面的 user 消息
                     blocks = [b for b in out if isinstance(b, dict) and b.get("type") == "image"]
                     texts = "\n".join(str(b.get("text") or "") for b in out if isinstance(b, dict) and b.get("type") == "text")
-                    pending += [(name, b) for b in blocks]
+                    pending += [(name, b, f"{name} {tc.function.arguments or '{}'}\n\n{texts}") for b in blocks]
                     out = f"{TOOL_IMAGE_NOTE}\n{texts}".rstrip() if blocks else texts
                 elif not isinstance(out, str):
                     out = json.dumps(out, ensure_ascii=False)
@@ -332,9 +359,12 @@ class ToolLoopBrain:
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
             if pending:  # OpenAI 的 tool 消息放不了图：紧跟着接一条 user 消息，按调用顺序放（探针：接口照收，模型照常调工具）
                 parts: list[dict] = []
-                for name, block in pending:
+                for name, block, note in pending:
                     parts += [{"type": "text", "text": f"（{name} 的截图）"}, block]
                     shots.append({"src": name, **_dims(block)})
+                    saved = self._save_shot(block, name, note)
+                    if saved:
+                        shots[-1]["file"] = saved
                     if self.on_message is not None:  # 大脑控制台里看得到它看了什么
                         self.on_message({"type": "user", "message": {"content": [{"type": "image_shot", "src": name, "thumb": _thumb(block)}]}})
                 messages.append({"role": "user", "content": to_openai_content(parts)})
