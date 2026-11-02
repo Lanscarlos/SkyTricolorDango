@@ -5,6 +5,7 @@ from statistics import median
 
 from skydango.config import AppearanceConfig, IdentityConfig
 from .bubbles import Rect
+from .track import iou
 
 FRIEND_TAG = "friend_tag"
 FRIEND_LOOK = "friend_look"
@@ -13,6 +14,9 @@ UNSURE = "unsure"
 STRANGER = "stranger"
 PENDING = "pending"
 LOOK_SPAN = 0.15
+PHYS_SELF = 0.6  # 这么高的 self 框算团子的物理线索（11-02 真机：真团子 0.7~0.9，打在别人身上的多在 0.3~0.5）
+PHYS_KEEP = 1.0  # 物理线索之后这么久内不按超时判陌生人
+SAME_BODY = 0.45  # 团子这一帧缺席时，框和它上一次的框重叠这么多的轨迹算同一个身体（同 perception.SAME_BODY_IOU）
 CALL_GRACE = 2.0  # 标了喊过、这么久还没收到结果 = 其实没喊成（dry-run、被拦）
 
 
@@ -97,6 +101,8 @@ class Evidence:
     look_at: float = float('-inf')
     smooth: float | None = None
     call_mark: tuple[float, float] | None = None  # (这一声的 at, 算宽限的起点；暂停时往后挪)
+    box: Rect | None = None  # 最后一次看到的框
+    phys_at: float = float('-inf')  # 最后一次有团子的物理线索（高分 self 框 / 不跟背景走）
 
 
 class IdentityBoard:
@@ -126,7 +132,10 @@ class IdentityBoard:
             if id not in present and now - e.last > self.track_buffer:
                 del self._evidence[id]
         for t in frame.tracks:
-            self._evidence.setdefault(t.id, Evidence(now)).last = now
+            e = self._evidence.setdefault(t.id, Evidence(now))
+            e.last = now
+            if (t.self_score is not None and t.self_score >= PHYS_SELF) or t.with_bg is False:
+                e.phys_at = now
 
         pairs = sorted((c.err * (self.cfg.tag_stick if self._previous.get(c.key) == t.id else 1),
                         t.id, c.key, c) for t in frame.tracks if t.id != self.dango_id for c in t.tags)
@@ -288,6 +297,8 @@ class IdentityBoard:
             scores = self._medians(e)
             me = [s for s in e.me_samples if s is not None]
             clearly_other = bool(scores) and max(scores.values()) < low and (not me or median(me) < low)
+            if now - e.phys_at <= PHYS_KEEP + 1e-9:
+                continue  # 刚有团子的物理线索：多半是团子换了编号还没换过去，先别判陌生人（11-02 真机轨迹 34 / 44）
             if age >= self.stranger_after and (t.unlit or clearly_other or age >= self.stranger_after + self.grace):
                 self._set(e, STRANGER, None, now)
 
@@ -298,6 +309,7 @@ class IdentityBoard:
         """暂停期间没看见的时间不算证据持续时间。呼喊 at 是标识，不挪。"""
         for e in self._evidence.values():
             e.last += seconds
+            e.phys_at += seconds
             e.tag_start += seconds
             e.tag_last += seconds
             e.panel_at += seconds
@@ -316,7 +328,7 @@ class IdentityBoard:
         candidates = []
         by_id = {t.id: t for t in frame.tracks}
         spot = self._spots.get(frame.panel)
-        cued = set()
+        cued, eligible, free = set(), set(), set()  # free：没挂名字、不是黑影；eligible：其中分数够当团子的（不论这一帧有没有新线索）
         for t in frame.tracks:
             e = self._evidence[t.id]
             parts = []
@@ -343,15 +355,26 @@ class IdentityBoard:
                 raw = sum(w * s for _, w, s in parts) / sum(w for _, w, _ in parts)
                 e.smooth = raw if e.smooth is None else 0.7 * e.smooth + 0.3 * raw
             tagged = e.key is not None and frame.now - e.tag_last <= self.cfg.tag_hold + 1e-9  # 头上有标签的是别人
-            if (not e.stable and not t.unlit and not tagged and t.id in cued
-                    and e.smooth >= self.cfg.dango_min):
-                candidates.append((e.smooth, t.id))
+            if not e.stable and not t.unlit and not tagged:
+                free.add(t.id)
+            if t.id in free and e.smooth is not None and e.smooth >= self.cfg.dango_min:
+                eligible.add(t.id)
+                if t.id in cued:
+                    candidates.append((e.smooth, t.id))
         current = self._evidence.get(self.dango_id)
         here = self.dango_id in by_id
         # 漏检一两帧（track_buffer 内证据还在）不换人，照常走下面的换人滞回
         if current is None or (here and (current.stable or by_id[self.dango_id].unlit)):
             self.dango_id = None
             self._weak_since = None
+        if self.dango_id is not None and not here and current.box is not None:
+            # 团子这一帧缺席、同一个身体换了编号（YOLO 一帧出 player、一帧只出 self，开着身份板时是两条轨迹）：直接交给它，
+            # 不走换人滞回，也就不会被当成新来的人等满时间判陌生人（11-02 真机轨迹 28 / 34）
+            twin = max(((iou(by_id[i].box, current.box), i) for i in free), default=None)
+            if twin and twin[0] >= SAME_BODY:
+                self.dango_id = twin[1]
+                current = self._evidence[twin[1]]
+                self._challenger = self._weak_since = None
         if not frame.sliding:
             if self.dango_id is not None:
                 if current.smooth is not None and current.smooth < self.cfg.dango_min:
@@ -371,12 +394,18 @@ class IdentityBoard:
                 elif frame.now - self._challenger[1] >= self.cfg.dango_switch:
                     self.dango_id = best[1]
                     self._challenger = None
-            else:
+            elif not (self._challenger and self._challenger[0] in eligible and (best is None or best[1] in (self._challenger[0], self.dango_id))
+                      and self._evidence[self._challenger[0]].smooth > (current.smooth or 0.0)):
+                # 挑战者这一帧只是没有新线索（self 框、长相分隔几帧才有）：人还在、分数还领先就接着计时，
+                # 不然隔一帧清零一次永远攒不满 dango_switch（11-02 真机轨迹 34：0.95 压了 15 秒没换上）
                 self._challenger = None
         if self.dango_id in by_id:
             t = by_id[self.dango_id]
             e = self._evidence[t.id]
             self._set(e, DANGO, None, frame.now, e.smooth or 0.0)
-            # 只靠位置分的帧不挪位置，不然认错的人走到哪位置跟到哪、永远满分
-            if not frame.sliding and t.id in cued:
+            # 只有物理线索（self 框 / 不跟背景走）才挪位置：只靠位置分或长相分的帧挪了，认错的人走到哪位置跟到哪、永远满分
+            # （11-02 真机：转视角时编号串到长得像团子的陌生人身上，长相分照样高，位置参照跟着她走，真团子换了编号被判陌生人）
+            if not frame.sliding and (t.self_score is not None or t.with_bg is False):
                 self._spots[frame.panel] = t.box
+        for t in frame.tracks:  # 交接看的是上一次的框，用完再记
+            self._evidence[t.id].box = t.box

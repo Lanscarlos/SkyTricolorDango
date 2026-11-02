@@ -333,3 +333,99 @@ def test_pause_during_call_does_not_expire_it():  # 窗口里暂停：宽限跟�
     b.step(frame(2.5, tr(1, 1000, called_at=2.5)))
     b.shift(5.0)
     assert b.step(frame(14.0, tr(1, 1000, called_at=2.5))).verdicts[1].kind == UNSURE  # 窗口顺延到 13.5，还在宽限里
+
+
+# ---- 11-02 真机：转视角时团子和长得像的陌生人重叠，编号串到她身上（runs/20261102-195817 轨迹 72 / 80） ----
+
+def _swap_scene(b, until):
+    """团子（1 号）在 960 站着不动，有 self 框；0.5 秒时两人重叠后编号串了：1 号跟着背景往左走、长相分照样像团子，
+    原地的团子成了新编号 3，几乎每帧有 self 框、不跟背景走。返回最后一帧的结论。"""
+    for t in (0.0, 0.1, 0.2, 0.3, 0.4):
+        b.step(frame(t, tr(1, 960, self_score=0.8, scores=sc(me=0.9))))
+    out, i = None, 0
+    t = 0.5
+    while t <= until + 1e-9:
+        i += 1
+        out = b.step(frame(round(t, 2), tr(1, 960 - 30 * i, scores=sc(me=0.93), with_bg=True if i % 5 == 0 else None),
+                           tr(3, 960, first=0.5, self_score=0.8, scores=sc(me=0.87) if i % 3 == 0 else None,
+                              with_bg=False if i % 5 == 0 else None)))
+        t += 0.1
+    return out
+
+
+def test_dango_label_follows_physical_cues_after_id_swap():
+    b = board()
+    out = _swap_scene(b, 2.5)
+    assert b.dango_id == 3 and out.verdicts[3].kind == DANGO and out.verdicts[1].kind != DANGO
+
+
+def test_real_dango_with_self_box_is_never_judged_stranger_after_swap():
+    for t in (0.6, 1.0, 1.5, 2.0, 3.0, 4.0):
+        out = _swap_scene(board(), t)
+        assert out.verdicts[3].kind != STRANGER, t
+
+
+def test_spot_moves_only_on_physical_cue():
+    b = board()
+    b.step(frame(0.0, tr(1, 960, self_score=0.9)))
+    for i in range(1, 6):  # 只靠长相分的帧：位置参照不跟着挪
+        b.step(frame(i * 0.1, tr(1, 960 - 40 * i, scores=sc(me=0.95))))
+    assert b.dango_spot(False).x == 960
+    b.step(frame(0.6, tr(1, 700, self_score=0.9)))
+    assert b.dango_spot(False).x == 700
+    b.step(frame(0.7, tr(1, 650, with_bg=False)))
+    assert b.dango_spot(False).x == 650
+
+
+def test_challenger_timer_survives_frames_without_fresh_cue():  # 11-02 真机轨迹 34：分数 0.95 压了 15 秒没换上
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 960, self_score=0.9)))
+    # 旧团子编号串到了旁边的人身上：时有时无、在别处、长相像团子；真团子新编号 2 在原地，self 框隔一帧才有
+    for i in range(1, 25):
+        t = round(0.2 + i * 0.1, 2)
+        tracks = [tr(2, 960, first=0.3, self_score=0.85 if i % 2 else None)]
+        if i % 3 == 0:
+            tracks.append(tr(1, 400, scores=sc(me=0.93)))
+        out = b.step(frame(t, *tracks))
+    assert b.dango_id == 2 and out.verdicts[2].kind == DANGO
+
+
+def test_dango_hands_over_to_same_body_track():  # 11-02 真机轨迹 28 / 34：YOLO 一帧出 player、一帧只出 self，同一个身体两条轨迹交替
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 960, self_score=0.9)))
+    for i in range(1, 40):  # 1 号（player）和 2 号（self）隔帧交替出现在同一个位置
+        t = round(0.2 + i * 0.1, 2)
+        if i % 2:
+            out = b.step(frame(t, tr(2, 965, first=0.3, self_score=0.85)))
+            assert out.verdicts[2].kind == DANGO, t
+        else:
+            out = b.step(frame(t, tr(1, 960)))
+            assert out.verdicts[1].kind == DANGO, t
+
+
+def test_handover_needs_same_body_not_just_nearby():
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 960, self_score=0.9)))
+    out = b.step(frame(0.3, tr(2, 1060)))  # 团子这一帧漏检，旁边一个人（IoU 低）不接手
+    assert b.dango_id == 1 and out.verdicts[2].kind != DANGO
+
+
+def test_track_with_physical_dango_cue_is_not_timed_out_as_stranger():  # 11-02 真机轨迹 34 / 44
+    b = board()
+    for t in (0.0, 0.1, 0.2):
+        b.step(frame(t, tr(1, 960, self_score=0.9, scores=sc(me=0.95))))
+    for i in range(1, 50):  # 团子编号被别人占着（长相分高、位置分满），真团子新编号 2 有高分 self 框
+        t = round(0.2 + i * 0.1, 2)
+        out = b.step(frame(t, tr(1, 960, scores=sc(me=0.95)),
+                           tr(2, 1400, first=0.3, self_score=0.8 if i % 2 else None),
+                           tr(3, 1700, first=0.3, self_score=0.4)))  # 低分 self 框打在别人身上：照常判
+        assert out.verdicts[2].kind != STRANGER, t
+    assert out.verdicts[3].kind == STRANGER
+    for i in range(1, 30):  # self 框没了 1 秒以后照常判
+        t = round(5.2 + i * 0.1, 2)
+        out = b.step(frame(t, tr(1, 960, scores=sc(me=0.95)), tr(2, 1400, first=0.3)))
+    assert out.verdicts[2].kind == STRANGER
+
