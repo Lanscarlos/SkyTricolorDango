@@ -63,6 +63,8 @@ FIELDS: tuple[Field, ...] = (
     Field("brain.compact.enabled", "大脑历史压缩", "只对 DeepSeek 等 OpenAI 兼容的大脑：一次上线内历史只往后接（缓存一路命中），太长时压成前情提要；关掉回到只带最近 8 轮", "bool", "brain"),
     Field("brain.compact.budget", "压缩门槛（token）", "上一次请求的输入到这么多 token 就把老的部分压成前情提要", "int", "brain"),
     Field("brain.compact.keep_turns", "压完留几轮原话", "压缩后最近这么多轮保留原话，更早的写进前情提要", "int", "brain"),
+    Field("brain.vision.enabled", "大脑直接看图", "只对 DeepSeek 等 OpenAI 兼容的大脑（模型要勾“能看图”）：看图工具的截图直接给它，唤醒消息挑时机附一张画了编号框的截图；关掉回到请眼睛代看", "bool", "brain"),
+    Field("brain.vision.auto", "唤醒时自动附图", "来了新消息、好友到身边、感知层拿不准时给大脑附一张截图（至少隔 20 秒）；关掉只剩看图工具的截图", "bool", "brain"),
     Field("backstage.enabled", "幕后", "团子知道自己是 AI、卡洛做了她，能跟卡洛聊她自己怎么运作；好友要在 friends.md 里写「知道团子是 AI」才会跟他承认", "bool", "brain"),
     Field("vision.source", "读聊天的方式", "a11y：读游戏的无障碍节点（准、面板关着也能读好友头顶气泡），读不到自动退回 OCR；ocr：截图识别（原来的做法）", "choice", "features", ("a11y", "ocr")),
     Field("env.enabled", "识别环境", "后台 OCR 画面：身边有谁、在哪", "bool", "features"),

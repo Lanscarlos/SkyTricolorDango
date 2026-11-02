@@ -22,6 +22,7 @@ function splitPrompt(p) {  // "[时间] 事件：\n- 一条\n- 一条\n状态：
 function stepLine(s) {
   if (s.kind === "thinking") return {cls: "think", mark: "…", text: s.text || ""};
   if (s.kind === "text") return {cls: "note", mark: "»", text: s.text || ""};
+  if (s.kind === "image") return {cls: "dim", mark: "▣", text: `[附图·${s.src || "?"}]`};
   if (s.kind === "compact") return {cls: "dim", mark: "─", text: s.text || "", fold: true};  // 压缩：第一行是摘要，点开看前情提要全文
   if (s.kind === "tool") {
     const input = s.input || {};
@@ -36,8 +37,24 @@ function toolCounts(t) {
   const s = Object.entries(c).map(([n, k]) => `${n}×${k}`).join(" ");
   return s || ((t.steps || []).some(x => x.kind === "text") ? "（只说了话）" : "（什么都没做）");
 }
+function shots(t) {  // 这一轮看过的图：唤醒消息附的（自动）+ 看图工具返回的
+  const out = [];
+  if (t.image) out.push("自动");
+  for (const s of t.steps || []) if (s.kind === "image" && !out.includes(s.src)) out.push(s.src || "?");
+  return out;
+}
+function checkRows(text) {  // 一段文字拆成 [{check, text}]：“核对：…”的行单独一条，别的连着
+  const out = [];
+  for (const row of String(text).split("\n")) {
+    const check = row.trim().startsWith("核对：");
+    const last = out[out.length - 1];
+    if (!check && last && !last.check) last.text += "\n" + row; else out.push({check, text: row});
+  }
+  return out;
+}
 function turnHead(t) {
   const parts = [hms(t.start), REASONS[t.reason] || t.reason];
+  for (const src of shots(t)) parts.push(`附图·${src}`);
   if (t.error) parts.push(`失败：${t.error}`);
   else if (t.end === null) parts.push("进行中…" + ((t.tools || []).length ? " " + toolCounts(t) : ""));
   else {
@@ -65,6 +82,14 @@ function line(cls, mark, text, fold) {
   sm.append(el("span", "m", mark), el("span", "x", `${rows[0]}  …（共 ${rows.length} 行）`));
   det.append(sm, el("pre", "", text)); return det;
 }
+function imageLine(src, thumb) {  // 点开看缩略图；太旧的图已经被丢掉了
+  const det = el("details", "bc-fold bc-line dim"), sm = el("summary");
+  sm.append(el("span", "m", "▣"), el("span", "x", `看到的图（${src}）`));
+  det.append(sm);
+  if (thumb) { const img = el("img", "bc-img"); img.src = "data:image/jpeg;base64," + thumb; img.alt = "大脑看到的图"; det.append(img); }
+  else det.append(el("pre", "", "（图太旧，没留）"));
+  return det;
+}
 function turnEl(t, onCopy) {
   const d = el("div", "bc-turn" + (t.error ? " err" : "") + (t.end === null ? " live" : "") + (isIdle(t) ? " idle" : ""));
   const th = el("div", "bc-th", turnHead(t)); th.title = "点一下复制这一轮"; th.onclick = () => onCopy(t, th); d.append(th);
@@ -79,7 +104,15 @@ function turnEl(t, onCopy) {
       det.append(sm, el("pre", "", p.rest)); d.append(det);
     }
   }
-  for (const s of t.steps || []) { const l = stepLine(s); d.append(line(l.cls, l.mark, l.text, l.fold)); }
+  if (t.image) d.append(imageLine("自动", t.image.thumb));
+  for (const s of t.steps || []) {
+    if (s.kind === "image") { d.append(imageLine(s.src || "?", s.thumb)); continue; }
+    if (s.kind === "text") {  // 最后的文字里“核对：…”的行高亮
+      for (const r of checkRows(s.text || "")) d.append(r.check ? line("check", "✓", r.text) : line("note", "»", r.text));
+      continue;
+    }
+    const l = stepLine(s); d.append(line(l.cls, l.mark, l.text, l.fold));
+  }
   if (t.error) d.append(line("fail", "✗", `失败：${t.error}`));
   return d;
 }
@@ -154,5 +187,5 @@ function mountBrainConsole(root, url) {
 }
 
 globalThis.mountBrainConsole = mountBrainConsole;
-if (typeof module !== "undefined") module.exports = {splitPrompt, stepLine, turnHead, isIdle};
+if (typeof module !== "undefined") module.exports = {splitPrompt, stepLine, turnHead, isIdle, checkRows};
 })();

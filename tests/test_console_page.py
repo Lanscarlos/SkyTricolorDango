@@ -591,3 +591,13 @@ def test_track_moves_forward_around_the_loop():  # 团子只往前走：目标�
 def test_live_page_mounts_track_only_in_brain_mode():
     live = (STATIC / "live.js").read_text(encoding="utf-8")
     assert "DangoTrack.mount" in live and "普通 Agent 没有跑道" in live
+
+
+def test_brainlog_shows_images_and_check_rows():  # 大脑直接看图：轮头标附图，“核对：”的行单独拿出来高亮
+    turn = {"start": 0, "end": 1, "seconds": 1.0, "reason": "events", "tools": ["look"], "steps": [{"kind": "image", "src": "look", "thumb": ""}],
+            "image": {"src": "auto", "thumb": ""}, "result": None}
+    head = _brainlog_js(f"B.turnHead({json.dumps(turn)})")
+    assert "附图·自动" in head and "附图·look" in head
+    assert _brainlog_js(f"B.stepLine({json.dumps(turn['steps'][0])})")["text"] == "[附图·look]"
+    rows = _brainlog_js(f"B.checkRows({json.dumps('不说：先看着' + chr(10) + '核对：①其实是小明' + chr(10) + '再等等', ensure_ascii=False)})")
+    assert rows == [{"check": False, "text": "不说：先看着"}, {"check": True, "text": "核对：①其实是小明"}, {"check": False, "text": "再等等"}]

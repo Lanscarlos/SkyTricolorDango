@@ -211,7 +211,7 @@ class Brain:
         text = self.message(now, events)
         image = self._snapshot(events)
         self.toolbox.begin_turn()
-        self._trace("begin", reason, text)
+        self._trace("begin", reason, text, *([{"src": image.src, "thumb": image.thumb}] if image is not None else []))
         self._flow("begin_turn")
         start = self.clock()
         self.chat_turn = any(e.kind in ("chat", "owner_command") for e in events)

@@ -227,3 +227,27 @@ def test_note_step_in_current_turn_or_outside():   # spec 2026-10-06-brain-compa
     outside, turn = out[0], out[1]
     assert outside["reason"] == "outside" and outside["steps"] == [{"kind": "compact", "text": "── 压缩：第 1 次 ──\n正文"}]
     assert turn["steps"] == [{"kind": "compact", "text": "── 压缩失败：坏了 ──"}] and turn["tools"] == []
+
+
+def test_trace_begin_keeps_image_and_caps_thumbs():
+    tr = BrainTrace()
+    for i in range(25):
+        tr.begin("events", "x", {"src": "auto", "thumb": f"t{i}"})
+        tr.finish({}, 1.0)
+    got = tr.since(0, 0.0)["turns"]
+    assert sum(1 for t in got if t["image"] and t["image"]["thumb"]) == 20
+    assert got[-1]["image"] == {"src": "auto", "thumb": "t24"}
+    assert got[0]["image"] == {"src": "auto", "thumb": ""}  # 太旧的只剩来源
+
+
+def test_trace_without_image_is_none():
+    tr = BrainTrace()
+    tr.begin("events", "x")
+    assert turns(tr)[0]["image"] is None
+
+
+def test_trace_image_shot_step():
+    tr = BrainTrace()
+    tr.begin("events", "x")
+    tr.feed(user({"type": "image_shot", "src": "look", "thumb": "QUJD"}))
+    assert turns(tr)[0]["steps"] == [{"kind": "image", "src": "look", "thumb": "QUJD"}]

@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 
 MAX_TURNS = 50  # 最多留几轮
 MAX_CHARS = 20000  # 单条文本最多留几个字
+MAX_THUMBS = 20  # 最多留几张缩略图（大脑看过的图，JPEG 缩到 480 宽）；更早的只剩一行"图太旧"
 TOOL_PREFIX = "mcp__sky__"
 INTERRUPTED = "被打断（下一轮开始了）"
 
@@ -65,6 +66,8 @@ def _steps(m: dict) -> list[dict]:
         elif kind == "assistant" and t == "tool_use":
             name = str(block.get("name") or "")
             steps.append({"kind": "tool", "id": block.get("id"), "name": name.removeprefix(TOOL_PREFIX), "input": block.get("input")})
+        elif kind == "user" and t == "image_shot":  # ToolLoopBrain 工具返回的图：缩略图 + 哪个工具
+            steps.append({"kind": "image", "src": str(block.get("src") or ""), "thumb": str(block.get("thumb") or "")})
         elif kind == "user" and t == "tool_result":
             steps.append({
                 "kind": "result",
@@ -106,18 +109,21 @@ class BrainTrace:
         self.boot = uuid.uuid4().hex[:8]  # 每个进程不同：网页发现变了就清空重来（新进程的版本号可能已经超过网页记的）
 
     # ---- 大脑这边 ----
-    def begin(self, reason: str, prompt: str) -> None:
+    def begin(self, reason: str, prompt: str, image: dict | None = None) -> None:
+        """image：唤醒消息附的图 {"src": "auto", "thumb": base64}（spec 2026-11-02-brain-vision §6）。"""
         try:
             with self._cond:
                 if self._current is not None:
                     self._close(self._current, error=INTERRUPTED)
                 turn = self._new(self._next_id, reason, prompt)
+                turn["image"] = dict(image) if image else None
                 self._next_id += 1
                 self._turns.append(turn)
                 while len(self._turns) > MAX_TURNS:
                     self._turns.popleft()
                 self._oldest = self._turns[0]["id"]
                 self._current = turn
+                self._trim_thumbs()
                 self._touch(turn)
         except Exception:
             log.debug("大脑记录出错（begin）", exc_info=True)
@@ -135,6 +141,7 @@ class BrainTrace:
                     turn = self._outside
                 turn["steps"] += steps
                 turn["tools"] += [s["name"] for s in steps if s["kind"] == "tool"]
+                self._trim_thumbs()
                 self._touch(turn)
         except Exception:
             log.debug("大脑记录出错（feed）", exc_info=True)
@@ -205,8 +212,19 @@ class BrainTrace:
     def _new(self, turn_id: int, reason: str, prompt: str) -> dict:
         return {
             "id": turn_id, "reason": reason, "start": self.wall(), "end": None, "seconds": None,
-            "prompt": _clip(prompt), "steps": [], "tools": [], "result": None, "error": None, "updated": 0,
+            "prompt": _clip(prompt), "image": None, "steps": [], "tools": [], "result": None, "error": None, "updated": 0,
         }
+
+    def _trim_thumbs(self) -> None:
+        """只留最近 MAX_THUMBS 张缩略图：更早的 thumb 置空（轮的 image 和工具图的步骤都算，按时间顺序）。"""
+        pool = ([self._outside] if self._outside is not None else []) + list(self._turns)
+        holders = []
+        for t in pool:
+            if t.get("image"):
+                holders.append(t["image"])
+            holders += [s for s in t["steps"] if s["kind"] == "image"]
+        for h in holders[:-MAX_THUMBS]:
+            h["thumb"] = ""
 
     def _close(self, turn: dict, seconds: float | None = None, error: str | None = None) -> None:
         turn["end"] = self.wall()

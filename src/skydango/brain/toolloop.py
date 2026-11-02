@@ -21,6 +21,7 @@ import numpy as np
 from ..models.errors import ModelError
 from ..models.openai_compat import classify, to_openai_content
 from .compact import COMPACT_SYSTEM, RECAP_ACK, InboxWatch, clean_recap, compact_request, inbox_note, recap_message, until_of, wake_stamp
+from .images import encode_jpeg, fit
 
 log = logging.getLogger(__name__)
 
@@ -96,13 +97,23 @@ def _strip_images(messages: list[dict]) -> None:
             m["content"] = "\n".join(NO_IMAGE if p.get("type") == "image_url" else str(p.get("text") or "") for p in c)
 
 
+def _decode(block: dict):
+    try:
+        return cv2.imdecode(np.frombuffer(base64.b64decode(block["source"]["data"]), np.uint8), cv2.IMREAD_COLOR)
+    except Exception:  # noqa: BLE001 假数据 / 坏图
+        return None
+
+
 def _dims(block: dict) -> dict:
     """图片块的宽高（给 brain.jsonl 的 images）；解不开记 0。"""
-    try:
-        img = cv2.imdecode(np.frombuffer(base64.b64decode(block["source"]["data"]), np.uint8), cv2.IMREAD_COLOR)
-        return {"w": int(img.shape[1]), "h": int(img.shape[0])}
-    except Exception:  # noqa: BLE001 假数据 / 坏图
-        return {"w": 0, "h": 0}
+    img = _decode(block)
+    return {"w": int(img.shape[1]), "h": int(img.shape[0])} if img is not None else {"w": 0, "h": 0}
+
+
+def _thumb(block: dict) -> str:
+    """图片块的缩略图（给大脑控制台）；解不开是空。"""
+    img = _decode(block)
+    return encode_jpeg(fit(img, (480, 270)), 70) if img is not None else ""
 
 
 def _size(messages: list[dict]) -> int:
@@ -324,6 +335,8 @@ class ToolLoopBrain:
                 for name, block in pending:
                     parts += [{"type": "text", "text": f"（{name} 的截图）"}, block]
                     shots.append({"src": name, **_dims(block)})
+                    if self.on_message is not None:  # 大脑控制台里看得到它看了什么
+                        self.on_message({"type": "user", "message": {"content": [{"type": "image_shot", "src": name, "thumb": _thumb(block)}]}})
                 messages.append({"role": "user", "content": to_openai_content(parts)})
         if image is not None:  # 历史里唤醒消息的图换成占位，图例留着（插在「状态：」前面，免得被截掉）
             head, sep, tail = text.partition("\n状态：")

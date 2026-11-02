@@ -433,6 +433,8 @@ h4.note{margin:0 0 4px;font-weight:500}
 .bc-line.tool .m,.bc-line.tool .x{color:var(--term-indigo)}
 .bc-line.err .m,.bc-line.err .x{color:var(--term-amber)}
 .bc-line.fail .m,.bc-line.fail .x{color:var(--term-red)}
+.bc-line.check .m,.bc-line.check .x{color:var(--term-amber);font-weight:700}
+img.bc-img{display:block;width:100%;max-width:480px;margin:2px 0 6px 1.9em;border-radius:4px;border:1px solid var(--term-line)}
 details.bc-fold{display:block}
 details.bc-fold>summary{display:flex;gap:8px;padding-left:2px;cursor:pointer;list-style:none}
 details.bc-fold>summary::-webkit-details-marker{display:none}
