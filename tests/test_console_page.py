@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "dangotrack.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "identity.js", "labeling.js", "models.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "dangotrack.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "identity.js", "formgroup.js", "labeling.js", "models.js", "settings.js", "device.js"]
 
 
 def _identity_js(expr):
@@ -601,3 +601,11 @@ def test_brainlog_shows_images_and_check_rows():  # 大脑直接看图：轮头�
     assert _brainlog_js(f"B.stepLine({json.dumps(turn['steps'][0])})")["text"] == "[附图·look]"
     rows = _brainlog_js(f"B.checkRows({json.dumps('不说：先看着' + chr(10) + '核对：①其实是小明' + chr(10) + '再等等', ensure_ascii=False)})")
     assert rows == [{"check": False, "text": "不说：先看着"}, {"check": True, "text": "核对：①其实是小明"}, {"check": False, "text": "再等等"}]
+
+
+def test_form_track_in_page():
+    page = (STATIC / 'console.html').read_text(encoding='utf-8')
+    assert 'id="fm-bytrack"' in page and 'id="fm-strip"' in page
+    assert page.index('static/formgroup.js') < page.index('static/labeling.js')
+    js = (STATIC / 'labeling.js').read_text(encoding='utf-8')
+    assert 'FormGroup' in js and 'api/form/label' in js

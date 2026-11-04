@@ -8,6 +8,9 @@
  * 外形页的「来自整理」筛选（难例收件箱，后端 inbox）：整理时外形头拿不准、交给人判的裁图都在这里。
  * 外形页的「导入未确认」筛选（10-04）：datasets/sky 直接导进 form/ 的裁图没人看过（后端 confirmed = false）；在原类别上按一下 = 原地确认。
  * 其中「回放用」（后端 replay）是数据集验证集帧里的框 = attrs-train 整帧回放的标准答案，先过它们回放才算得准。
+ * 外形页「按轨迹」（默认开，页顶复选框，记在 localStorage）：后端把同一个人连着几帧的裁图分成一组（vision/cropgroups.py），列表一行一组，
+ * 当前组上方一排缩略图（点一下换大图，Shift + 点 / 点 × = 拆出去不参与这一下），按键整组判（api/form/label 的 names，每张仍是一条记账，同一个 batch），
+ * Z 整组撤销；纯逻辑在 formgroup.js。外形页「重点核对」筛选：perception crops-audit 写的 _focus.json 名单。
  * 模型写的理由一律 textContent。 */
 (function () {
 "use strict";
@@ -17,7 +20,9 @@ const UNL = "_unlabeled", DIS = "_discard";
 const LB = {data: null, filter: "todo", list: [], cur: null, i: 0, playing: true, speed: 1, timer: null,
   busy: false, active: false, loading: false, cache: new Map(), keyBound: false, tab: "gesture"};
 /* 外形页（感知层第二层的人物裁图）：条目是单张 jpg，类别 = FORMS（后端给），接口 api/form/*。按键 Enter / 1~4（后端的 buttons）/ 0 / Z 只在外形页开着时有效。 */
-const FM = {data: null, filter: "todo", list: [], cur: null, busy: false, loading: false};
+const FM = {data: null, filter: "todo", list: [], cur: null, busy: false, loading: false,
+  byTrack: true, view: null, excluded: new Set(), gmap: new Map()};  // 按轨迹：view = 大图显示的那张，excluded = 拆出去的，gmap = 列表行名 → 组
+const FOCUS = new Set();  // 重点核对名单（state.focus）
 const FORM_NAMES = {not_person: "不是人", lit: "点亮的人", unlit: "黑影", spirit: "先祖", shared: "共享空间", morph: "变身"};
 
 /* ---- 名字 ---- */
@@ -51,6 +56,7 @@ function matches(c, f) {
   if (f === "unconfirmed") return unconfirmed(c);
   if (f === "replay") return unconfirmed(c) && c.replay === true;
   if (f === "inbox") return c.inbox === true;
+  if (f === "focus") return window.FormGroup.focusMatch(c, FOCUS, (FM.data && FM.data.forms) || []);
   if (f.startsWith("unconfirmed:")) return unconfirmed(c) && c.where === f.slice(12);
   return false;
 }
@@ -59,6 +65,7 @@ function rank(c) { return !c.guess ? 1 : c.guess.label === "unsure" ? 0 : 2; }  
 function pItems(P) { return (P.s.data && P.s.data[P.itemsKey]) || []; }
 function pBy(P, name) { return name == null ? null : pItems(P).find(c => c[P.key] === name) || null; }
 function pBuild(P) {
+  if (P.build && P.build()) return;  // 外形页按轨迹：列表一行一组
   const f = P.s.filter, k = P.key, list = pItems(P).filter(c => matches(c, f));
   if (f === "inbox") list.sort((a, b) => (a.where === UNL ? 0 : 1) - (b.where === UNL ? 0 : 1) || rank(a) - rank(b) || (a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0));  // 没判的在前
   if (f === "todo" || f.startsWith("guess:"))
@@ -76,6 +83,7 @@ function pValid(P, f) {
   if (f.startsWith("done:")) return labels.includes(f.slice(5));
   if (f.startsWith("guess:")) return [...labels, "unsure", "-"].includes(f.slice(6));
   if (P.confirmable && (f === "unconfirmed" || f === "replay" || f === "inbox")) return true;
+  if (P.confirmable && f === "focus") return FOCUS.size > 0;
   if (P.confirmable && f.startsWith("unconfirmed:")) return labels.includes(f.slice(12));
   return false;
 }
@@ -101,6 +109,7 @@ function pRenderFilter(P) {
     sel.append(g3);
     const ib = pItems(P).filter(c => c.inbox === true);
     if (ib.length || P.s.filter === "inbox") sel.append(opt("inbox", `来自整理（${ib.filter(c => c.where === UNL).length} 待判 / ${ib.length}）`));
+    if (FOCUS.size) sel.append(opt("focus", `重点核对（${pItems(P).filter(c => matches(c, "focus")).length} / ${FOCUS.size}）`));
   }
   const g2 = el("optgroup"); g2.label = "已确认";
   for (const l of P.labels()) g2.append(opt("done:" + l, `${P.name(l)}（${n[l] || 0}）`));
@@ -126,6 +135,7 @@ function pRenderCounts(P) {
     if (n.replay || P.s.filter === "replay") item("replay", "其中回放用", "replay");
     n.inbox = pItems(P).filter(c => c.inbox === true).length;
     if (n.inbox || P.s.filter === "inbox") item("inbox", "来自整理", "inbox");
+    if (FOCUS.size) { n.focus = pItems(P).filter(c => matches(c, "focus")).length; item("focus", "重点核对", "focus"); }
   }
   for (const l of P.labels()) item("done:" + l, P.name(l), l);
   item("discard", "丢弃", DIS);
@@ -142,7 +152,8 @@ function pRenderList(P) {
   if (!P.s.list.length) {
     box.append(el("p", "none lb-empty", P.s.filter === "todo" ? (pItems(P).length ? "都标完了。" : `还没有${P.noun}。`)
       : P.s.filter.startsWith("unconfirmed") || P.s.filter === "replay" ? "导入的都确认过了。"
-      : P.s.filter === "inbox" ? "还没有来自整理的裁图（先跑整理）。" : `这里没有${P.noun}。`));
+      : P.s.filter === "inbox" ? "还没有来自整理的裁图（先跑整理）。"
+      : P.s.filter === "focus" ? "重点核对的都看过了。" : `这里没有${P.noun}。`));
     return;
   }
   const frag = document.createDocumentFragment();
@@ -216,6 +227,14 @@ async function pUndo(P) {
   try { r = await post(P.api + "/undo"); }
   catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
   P.s.busy = false;
+  if (Array.isArray(r.data.items)) {  // 外形页整组撤销（成功，或撤了一部分停在被手动挪过的那张）
+    r.data.items.forEach(it => pApply(P, it));
+    pRerender(P);
+    if (r.data.items.length) P.select(P.pick ? P.pick(r.data.items) : r.data.items[0][P.key]); else P.renderSide();
+    if (!r.data.ok) toast(r.data.text || "没撤销完", "warn");
+    else toast(`撤销了这一组：${r.data.items.length} 张`, "ok");
+    return;
+  }
   if (!r.data.ok) { toast(r.data.text || "没撤销成", r.status === 409 ? "warn" : "bad"); P.renderSide(); return; }
   pApply(P, r.data);
   pRerender(P); P.select(r.data[P.key]);
@@ -238,6 +257,7 @@ async function pLoad(P) {
     return;
   }
   s.data = d; banner.hidden = true; $(P.ids + "-cols").hidden = LB.tab !== P.tab;
+  if (P.onData) P.onData(d);
   if (!pValid(P, s.filter)) s.filter = "todo";
   pRerender(P);
   const keep = pBy(P, s.cur);
@@ -391,24 +411,59 @@ function cropUrl(name) { return `api/form/crop?name=${encodeURIComponent(name)}`
 function fmShowImages() {
   const im = $("fm-crop"), cx = $("fm-ctx"), n1 = $("fm-crop-note"), n2 = $("fm-ctx-note");
   n1.hidden = n2.hidden = true;
-  if (!FM.cur) { im.removeAttribute("src"); im.hidden = true; cx.removeAttribute("src"); cx.hidden = true; n1.textContent = FM.data ? (FM.list.length ? "从列表里选一张" : "这个筛选里没有裁图") : ""; n1.hidden = !n1.textContent; return; }
+  const shown = FM.view || FM.cur;
+  if (!shown) { im.removeAttribute("src"); im.hidden = true; cx.removeAttribute("src"); cx.hidden = true; n1.textContent = FM.data ? (FM.list.length ? "从列表里选一张" : "这个筛选里没有裁图") : ""; n1.hidden = !n1.textContent; return; }
   im.hidden = cx.hidden = false;
   im.onerror = () => { im.hidden = true; n1.textContent = "这张图读不到"; n1.hidden = false; };
   cx.onerror = () => { cx.hidden = true; n2.hidden = false; };
-  im.src = cropUrl(FM.cur);
-  cx.src = `api/form/context?name=${encodeURIComponent(FM.cur)}`;
+  im.src = cropUrl(shown);
+  cx.src = `api/form/context?name=${encodeURIComponent(shown)}`;
 }
+function fmGroup(name) { return FM.byTrack && name != null ? FM.gmap.get(name) || null : null; }
 function fmSelect(name) {
+  if ((name || null) !== FM.cur) FM.excluded = new Set();  // 拆出去的只在当前组里算数
   FM.cur = name || null;
+  const g = fmGroup(FM.cur);
+  FM.view = g ? g.shown[window.FormGroup.centerIndex(g.shown.length)].crop : FM.cur;
   const at = FM.list.findIndex(c => c.crop === FM.cur);
   for (let j = at + 1; at >= 0 && j <= at + AHEAD && j < FM.list.length; j++) new Image().src = cropUrl(FM.list[j].crop);  // 预加载后几张
   pMarkCurrent(F); fmShowImages();
-  $("fm-title").textContent = FM.cur || "—"; $("fm-title").title = FM.cur || "";
-  $("fm-pos").textContent = !FM.cur ? "" : at < 0 ? "（不在当前筛选里）" : `第 ${at + 1} / ${FM.list.length} 张`;
+  fmShowTitle();
   fmRenderSide();
 }
+function fmShowTitle() {
+  const v = FM.view || FM.cur, g = fmGroup(FM.cur), at = FM.list.findIndex(c => c.crop === FM.cur);
+  $("fm-title").textContent = v || "—"; $("fm-title").title = v || "";
+  $("fm-pos").textContent = !FM.cur ? "" : at < 0 ? "（不在当前筛选里）"
+    : g ? `第 ${at + 1} / ${FM.list.length} 组（本组 ${window.FormGroup.targets(g, FM.excluded).length} / ${g.shown.length} 张）` : `第 ${at + 1} / ${FM.list.length} 张`;
+  fmRenderStrip();
+}
+/* 当前组的缩略图条：点 = 大图换成这张；Shift + 点 / 点 × = 拆出去（这一下不标它） */
+function fmRenderStrip() {
+  const box = $("fm-strip"), g = fmGroup(FM.cur);
+  box.textContent = "";
+  box.hidden = !g || g.shown.length < 2;
+  if (box.hidden) return;
+  for (const c of g.shown) {
+    const out = FM.excluded.has(c.crop), cell = el("span", "fm-thumb" + (c.crop === FM.view ? " on" : "") + (out ? " out" : ""));
+    const b = el("button"); b.type = "button"; b.title = `${c.crop}（Shift + 点 = ${out ? "放回来" : "拆出去"}）`;
+    const im = el("img"); im.alt = ""; im.loading = "lazy"; im.decoding = "async"; im.src = cropUrl(c.crop);
+    b.append(im);
+    b.onclick = e => { if (e.shiftKey) fmToggleOut(c.crop); else fmView(c.crop); };
+    const x = el("button", "fm-x", out ? "+" : "×"); x.type = "button"; x.title = out ? "放回这一组" : "拆出去，这一下不标它";
+    x.setAttribute("aria-label", x.title);
+    x.onclick = () => fmToggleOut(c.crop);
+    cell.append(b, x);
+    box.append(cell);
+  }
+}
+function fmView(name) { FM.view = name; fmShowImages(); fmShowTitle(); fmRenderSide(); }
+function fmToggleOut(name) {
+  if (FM.excluded.has(name)) FM.excluded.delete(name); else FM.excluded.add(name);
+  fmShowTitle(); fmRenderSide();
+}
 function fmRenderSide() {
-  const c = fmBy(FM.cur);
+  const c = fmBy(FM.view || FM.cur);
   const gbox = $("fm-guess"); gbox.textContent = "";
   if (!c) gbox.append(el("p", "none", "—"));
   else if (!c.guess) gbox.append(el("p", "none", "Claude 还没猜这一张（跑 perception attrs-label）"));
@@ -428,6 +483,8 @@ function fmRenderSide() {
     if (c.image) row("原图", el("code", "", c.image));
   }
   const acts = $("fm-actions"); acts.textContent = "";
+  const grp = fmGroup(FM.cur);
+  if (grp && grp.shown.length > 1) acts.append(el("p", "note fm-batch", `按键标整组：${window.FormGroup.targets(grp, FM.excluded).length} 张`));
   const off = !c || FM.busy, g = c && c.guess, canAgree = !!g && fmForms().includes(g.label);
   const agree = kbdBtn("btn go lb-agree", canAgree ? `同意 Claude：${fmName(g.label)}` : "同意 Claude", "Enter", fmAgree);
   agree.disabled = off || !canAgree;
@@ -464,9 +521,13 @@ const F = {
   labels: () => (FM.data && FM.data.forms) || [], name: fmName, whereText: fmWhereText, short: n => n,
   agreeable: g => fmForms().includes(g.label),
   select: name => fmSelect(name), renderSide: () => fmRenderSide(),
+  build: () => fmBuild(),
+  pick: items => { for (const g of FM.gmap.values()) if (g.shown.some(c => c.crop === items[0].crop)) return g.shown[0].crop; return items[0].crop; },
+  onData: d => { FOCUS.clear(); (d.focus || []).forEach(n => FOCUS.add(n)); },
   row: c => {
     const im = el("img"); im.loading = "lazy"; im.decoding = "async"; im.alt = ""; im.src = cropUrl(c.crop);
-    return [im, el("span", "n", c.crop), guessTag(F, c), el("span", "r", fmRowWhere(c))];
+    const g = fmGroup(c.crop);
+    return [im, el("span", "n", c.crop), guessTag(F, c), el("span", "r", (g && g.shown.length > 1 ? `${g.shown.length} 张 · ` : "") + fmRowWhere(c))];
   },
   onCounts: n => { const t = document.querySelector('#lb-tabs [data-tab="form"]'); if (t) t.textContent = n[UNL] ? `外形（${n[UNL]}）` : "外形"; },
 };
@@ -478,8 +539,42 @@ function load() { return pLoad(G); }
 function setFilter(f) { return pSetFilter(G, f); }
 function fmBy(name) { return pBy(F, name); }
 function fmForms() { return (FM.data && FM.data.buttons) || F.labels(); }  // 出按钮 / 数字键 / 能同意的类别；筛选照旧用全部
-function fmLabel(to) { return pLabel(F, to); }
-function fmAgree() { return pAgree(F); }
+/* 按轨迹：列表一行一组（行 = 组里第一张显示的裁图）。返回 false = 没开按轨迹，走原来的逐张列表 */
+function fmBuild() {
+  FM.gmap = new Map();
+  if (!FM.byTrack) return false;
+  const f = FM.filter, groups = window.FormGroup.buildGroups(pItems(F), (FM.data && FM.data.groups) || [], c => matches(c, f));
+  FM.list = groups.map(g => { FM.gmap.set(g.shown[0].crop, g); return g.shown[0]; });
+  return true;
+}
+async function fmLabel(to) {
+  const grp = fmGroup(FM.cur);
+  if (!grp) return pLabel(F, to);  // 没开按轨迹：逐字照旧
+  if (FM.busy) return;
+  const dst = to === "discard" ? DIS : to, old = FM.list.slice(), idx = old.findIndex(x => x.crop === FM.cur);
+  // 已经在这一类且确认过的不用再发（和单张一样：按一下 = 当作看过，跳下一组）
+  const names = window.FormGroup.targets(grp, FM.excluded).filter(n => { const c = fmBy(n); return !c || c.where !== dst || unconfirmed(c); });
+  if (!names.length) { pAdvance(F, old, idx); return; }
+  FM.busy = true; fmRenderSide();
+  let r;
+  try { r = await post("api/form/label", {name: names[0], names, to}); }
+  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
+  FM.busy = false;
+  const d = r.data || {};
+  if (!d.ok) {
+    toast(d.text || "没标上", "bad");
+    if (r.status === 409) fmLoad(); else fmRenderSide();
+    return;
+  }
+  (d.items || []).forEach(it => pApply(F, it));
+  if (d.skipped && d.skipped.length) toast(`跳过 ${d.skipped.length} 张：${d.skipped.map(x => x.text).filter((t, i, a) => a.indexOf(t) === i).join("；")}`, "warn");
+  pAdvance(F, old, idx);
+}
+function fmAgree() {
+  const c = fmBy(FM.view || FM.cur);
+  if (!fmGroup(FM.cur)) return pAgree(F);
+  if (c && c.guess && F.agreeable(c.guess)) fmLabel(c.guess.label);
+}
 function fmUndo() { return pUndo(F); }
 function fmLoad() { return pLoad(F); }
 function fmSetFilter(f) { return pSetFilter(F, f); }
@@ -572,6 +667,17 @@ Pages.labeling = {
     $("lb-filter").onchange = e => { setFilter(e.currentTarget.value); e.currentTarget.blur(); };  // 选完把焦点还给页面，按键才有用
     $("lb-refresh").onclick = reload;
     $("fm-filter").onchange = e => { fmSetFilter(e.currentTarget.value); e.currentTarget.blur(); };
+    let store = null;
+    try { store = window.localStorage; } catch (e) { /* 读不到存储 = 默认开 */ }
+    FM.byTrack = window.FormGroup.readByTrack(store);
+    const bt = $("fm-bytrack");
+    bt.checked = FM.byTrack;
+    bt.onchange = e => {
+      FM.byTrack = e.currentTarget.checked;
+      window.FormGroup.writeByTrack(store, FM.byTrack);
+      e.currentTarget.blur();
+      if (FM.data) pSetFilter(F, FM.filter);
+    };
     for (const b of $("lb-tabs").querySelectorAll("button")) b.onclick = () => setTab(b.dataset.tab);
     // 鼠标点按钮不抢焦点：点完接着按键就行（Tab 过去的按钮照样能用回车 / 空格）
     $("page-labeling").addEventListener("mousedown", e => { if (e.target.closest && e.target.closest("button")) e.preventDefault(); });

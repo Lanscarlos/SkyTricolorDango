@@ -276,13 +276,14 @@
     <div class="banner warn" id="fm-empty" hidden></div>
     <div class="cols lb-cols" id="fm-cols" hidden>
       <section class="pane lb-listpane" aria-label="裁图列表">
-        <h3>裁图<span class="grow"></span><select id="fm-filter" aria-label="筛选裁图"></select></h3>
+        <h3>裁图<span class="grow"></span><label class="fm-track" title="同一个人连着几帧的裁图串成一组，按一下键整组判"><input type="checkbox" id="fm-bytrack" checked> 按轨迹</label><select id="fm-filter" aria-label="筛选裁图"></select></h3>
         <div class="lb-counts" id="fm-counts"></div>
         <div class="lb-list" id="fm-list"></div>
       </section>
       <section class="pane lb-player" aria-label="裁图">
         <h3><span class="lb-title" id="fm-title">—</span><span class="grow"></span><span class="lb-pos" id="fm-pos"></span></h3>
         <div class="fm-stage"><img id="fm-crop" class="fm-crop" alt="人物裁图"><p class="lb-stage-note" id="fm-crop-note" hidden></p></div>
+        <div class="fm-strip" id="fm-strip" hidden></div>
         <div class="fm-ctx"><img id="fm-ctx" alt="来源画面（红框是这张裁图）"><p class="note" id="fm-ctx-note" hidden>没有原图（来源画面读不到）</p></div>
       </section>
       <section class="pane lb-side" aria-label="Claude 的猜测和标注">
@@ -454,6 +455,7 @@
 <script src="console/static/retrain.js"></script>
 <script src="console/static/frames.js"></script>
 <script src="console/static/identity.js"></script>
+<script src="console/static/formgroup.js"></script>
 <script src="console/static/labeling.js"></script>
 <script src="console/static/models.js"></script>
 <script src="console/static/settings.js"></script>
