@@ -2093,6 +2093,9 @@ class Body:
         source = getattr(self.reader, "describe", None)
         if callable(source):
             parts.append("读聊天：" + source())
+        mode_note = getattr(self.env, "mode_note", None)
+        if callable(mode_note) and (note := mode_note()):
+            parts.append("感知：" + note)
         if self._bubble_at is not None:
             parts.append("输入框：开着（身体替你开的，想好就 say）")
         else:

@@ -578,7 +578,7 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         gestures=_gesture_classifier(cfg), gesture_cfg=cfg.gesture,
         social_cfg=cfg.social, flame=flame,
         light_dir=run.path / "light" if want_light and run is not None else None, **_appearance_parts(cfg, run, dino),
-        call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs,
+        call_window=cfg.call.window, camera_settle=cfg.track.settle, attrs=attrs, attrs_cfg=cfg.attrs,
         catalog=_catalog_collector(cfg, run), icons_cfg=cfg.icons, map_icons=_map_icons(cfg, icons, dino, run),
         presence_call=can_call,
         identity=identity,
@@ -588,6 +588,8 @@ def _scene_watcher(cfg: Config, icons=None, dev=None, background: bool = True, r
         from .vision.identity_log import FrameLog
 
         watcher.identity_log = FrameLog(run.path / "identity")
+    if watcher.single:
+        log.info("感知层：单类模式（点没点火看%s）", "外形头" if attrs is not None else "亮度（外形头没开）")
     return watcher
 
 
@@ -1025,7 +1027,7 @@ def _perception(cfg: Config, args, dev=None):
         detector, make_ocr(cfg.ocr.engine, p.ocr_threads), p, cfg.env, _friend_names(cfg), cfg.vision.log_roi,
         icons=icons, background=False, capture=dev.screenshot if dev is not None else None,
         **_appearance_parts(cfg, None, dino),  # 只挂记忆簿：不存训练数据、不描述
-        attrs=attrs,
+        attrs=attrs, attrs_cfg=cfg.attrs,
         identity=identity, call_window=cfg.call.window,
     )
     return detector, watcher

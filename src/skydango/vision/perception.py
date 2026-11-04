@@ -41,14 +41,14 @@ import numpy as np
 
 from ..brain.images import difference, thumb
 from ..chat.tracker import normalize, similar
-from ..config import AppearanceConfig, EnvConfig, GestureConfig, IconsConfig, PerceptionConfig, SocialConfig, SpinConfig
+from ..config import AppearanceConfig, AttrsConfig, EnvConfig, GestureConfig, IconsConfig, PerceptionConfig, SocialConfig, SpinConfig
 from ..game.social import IDLE, KIND_NAMES, LIGHT, LIGHT_KEY, Request, is_request
 from .appearance import describe_crop, make_sample
 from .gallery import Sample
 from .identity import CallEnd, FrameIn, IdentityBoard, TagCand, TrackIn
 from .identity_log import FrameLog
 from . import identity as ident
-from .attrs import unlit_score
+from .attrs import dark_vote, unlit_score
 from .candle import black, find_flames, white_ring
 from .bubbles import Rect, roi_rect
 from .catalog import Who, stranger_key
@@ -365,6 +365,7 @@ class PerceptionWatcher:
         map_icons=None,  # vision.icons_map.MapIcons：先祖 / 物件 / 地图上的圈认种类（None = 不认，icons() 为空）
         presence_call: bool = False,  # 好友找不到时身体会不会喊一声确认（大脑模式、[call] auto、不是 dry-run）；不会就满 leave_after 直接算走开
         identity: IdentityBoard | None = None,
+        attrs_cfg: AttrsConfig | None = None,  # 第二层的配置：单类模式下外形头用不了时按亮度估点没点火要用（dark_unlit / every / votes）
     ) -> None:
         self.detector = detector
         self.ocr = ocr
@@ -427,6 +428,11 @@ class PerceptionWatcher:
         self._describe_asked: dict[tuple[str, str], float] = {}  # 上次 request 成功的时间：retry_after 内不再问
         self.keep = cfg.keep  # 身体说"走开了"时用
         self.attrs = attrs
+        self.attrs_cfg = attrs_cfg or (attrs.cfg if attrs is not None else AttrsConfig())
+        # 单类模型（人只有一类，检测器把 person 改名成 player 输出）：YOLO 说不出点没点火，交给外形头 / 亮度
+        self.single = bool(getattr(detector, "single", False))
+        if self.attrs is not None:
+            self.attrs.single = self.single
         self.tracker = Tracker(  # 同一个人可能两类来回变
             cfg.track_buffer, cfg.track_iou, cross=frozenset({"player", UNLIT}),
             center_gate=cfg.track_center_gate if cfg.track_predict else 0.0, predict=cfg.track_predict,
@@ -774,6 +780,8 @@ class PerceptionWatcher:
             self._mark_dango(tracks, selfs, now, panel_visible)
             dangos = [t for t in tracks if t.cls in ("player", UNLIT) and t.data.get("dango") and self._admitted(t)]
             players = [t for t in tracks if t.cls in ("player", UNLIT) and not t.data.get("dango") and self._admitted(t)]
+        if self.single:
+            self._dark_votes(frame, players, dangos, now)
         if self.attrs is not None:
             # 外形是先祖 / 共享空间的：看得到，但不算陌生人、不挂名字、不进接回 / 续命 / 走近 / 运动 / 动作 / 认装扮（spec §3.5）
             others = [t for t in players if self._other_form(t)]
@@ -976,11 +984,20 @@ class PerceptionWatcher:
         # 先祖 / 共享空间的人身上也不会有能点的火焰。第二层出错自己关掉后就不藏了（留下的待复核轨迹 admitted 一直是 False）
         hidden = ([t.box for t in tracks if t.cls in ("player", UNLIT) and not self._admitted(t)] + [t.box for t in self._others]
                   if self._attrs_on() else [])
-        self._people_boxes = [
-            (d.box, d.cls == UNLIT or id(d) in unlit_dup)  # 合框压掉过黑影框的也算"YOLO 认成黑影"
-            for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
-            if d.cls != "self" and not any(iou(d.box, k) >= 0.5 for k in known + hidden)
-        ]
+        if self.single:
+            # 单类：YOLO 没有黑影类，第二位来自配得上的人物轨迹的 _unlit；低分框（没有轨迹）一律 False
+            dark_boxes = [t.box for t in tracks if t.cls in ("player", UNLIT) and self._admitted(t) and self._unlit(t)]
+            self._people_boxes = [
+                (d.box, any(iou(d.box, b) >= 0.5 for b in dark_boxes))
+                for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
+                if d.cls != "self" and not any(iou(d.box, k) >= 0.5 for k in known + hidden)
+            ]
+        else:
+            self._people_boxes = [
+                (d.box, d.cls == UNLIT or id(d) in unlit_dup)  # 合框压掉过黑影框的也算"YOLO 认成黑影"
+                for d in people_boxes(dets + [x for x in low_all if x.score >= LIT_LOW])
+                if d.cls != "self" and not any(iou(d.box, k) >= 0.5 for k in known + hidden)
+            ]
         bonfires = [t for t in tracks if t.cls == "bonfire"]
         self._watch_flames(frame, tags, bonfires, now, width, height, panel_visible)
         self._watch_typing(bubbles, players, selfs, now, width, height)
@@ -1025,7 +1042,33 @@ class PerceptionWatcher:
 
     def _unlit(self, t: Track) -> bool:
         """人物轨迹是不是没点火的黑影：第二层开着时 YOLO 和外形两边投票，否则就看 YOLO 类别。"""
-        return self.attrs.is_unlit(t) if self._attrs_on() else t.cls == UNLIT
+        if self._attrs_on():
+            return self.attrs.is_unlit(t)
+        if self.single:
+            return bool(t.data.get("unlit", False))  # 单类：外形头没开 / 自己关了，unlit 来自亮度投票
+        return t.cls == UNLIT
+
+    def _dark_votes(self, frame: np.ndarray, players: list[Track], dangos: list[Track], now: float) -> None:
+        """单类模式、外形头没开 / 自己关了：按框有多黑给点没点火投票（`attrs.dark_vote`）。
+        团子轨迹不投（排除团子框量别人，团子自己不是黑影）；暂停时不投；每条轨迹隔 [attrs] every 秒量一次。"""
+        if self._attrs_on() or self.paused:
+            return
+        cfg = self.attrs_cfg
+        lit_v = self.light_cfg.lit_v if self.light_cfg is not None else 50
+        me = [t.box for t in dangos]
+        for t in players:
+            if t.data.get("dango") or now - t.data.get("dark_at", float("-inf")) < cfg.every:
+                continue
+            t.data["dark_at"] = now
+            dark_vote(t, black(frame, t.box, lit_v, exclude=me[0] if me else None), cfg)
+
+    def mode_note(self) -> str | None:
+        """status 里"感知："一行：单类模式（旧模型 None）。"""
+        if not self.single:
+            return None
+        if self._attrs_on():
+            return "单类模式"
+        return "单类模式；点没点火按亮度估（外形头没开）"
 
     def _other_form(self, t: Track) -> str | None:
         """第二层开着、外形投票是先祖 / 共享空间的人物轨迹：返回外形（"spirit" / "shared"），否则 None。"""
@@ -1107,8 +1150,8 @@ class PerceptionWatcher:
     def _disagree(self, t: Track) -> str | None:
         """YOLO 侧（最近帧里 player_unlit 的比例）和外形侧（unlit 占 lit / unlit / shared / morph 的比例）分在 0.5 两边时的说明。"""
         hist, mean = t.data.get("cls_hist"), t.data.get("form_mean")
-        if not hist or not mean or t.data.get("form_n", 0) == 0:
-            return None
+        if self.single or not hist or not mean or t.data.get("form_n", 0) == 0:
+            return None  # 单类模式 YOLO 侧没有意见，谈不上"相反"
         den = sum(mean.get(k, 0.0) for k in ("lit", "unlit", "shared", "morph"))
         if den <= 0:
             return None
@@ -2770,7 +2813,7 @@ class PerceptionWatcher:
         """第二层开着时给人物条目附上外形概率 form 和黑影分 u（悬停显示）；没有就不写。"""
         if mean:
             entry["form"] = {k: round(v, 2) for k, v in mean.items()}
-        u = unlit_score(t, self.attrs.cfg.yolo_w)
+        u = unlit_score(t, 0.0 if self.single else self.attrs.cfg.yolo_w)
         if u is not None:
             entry["u"] = round(u, 2)
 
