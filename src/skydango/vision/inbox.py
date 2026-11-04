@@ -224,9 +224,10 @@ class Route:
     p: float  # 这个类的把握
 
 
-def route(yolo_cls: str, score: float, probs: dict[str, float], conf: float, agree: float) -> Route:
+def route(yolo_cls: str, score: float, probs: dict[str, float], conf: float, agree: float, *, single: bool = False) -> Route:
     """人物框分流（spec §4 的表）：高分框只会自动确认一致的（判"不是人"也给人看，篝火不能自动删）；
-    低分框一致自动补成正式框、判"不是人"且有把握自动丢，其余给人判。"""
+    低分框一致自动补成正式框、判"不是人"且有把握自动丢，其余给人判。
+    single（单类模型出的框）：YOLO 只说"是个人"，外形头是人的某一类（点亮 / 黑影 / 先祖）且有把握就算一致，不看 PAIR。"""
     merged: dict[str, float] = {}
     for form, v in probs.items():
         k = MERGE_FORM.get(form, form)
@@ -235,7 +236,7 @@ def route(yolo_cls: str, score: float, probs: dict[str, float], conf: float, agr
     p = merged.get(form, 0.0)
     auto = None
     if p >= agree:
-        if form == PAIR.get(yolo_cls):
+        if (form in ("lit", "unlit", "spirit")) if single else (form == PAIR.get(yolo_cls)):
             auto = "agree"
         elif form == "not_person" and score < conf:
             auto = "drop_low"
@@ -558,7 +559,8 @@ def _process_frame(img, image: str, name: str, run: str, split: str, ctx: dict) 
     probs = ctx["judge"](img, [d.box for d in people]) if people else []
     auto = human = 0
     for d, p in zip(people, probs):
-        r = route(d.cls, d.score, p, cfg.perception.conf, cfg.inbox.agree)
+        # 单类规则只给 YOLO 出的框；原标注带来的 player_unlit 等照老规则配对
+        r = route(d.cls, d.score, p, cfg.perception.conf, cfg.inbox.agree, single=bool(ctx.get("single")) and id(d) not in labelled)
         entry = {"cls": d.cls, "box": [d.box.x, d.box.y, d.box.w, d.box.h], "score": float(d.score),
                  "src": "label" if id(d) in labelled else "yolo", "crop": None, "auto": r.auto}
         boxes.append(entry)
@@ -598,6 +600,8 @@ def process(
     weak: Callable,
     judge: Callable,
     progress: Callable[[str], None] = lambda line: print(line, flush=True),
+    *,
+    single: bool = False,
 ) -> dict:
     """整理收件箱（spec §4）：先收（强杀后补收），再对没整理完的运行逐帧去重、检测、外形头分流，每帧落一次盘（可续跑）。
     _stats.json 的 sec_per_frame = 最近一次整理里每张非重复帧的平均耗时（秒）。"""
@@ -648,7 +652,7 @@ def process(
                                              cfg.perception.classes) if again else [])
                         ctx = {"cfg": cfg, "writer": writer, "detect": detect, "weak": weak, "judge": judge,
                                "labels_fh": labels_fh, "guesses": _json_dict(guess_path), "orig": orig,
-                               "crop_stem": again["name"] if again else None}
+                               "single": single, "crop_stem": again["name"] if again else None}
                         image = (inbox / run / "raw" / file).resolve().as_posix()
                         boxes, auto, human = _process_frame(img, image, name, run, split, ctx)
                         frames[name] = {**base, "boxes": boxes}

@@ -1677,6 +1677,7 @@ def _inbox_process(cfg: Config, args) -> None:
 
     res = hardcase_inbox.process(
         Path(cfg.inbox.dir), Path(args.attrs_data), Path(args.runs), cfg, detector.detect, weak, judge,
+        single=bool(getattr(detector, "single", False)),  # 单类模型：YOLO 说是人、外形头有把握就自动确认
     )
     print(f"整理完了：{res['runs']} 次运行 / {res['frames']} 帧（重复 {res['dups']}），"
           f"外形头自动确认 {res['auto']} 个、{res['to_judge']} 个裁图等你在标注页判，{res['glance']} 帧可以直接过目")

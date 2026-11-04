@@ -845,3 +845,30 @@ def test_process_redo_reuses_dataset_crop_name(tmp_path):
     person = next(x for x in a["boxes"] if x["cls"] == "player")
     box = attrs_data._label_boxes(ds / "labels" / "train" / "a.txt", 1920, 1080)[0][1]
     assert person["crop"] == before[0] == crop_name("a", box)
+
+
+def test_route_single_agree_unlit():
+    probs = {"unlit": 0.95, "lit": 0.05}
+    assert route("player", 0.9, probs, conf=0.35, agree=0.9, single=True).auto == "agree"
+    assert route("player", 0.9, probs, conf=0.35, agree=0.9).auto is None  # 旧规则：player 只配 lit
+    assert route("player", 0.9, {"not_person": 0.97, "lit": 0.03}, conf=0.35, agree=0.9, single=True).auto is None
+
+
+def test_route_single_only_for_yolo(tmp_path):
+    # 原标注带来的 player_unlit 框（src=label）照老规则配对；YOLO 单类框按单类规则：外形头说黑影就自动确认
+    from skydango.vision.attrs_data import _Writer
+    from skydango.vision.inbox import _CROP_SIZE, _WRITER_KEYS, _process_frame
+
+    img = _img(90)
+    writer = _Writer(tmp_path / "attrs", _CROP_SIZE, 0.15, _WRITER_KEYS)
+    with (tmp_path / "labels.jsonl").open("a", encoding="utf-8") as fh:
+        for single in (True, False):
+            ctx = {"cfg": _cfg(), "writer": writer, "labels_fh": fh, "guesses": {}, "single": single,
+                   "detect": lambda f: [_Det("player", Rect(1000, 300, 100, 240), 0.8)],
+                   "weak": lambda f, d: [],
+                   "judge": lambda f, boxes: [{"unlit": 0.95, "lit": 0.05} for _ in boxes],
+                   "orig": [("player_unlit", Rect(300, 300, 100, 240))], "crop_stem": None}
+            boxes, _, _ = _process_frame(img, "x.jpg", f"f{single}", "r1", "train", ctx)
+            by_src = {b["src"]: b["auto"] for b in boxes if b["cls"] in ("player", "player_unlit")}
+            # 原标注框 player_unlit 配 unlit，老规则也一致；YOLO 框 player 配 unlit：只有单类才一致
+            assert by_src == {"label": "agree", "yolo": "agree" if single else None}, (single, boxes)
