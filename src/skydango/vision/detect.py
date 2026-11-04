@@ -51,6 +51,17 @@ def _to_rect(x1: float, y1: float, x2: float, y2: float, width: int, height: int
     return Rect(x1, y1, x2 - x1, y2 - y1)
 
 
+def single_class_names(names: list[str]) -> tuple[list[str], bool]:
+    """认出"人只有一类"的模型：0 号类别叫 person。
+
+    是的话把 person 换成 player（下游按类别名的代码不用动）、unused_* 换成 ""（出框时丢掉），
+    返回 (新名字, True)；否则原样返回 (names, False)。
+    """
+    if not names or names[0] != "person":
+        return names, False
+    return ["player" if n == "person" else ("" if n.startswith("unused") else n) for n in names], True
+
+
 def decode(
     out: np.ndarray,
     names: list[str],
@@ -74,7 +85,7 @@ def decode(
     dets: list[Detection] = []
     if pred.shape[1] == 6 and pred.shape[0] != 4 + len(names):  # 端到端
         for x1, y1, x2, y2, score, c in pred:
-            if score < conf or not 0 <= int(c) < len(names):
+            if score < conf or not 0 <= int(c) < len(names) or not names[int(c)]:
                 continue
             rect = _to_rect((x1 - left) / scale, (y1 - top) / scale, (x2 - left) / scale, (y2 - top) / scale, width, height)
             if rect is not None:
@@ -96,7 +107,7 @@ def decode(
     for i in np.asarray(idx).reshape(-1):
         bx, by, bw_, bh_ = boxes[i]
         rect = _to_rect(bx, by, bx + bw_, by + bh_, width, height)
-        if rect is not None and 0 <= int(cls[i]) < len(names):
+        if rect is not None and 0 <= int(cls[i]) < len(names) and names[int(cls[i])]:
             dets.append(Detection(names[int(cls[i])], rect, float(best[i])))
     return dets
 
@@ -126,7 +137,7 @@ class OnnxYoloDetector:
         self.session = open_session(path, device, "perception.device")
         self.providers = self.session.get_providers()
         meta = self.session.get_modelmeta().custom_metadata_map
-        self.names = _parse_names(meta.get("names")) or list(classes)
+        self.names, self.single = single_class_names(_parse_names(meta.get("names")) or list(classes))
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         fixed = inp.shape[-1]
@@ -151,7 +162,7 @@ class UltralyticsDetector:
         self.device = torch_device(device)
         self.providers = [f"ultralytics:{device}"]
         names = self.model.names
-        self.names = [names[k] for k in sorted(names)] if isinstance(names, dict) else list(names)
+        self.names, self.single = single_class_names([names[k] for k in sorted(names)] if isinstance(names, dict) else list(names))
 
     def detect(self, img: np.ndarray) -> list[Detection]:
         result = self.model.predict(img, imgsz=self.imgsz, conf=self.conf, iou=self.iou, device=self.device, verbose=False)[0]
@@ -160,7 +171,7 @@ class UltralyticsDetector:
         dets = []
         for (x1, y1, x2, y2), c, s in zip(boxes.xyxy.tolist(), boxes.cls.tolist(), boxes.conf.tolist()):
             rect = _to_rect(x1, y1, x2, y2, width, height)
-            if rect is not None:
+            if rect is not None and self.names[int(c)]:
                 dets.append(Detection(self.names[int(c)], rect, float(s)))
         return dets
 
