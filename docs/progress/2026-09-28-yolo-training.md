@@ -374,3 +374,12 @@ spec `docs/superpowers/specs/2026-11-04-yolo-boxes-only-design.md`，计划 `doc
 - **原因是验证集答案偏向 v10**（`tmp/v10_bias.py`）：10-04 傍晚"补全答案"是拿 v10 找漏标的人（`crops --model v10`），验证集补了 36 人——v10 框得出的人才会被补进答案。用补全前的答案（`_backup/labels-20261004-162434`）打分，阈值 0.35：v10 78% / 76%、对照 76% / 77%、v12 78% / 74%，差距只剩 1~3 个点。
 - 所以 spec 2026-11-04 §3.1 门槛 1 改成"和同一份数据上的多类对照比、用不偏向任何一个模型的答案"；合成一类的代价目前看是召回低 ~3 个点（单次训练，还没扣波动）。
 - **下一步**：三个模型（v10 / 对照 / v12）在验证集上框出、答案里没有的人合起来裁图，外形页人工判、写回，再重新打分。
+
+## 2026-11-05：外形页按轨迹判 + 训练集核对名单（代码做完）
+
+spec `docs/superpowers/specs/2026-11-05-form-track-labeling-design.md`，计划 `docs/superpowers/plans/2026-11-05-form-track-labeling.md`。
+
+**做了什么**：外形页能把同一个人连着几帧的裁图串成一组（`vision/cropgroups.py`），按一下键整组判、Z 整组撤销（`_labels.jsonl` 每张一行、多一个 `batch`），可以把串错的拆出去；
+新命令 `perception crops-audit` 用几个 YOLO 模型在训练帧上和标注对一遍，漏标 / 可疑 / 部分模型没框到 / 外形头存疑的人物框写进 `datasets/attrs/_focus.json`，外形页多一个「重点核对」筛选。页面只在 node 里测过纯逻辑，没在浏览器里看过。
+
+**下一步**：`python -m skydango perception crops-audit datasets/sky --models models/sky-yolo-v10.pt,tmp/retrain/control-20261104/yolo/weights/best.pt,models/sky-yolo-v12.pt` → 管理面板「标注 → 外形」的「重点核对」按轨迹判 → `perception crops datasets/sky --writeback` → 单类 / 多类各训 3 次比平均。

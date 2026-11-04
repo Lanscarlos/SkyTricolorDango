@@ -111,7 +111,8 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/places.py` `unknownnames.py` `gesture.py` | 感知层三期：认地图（参考截图匹配）、没认出的名字清单、别人对团子做的动作（研究性质：切片段、评估、ONNX 接口） |
 | `src/skydango/vision/gesture_label.py` | 动作片段的 Claude 初分（`perception gesture-label`）：16 帧拼成 4×4 一张图、提示词、解析，结果写进片段目录的 `claude.json`（复用 `assist.Reviewer`） |
 | `src/skydango/vision/gesture_train.py` | 动作模型训练（`perception gesture-train`）：读确认过的片段、按录像切训练 / 验证集（`_split.json`）、DINOv2-small 冻住提特征（缓存 `_features/`）+ 时序头、导出 ONNX、报告；torch 延迟导入 |
-| `src/skydango/console/labeling.py` | 「标注」页的后端（`/api/gesture/*`）：片段状态、取帧、确认 / 改类别 / 丢弃 = 挪文件夹、撤销，记在 `_labels.jsonl` |
+| `src/skydango/console/labeling.py` | 「标注」页的后端（`/api/gesture/*`）：片段状态、取帧、确认 / 改类别 / 丢弃 = 挪文件夹、撤销，记在 `_labels.jsonl`；外形页（`FormLabels`）还给分组（`groups`，现算、按 `_crops.jsonl` 缓存）和「重点核对」名单（`focus`），整组标注 / 撤销（`batch`） |
+| `src/skydango/vision/cropgroups.py` `console/static/formgroup.js` `vision/crops_audit.py` | 外形页按轨迹判（见「管理面板」的「标注」页）：`cropgroups.groups` 把同一个人连着几帧的裁图串成组（复用 `Tracker`，纯函数）；`formgroup.js` 是前端纯逻辑（node 可测）；`crops_audit.py` 是 `perception crops-audit` 的实现 |
 | `src/skydango/console/emotenames.py` | 「标注 → 动作名」的后端（`/api/emotes/*`）：按剪影把图标库 `emotes/*.png` 配给 `emotes/scan/` 的扫描图标、起名（复制）/ 改名 / 清除（挪进 `_removed/`）、名字检查、提示配置里引用旧名字的地方 |
 | `src/skydango/vision/embed.py` `onnxrt.py` | 特征模型的公共部分：`OnnxEmbedder`、`unit` / `cosine`（认地图、认装扮共用）；`onnxrt.py` 按 device（cuda / dml / cpu）选 onnxruntime 后端、建会话（YOLO、特征模型、动作模型共用） |
 | `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己各一个底库、`assign_friends`、`looks_like_dango`、换装判定）、攒训练数据 `CropSaver` |
@@ -468,6 +469,7 @@ dir = "private/sandbox"
 - **预检**：大脑模式下也查 LLM Key；每个问题带 `setting` 跳转目标，「去设置 →」跳到设置页并高亮那一行（樱花底闪一下）。
 - **剧本和报告页**：报告在页内直接读（`console/reports.py`，`GET /api/sandbox/reports[/<name>]`），不用再去翻 `sandbox/reports/`。
 - **「标注」页**（`#labeling`，左栏「数据」组；后端 `console/labeling.py`）：逐段看动作片段的动图，按键标（1~9 = 类别、0 = 丢弃、Z = 撤销；10-03 去掉了「回车 = 同意 Claude」：初分认不出动作，直接人工标），片段挪进 `datasets/gesture/<动作>/`，然后 `perception gesture-train`。同一页还有「外形」标签页（第二层，后端同 `console/labeling.py`）：逐张看人物裁图和 Claude 的初分，确认 / 改类别 / 丢弃，裁图挪进 `datasets/attrs/form/<类别>/`；10-04 起只出 不是人 / 点亮的人 / 黑影 / 先祖 四个按钮（共享空间、变身按点没点火标；先祖不够 20 张训练时并进不是人），筛选里照旧列全部类别。
+  外形页「按轨迹」（11-05，默认开，页顶复选框记在 localStorage `skydango.form.byTrack`；设计 `docs/superpowers/specs/2026-11-05-form-track-labeling-design.md`，计划同日期 `plans/2026-11-05-form-track-labeling.md`；**代码做完，页面只在 node 测过纯逻辑，没在浏览器里看过**）：后端 `FormLabels.state` 多 `groups`（同一来源里相邻帧隔 ≤ 3 秒、框连得上的裁图串成一组，最多 30 张，取不到时间的各自一组，不写进任何文件）和 `focus`；列表一行一组，当前组上方一排缩略图（点 = 换大图，Shift + 点 / 点 × = 拆出去这一下不标它），1~4 / Enter / 0 整组判（`api/form/label` 带 `names`，`_labels.jsonl` 照旧每张一行、多一个相同的 `batch`），Z 按 `batch` 整组撤销（中途某张被手动挪过就停在那张）；关掉开关 = 外形页逐字照旧。筛选多一项「重点核对」：`perception crops-audit` 写的 `datasets/attrs/_focus.json`（没有这个文件就不出现）。
   外形页的「导入未确认」筛选（10-04）：`datasets/sky` 直接导进 `form/` 的裁图没人看过、标签混了不少错的（`confirmed = false`，按 `_labels.jsonl` 里有没有人标过算，`attrs_data.hand_labels`）；在它现在的类别上按一下 = 原地确认（记一条 from == to、不挪文件），`attrs-train` 默认只用确认过的；其中「回放用」（`replay`）是数据集验证集帧里的框 = 整帧回放的标准答案，先过它们回放才准。
   第三个标签页「动作名」（`console/emotenames.py` + `static/emotenames.js`）：网格列出 `emotes scan` 扫下来的全部图标，起名 = 把 `scan/NNN.png` 复制成图标库的 `emotes/<名字>.png`，改名 / 清除（挪进 `emotes/_removed/`）；
   哪个扫描图标叫什么按剪影配（门槛 0.7、每张库图只配一个），不靠编号，重扫不错位。**只起名**，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动生效；
@@ -894,6 +896,7 @@ python -m skydango perception identity-truth <录像目录> [--fps 6.5] [--apply
 python -m skydango perception identity-eval <录像目录> [--fps 6.5] [-o 输出目录] [--enroll 20]  # 新旧认人对比、呼喊两种假设、只重放身份板扫门槛；--enroll 拿答案前 N 秒的团子框模拟启动登记（这几秒不计分，0 = 不登记）
 python -m skydango perception crops <来源...> [--model 模型] [--conf 0.2] [--out datasets/attrs]  # 第二层的数据：数据集 / 难例目录（支持 runs/*/hard）/ 图片目录 → 人物裁图，已标注的按类别放，对不上的进 _unlabeled/
 python -m skydango perception crops datasets/sky --writeback  # 标注页确认过的写回 datasets/sky 的 labels/：补漏标的人、改点没点火、删确认不是人的框（「不要」和没确认的不动），增强图的标注副本一起改；先备份到 <数据集>/_backup/
+python -m skydango perception crops-audit datasets/sky [--models a.pt,b.pt] [--conf 0.25] [--attrs-data datasets/attrs]  # 训练集核对名单：几个 YOLO 在 images/train 上和标注对一遍，漏标 / 都没框到 / 部分没框到 / 外形头存疑的人物框写进 datasets/attrs/_focus.json（旧的备份成 _focus-<时间>.json），缺的裁图补进 datasets/attrs；去外形页「重点核对」筛选里按轨迹判
 python -m skydango perception attrs-label [datasets/attrs] [--recheck]  # Claude 初分 _unlabeled 裁图（花额度），再去管理面板「标注」页「外形」确认
 python -m skydango perception attrs-train [datasets/attrs] [--out 路径] [--force] [--device cuda|dml|cpu] [--all] [--no-mask]  # 训练外形头 → models/attrs-<日期>.npz + 报告（是 [attrs] model 时要加 --force）；默认只用标注页确认过的，--all 连 datasets/sky 导进来没确认的也用；--no-mask 按旧裁法（不遮挡框外）
 python -m skydango perception attrs-eval datasets/sky --model models/attrs-<日期>.npz [--attrs-data datasets/attrs]  # 外形头在 YOLO 数据集验证集上的评估（答案按标注页确认过的修正）
