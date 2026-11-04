@@ -429,3 +429,137 @@ def test_form_undo_skips_automatic_records(tmp_path):
     assert hand_labels(tmp_path) == {"auto.jpg": "unlit", "edit.jpg": "lit"}
     assert f.undo()[0] == 409  # 只剩自动记录：没有可撤销的
     assert hand_labels(tmp_path) == {"auto.jpg": "unlit", "edit.jpg": "lit"}
+
+
+# ---- 外形页：分组、重点核对、整组标注 / 撤销 ----
+def make_track(root, names, rec="recA", where="_unlabeled", t0=0.0, x0=100):
+    """同一个人连着几帧的裁图：帧名 <录像>_<NNNN>_<秒>s，位置小幅移动；来源按数据集记。"""
+    for i, n in enumerate(names):
+        make_crop(root, where, n, image=f"/x/{rec}_{i:04d}_{t0 + i:06.2f}s.jpg", box=(x0 + i * 4, 100, 50, 150))
+    p = root / "_crops.jsonl"
+    rows = [json.loads(x) for x in p.read_text("utf-8").splitlines()]
+    for r in rows:
+        if r["crop"] in names:
+            r.update(source="dataset", dataset="/x/sky", split="train", group=rec)
+    p.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+
+def test_form_state_groups_and_focus(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_track(tmp_path, ["a.jpg", "b.jpg", "c.jpg"])
+    make_track(tmp_path, ["d.jpg"], rec="recB")
+    (tmp_path / "_focus.json").write_text(json.dumps(["b.jpg", "zzz.jpg"]), encoding="utf-8")
+    s = FormLabels(tmp_path).state()
+    assert sorted(s["groups"]) == [["a.jpg", "b.jpg", "c.jpg"], ["d.jpg"]]
+    assert s["focus"] == ["b.jpg"]
+
+
+def test_form_state_focus_bad_file(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_track(tmp_path, ["a.jpg"])
+    for bad in ("{oops", json.dumps({"a": 1}), json.dumps([1, None])):
+        (tmp_path / "_focus.json").write_text(bad, encoding="utf-8")
+        s = FormLabels(tmp_path).state()
+        assert s["ok"] and s["focus"] == []
+
+
+def test_form_state_groups_only_existing(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_track(tmp_path, ["a.jpg", "b.jpg"])
+    (tmp_path / "_unlabeled" / "b.jpg").unlink()  # _crops.jsonl 里还有行，文件没了
+    assert FormLabels(tmp_path).state()["groups"] == [["a.jpg"]]
+
+
+def test_form_label_batch_logs_one_line_each(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    names = ["a.jpg", "b.jpg", "c.jpg"]
+    make_track(tmp_path, names)
+    code, d = FormLabels(tmp_path).label("a.jpg", "lit", names)
+    assert code == 200 and d["ok"] and d["skipped"] == [] and [i["crop"] for i in d["items"]] == names
+    lines = log_lines(tmp_path)
+    assert len(lines) == 3 and len({x["batch"] for x in lines}) == 1 and lines[0]["batch"] == d["batch"]
+    assert all((tmp_path / "form" / "lit" / n).is_file() for n in names)
+
+
+def test_form_label_batch_skips_missing_and_confirmed(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_track(tmp_path, ["a.jpg", "b.jpg", "c.jpg"])
+    f = FormLabels(tmp_path)
+    assert f.label("b.jpg", "lit")[0] == 200  # b 已经确认是 lit
+    code, d = f.label("a.jpg", "lit", ["a.jpg", "b.jpg", "gone.jpg", "c.jpg"])
+    assert code == 200 and [i["crop"] for i in d["items"]] == ["a.jpg", "c.jpg"]
+    assert sorted(s["crop"] for s in d["skipped"]) == ["b.jpg", "gone.jpg"] and all(s["text"] for s in d["skipped"])
+    code, d = f.label("a.jpg", "lit", ["a.jpg", "gone.jpg"])  # 一张都没成功
+    assert code == 409 and not d["ok"] and len(d["skipped"]) == 2
+
+
+def test_form_label_batch_confirms_in_place(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_track(tmp_path, ["a.jpg", "b.jpg"], where="form/lit")  # datasets/sky 导进来、没人确认过
+    code, d = FormLabels(tmp_path).label("a.jpg", "lit", ["a.jpg", "b.jpg"])
+    assert code == 200 and all(i["confirmed"] for i in d["items"]) and len(log_lines(tmp_path)) == 2
+
+
+def test_form_undo_batch(tmp_path):
+    from skydango.console.labeling import FormLabels
+    from skydango.vision.attrs_data import hand_labels
+
+    names = ["a.jpg", "b.jpg", "c.jpg"]
+    make_track(tmp_path, names)
+    f = FormLabels(tmp_path)
+    f.label("a.jpg", "lit", names)
+    code, d = f.undo()
+    assert code == 200 and d["ok"] and sorted(i["crop"] for i in d["items"]) == names
+    assert all((tmp_path / "_unlabeled" / n).is_file() for n in names)
+    assert not any(n in hand_labels(tmp_path) for n in names)
+    assert all(x["batch"] == d["batch"] for x in log_lines(tmp_path))
+    assert f.undo()[0] == 409
+
+
+def test_form_undo_batch_stops_at_moved(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    names = ["a.jpg", "b.jpg", "c.jpg"]
+    make_track(tmp_path, names)
+    f = FormLabels(tmp_path)
+    f.label("a.jpg", "lit", names)
+    (tmp_path / "form" / "lit" / "b.jpg").rename(tmp_path / "b-moved.jpg")  # 手动挪走
+    code, d = f.undo()
+    assert code == 409 and not d["ok"] and "撤了 1 张" in d["text"]
+    assert [i["crop"] for i in d["items"]] == ["c.jpg"] and (tmp_path / "_unlabeled" / "c.jpg").is_file()
+
+
+def test_form_undo_single_unchanged(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_track(tmp_path, ["a.jpg", "b.jpg"])
+    f = FormLabels(tmp_path)
+    f.label("a.jpg", "lit")
+    f.label("b.jpg", "lit")
+    code, d = f.undo()
+    assert code == 200 and d["crop"] == "b.jpg" and d["where"] == "_unlabeled" and "batch" not in d
+    assert (tmp_path / "form" / "lit" / "a.jpg").is_file()
+
+
+def test_form_api_label_names(tmp_path, upstream, monkeypatch):  # noqa: F811
+    make_track(tmp_path / "datasets" / "attrs", ["a.jpg", "b.jpg"])
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    s = make_server(tmp_path, upstream)
+    try:
+        u = s.url
+        st, d = request(u + "api/form/state")
+        assert st == 200 and d["groups"] == [["a.jpg", "b.jpg"]] and d["focus"] == []
+        body = json.dumps({"name": "a.jpg", "names": ["a.jpg", "b.jpg"], "to": "lit"}).encode()
+        st, d = request(u + "api/form/label", body, GOOD)
+        assert st == 200 and len(d["items"]) == 2 and d["batch"]
+        st, d = request(u + "api/form/undo", b"{}", GOOD)
+        assert st == 200 and d["batch"] and len(d["items"]) == 2
+    finally:
+        s.stop()

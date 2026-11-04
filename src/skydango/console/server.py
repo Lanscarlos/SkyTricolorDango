@@ -1095,7 +1095,7 @@ class ConsoleServer:
                     "/api/inner/forget": console.forget,
                     "/api/gesture/label": lambda body: console.gesture_labels().label(str(body.get("clip") or ""), str(body.get("to") or "")),
                     "/api/gesture/undo": lambda body: console.gesture_labels().undo(),
-                    "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or "")),
+                    "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or ""), body["names"] if isinstance(body.get("names"), list) else None),
                     "/api/form/undo": lambda body: console.form_labels().undo(),
                     "/api/frames/act": lambda body: console.frames_api().act(body),
                     "/api/identity/label": lambda body: console.identity_truth().label(body),

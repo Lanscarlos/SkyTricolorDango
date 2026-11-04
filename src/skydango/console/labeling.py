@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import cv2
@@ -18,6 +19,7 @@ import numpy as np
 
 from ..vision.attrs import FORMS
 from ..vision.attrs_data import hand_labels, live_records
+from ..vision.cropgroups import groups as crop_groups
 from ..vision.gesture import recording_of
 from ..vision.gesture_label import BLIND_FILE, load_guess
 
@@ -27,7 +29,9 @@ FORM_DIR = "form"
 # 外形页出按钮的类别（10-04）：先祖单独标（和共享空间长得像，混进不是人难学；图鉴以后也要），不够数训练时并进不是人；
 # 共享空间 / 变身按点没点火标成 lit / unlit（训练时本来就并进 lit），筛选里照旧列出
 FORM_BUTTONS = ("not_person", "lit", "unlit", "spirit")
+FOCUS_FILE = "_focus.json"  # perception crops-audit 写的「重点核对」名单（JSON 字符串数组）
 CONTEXT_W = 480  # 外形页的原图缩略宽度
+_GROUP_CACHE: dict[str, tuple[tuple, list[list[str]]]] = {}  # _crops.jsonl 路径 → ((mtime, size), 分组)；文件没变就不重算
 _LOCK = threading.Lock()  # 每个请求现建一个 GestureLabels / FormLabels，所以锁放模块级：label / undo 的 找→挪→记账 整段串行
 
 
@@ -94,15 +98,15 @@ class _Moves:
             return 409, f"挪不动：{exc}"
         return 200, ""
 
-    def _relabel(self, name: str, dst: str) -> tuple[int, dict]:
-        """把条目挪到 dst 并记账。成功 (200, {})，失败 (状态码, {"ok": False, "text": …})。"""
+    def _relabel(self, name: str, dst: str, extra: dict | None = None) -> tuple[int, dict]:
+        """把条目挪到 dst 并记账（extra 并进记账行，整组标注的 batch 用）。成功 (200, {})，失败 (状态码, {"ok": False, "text": …})。"""
         src = self._find(name)
         if src is None:
             return 409, {"ok": False, "text": "找不到这一条（可能被手动挪走了），刷新一下"}
         code, text = self._move(name, src, dst)
         if code != 200:
             return code, {"ok": False, "text": text}
-        if not self._logged({"t": time.time(), self._key: name, "from": src, "to": dst}, name, src, dst):
+        if not self._logged({"t": time.time(), self._key: name, "from": src, "to": dst, **(extra or {})}, name, src, dst):
             return 500, {"ok": False, "text": "记录写不进去，已挪回原处"}
         return 200, {}
 
@@ -121,7 +125,12 @@ class _Moves:
                 out.append(e)
         return out
 
-    def _revert(self) -> tuple[int, dict, str]:
+    def _top(self) -> dict | None:
+        """撤销栈顶（最近一条没被抵消、人在页面上标的记录）。"""
+        stack = [e for e in live_records(self._entries()) if not e.get("by")]
+        return stack[-1] if stack else None
+
+    def _revert(self, extra: dict | None = None) -> tuple[int, dict, str]:
         """撤销最近一条没被抵消的操作。返回 (状态码, body, 条目名)：成功时 body = {"where": 回到的位置}，失败时是错误 body。
         带 `by` 的是程序追加的（整理的 auto-agree、整帧编辑的 frame-edit），不进撤销栈：按 Z 只撤人在页面上标的。
         配对规则和 `attrs_data.hand_labels` 共用（`live_records`），两边不会算岔。"""
@@ -137,7 +146,7 @@ class _Moves:
             code, text = self._move(name, src, dst)
             if code != 200:
                 return code, {"ok": False, "text": text}, ""
-        if not self._logged({"t": time.time(), self._key: name, "from": src, "to": dst, "undo": True}, name, src, dst):
+        if not self._logged({"t": time.time(), self._key: name, "from": src, "to": dst, "undo": True, **(extra or {})}, name, src, dst):
             return 500, {"ok": False, "text": "记录写不进去，已挪回原处"}, ""
         return 200, {"where": dst}, name
 
@@ -269,7 +278,34 @@ class FormLabels(_Moves):
             names = self._names(d)
             counts[d] = len(names)
             items.extend(self._item(n, d, rows, guesses, hand) for n in names)
-        return {"ok": True, "forms": list(FORMS), "buttons": list(FORM_BUTTONS), "counts": counts, "items": items}
+        present = {i["crop"] for i in items}
+        return {"ok": True, "forms": list(FORMS), "buttons": list(FORM_BUTTONS), "counts": counts, "items": items,
+                "groups": self._groups(rows, present), "focus": self._focus(present)}
+
+    def _groups(self, rows: dict[str, dict], present: set[str]) -> list[list[str]]:
+        """同一个人连着几帧的裁图分组（`vision/cropgroups.py`），只留现在还在某个位置里的。按 `_crops.jsonl` 的 mtime / 大小缓存。"""
+        path = self.root / "_crops.jsonl"
+        try:
+            st = path.stat()
+            sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return []
+        hit = _GROUP_CACHE.get(str(path))
+        if hit is None or hit[0] != sig:
+            hit = (sig, crop_groups(rows.values()))
+            _GROUP_CACHE[str(path)] = hit
+        out = [[c for c in g if c in present] for g in hit[1]]
+        return [g for g in out if g]
+
+    def _focus(self, present: set[str]) -> list[str]:
+        """`_focus.json` 里现在还存在的裁图名；文件不存在 / 坏了 = []。"""
+        try:
+            data = json.loads((self.root / FOCUS_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [n for n in data if isinstance(n, str) and n in present]
 
     def crop(self, name: str) -> bytes | None:
         where = self._find(name)
@@ -302,25 +338,65 @@ class FormLabels(_Moves):
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return buf.tobytes() if ok else None
 
-    def label(self, name: str, to: str) -> tuple[int, dict]:
+    def label(self, name: str, to: str, names: list[str] | None = None) -> tuple[int, dict]:
+        """标一张；`names` 非空 = 整组（按轨迹判）：逐张做同样的事，每行记账多一个相同的 `batch`，不能标的跳过。"""
         dst = DISCARD if to == "discard" else to if to in FORMS else None
         if dst is None:
             return 400, {"ok": False, "text": f"不认识的类别：{to}"}
+        if names:
+            return self._label_batch(names, dst)
         with _LOCK:
-            code, body = self._confirm(name, dst) if dst in FORMS and self._find(name) == dst else self._relabel(name, dst)
+            code, body = self._label_one(name, dst)
         return (200, {"ok": True, **self._fresh(name, dst)}) if code == 200 else (code, body)
 
-    def _confirm(self, name: str, form: str) -> tuple[int, dict]:
+    def _label_one(self, name: str, dst: str, extra: dict | None = None) -> tuple[int, dict]:
+        """持锁调用：已经在这一类 → 原地确认，否则挪过去。"""
+        if dst in FORMS and self._find(name) == dst:
+            return self._confirm(name, dst, extra)
+        return self._relabel(name, dst, extra)
+
+    def _label_batch(self, names: list[str], dst: str) -> tuple[int, dict]:
+        batch = uuid.uuid4().hex[:12]
+        done: list[str] = []
+        skipped: list[dict] = []
+        with _LOCK:
+            for name in dict.fromkeys(str(n) for n in names):
+                code, body = self._label_one(name, dst, {"batch": batch})
+                if code == 200:
+                    done.append(name)
+                else:
+                    skipped.append({"crop": name, "text": body.get("text", "标不上")})
+        if not done:
+            return 409, {"ok": False, "text": "这一组一张都没标上：" + (skipped[0]["text"] if skipped else "没有可标的"), "skipped": skipped}
+        rows, guesses, hand = self._rows(), self._guesses(), hand_labels(self.root)
+        return 200, {"ok": True, "batch": batch, "items": [self._item(n, dst, rows, guesses, hand) for n in done], "skipped": skipped}
+
+    def _confirm(self, name: str, form: str, extra: dict | None = None) -> tuple[int, dict]:
         """原地确认（持锁调用）：已经在这一类、还没人确认过 → 只记账。"""
         if hand_labels(self.root).get(name) == form:
             return 409, {"ok": False, "text": "已经确认过是这一类了"}
         try:
-            self._log({"t": time.time(), self._key: name, "from": form, "to": form})
+            self._log({"t": time.time(), self._key: name, "from": form, "to": form, **(extra or {})})
         except OSError:
             return 500, {"ok": False, "text": "记录写不进去，没确认上"}
         return 200, {}
 
     def undo(self) -> tuple[int, dict]:
         with _LOCK:
-            code, body, name = self._revert()
-        return (200, {"ok": True, **self._fresh(name, body["where"])}) if code == 200 else (code, body)
+            top = self._top()
+            batch = top.get("batch") if top else None
+            if not isinstance(batch, str) or not batch:
+                code, body, name = self._revert()
+                return (200, {"ok": True, **self._fresh(name, body["where"])}) if code == 200 else (code, body)
+            undone: list[tuple[str, str]] = []
+            while True:  # 整组撤销：连续撤到栈顶不是这个 batch 为止
+                top = self._top()
+                if top is None or top.get("batch") != batch:
+                    break
+                code, body, name = self._revert({"batch": batch})
+                if code != 200:
+                    n = len(undone)
+                    return 409, {"ok": False, "text": f"撤了 {n} 张，第 {n + 1} 张已经不在原来的位置（可能被手动挪过），其余没撤",
+                                 "items": [self._fresh(c, w) for c, w in undone]}
+                undone.append((name, body["where"]))
+            return 200, {"ok": True, "batch": batch, "items": [self._fresh(c, w) for c, w in undone]}
