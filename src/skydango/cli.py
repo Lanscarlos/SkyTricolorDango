@@ -1071,6 +1071,8 @@ def cmd_perception(cfg: Config, args) -> None:
         _perception_attrs_label(cfg, args)
     elif args.action == "crops":
         _perception_crops(cfg, args)
+    elif args.action == "crops-audit":
+        _perception_crops_audit(cfg, args)
     elif args.action == "attrs-train":
         _perception_attrs_train(cfg, args)
     elif args.action == "retrain":
@@ -1175,6 +1177,36 @@ def _perception_crops(cfg: Config, args) -> None:
             counts = ad.crops_from_images(src, detector, out, args.conf)
         print(f"{src}: " + "，".join(f"{k} {v}" for k, v in counts.items()))
     print(f"裁图在 {out}（_unlabeled/ 等 Claude 初分、标注页确认）")
+
+
+def _perception_crops_audit(cfg: Config, args) -> None:
+    """训练集核对名单：几个 YOLO 模型在 datasets/sky 的训练帧上和标注对一遍，漏标 / 可疑 / 部分模型没框到 / 外形头说不是人的框
+    写进 <attrs-data>/_focus.json，外形页「重点核对」筛选读它，见 vision/crops_audit.py。"""
+    from .vision import attrs, attrs_train as at, crops_audit
+
+    ds = Path(args.dataset)
+    if not (ds / "images" / "train").is_dir() or not (ds / "labels" / "train").is_dir():
+        raise SystemExit(f"{ds} 不是 YOLO 数据集（要有 images/train 和 labels/train）")
+    paths = [m.strip() for m in (args.models or "").split(",") if m.strip()] or [cfg.perception.model]
+    low = 0.15
+    detectors: dict = {}
+    for m in paths:
+        name = Path(m).stem
+        while name in detectors:
+            name += "+"
+        try:
+            detectors[name] = at.replay_detector(cfg.perception, m, conf=low)
+        except Exception as exc:
+            raise SystemExit(f"检测器 {m} 加载失败：{exc}")
+    head = attrs.load_model(cfg.attrs, _attrs_device(cfg))
+    if head is None:
+        print("外形头没加载，三个都框到的不再筛")
+    out = Path(args.attrs_data)
+    res = crops_audit.audit(ds, out, detectors, head=head, conf=args.conf, low=low)
+    backup = crops_audit.write_focus(out, res["focus"])
+    print(f"漏标 {len(res['missed'])}、可疑（都没框到）{len(res['suspect'])}、部分模型没框到 {len(res['partial'])}、外形头存疑 {len(res['head'])}，"
+          f"名单共 {len(res['focus'])} 张")
+    print(f"名单 → {out / crops_audit.FOCUS_FILE}" + (f"（旧的备份在 {backup}）" if backup else "") + "；去管理面板「标注 → 外形」的「重点核对」筛选里过")
 
 
 def _attrs_replays(cfg: Config, frames: list, model, notes: list[str], attrs_root: Path | None = None):
@@ -3936,6 +3968,11 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--out", default="datasets/attrs", help="输出目录")
     q.add_argument("--writeback", action="store_true",
                    help="不裁图：标注页确认过的写回 labels/——补漏标的人、改点没点火、删不是人的框，增强图一起改（先备份到 <数据集>/_backup/）")
+    q = psub.add_parser("crops-audit", help="训练集核对名单：几个 YOLO 模型和标注对一遍，漏标 / 可疑 / 外形头存疑的人物框写进 _focus.json（外形页「重点核对」）")
+    q.add_argument("dataset", help="YOLO 数据集目录（只看 images/train）")
+    q.add_argument("--models", help="YOLO 模型，逗号分隔（默认只用 [perception] model）")
+    q.add_argument("--conf", type=float, default=0.25, help="算漏标的检测置信度下限")
+    q.add_argument("--attrs-data", default="datasets/attrs", help="外形裁图目录（裁图和 _focus.json 写在这里）")
     q = psub.add_parser("attrs-label", help="第二层外形头的 Claude 初分：_unlabeled/ 里的裁图每 16 张拼成 4×4 一张图，结果写进 _unlabeled/claude.json")
     q.add_argument("source", nargs="?", help="数据目录（默认 datasets/attrs）")
     q.add_argument("--recheck", action="store_true", help="已有 claude.json 的裁图也重新初分")
