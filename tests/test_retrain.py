@@ -361,3 +361,27 @@ def test_run_retrain_no_merge_uses_dataset(tmp_path, monkeypatch):
     out = tmp_path / "out"
     retrain.run_retrain(cfg, ds, inbox, out, lambda s: None, **kw)
     assert calls["train"][0] == (cfg.retrain.epochs, ds / "data.yaml") and not (out / "merged").exists()
+
+
+class SingleDet(FakeDet):
+    single = True
+
+
+def test_compare_single_side_uses_zero_yolo_w(tmp_path, monkeypatch):
+    # 新旧检测器一个单类一个不是：各自按自己的 yolo_w；报告里带"只用亮度判点没点火"
+    cfg, ds, inbox, models, calls, kw = _world(tmp_path, monkeypatch)
+    one = {1: [_d("player", 20, 0.9)], 2: [_d("player", 70, 0.9)], 3: [_d("player", 100, 0.9)]}  # 单类：黑影也是 player
+    monkeypatch.setattr("skydango.vision.detect.make_detector",
+                        lambda path, *a, **kw: SingleDet(one) if "v12" in str(path) else FakeDet(OLD))
+    old = _load_head(tmp_path / "old.npz", _head(1), cfg)  # 外形头永远说 lit
+    new = _load_head(tmp_path / "new.npz", _head(2), cfg)  # 永远说 unlit
+    n = retrain.compare(cfg.perception.model, models / "sky-yolo-v12.pt", old, new, ds, cfg, {"f1"}, attrs_root=None)
+    rows = n["all"]["rows"]
+    # f3 标的是 player_unlit（答案明确）：旧头永远说点亮，0.3×1 + 0.7×0 = 0.3 < 0.5 -> 认反；
+    # 新 YOLO 是单类，YOLO 一侧按 0 算，外形头说 unlit -> 黑影，对
+    assert (rows["old_head"]["pairs"], rows["old_head"]["mismatch"]) == (1, 1)
+    assert (rows["new_head"]["pairs"], rows["new_head"]["mismatch"]) == (1, 0)
+    assert rows["new"]["mismatch"] == 1  # 新 YOLO 自己不会说黑影
+    assert "dark" in n["all"]
+    md = retrain.report_md({"yolo": "y", "attrs": "a", "numbers": n})
+    assert "只用亮度判点没点火" in md

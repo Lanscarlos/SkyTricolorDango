@@ -164,9 +164,9 @@ def test_replay_counts(tmp_path):
     b, s = r["baseline"], r["second"]
     assert (b["tp"], b["fp"], b["fn"]) == (2, 1, 1)  # 基线：A、B 对，高分假框错，低分真框漏
     assert (s["tp"], s["fp"], s["fn"]) == (3, 0, 0)
-    assert (b["pairs"], b["mismatch"]) == (2, 1)  # B 被 YOLO 认成 player（亮）
+    assert (b["pairs"], b["mismatch"]) == (1, 1)  # 只有 B（标的是 player_unlit）答案明确；它被 YOLO 认成 player（亮）
     # 默认 yolo_w = 0.3：外形头黑影占比 ≥ 0.5 / 0.7 ≈ 0.71 就能把 YOLO 的 player 框翻成黑影，B（0.98）翻对了
-    assert (s["pairs"], s["mismatch"]) == (3, 0)
+    assert (s["pairs"], s["mismatch"]) == (1, 0)
     assert r["yolo_w"] == 0.3
     md = "\n".join(at.replay_md(r))
     assert "yolo_w = 0.3" in md and "≥ 0.71" in md and "< 0.29" in md and "基本就是 YOLO 自己的答案" not in md
@@ -185,7 +185,7 @@ def test_replay_yolo_w_half_cannot_flip(tmp_path):
     """yolo_w = 0.5：player 框要外形头黑影占比恰好 1.0 才翻，0.98 翻不了 -> 第二层的认反数就是 YOLO 自己的。"""
     frames = _replay_set(tmp_path)
     r = at.replay(frames, det_again(), FakeModel(model_queue()), conf_low=0.2, conf=0.5, accept=0.6, reject=0.7, yolo_w=0.5)
-    assert (r["second"]["pairs"], r["second"]["mismatch"]) == (3, 1)
+    assert (r["second"]["pairs"], r["second"]["mismatch"]) == (1, 1)
     assert "基本就是 YOLO 自己的答案" in "\n".join(at.replay_md(r))
 
 
@@ -197,7 +197,7 @@ def test_cli_replays_use_configured_yolo_w(tmp_path, monkeypatch):
     cfg.perception.low_conf = 0.2
     replays, _ = cli._attrs_replays(cfg, frames, FakeModel(model_queue()), [])
     (r,) = replays
-    assert r["yolo_w"] == 0.5 and (r["second"]["pairs"], r["second"]["mismatch"]) == (3, 1)
+    assert r["yolo_w"] == 0.5 and (r["second"]["pairs"], r["second"]["mismatch"]) == (1, 1)
 
 
 def test_unlit_second_follows_yolo_w():
@@ -256,8 +256,8 @@ def test_gt_boxes_drop_spirit_when_head_has_no_spirit(tmp_path):
     # 先祖不够数时并进 not_person：外形头会把先祖框撤掉，评估就不该再把先祖当成要保留的人（不然全算漏检）
     lf = tmp_path / "a.txt"
     lf.write_text("0 0.5 0.5 0.1 0.2\n9 0.2 0.5 0.1 0.2\n4 0.8 0.5 0.1 0.2\n", encoding="utf-8")
-    assert [c for _, c in at._gt_boxes(lf, 100, 100)] == [0, 9, 4]
-    assert [c for _, c in at._gt_boxes(lf, 100, 100, spirit=False)] == [0, 4]
+    assert [c for _, c, _ in at._gt_boxes(lf, 100, 100)] == [0, 9, 4]
+    assert [c for _, c, _ in at._gt_boxes(lf, 100, 100, spirit=False)] == [0, 4]
 
 
 def test_run_training_end_to_end(tmp_path):
@@ -350,8 +350,8 @@ def test_gt_fixes_apply_hand_labels(tmp_path):
     lf.parent.mkdir(parents=True)
     lf.write_text("0 0.1 0.15 0.1 0.2\n0 0.35 0.15 0.1 0.2\n0 0.75 0.15 0.1 0.2\n", encoding="utf-8")  # 200×200：a、b、d
     gt = at._gt_boxes(lf, 200, 200, fixes=fixes)
-    assert sorted((b.x, c) for b, c in gt) == [(10, 4), (100, 0), (140, 0)]
-    assert sorted((b.x, c) for b, c in at._gt_boxes(lf, 200, 200)) == [(10, 0), (60, 0), (140, 0)]
+    assert sorted((b.x, c) for b, c, _ in gt) == [(10, 4), (100, 0), (140, 0)]
+    assert sorted((b.x, c) for b, c, _ in at._gt_boxes(lf, 200, 200)) == [(10, 0), (60, 0), (140, 0)]
     assert isinstance(gt[0][0], Rect)
 
 
@@ -388,3 +388,53 @@ def test_split_pins_non_dataset_group_to_dataset_recording_split(tmp_path):
         assert all(f"unlit/x{i}.jpg" in sp["val"] for i in range(4))
         assert all(f"unlit/y{i}.jpg" in sp["train"] for i in range(4))
         assert sp["pinned"] == {"recX": "val", "recY": "train"}
+
+
+# ---- 单类模式：只拿明确的答案计点没点火 ----
+
+
+def test_gt_sure_flags(tmp_path):
+    lf = tmp_path / "val" / "f.txt"
+    lf.parent.mkdir()
+    lf.write_text("0 0.1 0.5 0.1 0.4\n4 0.3 0.5 0.1 0.4\n9 0.5 0.5 0.1 0.4\n0 0.7 0.5 0.1 0.4\n", encoding="utf-8")  # 200×100
+    gt = at._gt_boxes(lf, 200, 100)
+    assert [(c, s) for _, c, s in gt] == [(0, False), (4, True), (9, True), (0, False)]
+    fixes = {("val", "f"): [(Rect(130, 30, 20, 40), 4)]}  # 把第四个框（只标 0）确认成黑影
+    gt = at._gt_boxes(lf, 200, 100, fixes=fixes)
+    assert [(c, s) for _, c, s in gt] == [(0, False), (4, True), (9, True), (4, True)]
+    fixes = {("val", "f"): [(Rect(0, 0, 10, 10), 0)]}  # 补进来的也算明确
+    assert at._gt_boxes(lf, 200, 100, fixes=fixes)[-1][1:] == (0, True)
+
+
+def test_score_ignores_unsure_player():
+    gt = [(Rect(0, 0, 40, 60), 0, False), (Rect(100, 0, 40, 60), 0, True), (Rect(200, 0, 40, 60), 4, True)]
+    preds = [{"box": Rect(0, 0, 40, 60), "unlit": True},    # 只标 player 的框判成黑影：不计认反
+             {"box": Rect(100, 0, 40, 60), "unlit": True},  # 确认过是点亮却判黑影：认反
+             {"box": Rect(200, 0, 40, 60), "unlit": True}]
+    assert at._score(preds, gt) == (3, 0, 0, 2, 1)
+
+
+def _one_record(p, gt_cls=4, sure=True, cls="player"):
+    return [{"gt": [(Rect(10, 10, 40, 80), gt_cls, sure)],
+             "dets": [{"cls": cls, "box": Rect(10, 10, 40, 80), "score": 0.9, "p": p, "dark": None}]}]
+
+
+def test_replay_row_single_ignores_yolo_w():
+    recs = _one_record({"lit": 0.4, "unlit": 0.6})
+    a = Config().attrs  # yolo_w 默认 0.3
+    old = at.replay_row(recs, 0.2, 0.5, a)  # 0.3×0 + 0.7×0.6 = 0.42：判点亮 -> 认反
+    one = at.replay_row(recs, 0.2, 0.5, a, single=True)  # yolo_w 按 0：0.6 -> 黑影 -> 对
+    assert (old["second"]["pairs"], old["second"]["mismatch"]) == (1, 1) and old["yolo_w"] == 0.3
+    assert (one["second"]["pairs"], one["second"]["mismatch"]) == (1, 0) and one["yolo_w"] == 0.0 and one["single"]
+    assert "单类模型" in "\n".join(at.replay_md(one))
+
+
+def test_dark_sweep_picks_threshold():
+    recs = [{"gt": [(Rect(10, 10, 40, 80), 4, True), (Rect(100, 10, 40, 80), 0, True), (Rect(200, 10, 40, 80), 0, False)],
+             "dets": [{"cls": "player", "box": Rect(10, 10, 40, 80), "score": 0.9, "p": None, "dark": 0.7},
+                      {"cls": "player", "box": Rect(100, 10, 40, 80), "score": 0.9, "p": None, "dark": 0.2},
+                      {"cls": "player", "box": Rect(200, 10, 40, 80), "score": 0.9, "p": None, "dark": 0.9}]}]  # 第三个答案不明确：不算
+    d = at.dark_sweep(recs)
+    assert d["n"] == 2 and d["acc"] == 1.0 and 0.25 < d["best"] < 0.7
+    assert at.dark_sweep(_one_record(None))["n"] == 0  # dark 量不出：没对子
+    assert "最好的门槛" in "\n".join(at.dark_md(d)) and "没算" in "\n".join(at.dark_md({"n": 0}))

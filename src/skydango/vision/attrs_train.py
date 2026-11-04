@@ -24,6 +24,7 @@ from .attrs import FORMS, PERSON_FORMS
 from .attrs_data import WRITEBACK_ID, hand_labels
 from .augment import IMAGE_EXTS
 from .bubbles import Rect
+from .candle import black
 from .gesture_train import macro_f1
 from .track import iou
 
@@ -306,8 +307,10 @@ def gt_fixes(root: Path) -> dict[tuple[str, str], list[tuple[Rect, int | None]]]
 
 
 def _gt_boxes(path: Path, w: int, h: int, spirit: bool = True,
-              fixes: dict[tuple[str, str], list[tuple[Rect, int | None]]] | None = None) -> list[tuple[Rect, int]]:
-    """spirit = False：外形头没有单独的先祖类（不够数并进了 not_person，会把先祖框撤掉），先祖不算要保留的人。
+              fixes: dict[tuple[str, str], list[tuple[Rect, int | None]]] | None = None) -> list[tuple[Rect, int, bool]]:
+    """返回 [(框, 类别号, sure)]。sure = 点没点火的答案明确：标的是 4 / 9，或这一框来自 fixes（标注页确认过：改过类别或补进来的）。
+    只标 0（player）又没被确认过的框 sure = False：单类模型没有黑影类，datasets/sky 里黑影常被标成 player，不能拿它当"点亮"的答案。
+    spirit = False：外形头没有单独的先祖类（不够数并进了 not_person，会把先祖框撤掉），先祖不算要保留的人。
     fixes（`gt_fixes`）：和标注框 IoU ≥ FIX_IOU 的改类别（None 删掉），对不上的补进来。"""
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -315,17 +318,18 @@ def _gt_boxes(path: Path, w: int, h: int, spirit: bool = True,
         if len(parts) < 5 or int(parts[0]) not in GT_PERSON or (not spirit and int(parts[0]) == 9):
             continue
         cx, cy, bw, bh = (float(v) for v in parts[1:5])
-        out.append((Rect(round((cx - bw / 2) * w), round((cy - bh / 2) * h), round(bw * w), round(bh * h)), int(parts[0])))
+        out.append((Rect(round((cx - bw / 2) * w), round((cy - bh / 2) * h), round(bw * w), round(bh * h)), int(parts[0]),
+                    int(parts[0]) in (4, 9)))
     for box, cid in (fixes or {}).get((Path(path).parent.name, Path(path).stem), []):
         hit = max(range(len(out)), key=lambda i: iou(box, out[i][0]), default=None)
         if hit is not None and iou(box, out[hit][0]) >= FIX_IOU:
             if cid is None:
                 out.pop(hit)
             else:
-                out[hit] = (out[hit][0], cid)
+                out[hit] = (out[hit][0], cid, True)
         elif cid is not None:
-            out.append((box, cid))
-    return [(b, c) for b, c in out if spirit or c != 9]
+            out.append((box, cid, True))
+    return [(b, c, s) for b, c, s in out if spirit or c != 9]
 
 
 def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | None = None,
@@ -349,7 +353,7 @@ def collect(frames: list[Path], detector, model, conf_low: float, fixes: dict | 
                                for d in dets]) if dets and model is not None else [{} for _ in dets]
         keep_spirit = (model is None or "spirit" in labels) if spirit is None else spirit
         records.append({"gt": _gt_boxes(lf, w, h, spirit=keep_spirit, fixes=fixes), "dets": [
-            {"cls": d.cls, "box": d.box, "score": d.score,
+            {"cls": d.cls, "box": d.box, "score": d.score, "dark": black(img, d.box),  # 框有多黑：外形头用不了时的亮度判法
              "p": ({lb: float(v) for lb, v in zip(labels, r["form"])} if "form" in r else None)}
             for d, r in zip(dets, probs)]})
     return records
@@ -371,19 +375,22 @@ def load_fixes(attrs_root: Path | None, notes: list[str]) -> dict:
     return fixes
 
 
-def replay_row(records: list[dict], conf_low: float, conf: float, a: AttrsConfig) -> dict:
-    """`simulate` 按 [attrs] 的 accept / reject / yolo_w 算，再带上这些门槛（`replay_md` 要用）。"""
-    return {**simulate(records, conf, a.accept, a.reject, a.yolo_w), "conf_low": conf_low, "conf": conf,
-            "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n, "yolo_w": a.yolo_w}
+def replay_row(records: list[dict], conf_low: float, conf: float, a: AttrsConfig, *, single: bool = False) -> dict:
+    """`simulate` 按 [attrs] 的 accept / reject / yolo_w 算，再带上这些门槛（`replay_md` 要用）。
+    single（单类检测器）：YOLO 说不出点没点火，yolo_w 按 0 算（记在结果里）。"""
+    w = 0.0 if single else a.yolo_w
+    return {**simulate(records, conf, a.accept, a.reject, w), "conf_low": conf_low, "conf": conf,
+            "accept": a.accept, "reject": a.reject, "reject_n": a.reject_n, "yolo_w": w, "single": single,
+            "dark": dark_sweep(records)}
 
 
 def _ratio(a: int, b: int) -> float:
     return a / b if b else 1.0
 
 
-def _score(preds: list[dict], gt: list[tuple[Rect, int]]) -> tuple[int, int, int, int, int]:
-    """贪心配对（IoU 从大到小，≥ MATCH_IOU）。返回 (tp, fp, fn, 配上且 GT 是亮 / 黑影的对数, 其中点没点火认反的数)。"""
-    pairs = sorted(((iou(p["box"], g[0]), i, j) for i, p in enumerate(preds) for j, g in enumerate(gt)), reverse=True)
+def _match(preds_boxes: list[Rect], gt: list[tuple[Rect, int, bool]]) -> list[tuple[int, int]]:
+    """贪心配对（IoU 从大到小，≥ MATCH_IOU），返回 [(预测序号, 标注序号)]。"""
+    pairs = sorted(((iou(b, g[0]), i, j) for i, b in enumerate(preds_boxes) for j, g in enumerate(gt)), reverse=True)
     used_p, used_g, matched = set(), set(), []
     for v, i, j in pairs:
         if v < MATCH_IOU:
@@ -393,9 +400,16 @@ def _score(preds: list[dict], gt: list[tuple[Rect, int]]) -> tuple[int, int, int
         used_p.add(i)
         used_g.add(j)
         matched.append((i, j))
+    return matched
+
+
+def _score(preds: list[dict], gt: list[tuple[Rect, int, bool]]) -> tuple[int, int, int, int, int]:
+    """贪心配对（IoU 从大到小，≥ MATCH_IOU）。返回 (tp, fp, fn, 配上且答案明确（sure）的亮 / 黑影的对数, 其中点没点火认反的数)。
+    点没点火只在 sure 的框上计：只标 player 的框可能其实是黑影（标错 / 单类数据），tp / fp / fn 照旧算所有框。"""
+    matched = _match([p["box"] for p in preds], gt)
     both = bad = 0
     for i, j in matched:
-        if gt[j][1] in (0, 4):
+        if gt[j][1] in (0, 4) and gt[j][2]:
             both += 1
             bad += preds[i]["unlit"] != (gt[j][1] == 4)
     return len(matched), len(preds) - len(matched), len(gt) - len(matched), both, bad
@@ -463,6 +477,28 @@ def sweep_thresholds(records: list[dict], conf: float) -> tuple[float, float]:
     return best[3], best[4]
 
 
+DARK_GRID = tuple(round(0.30 + 0.05 * i, 2) for i in range(11))  # 0.30 ~ 0.80
+
+
+def dark_sweep(records: list[dict]) -> dict:
+    """只用亮度判点没点火（单类模式、外形头用不了时的做法）：在答案明确（sure）的 0 / 4 标注上，
+    把检测框按 MATCH_IOU 贪心配对（只用量得出 dark 的框），对每个门槛算"框有多黑 ≥ 门槛 就是黑影"的准确率。
+    返回 {"best": 准确率最高的门槛（并列取中间那个）, "acc": 准确率, "n": 配上的对数, "rows": [(门槛, 准确率)]}；没有对子 best / acc 是 None。"""
+    pairs: list[tuple[float, bool]] = []
+    for rec in records:
+        dets = [d for d in rec["dets"] if d.get("dark") is not None]
+        for i, j in _match([d["box"] for d in dets], rec["gt"]):
+            _, cid, sure = rec["gt"][j]
+            if sure and cid in (0, 4):
+                pairs.append((float(dets[i]["dark"]), cid == 4))
+    if not pairs:
+        return {"best": None, "acc": None, "n": 0, "rows": []}
+    rows = [(t, sum((v >= t) == unlit for v, unlit in pairs) / len(pairs)) for t in DARK_GRID]
+    top = max(a for _, a in rows)
+    tied = [t for t, a in rows if abs(a - top) < 1e-9]
+    return {"best": tied[len(tied) // 2], "acc": top, "n": len(pairs), "rows": rows}
+
+
 def frames_in(dataset: Path, split: str = "val") -> list[Path]:
     d = Path(dataset) / "images" / split
     return sorted(p for p in d.iterdir() if p.suffix.lower() in IMAGE_EXTS) if d.is_dir() else []
@@ -516,7 +552,24 @@ def replay_md(r: dict) -> list[str]:
         lines.append(f"| {name} | {s['tp']} | {s['fp']} | {s['fn']} | {_pct(s['precision'])} | {_pct(s['recall'])} | "
                      f"{s['mismatch']} / {s['pairs']} |")
     lines.append(_unlit_note(r.get("yolo_w", AttrsConfig.yolo_w)))
-    return lines + [""]
+    lines.append("「点没点火认反」只在答案明确的框上算（标的是 player_unlit / spirit，或标注页确认过的）；"
+                 "只标 player 又没人确认过的框可能其实是黑影，不算。")
+    if r.get("single"):
+        lines.append("这一行的 YOLO 是单类模型（只框人），YOLO 一侧的权重按 0 算，点没点火全靠外形头。")
+    return lines + dark_md(r.get("dark"))
+
+
+def dark_md(d: dict | None) -> list[str]:
+    """"只用亮度判点没点火"一节（attrs-eval 和重训报告共用）；没有这项数据就不写。"""
+    if not d:
+        return []
+    if not d.get("n"):
+        return ["### 只用亮度判点没点火（外形头用不了时）", "", "没有答案明确的点亮 / 黑影标注配上检测框，没算。", ""]
+    return ["### 只用亮度判点没点火（外形头用不了时）", "",
+            f"在 {d['n']} 对答案明确的框上，框有多黑（`candle.black`）≥ 门槛就判黑影：最好的门槛 {d['best']:g}，准确率 {d['acc']:.0%}"
+            f"（`[attrs] dark_unlit` 现在填多少看这个）。", "",
+            "| 门槛 | " + " | ".join(f"{t:g}" for t, _ in d["rows"]) + " |", "|---|" + "---|" * len(d["rows"]),
+            "| 准确率 | " + " | ".join(f"{a:.0%}" for _, a in d["rows"]) + " |", ""]
 
 
 def report_md(*, data: Path, model: Path | None, when, result: dict | None, replays: list[dict],

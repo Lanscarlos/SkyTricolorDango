@@ -180,7 +180,8 @@ def compare(old_yolo: str | Path | None, new_yolo: str | Path, old_attrs, new_at
             part = parts[key]
             if part is None:
                 continue
-            r = at.replay_row(recs, p.low_conf, p.conf, a)
+            r = at.replay_row(recs, p.low_conf, p.conf, a, single=bool(getattr(detector, "single", False)))
+            part["dark"] = r["dark"]  # 先旧后新，留下的是新模型这一边（单类检测框的亮度）
             part["rows"][side] = r["baseline"]
             part["rows"][f"{side}_head"] = r["second"] if head is not None else None
             part.setdefault("frames", r["frames"])  # 答案是同一份，两边的帧数 / 人数一样
@@ -233,6 +234,7 @@ def _part_md(title: str, part: dict | None, params: dict) -> list[str]:
               f"reject = {params['reject']:g}、yolo_w = {params['yolo_w']:g}", ""]
     L += ["| | 对 | 错报 | 漏 | 精确率 | 召回率 | 点没点火认反 |", "|---|---|---|---|---|---|---|"]
     rows = part["rows"]
+    dark = at.dark_md(part.get("dark"))
     for key, name in ROWS:
         s = rows.get(key)
         if s is None:
@@ -244,6 +246,7 @@ def _part_md(title: str, part: dict | None, params: dict) -> list[str]:
                  f"{_cell(s['precision'], base and base['precision'])} | {_cell(s['recall'], base and base['recall'])} | "
                  f"{s['mismatch']} / {s['pairs']} |")
     L.append("")
+    L += dark
     m = part.get("map50")
     if m:
         old, new = m.get("old") or {}, m.get("new") or {}

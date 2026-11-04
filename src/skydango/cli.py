@@ -1197,7 +1197,7 @@ def _attrs_replays(cfg: Config, frames: list, model, notes: list[str], attrs_roo
         records = at.collect(frames, detector, model, low, fixes)
         if suggest is None or low == p.low_conf:
             suggest = at.sweep_thresholds(records, p.conf)
-        replays.append(at.replay_row(records, low, p.conf, a))
+        replays.append(at.replay_row(records, low, p.conf, a, single=bool(getattr(detector, "single", False))))
     return replays, suggest
 
 
