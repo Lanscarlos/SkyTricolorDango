@@ -366,3 +366,11 @@ spec `docs/superpowers/specs/2026-11-04-yolo-boxes-only-design.md`，计划 `doc
 **做了什么**：检测器认出 0 号类别叫 `person` 的单类模型（改名 `player`、丢 `unused_*`）；点没点火统一走 `PerceptionWatcher._unlit`，单类时只看外形头，外形头没开 / 关了按亮度（`dark_unlit`）投票；`perception retrain` 默认用合并视图（`[retrain] merge`，player / player_unlit / spirit → person）训 YOLO，`datasets/sky` 不动；回放只拿答案明确的框计"点没点火认反"，报告加"只用亮度判点没点火"一节；收件箱整理对 YOLO 出的框按单类规则自动确认；Claude 标注提示词加"点没点火拿不准就标 player"（版本 5，旧缓存会失效）。
 
 **下一步**：`python -m skydango perception retrain` 训第一个单类模型（合并视图会自己建），看报告里 spec §3.1 三条门槛：① 找人不变差（回放里 `baseline` 行的召回 / 精确率，不看 mAP）② 黑影靠外形头 / 亮度能认（外形头那一行"点没点火认反"，亮度那一节的准确率和最佳门槛）③ 旧行为不退。过了再换上，并把亮度最佳门槛填进 `[attrs] dark_unlit`。真机 spec §3.2 五步没走。
+
+### 11-04 晚：第一个单类模型 v12，和"v10 为什么这么好"
+
+- `perception retrain`（合并视图）训出 `models/sky-yolo-v12.pt` + `models/attrs-20261104a.npz`（外形头宏平均 F1 0.887），报告 `tmp/retrain/20261104-205859/report.md`；**没换上，本机还是 v10**。
+- 报告里 v12 比 v10 召回低 6、精确率低 4，扫阈值（`tmp/retrain_conf_sweep.py`）每档都低。同设置、同数据按多类训的对照（`tmp/retrain_control.py` → `tmp/retrain/control-20261104/`）也低一截，所以不是合成一类的锅。
+- **原因是验证集答案偏向 v10**（`tmp/v10_bias.py`）：10-04 傍晚"补全答案"是拿 v10 找漏标的人（`crops --model v10`），验证集补了 36 人——v10 框得出的人才会被补进答案。用补全前的答案（`_backup/labels-20261004-162434`）打分，阈值 0.35：v10 78% / 76%、对照 76% / 77%、v12 78% / 74%，差距只剩 1~3 个点。
+- 所以 spec 2026-11-04 §3.1 门槛 1 改成"和同一份数据上的多类对照比、用不偏向任何一个模型的答案"；合成一类的代价目前看是召回低 ~3 个点（单次训练，还没扣波动）。
+- **下一步**：三个模型（v10 / 对照 / v12）在验证集上框出、答案里没有的人合起来裁图，外形页人工判、写回，再重新打分。
