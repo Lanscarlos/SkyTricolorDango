@@ -544,6 +544,8 @@ class AttrsConfig:
     yolo_w: float = 0.3
     flip_votes: int = 3  # 形态要翻转，新形态至少连续几票
     max_errors: int = 10  # 推理连续出错这么多次就自己关掉
+    # 单类模式（YOLO 只框人）下外形头没开 / 自己关了时，按框有多黑估点没点火：candle.black() 中位数 ≥ 这个算黑影（同 [catalog] dark_max 的量，估的）
+    dark_unlit: float = 0.5
 
 
 @dataclass

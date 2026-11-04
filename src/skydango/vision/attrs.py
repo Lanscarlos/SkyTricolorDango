@@ -199,6 +199,32 @@ def unlit_score(t: Track, yolo_w: float) -> float | None:
     return yolo_w * yolo + (1 - yolo_w) * mean.get("unlit", 0.0) / den
 
 
+def dark_vote(t: Track, value: float | None, cfg: AttrsConfig) -> None:
+    """单类模式下外形头用不了时，用框有多黑（`candle.black`）给点没点火投票。
+
+    value 进 data["dark_hist"]（最近 votes 个，None 不进、不改 unlit）；中位数 m ≥ dark_unlit 算黑影。
+    和外形头共用 data["unlit"] / "unlit_streak"：第一次直接定，之后带滞回（dark_unlit ± 0.1），连续 flip_votes 票才翻。"""
+    if value is None:
+        return
+    hist = t.data.setdefault("dark_hist", [])
+    hist.append(float(value))
+    del hist[:-cfg.votes]
+    m = float(np.median(hist))
+    if "unlit" not in t.data:
+        t.data["unlit"] = m >= cfg.dark_unlit
+        t.data["unlit_streak"] = 0
+        return
+    cur = t.data["unlit"]
+    if (m < cfg.dark_unlit - 0.1) if cur else (m > cfg.dark_unlit + 0.1):
+        t.data["unlit_streak"] = t.data.get("unlit_streak", 0) + 1
+        if t.data["unlit_streak"] >= cfg.flip_votes:
+            t.data["unlit"] = not cur
+            t.data["unlit_streak"] = 0
+            t.flips += 1
+    else:
+        t.data["unlit_streak"] = 0
+
+
 class PersonAttrs:
     """给 YOLO 的人物轨迹挑框裁图、过模型、把最近几次的概率平均起来（投票）。
 
@@ -211,6 +237,7 @@ class PersonAttrs:
         self.model = model
         self.enabled = True
         self.errors = 0
+        self.single = False  # 单类模型（人只有一类）：由感知层设置，点没点火只看外形头
 
     def update(self, frame: np.ndarray, tracks: list[Track], now: float, panel: Rect | None) -> None:
         if not self.enabled:
@@ -265,7 +292,9 @@ class PersonAttrs:
         for t in people:
             if t.data.get("rejected"):
                 continue
-            u = unlit_score(t, cfg.yolo_w)
+            if self.single and not t.data.get("form_mean"):
+                continue  # 单类：外形头还没出结果，YOLO 这边没有点没点火的信息，不先定
+            u = unlit_score(t, 0.0 if self.single else cfg.yolo_w)
             if u is None:
                 continue
             if "unlit" not in t.data:
@@ -278,6 +307,8 @@ class PersonAttrs:
                 if t.data["unlit_streak"] >= cfg.flip_votes:
                     t.data["unlit"] = not cur
                     t.data["unlit_streak"] = 0
+                    if self.single:
+                        t.flips += 1  # 单类模式没有类别来回变，难例的"来回变"改看这个
             else:
                 t.data["unlit_streak"] = 0
 
@@ -296,4 +327,6 @@ class PersonAttrs:
     def is_unlit(self, t: Track) -> bool:
         if self.enabled and "unlit" in t.data:
             return bool(t.data["unlit"])
+        if self.single:
+            return bool(t.data.get("unlit", False))
         return t.cls == "player_unlit"

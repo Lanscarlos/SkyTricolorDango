@@ -378,3 +378,49 @@ def test_is_unlit_falls_back_to_yolo_class_when_disabled():
     assert pa.is_unlit(t)
     t.data["strong"] = True
     assert pa.admit(t)
+
+
+# ---- 单类模式（YOLO 只框人）----
+
+
+def test_unlit_score_single_ignores_yolo():
+    t = _track(1, 200, 0.0)
+    t.data["cls_hist"] = ["player"] * 3
+    t.data["form_n"] = 2
+    t.data["form_mean"] = {"not_person": 0.0, "lit": 0.1, "unlit": 0.9, "shared": 0.0}
+    assert abs(attrs.unlit_score(t, 0.0) - 0.9) < 1e-6  # YOLO 权重 0：只看外形头
+
+
+def test_dark_vote_first_and_hysteresis():
+    cfg = AttrsConfig(votes=5, flip_votes=3, dark_unlit=0.5)
+    t = _track(1, 200, 0.0)
+    attrs.dark_vote(t, 0.8, cfg)
+    assert t.data["unlit"] is True
+    for v in (0.45, 0.45, 0.45, 0.45):
+        attrs.dark_vote(t, v, cfg)
+    assert t.data["unlit"] is True  # 0.45 在滞回区里，不翻
+    for _ in range(5):
+        attrs.dark_vote(t, 0.1, cfg)
+    assert t.data["unlit"] is False and t.flips == 1
+
+
+def test_dark_vote_none_ignored():
+    cfg = AttrsConfig()
+    t = _track(1, 200, 0.0)
+    attrs.dark_vote(t, None, cfg)
+    assert "dark_hist" not in t.data and "unlit" not in t.data
+    attrs.dark_vote(t, 0.9, cfg)
+    attrs.dark_vote(t, None, cfg)
+    assert t.data["dark_hist"] == [0.9] and t.data["unlit"] is True
+
+
+def test_person_attrs_single_counts_flips():
+    def run(single):
+        pa = _pa(FakeModel(), votes=1, every=0.0, flip_votes=2)
+        pa.single = single
+        t = _track(1, 200, 0.0)
+        _feed(pa, pa.model, t, [[0, 0.1, 0.9]] * 2 + [[0, 0.9, 0.1]] * 3)
+        return t
+    t = run(True)
+    assert t.data["unlit"] is False and t.flips == 1
+    assert run(False).flips == 0
