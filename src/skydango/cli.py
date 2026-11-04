@@ -2553,7 +2553,7 @@ def _perception_label(cfg: Config, args) -> None:
     print("自动标出：" + "、".join(f"{c}×{v}" for c, v in counts.items()))
     print(f"数据集配置：{out / 'data.yaml'}")
     print("下一步：用 X-AnyLabeling 打开 images/ 导入 YOLO 标注，给**每一张**补上 player（其他玩家）、player_unlit（没点火的黑影）"
-          "和 self（团子自己）框、"
+          "和 self（团子自己）框（点没点火拿不准就标 player，外形页会再确认）、"
           "修正错框 —— 没补全的图会教模型“这里没有人”，训出来会漏检")
 
 

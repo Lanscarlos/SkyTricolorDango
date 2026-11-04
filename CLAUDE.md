@@ -322,6 +322,13 @@ dir = "private/sandbox"
   A `panel_people`（默认开）：面板开着时只丢面板区域里的名字标签 / 气泡 / 圆圈（`PANEL_DROP`），人物框留着，面板后面没挂过标签的点过火的人先不判陌生人（`_under_panel`，黑影照常判；面板关了从关的那一刻起再等 `stranger_after`），面板里的 `self` 框当普通人（开面板时团子在右边，那是误检）、面板后面的人不做远处裁图；
   B 平移估计（`_pan_step`）用整张缩略图、只在面板开着时遮左三分之一，不再遮人物框（受 `track_pan` 管）；C `panel_settle`（2.5 秒，0 = 关）：面板标志翻转 / 按 C（`PanelManager.on_press` → `camera_moved(at, "panel")`）后这段时间速度清零、不攒走近 / 运动历史。
   `panel_people = false`、`panel_settle = 0`、`track_pan = false` 逐字照旧；**只在合成画面里测过，录像回放测试和 track-eval 前后对比还没跑**（要本机的 `tmp/record/panel-toggle-1003-*`，见 5b 末尾「还没做」）
+- **单类模式（YOLO 只框人，视觉重构 A）**（spec `docs/superpowers/specs/2026-11-04-yolo-boxes-only-design.md`，计划 `docs/superpowers/plans/2026-11-04-yolo-boxes-only.md`；**代码 11-04 做完；还没训出单类模型、没上线，spec §3.2 真机五步没走**）：
+  - **怎么认**：模型的 0 号类别叫 `person` 就是单类模型（`detect.single_class_names`，不加配置开关）：检测器把 `person` 改名成 `player` 往下传、`unused_*`（4 / 9 号占位）的框丢掉，其余类别（1 name_tag、2 social_ring、3 self、5 typing、6~8 物品）不动；检测器有属性 `single`。旧模型（有 `player_unlit`）逐字照旧
+  - **点没点火来源**：YOLO 不再说（YOLO 一侧权重按 0 算）。外形头开着 → 只看外形头（`PersonAttrs.single`，翻转计入 `Track.flips`）；外形头没开 / 连续出错自己关了 → 按亮度投票（`attrs.dark_vote`：`candle.black()` 中位数 ≥ `[attrs] dark_unlit` 0.5 算黑影，滞回 ±0.1，复用 `every` / `votes` / `flip_votes`；已有轨迹的 `unlit` 无缝接着用）。统一走 `PerceptionWatcher._unlit`；点亮陌生人找的"下面是不是黑影"（`_people_boxes` 第二位）也来自它，低分框一律 False。启动日志和 status 的"感知：…"一行写明模式
+  - **训练**：`[retrain] merge = true`（默认）时 `perception retrain` 先建合并视图（`vision/merged.py`：硬链接图片 + 把标签 4 / 9 改成 0，`datasets/sky` 不动）再训 YOLO；新模型的 ultralytics val 用合并视图，旧模型仍用 `datasets/sky`（旧模型的 4 / 9 号映射不成 0）。回放对比里新旧检测器各自按自己是不是单类算（单类 `yolo_w` = 0）；"点没点火认反"只在答案明确的框上算（标的是 player_unlit / spirit，或标注页确认过的；只标 player 的可能其实是黑影）；报告多一节"只用亮度判点没点火"（`attrs_train.dark_sweep`，各门槛的准确率，定 `dark_unlit` 用）
+  - **收件箱**：`inbox process` 对 YOLO 出的框按单类规则（外形头说点亮 / 黑影 / 先祖且有把握就自动确认，不看 YOLO 类别配对）；原标注带来的 `player_unlit` 框仍按老规则
+  - **标注规则**：Claude 辅助标注的提示词（`assist.PROMPT_VERSION` 5）加了"点没点火拿不准就判 player，外形页会再确认"
+  - **下一步**：`perception retrain` 训第一个单类模型，看 spec §3.1 三条门槛（找人不变差、黑影靠外形头 / 亮度能认、旧行为不退）；回放里 sweep 出的亮度门槛填进 `dark_unlit`；`spin` 转圈汇总（`sweep.py`）里还按 `player_unlit` 类别认黑影，单类模式下不报黑影，要接外形头 / 亮度时再改
 - **感知层第二层（`[attrs]`，代码默认关；本机 10-04 起开着：`models/attrs-20261004d-mask.npz`，上线门槛 1~3 过了，门槛 4（真机效果）边开边验、还没定论）**：设计 `docs/superpowers/specs/2026-10-02-perception-attrs-design.md`，计划 `docs/superpowers/plans/2026-10-02-perception-attrs.md`。
   **裁图框外填灰**（10-04，`attrs.CROP_KEEP` 0.05，写进模型的 `<头>.keep`，旧模型没有 = 不遮挡）：瘦高的框补成正方形会把旁边的人裁进来，离线对比 5 折 F1 0.76 → 0.90（`tmp/attrs-mask/report-fixed.md`）；
   存盘的裁图不遮挡（标注页要看上下文），训练提特征时按框事后遮挡；整帧回放的标准答案按标注页确认过的修正（`attrs_train.gt_fixes`，只在内存里）。

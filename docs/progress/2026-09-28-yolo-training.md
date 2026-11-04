@@ -358,3 +358,11 @@ GPU 上 4 张逐张 < 40 ms，**不用导出带 batch 的主干**。onnxruntime-
 - 每段录像的 `inbox/` 输出在 `tmp/catalog/<名字>/inbox/offline/<录像>/`，可以直接翻看。
 
 **Task 9 复跑（play-1001-1，`tmp/catalog/play-1-fix/`）**：514 个候选，收下 326、`dark` 挡掉 22（edge 92、small 28、blocked 28、blurry 18）；存图从 36 张降到 14 张（团子 6、好友 6、陌生人 2）。黑影已经全部不见；但剩下的 2 张"陌生人"（t127、t198）看着还是团子（红斗篷 + 橙袍，和团子那一行同一身），说明团子框丢得比 1 秒更久、或离 self 框不够近的帧里仍有漏网，没再放宽（宁可漏收、不靠旧位置瞎猜）。懒洋洋大王那一行有一张主体是黑影（和他叠在一起，被框成一个人）。**最终评审后 F2 修了**：好友名字标签还没读出来的那几帧被当陌生人收（`_catalog_who` 现在只收感知层已判陌生人 `data["stranger"]` 或“像小明” `maybe` 的，有标签但不在名单里的不收）；复跑结果见 `tmp/catalog/play-1-final/`。另外团子那一行里有一张是一个黑影（那一帧 self 框给了别人，h0.64，带火焰圆圈）。
+
+## 2026-11-04：单类模式（YOLO 只框人）代码做完
+
+spec `docs/superpowers/specs/2026-11-04-yolo-boxes-only-design.md`，计划 `docs/superpowers/plans/2026-11-04-yolo-boxes-only.md`。
+
+**做了什么**：检测器认出 0 号类别叫 `person` 的单类模型（改名 `player`、丢 `unused_*`）；点没点火统一走 `PerceptionWatcher._unlit`，单类时只看外形头，外形头没开 / 关了按亮度（`dark_unlit`）投票；`perception retrain` 默认用合并视图（`[retrain] merge`，player / player_unlit / spirit → person）训 YOLO，`datasets/sky` 不动；回放只拿答案明确的框计"点没点火认反"，报告加"只用亮度判点没点火"一节；收件箱整理对 YOLO 出的框按单类规则自动确认；Claude 标注提示词加"点没点火拿不准就标 player"（版本 5，旧缓存会失效）。
+
+**下一步**：`python -m skydango perception retrain` 训第一个单类模型（合并视图会自己建），看报告里 spec §3.1 三条门槛：① 找人不变差（回放里 `baseline` 行的召回 / 精确率，不看 mAP）② 黑影靠外形头 / 亮度能认（外形头那一行"点没点火认反"，亮度那一节的准确率和最佳门槛）③ 旧行为不退。过了再换上，并把亮度最佳门槛填进 `[attrs] dark_unlit`。真机 spec §3.2 五步没走。
