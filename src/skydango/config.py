@@ -521,6 +521,8 @@ class RetrainConfig:
     epochs: int = 120
     batch: int = 16
     workers: int = 2
+    # 训练 YOLO 时把 player / player_unlit / spirit 合成一类 person（合并视图，不动 datasets/sky；点没点火 / 先祖交给外形头）
+    merge: bool = True
 
 
 @dataclass

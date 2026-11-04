@@ -101,7 +101,7 @@ OLD = {2: [_d("player", 70, 0.9)], 3: [_d("player_unlit", 100, 0.9)]}  # 漏了 
 NEW = {1: [_d("player", 20, 0.9)], 2: [_d("player", 70, 0.9)], 3: [_d("player_unlit", 100, 0.9)]}
 
 
-def _world(tmp_path, monkeypatch, old_attrs=True):
+def _world(tmp_path, monkeypatch, old_attrs=True, merge=False):
     ds = tmp_path / "sky"
     for tag, stem, label in ((1, "f1", "0 0.2 0.5 0.2 0.6\n"), (2, "f2", "0 0.45 0.5 0.2 0.6\n"),
                              (3, "f3", "4 0.6 0.5 0.2 0.6\n")):
@@ -124,6 +124,7 @@ def _world(tmp_path, monkeypatch, old_attrs=True):
     (models / "sky-yolo-v10.pt").write_bytes(b"old")
     (ty / "sky-v11").mkdir(parents=True)
     cfg = Config()
+    cfg.retrain.merge = merge  # 默认关：这些测试看的是不合并的老路径，合并视图的在 test_run_retrain_uses_merged
     cfg.perception.model = str(models / "sky-yolo-v10.pt")
     cfg.perception.low_conf = 0.2
     cfg.attrs.backbone = "b.onnx"
@@ -332,3 +333,31 @@ def test_cli_retrain(tmp_path, monkeypatch, capsys):
         cli.main(["-c", str(tmp_path / "config.toml"), "perception", "retrain"])
     assert e.value.code not in (0, None)
     assert "重训失败（训练外形头）" in capsys.readouterr().out
+
+
+def test_run_retrain_uses_merged(tmp_path, monkeypatch):
+    cfg, ds, inbox, models, calls, kw = _world(tmp_path, monkeypatch, merge=True)
+    # 合并视图要有图片和标签可建：训练集一张、验证集沿用 _world 里的三张
+    imwrite(ds / "images/train/t1.png", np.full((100, 200, 3), 60, np.uint8))
+    (ds / "labels/train").mkdir(parents=True, exist_ok=True)
+    (ds / "labels/train/t1.txt").write_text("4 0.5 0.5 0.2 0.6\n9 0.2 0.5 0.1 0.3\n", encoding="utf-8")
+    out = tmp_path / "out"
+    res = retrain.run_retrain(cfg, ds, inbox, out, lambda s: None, **kw)
+    assert calls["train"][0] == (cfg.retrain.epochs, out / "merged" / "data.yaml")
+    assert [ln.split()[0] for ln in (out / "merged/labels/train/t1.txt").read_text(encoding="utf-8").splitlines()] == ["0", "0"]
+    assert (ds / "labels/train/t1.txt").read_text(encoding="utf-8").startswith("4 ")  # 原数据集没动
+    # 新模型的 ultralytics val 用合并视图，旧模型用原数据集
+    by_weights = {("v12" in str(w)): d for w, d in calls["val"] if d.name == "data.yaml"}
+    assert by_weights[True] == out / "merged" / "data.yaml" and by_weights[False] == ds / "data.yaml"
+    sub_new = [d for w, d in calls["val"] if "v12" in str(w) and d.name != "data.yaml"]
+    assert sub_new and "merged" not in sub_new[0].as_posix().split("/")[-1]  # 收件箱清单单独成文件
+    listed = [ln for ln in (out / "new" / "inbox_val.txt").read_text(encoding="utf-8").splitlines() if ln]
+    assert listed and all("merged" in ln.replace(chr(92), "/") for ln in listed)
+    assert res["merged"] is True and "合并视图训练" in (out / "report.md").read_text(encoding="utf-8")
+
+
+def test_run_retrain_no_merge_uses_dataset(tmp_path, monkeypatch):
+    cfg, ds, inbox, models, calls, kw = _world(tmp_path, monkeypatch, merge=False)
+    out = tmp_path / "out"
+    retrain.run_retrain(cfg, ds, inbox, out, lambda s: None, **kw)
+    assert calls["train"][0] == (cfg.retrain.epochs, ds / "data.yaml") and not (out / "merged").exists()

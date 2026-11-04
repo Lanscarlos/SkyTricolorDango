@@ -277,6 +277,7 @@ imgsz = 960
 epochs = 120
 batch = 16
 workers = 2
+merge = true                    # 训练 YOLO 时把 player / player_unlit / spirit 合成一类 person（合并视图，不动 datasets/sky）
 
 [catalog]
 # 装扮图鉴第 1 期：运行时把近处的人清楚的整身裁图存进 catalog/inbox/<日期>/<运行>/<身份>/（只截图存盘、不发输入）。

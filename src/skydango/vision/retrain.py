@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..config import Config, RetrainConfig
-from . import attrs, attrs_train as at
+from . import attrs, attrs_train as at, merged
 from . import inbox as ib
 
 DATASET = Path("datasets/sky")
@@ -138,12 +138,17 @@ def _inbox_yaml(dataset: Path, images: list[Path], work: Path) -> Path:
 
 def compare(old_yolo: str | Path | None, new_yolo: str | Path, old_attrs, new_attrs, dataset: Path, cfg: Config,
             inbox_frames: set[str], *, attrs_root: Path | None = ATTRS_ROOT, val=None, work: Path | None = None,
-            step: Callable[[str], None] = lambda s: None) -> dict:
+            step: Callable[[str], None] = lambda s: None, yolo_dataset: Path | None = None) -> dict:
     """旧 / 新模型在 dataset 验证集上比：整帧回放四行（旧 YOLO、旧 + 旧外形头、新 YOLO、新 + 新外形头）
     × "全部验证帧"和"来自收件箱的验证帧"（inbox_frames = 帧名，不带扩展名）两份；val 不是 None 时再加各类 mAP50。
     old_attrs / new_attrs 是加载好的外形头（None = 没有，那一行空着）；old_yolo 文件不存在时旧的两行都空着。
+    yolo_dataset（合并视图的目录或它的 data.yaml）：**新模型**的 ultralytics val 用它（新模型是单类）；旧模型（不是单类）仍用 dataset，
+    ultralytics val 没法把旧模型的 4 / 9 号映射成 0；外形头回放、取帧仍用 dataset。
     返回 {all: 一份, inbox: 一份或 None（没有收件箱验证帧）, params, notes}；一份 = {frames, gt, rows: {old, old_head, new, new_head}, map50}。"""
     p, a = cfg.perception, cfg.attrs
+    yd = Path(yolo_dataset) if yolo_dataset is not None else None
+    if yd is not None and yd.suffix in (".yaml", ".yml"):
+        yd = yd.parent
     notes: list[str] = []
     frames = at.frames_in(dataset, "val")
     mine = [f for f in frames if f.stem in inbox_frames]
@@ -187,13 +192,17 @@ def compare(old_yolo: str | Path | None, new_yolo: str | Path, old_attrs, new_at
         if val is None:
             continue
         work = Path(work) if work is not None else Path(".")
-        data = Path(dataset) / "data.yaml" if key == "all" else _inbox_yaml(dataset, mine, work)
         part["map50"] = {}
         for side, yolo in (("old", old_yolo), ("new", new_yolo)):
             if side == "old" and not have_old:
                 part["map50"][side] = None
                 continue
             step(f"mAP50（{'旧' if side == 'old' else '新'} YOLO，{'全部验证帧' if key == 'all' else '收件箱验证帧'}）")
+            if side == "new" and yd is not None:
+                # 合并视图里的图片同名；收件箱那份清单也要指向合并视图里的图（标签是按图片路径换出来的）
+                data = yd / "data.yaml" if key == "all" else _inbox_yaml(yd, [yd / "images" / "val" / f.name for f in mine], work / "new")
+            else:
+                data = Path(dataset) / "data.yaml" if key == "all" else _inbox_yaml(dataset, mine, work)
             part["map50"][side] = val(Path(yolo), data, work / f"val-{side}-{key}")
     if val is None:
         notes.append("没算 mAP50")
@@ -261,6 +270,8 @@ def report_md(result: dict) -> str:
         t = result["train"]
         L.append(f"- YOLO 训练：起点 {t['base']}、imgsz {t['imgsz']}、{t['epochs']} 轮、batch {t['batch']}；"
                  f"收件箱通过的帧用到 {result.get('trained_frames', 0)} 帧")
+    if result.get("merged"):
+        L.append("- YOLO 用合并视图训练（单类：player / player_unlit / spirit → person）")
     head = result.get("head") or {}
     if head.get("macro_f1") is not None:
         L.append(f"- 外形头：验证集宏平均 F1 {head['macro_f1']:.3f}（训练 {head.get('train_n')} 张、验证 {head.get('val_n')} 张）")
@@ -321,9 +332,13 @@ def _run(cfg, dataset, inbox, out, progress, step, train, val, attrs_train_fn, e
 
     step("挪走标注缓存")
     stash_caches(dataset, out / "caches")
+    yolo_data = dataset
+    if cfg.retrain.merge:
+        step("建合并视图")
+        yolo_data = merged.build(dataset, out / "merged").parent
 
     step("训练 YOLO")
-    best = train_yolo(cfg.retrain, dataset, out / "yolo", train, progress)
+    best = train_yolo(cfg.retrain, yolo_data, out / "yolo", train, progress)
     if yolo_out.exists():
         raise FileExistsError(f"{yolo_out} 已经有了")
     yolo_out.parent.mkdir(parents=True, exist_ok=True)
@@ -351,7 +366,8 @@ def _run(cfg, dataset, inbox, out, progress, step, train, val, attrs_train_fn, e
 
     inbox_val = {d["dataset"].split("/", 1)[1] for d in ib.passed_frames(inbox) if d["dataset"].startswith("val/")}
     numbers = compare(cfg.perception.model, yolo_out, old_head, new_head, dataset, cfg, inbox_val, attrs_root=attrs_root,
-                      val=val if val is not None else ultra_val(cfg.retrain), work=out, step=step)
+                      val=val if val is not None else ultra_val(cfg.retrain), work=out, step=step,
+                      yolo_dataset=yolo_data if cfg.retrain.merge else None)
 
     step("写报告")
     ev = head_res.get("eval") or {}
@@ -360,7 +376,7 @@ def _run(cfg, dataset, inbox, out, progress, step, train, val, attrs_train_fn, e
         "old_yolo": cfg.perception.model, "old_attrs": cfg.attrs.model,
         "started": dt.datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
         "finished": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "trained_frames": len(passed), "train": dataclasses.asdict(cfg.retrain),
+        "trained_frames": len(passed), "merged": bool(cfg.retrain.merge), "train": dataclasses.asdict(cfg.retrain),
         "head": {"macro_f1": ev.get("macro_f1"), "train_n": head_res.get("train_n"), "val_n": head_res.get("val_n")},
         "notes": notes, "numbers": numbers, "report": str(out / "report.md"),
     }
