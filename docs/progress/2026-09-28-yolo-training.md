@@ -383,3 +383,10 @@ spec `docs/superpowers/specs/2026-11-05-form-track-labeling-design.md`，计划 
 新命令 `perception crops-audit` 用几个 YOLO 模型在训练帧上和标注对一遍，漏标 / 可疑 / 部分模型没框到 / 外形头存疑的人物框写进 `datasets/attrs/_focus.json`，外形页多一个「重点核对」筛选。页面只在 node 里测过纯逻辑，没在浏览器里看过。
 
 **下一步**：`python -m skydango perception crops-audit datasets/sky --models models/sky-yolo-v10.pt,tmp/retrain/control-20261104/yolo/weights/best.pt,models/sky-yolo-v12.pt` → 管理面板「标注 → 外形」的「重点核对」按轨迹判 → `perception crops datasets/sky --writeback` → 单类 / 多类各训 3 次比平均。
+
+### 11-05 续：外形页网格过目（代码做完）
+
+spec `docs/superpowers/specs/2026-11-05-form-grid-review-design.md`，计划 `docs/superpowers/plans/2026-11-05-form-grid-review.md`。按轨迹判在真数据上只省约 40% 按键（训练集稀疏抽帧，1304 张串成 758 组），改成网格过目：一页 36 张、默认是人、只点错的、Enter 整页确认。
+核对分两步：第一步只核「是不是人」（网格，记录带 `scope: person`，不算外形确认）；第二步核外形类别（单张页「导入未确认」，不改）。`crops-audit` 现在也写 `_scores.json`（外形概率），网格按它排序。页面只在 node 测过纯逻辑，没在浏览器里看过。
+
+**下一步**：`perception crops-audit` 重跑一遍（要写 `_scores.json`）→ 管理面板「标注 → 外形 → 网格」核「重点核对」和训练集「导入未确认」（目标 1300 张左右 40 分钟内，记时间）→ `perception crops datasets/sky --writeback` → 单类 / 多类各训 3 次比平均。

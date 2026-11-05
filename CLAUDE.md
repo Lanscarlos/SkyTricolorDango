@@ -112,7 +112,7 @@ SkyTricolorDango：在 MuMu 模拟器上"自己玩光遇"的 Agent。纯视觉�
 | `src/skydango/vision/gesture_label.py` | 动作片段的 Claude 初分（`perception gesture-label`）：16 帧拼成 4×4 一张图、提示词、解析，结果写进片段目录的 `claude.json`（复用 `assist.Reviewer`） |
 | `src/skydango/vision/gesture_train.py` | 动作模型训练（`perception gesture-train`）：读确认过的片段、按录像切训练 / 验证集（`_split.json`）、DINOv2-small 冻住提特征（缓存 `_features/`）+ 时序头、导出 ONNX、报告；torch 延迟导入 |
 | `src/skydango/console/labeling.py` | 「标注」页的后端（`/api/gesture/*`）：片段状态、取帧、确认 / 改类别 / 丢弃 = 挪文件夹、撤销，记在 `_labels.jsonl`；外形页（`FormLabels`）还给分组（`groups`，现算、按 `_crops.jsonl` 缓存）和「重点核对」名单（`focus`），整组标注 / 撤销（`batch`） |
-| `src/skydango/vision/cropgroups.py` `console/static/formgroup.js` `vision/crops_audit.py` | 外形页按轨迹判（见「管理面板」的「标注」页）：`cropgroups.groups` 把同一个人连着几帧的裁图串成组（复用 `Tracker`，纯函数）；`formgroup.js` 是前端纯逻辑（node 可测）；`crops_audit.py` 是 `perception crops-audit` 的实现 |
+| `src/skydango/vision/cropgroups.py` `console/static/formgroup.js` `console/static/formgrid.js` `vision/crops_audit.py` | 外形页按轨迹判 / 网格过目（见「管理面板」的「标注」页）：`cropgroups.groups` 把同一个人连着几帧的裁图串成组（复用 `Tracker`，纯函数）；`formgroup.js` / `formgrid.js`（网格：分页、按是人概率排序、点击标记、整页提交）是前端纯逻辑（node 可测）；`crops_audit.py` 是 `perception crops-audit` 的实现（也写 `_scores.json`） |
 | `src/skydango/console/emotenames.py` | 「标注 → 动作名」的后端（`/api/emotes/*`）：按剪影把图标库 `emotes/*.png` 配给 `emotes/scan/` 的扫描图标、起名（复制）/ 改名 / 清除（挪进 `_removed/`）、名字检查、提示配置里引用旧名字的地方 |
 | `src/skydango/vision/embed.py` `onnxrt.py` | 特征模型的公共部分：`OnnxEmbedder`、`unit` / `cosine`（认地图、认装扮共用）；`onnxrt.py` 按 device（cuda / dml / cpu）选 onnxruntime 后端、建会话（YOLO、特征模型、动作模型共用） |
 | `src/skydango/vision/appearance.py` | 认装扮（见「认装扮」）：好样本裁图、内置颜色特征 `ColorEmbedder`、外观记忆簿 `AppearanceBook`（好友 / 陌生人编号 / 团子自己各一个底库、`assign_friends`、`looks_like_dango`、换装判定）、攒训练数据 `CropSaver` |
@@ -336,6 +336,7 @@ dir = "private/sandbox"
   YOLO 框出人物后按轨迹裁图，交给冻住的 DINOv2-small + 线性头（`models/attrs-<日期>.npz`，Claude 只当标注老师、不进运行时）判**外形**：不是人 / 点过火 / 黑影 / 先祖 / 共享空间玩家 / 变身。
   用途：① 复核——YOLO 高分框被稳定判"不是人"就撤下，低分框（`low_conf ~ conf`）等复核说是人才放行（目标是降门槛捞漏检）；② 点没点火和 YOLO 类别投票、带滞回；
   ③ 先祖 / 共享空间不算陌生人，变身照常认人。`enabled = false` 逐字是原来的行为；`[perception] enabled = false` 时不生效；主干和 npz 对不上 / 连续出错自动关掉。
+  网格过目的「核过是人」记录（`scope: person`）不算外形确认、不进外形头训练（只用来给 `--writeback` 补漏标的框）。
   数据：`perception crops` → `perception attrs-label`（花额度）→ 管理面板「标注」页的「外形」标签页确认 → `crops --writeback` → `perception attrs-train` → `attrs-eval`；
   管理面板画面上画灰色虚线（被撤）/ "复核"（靠复核放行），难例多 `attrs_reject` / `attrs_disagree` 两种原因。上线门槛四条和剩下要人做的步骤见 `docs/progress/2026-09-28-yolo-training.md`「第二层」
   DINOv2-small 在 5070 Ti 上一张裁图约 5 ms、4 张约 20 ms（10-02，onnxruntime-gpu 1.23.2）；CPU 上一张约 32 ms，没 GPU 时别开，或者 `max_crops = 1`、`every = 1.0`（`[perception] device = "cuda"` 而主干只在 CPU 上跑时启动会警告）
@@ -470,6 +471,10 @@ dir = "private/sandbox"
 - **剧本和报告页**：报告在页内直接读（`console/reports.py`，`GET /api/sandbox/reports[/<name>]`），不用再去翻 `sandbox/reports/`。
 - **「标注」页**（`#labeling`，左栏「数据」组；后端 `console/labeling.py`）：逐段看动作片段的动图，按键标（1~9 = 类别、0 = 丢弃、Z = 撤销；10-03 去掉了「回车 = 同意 Claude」：初分认不出动作，直接人工标），片段挪进 `datasets/gesture/<动作>/`，然后 `perception gesture-train`。同一页还有「外形」标签页（第二层，后端同 `console/labeling.py`）：逐张看人物裁图和 Claude 的初分，确认 / 改类别 / 丢弃，裁图挪进 `datasets/attrs/form/<类别>/`；10-04 起只出 不是人 / 点亮的人 / 黑影 / 先祖 四个按钮（共享空间、变身按点没点火标；先祖不够 20 张训练时并进不是人），筛选里照旧列全部类别。
   外形页「按轨迹」（11-05，默认开，页顶复选框记在 localStorage `skydango.form.byTrack`；设计 `docs/superpowers/specs/2026-11-05-form-track-labeling-design.md`，计划同日期 `plans/2026-11-05-form-track-labeling.md`；**代码做完，页面只在 node 测过纯逻辑，没在浏览器里看过**）：后端 `FormLabels.state` 多 `groups`（同一来源里相邻帧隔 ≤ 3 秒、框连得上的裁图串成一组，最多 30 张，取不到时间的各自一组，不写进任何文件）和 `focus`；列表一行一组，当前组上方一排缩略图（点 = 换大图，Shift + 点 / 点 × = 拆出去这一下不标它），1~4 / Enter / 0 整组判（`api/form/label` 带 `names`，`_labels.jsonl` 照旧每张一行、多一个相同的 `batch`），Z 按 `batch` 整组撤销（中途某张被手动挪过就停在那张）；关掉开关 = 外形页逐字照旧。筛选多一项「重点核对」：`perception crops-audit` 写的 `datasets/attrs/_focus.json`（没有这个文件就不出现）。
+  外形页「网格」（11-05，页顶「网格」按钮切换，记在 localStorage `skydango.form.mode`；设计 `docs/superpowers/specs/2026-11-05-form-grid-review-design.md`，计划同日期 `plans/2026-11-05-form-grid-review.md`；**代码做完，页面只在 node 测过纯逻辑，没在浏览器里看过**）：核对训练集人物框分两步，网格是**第一步只核「是不是人」**——一页 36 张（6 × 6），默认都是人，只点错的（单击 = 不是人，Shift + 单击 = 不要，双击 = 右侧看整帧），**Enter 整页确认**（`POST api/form/check`，一个 `batch`）、**Z 整页撤销**（回到那一页、标记恢复）；按「是人的概率」从低到高排（最可疑在前，没分数的最后），核过是人的不再出现，顶上「核过是人 N / 这个筛选共 M」。
+  没点的在 `form/<类别>/` 里的不挪、只记一行 `{"scope": "person", "from": 类别, "to": 类别, "batch"}`；还在 `_unlabeled` 的（`crops-audit` 找到的漏标）挪去外形头猜的人形类别（`_scores.json` 里 lit / unlit / spirit 最高的，没分数 = lit）；点出的"不是人"挪进 `form/not_person`、"不要"进 `_discard`，都是普通记录。
+  **`scope: person` 的记录不算外形确认**（`attrs_data.hand_labels` 跳过它们，这些裁图在「导入未确认」里还是没人看过；`attrs-train` 默认只用确认过的，所以第一步的结果不进外形头训练），`attrs_data.person_checked` 给核过是人的名单（撤销后不算、裁图被挪走不算）；`perception crops --writeback` 只用它补框：漏标核过是人 → 补一个框，原有标注核过是人 → 不变。
+  `perception crops-audit` 顺手把外形头对训练集所有人物标注框和漏标的概率写进 `datasets/attrs/_scores.json`（覆盖写、旧的备份成 `_scores-<时间>.json`；外形头没加载就不写），网格按它排序。第二步（细核外形类别）还是用现有的单张页「导入未确认」。
   外形页的「导入未确认」筛选（10-04）：`datasets/sky` 直接导进 `form/` 的裁图没人看过、标签混了不少错的（`confirmed = false`，按 `_labels.jsonl` 里有没有人标过算，`attrs_data.hand_labels`）；在它现在的类别上按一下 = 原地确认（记一条 from == to、不挪文件），`attrs-train` 默认只用确认过的；其中「回放用」（`replay`）是数据集验证集帧里的框 = 整帧回放的标准答案，先过它们回放才准。
   第三个标签页「动作名」（`console/emotenames.py` + `static/emotenames.js`）：网格列出 `emotes scan` 扫下来的全部图标，起名 = 把 `scan/NNN.png` 复制成图标库的 `emotes/<名字>.png`，改名 / 清除（挪进 `emotes/_removed/`）；
   哪个扫描图标叫什么按剪影配（门槛 0.7、每张库图只配一个），不靠编号，重扫不错位。**只起名**，团子能做哪些动作照旧由轮盘 / 白名单决定；团子在跑也能起，下次启动生效；
