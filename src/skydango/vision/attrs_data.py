@@ -39,6 +39,7 @@ DETECT_CLASSES = ("player", "player_unlit")
 UNLABELED_IOU = 0.4  # 检测框和任何人物标注的 IoU 低于这个才算"没标过"
 DEDUP_IOU = 0.5  # 同一张图里重叠这么多的只留分高的；写回时同帧已有人物框重叠这么多就不写
 
+DISCARD_DIR = "_discard"
 LABEL_LOG = "_labels.jsonl"  # 标注页的记账（console/labeling.py 写）
 
 log = logging.getLogger(__name__)
@@ -61,13 +62,14 @@ def live_records(entries: list[dict]) -> list[dict]:
     return kept
 
 
-def hand_labels(root: Path) -> dict[str, str]:
-    """标注页记账里每张裁图最后一次有效操作的去处（撤销配对同 labeling 的撤销，见 `live_records`；auto-agree 也算确认过）。
-    裁图现在就在这个位置 = 人确认过（含原地确认 from == to）；datasets/sky 导进 form/ 的裁图没有记录 = 没人看过。"""
+PERSON_SCOPE = "person"  # 标注页网格「核过是人」的记录：只说这个框是人，不算外形类别确认
+
+
+def _log_entries(root: Path) -> list[dict]:
     try:
         lines = (Path(root) / LABEL_LOG).read_text(encoding="utf-8").splitlines()
     except OSError:
-        return {}
+        return []
     entries: list[dict] = []
     for line in lines:
         try:
@@ -76,7 +78,31 @@ def hand_labels(root: Path) -> dict[str, str]:
             continue
         if isinstance(e, dict) and (e.get("undo") or (isinstance(e.get("crop"), str) and isinstance(e.get("to"), str))):
             entries.append(e)
-    return {e["crop"]: e["to"] for e in live_records(entries)}
+    return entries
+
+
+def hand_labels(root: Path) -> dict[str, str]:
+    """标注页记账里每张裁图最后一次有效操作的去处（撤销配对同 labeling 的撤销，见 `live_records`；auto-agree 也算确认过）。
+    裁图现在就在这个位置 = 人确认过（含原地确认 from == to）；datasets/sky 导进 form/ 的裁图没有记录 = 没人看过。
+    `scope: person` 的记录（网格只核了"是不是人"）不算外形确认，跳过（配对时它们照样参与，撤销照旧抵消）。"""
+    return {e["crop"]: e["to"] for e in live_records(_log_entries(root)) if e.get("scope") != PERSON_SCOPE}
+
+
+def person_checked(root: Path) -> set[str]:
+    """核过是人的裁图：撤销之后最后一条记录是 `scope: person`、而且裁图现在还在那条记录的 `to` 里（被挪走 / 后来又按外形类别标过的不算）。"""
+    root = Path(root)
+    last: dict[str, dict] = {}
+    for e in live_records(_log_entries(root)):
+        last[e["crop"]] = e
+    out: set[str] = set()
+    for crop, e in last.items():
+        if e.get("scope") != PERSON_SCOPE:
+            continue
+        to = e["to"]
+        d = root / DISCARD_DIR if to == DISCARD_DIR else root / "form" / to
+        if (d / crop).is_file():
+            out.add(crop)
+    return out
 
 
 def crop_name(frame_stem: str, box: Rect) -> str:

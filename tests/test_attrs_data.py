@@ -347,3 +347,73 @@ def test_writeback_skips_inbox_rows(tmp_path):
     (out / "_crops.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
     assert ad.writeback(root, out, datetime(2026, 10, 4, 12, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
     assert not list((root / "labels").rglob("*.txt"))
+
+
+# ---- 11-05 网格过目：scope: person 的记录不算外形确认 ----
+
+def _log(out, *entries):
+    out.mkdir(parents=True, exist_ok=True)
+    with (out / "_labels.jsonl").open("a", encoding="utf-8") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+
+def _touch(out, folder, name):
+    d = out / folder
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_bytes(b"x")
+
+
+def test_hand_labels_skips_person_scope(tmp_path):
+    _log(tmp_path, {"crop": "a.jpg", "from": "lit", "to": "lit", "scope": "person", "batch": "b1"})
+    assert ad.hand_labels(tmp_path) == {}
+
+
+def test_person_checked_basic(tmp_path):
+    _touch(tmp_path, "form/lit", "a.jpg")
+    _log(tmp_path, {"crop": "a.jpg", "from": "lit", "to": "lit", "scope": "person", "batch": "b1"})
+    assert ad.person_checked(tmp_path) == {"a.jpg"}
+
+
+def test_person_checked_undone(tmp_path):
+    _touch(tmp_path, "form/lit", "a.jpg")
+    _log(tmp_path, {"crop": "a.jpg", "from": "lit", "to": "lit", "scope": "person", "batch": "b1"},
+         {"crop": "a.jpg", "from": "lit", "to": "lit", "undo": True})
+    assert ad.person_checked(tmp_path) == set()
+
+
+def test_person_checked_moved_away(tmp_path):
+    _touch(tmp_path, "form/unlit", "a.jpg")
+    _log(tmp_path, {"crop": "a.jpg", "from": "lit", "to": "lit", "scope": "person", "batch": "b1"})
+    assert ad.person_checked(tmp_path) == set()
+
+
+def test_person_then_form_confirm(tmp_path):
+    _touch(tmp_path, "form/unlit", "a.jpg")
+    _log(tmp_path, {"crop": "a.jpg", "from": "lit", "to": "lit", "scope": "person", "batch": "b1"},
+         {"crop": "a.jpg", "from": "lit", "to": "unlit"})
+    assert ad.hand_labels(tmp_path) == {"a.jpg": "unlit"}
+    assert ad.person_checked(tmp_path) == set()
+
+
+def test_writeback_ignores_person_scope_known(tmp_path):
+    root = _dataset(tmp_path)
+    out = tmp_path / "attrs"
+    ad.crops_from_dataset(root, FakeDetector({}), out, conf=0.2)
+    known = next(r for r in _rows(out) if r["known"] and r["split"] == "train" and r["yolo_cls"] == "spirit")
+    _log(out, {"crop": known["crop"], "from": "spirit", "to": "spirit", "scope": "person", "batch": "b1"})
+    assert ad.writeback(root, out, datetime(2026, 11, 5, 1, 0, 0)) == {"frames": 0, "boxes": 0, "relabeled": 0, "removed": 0}
+
+
+def test_writeback_adds_person_checked_missed(tmp_path):
+    root = _dataset(tmp_path)
+    out = tmp_path / "attrs"
+    det = FakeDetector({1: [_det("player", 150, 5, 20, 40), _det("player", 40, 30, 20, 40)]})
+    ad.crops_from_dataset(root, det, out, conf=0.2)
+    new = next(r for r in _rows(out) if r["source"] == "dataset" and not r["known"])
+    _move(out, new, "unlit")  # 网格确认把漏标从 _unlabeled 挪去人形类别
+    _log(out, {"crop": new["crop"], "from": "_unlabeled", "to": "unlit", "scope": "person", "batch": "b1"})
+    res = ad.writeback(root, out, datetime(2026, 11, 5, 2, 0, 0))
+    assert res["boxes"] == 1
+    lines = (root / "labels/train/rec1_0001_1.00s.txt").read_text(encoding="utf-8").splitlines()
+    assert lines[-1].split()[0] == "4"
