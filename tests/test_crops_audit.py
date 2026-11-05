@@ -4,7 +4,7 @@ import numpy as np
 
 from skydango.imageio import imwrite
 from skydango.vision.bubbles import Rect
-from skydango.vision.crops_audit import audit, write_focus
+from skydango.vision.crops_audit import audit, write_focus, write_scores
 from skydango.vision.detect import Detection
 
 W, H = 400, 300
@@ -123,7 +123,7 @@ def test_audit_skips_augmented_and_val(tmp_path):
     make_dataset(ds, {2: [(0, A)]}, suffix="_blur")  # 增强图
     det = FakeDetector({det_key(1): [("player", B, 0.9)], det_key(2): [("player", B, 0.9)]})
     res = audit(ds, attrs, {"m1": det})
-    assert res == {"missed": [], "suspect": [], "partial": [], "head": [], "focus": []}
+    assert res == {"missed": [], "suspect": [], "partial": [], "head": [], "focus": [], "scores": {}}
 
 
 def test_write_focus_backs_up(tmp_path):
@@ -133,6 +133,36 @@ def test_write_focus_backs_up(tmp_path):
     assert backup is not None and backup.name.startswith("_focus-") and backup.suffix == ".json"
     assert json.loads(backup.read_text("utf-8")) == ["a.jpg"]
     assert json.loads((tmp_path / "_focus.json").read_text("utf-8")) == ["b.jpg"]
+
+
+def test_audit_scores_cover_all_label_boxes_and_missed(tmp_path):
+    ds, attrs = tmp_path / "ds", tmp_path / "attrs"
+    SELF = Rect(130, 150, 40, 80)
+    make_dataset(ds, {1: [(0, A), (4, C), (3, SELF)]})
+    det = FakeDetector({det_key(1): [("player", A, 0.9), ("player", C, 0.9), ("player", B, 0.8)]})  # B 标注里没有
+    head = FakeHead({100 + A.x % 100: {"lit": 0.7, "not_person": 0.3}, 100 + C.x % 100: {"unlit": 0.9, "not_person": 0.1},
+                     10: {"lit": 0.5, "spirit": 0.2, "not_person": 0.3}, 100 + SELF.x % 100: {"lit": 1.0}})
+    res = audit(ds, attrs, {"m1": det}, head=head)
+    a, c = f"rec_0001_001.00s__{A.x}_{A.y}_{A.w}_{A.h}.jpg", f"rec_0001_001.00s__{C.x}_{C.y}_{C.w}_{C.h}.jpg"
+    missed = res["missed"][0]
+    assert set(res["scores"]) == {a, c, missed}  # self 框没有分数
+    assert res["scores"][a]["lit"] == 0.7 and res["scores"][c]["unlit"] == 0.9
+    assert res["scores"][missed] == {"not_person": 0.3, "lit": 0.5, "unlit": 0.0, "spirit": 0.2}
+
+
+def test_audit_no_head_no_scores(tmp_path):
+    ds, attrs = tmp_path / "ds", tmp_path / "attrs"
+    make_dataset(ds, {1: [(0, A)]})
+    det = FakeDetector({det_key(1): [("player", A, 0.9), ("player", B, 0.8)]})
+    assert audit(ds, attrs, {"m1": det})["scores"] == {}
+
+
+def test_write_scores_backs_up(tmp_path):
+    assert write_scores(tmp_path, {}) is None and not (tmp_path / "_scores.json").exists()
+    assert write_scores(tmp_path, {"a.jpg": {"lit": 0.9}}) is None
+    backup = write_scores(tmp_path, {"b.jpg": {"lit": 0.1}})
+    assert backup is not None and backup.name.startswith("_scores-") and json.loads(backup.read_text("utf-8")) == {"a.jpg": {"lit": 0.9}}
+    assert json.loads((tmp_path / "_scores.json").read_text("utf-8")) == {"b.jpg": {"lit": 0.1}}
 
 
 def test_cli_crops_audit_writes_focus(tmp_path, monkeypatch, capsys):
@@ -150,3 +180,18 @@ def test_cli_crops_audit_writes_focus(tmp_path, monkeypatch, capsys):
     focus = json.loads((out / "_focus.json").read_text("utf-8"))
     assert len(focus) == 2  # 漏标的 B + 两个模型都没框到标注 A
     assert "外形头没加载" in capsys.readouterr().out
+
+
+def test_cli_crops_audit_writes_scores(tmp_path, monkeypatch, capsys):
+    from skydango import cli
+    from skydango.vision import attrs, attrs_train
+
+    ds, out = tmp_path / "ds", tmp_path / "attrs"
+    make_dataset(ds, {1: [(0, A)]})
+    monkeypatch.setattr(attrs_train, "replay_detector", lambda p, model=None, conf=0.2: FakeDetector({det_key(1): [("player", A, 0.9)]}))
+    monkeypatch.setattr(attrs, "load_model", lambda *a, **k: FakeHead({100 + A.x % 100: {"lit": 0.8, "not_person": 0.2}}))
+    monkeypatch.chdir(tmp_path)
+    cli.main(["perception", "crops-audit", str(ds), "--models", "a.pt", "--attrs-data", str(out)])
+    scores = json.loads((out / "_scores.json").read_text("utf-8"))
+    assert len(scores) == 1 and next(iter(scores.values()))["lit"] == 0.8
+    assert "_scores.json" in capsys.readouterr().out

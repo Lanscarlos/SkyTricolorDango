@@ -23,6 +23,7 @@ from .track import iou
 
 HIT_IOU = 0.5  # 标注框和检测框重叠这么多才算"框到了"
 FOCUS_FILE = "_focus.json"
+SCORES_FILE = "_scores.json"
 
 
 def _people_at(detections, thresh: float):
@@ -32,24 +33,32 @@ def _people_at(detections, thresh: float):
     return merge_people([d for d in detections if d.cls in DETECT_CLASSES and d.score >= thresh])[0]
 
 
-def _head_flag(head, img, cls: int, box: Rect, accept: float) -> bool:
-    """外形头说它不是人（最高类不在 PERSON_FORMS）或人形概率之和 < accept。"""
+def head_probs(head, img, cls: int | None, box: Rect) -> dict[str, float]:
+    """外形头对这个框的各类概率（类别名 → 概率）。cls 是数据集类别号（4 = player_unlit），漏标的传 None 当 player；头不出 form 结果 = {}。"""
     yolo_cls = "player_unlit" if cls == 4 else "player"
     res = head.predict([(yolo_cls, attrs.crop(img, box, head.pad("form"), head.size, head.keep("form")))])[0]
     p = res.get("form")
     if p is None:
+        return {}
+    return {lb: float(p[i]) for i, lb in enumerate(head.labels("form"))}
+
+
+def _head_flag(probs: dict[str, float], accept: float) -> bool:
+    """外形头说它不是人（最高类不在 PERSON_FORMS）或人形概率之和 < accept。"""
+    if not probs:
         return False
-    labels = head.labels("form")
-    top = labels[int(max(range(len(labels)), key=lambda i: p[i]))]
-    return top not in attrs.PERSON_FORMS or sum(float(p[i]) for i, lb in enumerate(labels) if lb in attrs.PERSON_FORMS) < accept
+    top = max(probs, key=lambda k: probs[k])
+    return top not in attrs.PERSON_FORMS or sum(v for k, v in probs.items() if k in attrs.PERSON_FORMS) < accept
 
 
 def audit(dataset: Path, attrs_root: Path, detectors: dict, head=None, conf: float = 0.25, low: float = 0.15,
           accept: float = 0.6) -> dict:
-    """返回 {"missed", "suspect", "partial", "head", "focus"}（都是裁图名）。detectors = {名字: 检测器}，
+    """返回 {"missed", "suspect", "partial", "head", "focus"}（都是裁图名）和 "scores"（裁图名 → 外形头给的各类概率：训练集所有人物标注框 +
+    这次找到的漏标；外形头没给 = {}，网格按"是人的概率"排序用，见 `write_scores`）。detectors = {名字: 检测器}，
     检测器出框门槛要不高于 low；缺的裁图会写进 attrs_root（missed → _unlabeled/，其余补裁进 form/<外形>/）。"""
     dataset, attrs_root = Path(dataset), Path(attrs_root)
     res: dict[str, list[str]] = {"missed": [], "suspect": [], "partial": [], "head": []}
+    scores: dict[str, dict[str, float]] = {}
     existing: dict[str, list[tuple[Rect, str]]] = {}  # 原图 → 已经裁过的 (框, 裁图名)，换模型重跑时认得出已有的
     for r in _read_rows(attrs_root):
         if isinstance(r.get("image"), str) and isinstance(r.get("box"), list) and len(r["box"]) == 4:
@@ -77,6 +86,10 @@ def audit(dataset: Path, attrs_root: Path, detectors: dict, head=None, conf: flo
                         w.add(img, path.stem, d.box, "_unlabeled",
                               {**base, "score": round(float(d.score), 4), "yolo_cls": d.cls, "known": False, "found_by": name})
                         existing.setdefault(image, []).append((d.box, hit))
+                    if head is not None and hit not in scores:
+                        probs = head_probs(head, img, None, d.box)
+                        if probs:
+                            scores[hit] = {k: round(v, 4) for k, v in probs.items()}
                     res["missed"].append(hit)
 
             lows = {name: _people_at(dets, low) for name, dets in raw.items()}
@@ -84,16 +97,19 @@ def audit(dataset: Path, attrs_root: Path, detectors: dict, head=None, conf: flo
                 if cls not in PERSON_IDS or cls == 3 or cls not in KNOWN:
                     continue
                 hits = sum(any(iou(d.box, box) >= HIT_IOU for d in ds) for ds in lows.values())
+                name = crop_name(path.stem, box)
+                probs = head_probs(head, img, cls, box) if head is not None else {}
+                if probs:
+                    scores[name] = {k: round(v, 4) for k, v in probs.items()}
                 kind = None
                 if lows and hits == 0:
                     kind = "suspect"
                 elif lows and hits < len(lows):
                     kind = "partial"
-                elif head is not None and _head_flag(head, img, cls, box, accept):
+                elif _head_flag(probs, accept):
                     kind = "head"
                 if kind is None:
                     continue
-                name = crop_name(path.stem, box)
                 if name not in w.done:  # form/ 和 _unlabeled/ 里都没有：补裁
                     w.add(img, path.stem, box, f"form/{KNOWN[cls]}",
                           {**base, "score": 1.0, "yolo_cls": ID_NAMES[cls], "known": True})
@@ -102,21 +118,35 @@ def audit(dataset: Path, attrs_root: Path, detectors: dict, head=None, conf: flo
         w.close()
     out = {k: list(dict.fromkeys(v)) for k, v in res.items()}
     out["focus"] = list(dict.fromkeys(n for k in ("missed", "suspect", "partial", "head") for n in out[k]))
+    out["scores"] = scores
     return out
+
+
+def _write_backed_up(attrs_root: Path, fname: str, data) -> Path | None:
+    """写 attrs_root/<fname>；已有的先改名成 <主名>-<时间>.json。返回备份路径（没有旧文件 = None）。"""
+    attrs_root = Path(attrs_root)
+    attrs_root.mkdir(parents=True, exist_ok=True)
+    path = attrs_root / fname
+    stem = path.stem
+    backup = None
+    if path.exists():
+        backup = attrs_root / f"{stem}-{datetime.now():%Y%m%d-%H%M%S}.json"
+        n = 1
+        while backup.exists():  # 同一秒写两次
+            backup = attrs_root / f"{stem}-{datetime.now():%Y%m%d-%H%M%S}-{n}.json"
+            n += 1
+        path.rename(backup)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    return backup
 
 
 def write_focus(attrs_root: Path, names: list[str]) -> Path | None:
     """写 `_focus.json`；已有的先改名成 `_focus-<时间>.json`。返回备份路径（没有旧文件 = None）。"""
-    attrs_root = Path(attrs_root)
-    attrs_root.mkdir(parents=True, exist_ok=True)
-    path = attrs_root / FOCUS_FILE
-    backup = None
-    if path.exists():
-        backup = attrs_root / f"_focus-{datetime.now():%Y%m%d-%H%M%S}.json"
-        n = 1
-        while backup.exists():  # 同一秒写两次
-            backup = attrs_root / f"_focus-{datetime.now():%Y%m%d-%H%M%S}-{n}.json"
-            n += 1
-        path.rename(backup)
-    path.write_text(json.dumps(names, ensure_ascii=False, indent=1), encoding="utf-8")
-    return backup
+    return _write_backed_up(attrs_root, FOCUS_FILE, names)
+
+
+def write_scores(attrs_root: Path, scores: dict) -> Path | None:
+    """写 `_scores.json`（覆盖，旧的先备份成 `_scores-<时间>.json`）。返回备份路径；空字典（外形头没加载）不写、返回 None。"""
+    if not scores:
+        return None
+    return _write_backed_up(attrs_root, SCORES_FILE, scores)

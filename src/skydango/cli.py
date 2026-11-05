@@ -1204,9 +1204,12 @@ def _perception_crops_audit(cfg: Config, args) -> None:
     out = Path(args.attrs_data)
     res = crops_audit.audit(ds, out, detectors, head=head, conf=args.conf, low=low)
     backup = crops_audit.write_focus(out, res["focus"])
+    scores_backup = crops_audit.write_scores(out, res["scores"])
     print(f"漏标 {len(res['missed'])}、可疑（都没框到）{len(res['suspect'])}、部分模型没框到 {len(res['partial'])}、外形头存疑 {len(res['head'])}，"
           f"名单共 {len(res['focus'])} 张")
     print(f"名单 → {out / crops_audit.FOCUS_FILE}" + (f"（旧的备份在 {backup}）" if backup else "") + "；去管理面板「标注 → 外形」的「重点核对」筛选里过")
+    if res["scores"]:
+        print(f"外形概率（{len(res['scores'])} 张）→ {out / crops_audit.SCORES_FILE}" + (f"（旧的备份在 {scores_backup}）" if scores_backup else "") + "；外形页网格按它排序")
 
 
 def _attrs_replays(cfg: Config, frames: list, model, notes: list[str], attrs_root: Path | None = None):
