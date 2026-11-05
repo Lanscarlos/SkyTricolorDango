@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 STATIC = importlib.resources.files("skydango.console") / "static"
-JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "dangotrack.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "identity.js", "formgroup.js", "labeling.js", "models.js", "settings.js", "device.js"]
+JS = ["common.js", "markdown.js", "inner.js", "brainlog.js", "chatlog.js", "sandbox.js", "livectl.js", "dangotrack.js", "live.js", "scenarios.js", "emotenames.js", "retrain.js", "frames.js", "identity.js", "formgroup.js", "formgrid.js", "labeling.js", "models.js", "settings.js", "device.js"]
 
 
 def _identity_js(expr):

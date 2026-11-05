@@ -276,7 +276,7 @@
     <div class="banner warn" id="fm-empty" hidden></div>
     <div class="cols lb-cols" id="fm-cols" hidden>
       <section class="pane lb-listpane" aria-label="裁图列表">
-        <h3>裁图<span class="grow"></span><label class="fm-track" title="同一个人连着几帧的裁图串成一组，按一下键整组判"><input type="checkbox" id="fm-bytrack" checked> 按轨迹</label><select id="fm-filter" aria-label="筛选裁图"></select></h3>
+        <h3>裁图<span class="grow"></span><button type="button" class="btn sm" id="fm-gridmode" title="一页 36 张，默认是人，只点错的">网格</button><label class="fm-track" title="同一个人连着几帧的裁图串成一组，按一下键整组判"><input type="checkbox" id="fm-bytrack" checked> 按轨迹</label><select id="fm-filter" aria-label="筛选裁图"></select></h3>
         <div class="lb-counts" id="fm-counts"></div>
         <div class="lb-list" id="fm-list"></div>
       </section>
@@ -296,6 +296,19 @@
         <p class="note lb-keys">选完自动跳下一张；已确认的再按一次别的类别就是改类别；导入未确认的按它现在的类别就是确认。</p>
       </section>
     </div>
+    <section class="pane fg-cols" id="fg-cols" aria-label="裁图网格" hidden>
+      <h3>网格核对<span class="grow"></span><span class="lb-pos" id="fg-pos"></span><select id="fg-filter" aria-label="筛选裁图"></select><button type="button" class="btn sm" id="fg-single">单张</button></h3>
+      <p class="note fg-progress" id="fg-progress"></p>
+      <div class="fg-wrap">
+        <div class="fg-grid" id="fg-grid"></div>
+        <div class="fg-ctx" id="fg-ctx" hidden><img id="fg-ctx-img" alt="来源画面（红框是这张裁图）"></div>
+      </div>
+      <div class="fg-foot">
+        <button type="button" class="btn sm lb-undo" id="fg-undo"><kbd class="k">Z</kbd><span class="t">撤销上一页</span></button>
+        <button type="button" class="btn go" id="fg-confirm"><kbd class="k">Enter</kbd><span class="t">这一页确认</span></button>
+      </div>
+      <p class="note lb-keys">默认每一张都是人，只点错的：单击 = 不是人，Shift + 单击 = 不要，双击 = 看整帧；这一步只核「是不是人」，不算外形类别确认。</p>
+    </section>
     <div class="banner warn" id="en-empty" hidden></div>
     <div class="cols en-cols" id="en-cols" hidden>
       <section class="pane en-gridpane" aria-label="动作图标">
@@ -456,6 +469,7 @@
 <script src="console/static/frames.js"></script>
 <script src="console/static/identity.js"></script>
 <script src="console/static/formgroup.js"></script>
+<script src="console/static/formgrid.js"></script>
 <script src="console/static/labeling.js"></script>
 <script src="console/static/models.js"></script>
 <script src="console/static/settings.js"></script>

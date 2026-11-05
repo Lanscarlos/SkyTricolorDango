@@ -576,8 +576,137 @@ function fmAgree() {
   if (c && c.guess && F.agreeable(c.guess)) fmLabel(c.guess.label);
 }
 function fmUndo() { return pUndo(F); }
-function fmLoad() { return pLoad(F); }
+function fmLoad() { return pLoad(F).then(() => fgApplyVisibility()); }
 function fmSetFilter(f) { return pSetFilter(F, f); }
+
+/* ---- 外形页「网格」模式（计划 2026-11-05-form-grid-review；纯逻辑在 formgrid.js）----
+ * 一页 36 张，默认是人，只点错的：单击 = 不是人、Shift + 单击 = 不要、双击 = 看整帧；Enter 整页确认（api/form/check）、Z 整页撤销。
+ * 记录带 scope: person，不算外形确认；左列表和右按钮区收起，筛选沿用 FM.filter。 */
+const FG = {mode: "single", page: 0, marks: new Map(), list: [], busy: false, hist: [], gp: null};
+FG.gp = Object.assign({}, F, {ids: "fg"});  // 网格自己的筛选下拉（fg-filter）复用 pRenderFilter
+function fgOn() { return FG.mode === "grid" && LB.tab === "form"; }
+function fgPersonSet() { return new Set((FM.data && FM.data.person) || []); }
+function fgApplyVisibility() {  // 单张 / 网格两套界面谁显示
+  const has = !!FM.data, form = LB.tab === "form", grid = FG.mode === "grid";
+  $("fm-cols").hidden = !form || !has || grid;
+  $("fg-cols").hidden = !form || !has || !grid;
+  if (form && has && grid) fgRender();
+}
+function fgSetMode(mode) {
+  FG.mode = mode;
+  FG.page = 0; FG.marks = new Map();
+  let store = null;
+  try { store = window.localStorage; } catch (e) { /* 读不到存储 = 不记 */ }
+  window.FormGrid.writeMode(store, mode);
+  fgApplyVisibility();
+}
+function fgBuild() {
+  const f = FM.filter, person = fgPersonSet(), scores = (FM.data && FM.data.scores) || {};
+  FG.list = window.FormGrid.gridItems(pItems(F), c => matches(c, f), person, scores);
+  const pages = window.FormGrid.pageCount(FG.list.length);
+  if (FG.page >= pages) FG.page = Math.max(0, pages - 1);
+}
+function fgRender() {
+  fgBuild();
+  pRenderFilter(FG.gp);
+  const G = window.FormGrid, items = G.page(FG.list, FG.page), scores = (FM.data && FM.data.scores) || {};
+  const all = pItems(F).filter(c => matches(c, FM.filter)), person = fgPersonSet();
+  $("fg-progress").textContent = `核过是人 ${all.filter(c => person.has(c.crop)).length} / 这个筛选共 ${all.length}`;
+  const pages = G.pageCount(FG.list.length);
+  const marked = items.filter(c => FG.marks.has(c.crop)).length;
+  $("fg-pos").textContent = items.length ? `第 ${FG.page + 1} / ${pages} 页 · 本页 ${items.length} 张，点出 ${marked} 张` : "";
+  const box = $("fg-grid");
+  box.textContent = "";
+  $("fg-ctx").hidden = true;
+  if (!items.length) {
+    box.append(el("p", "none lb-empty", FM.filter === "focus" ? "重点核对的都看过了。" : FG.list.length ? "" : "这个筛选里没有要核的裁图（核过是人的不再出现）。"));
+  }
+  for (const c of items) {
+    const kind = FG.marks.get(c.crop), p = G.personProb(scores[c.crop]);
+    const cell = el("button", "fg-cell" + (kind ? " " + kind : "")); cell.type = "button"; cell.dataset.k = c.crop;
+    cell.title = `${c.crop}\n单击 = 不是人，Shift + 单击 = 不要，双击 = 看整帧`;
+    const im = el("img"); im.loading = "lazy"; im.decoding = "async"; im.alt = ""; im.src = cropUrl(c.crop);
+    const tag = el("span", "fg-tag", `${fmName(c.where)}${p === null ? "" : " " + Math.round(p * 100) + "%"}`);
+    cell.append(im, tag);
+    if (kind) cell.append(el("span", "fg-mark", kind === "discard" ? "不要" : "×"));
+    cell.onclick = e => { FG.marks = G.toggle(FG.marks, c.crop, e.shiftKey ? "discard" : "not_person"); fgMarkCell(cell, c.crop); fgCount(items); };
+    cell.ondblclick = () => fgShowCtx(c.crop);
+    box.append(cell);
+  }
+  $("fg-confirm").disabled = FG.busy || !items.length;
+  $("fg-undo").disabled = FG.busy;
+}
+function fgMarkCell(cell, crop) {  // 点一下只改这一格，不重画整页
+  const kind = FG.marks.get(crop);
+  cell.classList.remove("not_person", "discard");
+  const old = cell.querySelector(".fg-mark"); if (old) old.remove();
+  if (kind) { cell.classList.add(kind); cell.append(el("span", "fg-mark", kind === "discard" ? "不要" : "×")); }
+}
+function fgCount(items) {
+  const marked = items.filter(c => FG.marks.has(c.crop)).length, pages = window.FormGrid.pageCount(FG.list.length);
+  $("fg-pos").textContent = `第 ${FG.page + 1} / ${pages} 页 · 本页 ${items.length} 张，点出 ${marked} 张`;
+}
+function fgShowCtx(crop) {
+  const box = $("fg-ctx"), im = $("fg-ctx-img");
+  im.onerror = () => { box.hidden = true; toast("没有原图（来源画面读不到）", "warn"); };
+  im.src = `api/form/context?name=${encodeURIComponent(crop)}`;
+  box.hidden = false;
+}
+async function fgFetch() {
+  let d;
+  try { d = await getJSON("api/form/state"); } catch (e) { d = null; }
+  if (!d || !d.ok) { toast((d && d.text) || "读不到裁图（面板停了？）", "bad"); return false; }
+  FM.data = d; FOCUS.clear(); (d.focus || []).forEach(n => FOCUS.add(n));
+  return true;
+}
+async function fgConfirm() {
+  if (!fgOn() || FG.busy) return;
+  const items = window.FormGrid.page(FG.list, FG.page);
+  if (!items.length) return;
+  const sub = window.FormGrid.submission(items, FG.marks), marks = new Map(FG.marks);
+  FG.busy = true; fgRender();
+  let r;
+  try { r = await post("api/form/check", sub); }
+  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
+  FG.busy = false;
+  const d = r.data || {};
+  if (!d.ok) {
+    toast(d.text || "没确认上", "bad");
+    if (r.status === 409) { await fgFetch(); }
+    fgRender();
+    return;
+  }
+  FG.hist.push({batch: d.batch, marks, page: FG.page});
+  if (FG.hist.length > 50) FG.hist.shift();
+  for (const n of Object.keys(sub).flatMap(k => sub[k])) FG.marks.delete(n);
+  if (d.skipped && d.skipped.length) toast(`跳过 ${d.skipped.length} 张：${d.skipped.map(x => x.text).filter((t, i, a) => a.indexOf(t) === i).join("；")}`, "warn");
+  await fgFetch();  // 核过的从列表里退出，原来第二页的补到第一页 = 进下一页
+  fgRender();
+}
+async function fgUndo() {
+  if (!fgOn() || FG.busy) return;
+  FG.busy = true; fgRender();
+  let r;
+  try { r = await post("api/form/undo"); }
+  catch (e) { r = {status: 0, data: {ok: false, text: "面板没回应"}}; }
+  FG.busy = false;
+  const d = r.data || {};
+  const undone = Array.isArray(d.items) ? d.items.map(x => x.crop) : d.crop ? [d.crop] : [];
+  if (!d.ok && !undone.length) { toast(d.text || "没撤销成", r.status === 409 ? "warn" : "bad"); fgRender(); return; }
+  await fgFetch();
+  const hi = FG.hist.findIndex(h => h.batch === d.batch);
+  FG.marks = new Map();
+  if (hi >= 0) {  // 是网格自己确认的那一页：标记恢复成确认前的样子（不是人 / 不要的重新标上）
+    FG.marks = new Map(FG.hist[hi].marks);
+    FG.hist.splice(hi, 1);
+  }
+  fgBuild();
+  const at = FG.list.findIndex(c => undone.includes(c.crop));
+  if (at >= 0) FG.page = Math.floor(at / window.FormGrid.PAGE);
+  fgRender();
+  if (!d.ok) toast(d.text || "没撤销完", "warn");
+  else toast(`撤销了：${undone.length} 张`, "ok");
+}
 
 const NOTES = {
   identity: "答案写回 tmp/identity-truth/<录像>/truth-draft.toml，标过的记在 reviewed.json；写完去命令行 --apply",
@@ -596,6 +725,7 @@ function setTab(tab) {
   $("lb-note").textContent = NOTES[LB.tab];
   $("lb-cols").hidden = !gesture || !LB.data; $("lb-empty").hidden = !gesture || !!LB.data;
   $("fm-cols").hidden = !form || !FM.data; $("fm-empty").hidden = !form || !!FM.data;
+  fgApplyVisibility();
   const en = window.EmoteNamesTab, has = !!(en && en.hasData());
   $("en-cols").hidden = !names || !has; $("en-empty").hidden = !names || has;
   const fr = window.FramesTab, frTab = LB.tab === "frames", fhas = !!(fr && fr.hasData());
@@ -635,7 +765,11 @@ function onKey(e) {
   if (LB.tab === "names") return;  // 动作名页：输入框里回车就是保存，别的键不管
   if (LB.tab === "identity") { if (window.IdentityTab) window.IdentityTab.key(e); return; }
   if (LB.tab === "frames") { if (window.FramesTab) window.FramesTab.key(e); return; }  // 整帧页自己管按键（过目 / 编辑两套）
-  if (LB.tab === "form") {
+  if (LB.tab === "form" && FG.mode === "grid") {
+    if (k === "Enter") act = fgConfirm;
+    else if (k === "z" || k === "Z") act = fgUndo;
+  }
+  else if (LB.tab === "form") {
     if (k === "Enter") act = fmAgree;
     else if (k === "z" || k === "Z") act = fmUndo;
     else if (k === "0") act = () => fmLabel("discard");
@@ -678,6 +812,17 @@ Pages.labeling = {
       e.currentTarget.blur();
       if (FM.data) pSetFilter(F, FM.filter);
     };
+    FG.mode = window.FormGrid.readMode(store);
+    $("fm-gridmode").onclick = () => fgSetMode("grid");
+    $("fg-single").onclick = () => { fgSetMode("single"); if (FM.data) pSetFilter(F, FM.filter); };
+    $("fg-filter").onchange = e => {
+      const f = e.currentTarget.value;
+      FM.filter = pValid(F, f) ? f : "todo"; FG.page = 0; FG.marks = new Map();
+      fgRender(); e.currentTarget.blur();
+    };
+    $("fg-confirm").onclick = fgConfirm;
+    $("fg-undo").onclick = fgUndo;
+    $("fg-cols").addEventListener("click", () => { $("fg-ctx").hidden = true; });  // 点别处收起整帧
     for (const b of $("lb-tabs").querySelectorAll("button")) b.onclick = () => setTab(b.dataset.tab);
     // 鼠标点按钮不抢焦点：点完接着按键就行（Tab 过去的按钮照样能用回车 / 空格）
     $("page-labeling").addEventListener("mousedown", e => { if (e.target.closest && e.target.closest("button")) e.preventDefault(); });

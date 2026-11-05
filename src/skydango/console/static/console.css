@@ -920,3 +920,23 @@ kbd.k{display:inline-block;min-width:1.7em;padding:0 5px;border:1px solid var(--
 .id-frame img{display:block;width:100%;height:auto}.id-frame canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .id-keys{display:flex;flex-wrap:wrap;gap:7px}#id-progress{font-weight:700}#id-progress[data-done="1"]{color:var(--matcha-ink)}
 #id-ready{overflow-wrap:anywhere}
+
+/* ---- 外形页网格（一页 36 张，只点错的） ---- */
+.fg-cols{display:flex;flex-direction:column;gap:10px;padding-bottom:12px}
+.fg-cols>h3{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.fg-progress{margin:0 14px}
+.fg-wrap{position:relative;padding:0 14px}
+.fg-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}
+.fg-cell{position:relative;display:block;aspect-ratio:1;padding:0;border:0;border-radius:10px;background:var(--bubble);overflow:hidden;cursor:pointer;box-shadow:0 0 0 1px var(--line);user-select:none}
+.fg-cell img{display:block;width:100%;height:100%;object-fit:contain}
+.fg-tag{position:absolute;left:4px;bottom:4px;max-width:calc(100% - 8px);padding:1px 6px;border-radius:999px;background:var(--card);color:var(--ink);font-size:11px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 0 0 1px var(--line)}
+.fg-cell.not_person{box-shadow:0 0 0 3px var(--brick)}
+.fg-cell.not_person img{opacity:.55}
+.fg-cell.discard{box-shadow:0 0 0 3px var(--ash-ink)}
+.fg-cell.discard img{opacity:.3;filter:grayscale(1)}
+.fg-mark{position:absolute;top:4px;right:4px;min-width:22px;padding:0 6px;border-radius:999px;background:var(--brick-base);color:var(--white);font-size:13px;line-height:22px;text-align:center}
+.fg-cell.discard .fg-mark{background:var(--ink)}
+.fg-ctx{position:absolute;top:0;right:14px;width:min(480px,60%);border-radius:14px;overflow:hidden;background:var(--card);box-shadow:var(--lift),0 0 0 1px var(--line);cursor:pointer;z-index:2}
+.fg-ctx img{display:block;width:100%;height:auto}
+.fg-foot{display:flex;justify-content:flex-end;gap:10px;padding:0 14px}
+@media (max-width:760px){.fg-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
