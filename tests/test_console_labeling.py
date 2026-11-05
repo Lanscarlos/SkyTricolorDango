@@ -563,3 +563,152 @@ def test_form_api_label_names(tmp_path, upstream, monkeypatch):  # noqa: F811
         assert st == 200 and d["batch"] and len(d["items"]) == 2
     finally:
         s.stop()
+
+
+# ---- 11-05 网格过目：整页「核过是人」确认 ----
+
+def _scores(root, data):
+    (root / "_scores.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def _where(root, name):
+    for d in ("_unlabeled", "_discard", "form/lit", "form/unlit", "form/spirit", "form/not_person"):
+        if (root / d / name).is_file():
+            return d
+    return None
+
+
+def test_form_state_scores_and_person(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/lit", "a.jpg")
+    make_crop(tmp_path, "_unlabeled", "b.jpg")
+    _scores(tmp_path, {"a.jpg": {"lit": 0.9, "not_person": 0.1}, "gone.jpg": {"lit": 1.0}})
+    f = FormLabels(tmp_path)
+    assert f.check(["a.jpg"], [], [])[0] == 200
+    s = f.state()
+    assert s["scores"] == {"a.jpg": {"lit": 0.9, "not_person": 0.1}}  # 只留现在还在的裁图
+    assert s["person"] == ["a.jpg"]
+
+
+def test_form_state_scores_bad_file(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/lit", "a.jpg")
+    for bad in ("{oops", json.dumps([1, 2]), json.dumps("x")):
+        (tmp_path / "_scores.json").write_text(bad, encoding="utf-8")
+        s = FormLabels(tmp_path).state()
+        assert s["ok"] and s["scores"] == {}
+
+
+def test_form_check_person_in_place(tmp_path):
+    from skydango.console.labeling import FormLabels
+    from skydango.vision.attrs_data import hand_labels, person_checked
+
+    make_crop(tmp_path, "form/lit", "a.jpg")
+    code, d = FormLabels(tmp_path).check(["a.jpg"], [], [])
+    assert code == 200 and d["ok"] and d["batch"] and [i["crop"] for i in d["items"]] == ["a.jpg"]
+    assert (tmp_path / "form" / "lit" / "a.jpg").is_file()
+    lines = log_lines(tmp_path)
+    assert len(lines) == 1 and lines[0]["scope"] == "person" and lines[0]["from"] == lines[0]["to"] == "lit"
+    assert person_checked(tmp_path) == {"a.jpg"} and "a.jpg" not in hand_labels(tmp_path)
+    assert d["items"][0]["confirmed"] is False  # 外形还没确认
+
+
+def test_form_check_person_unlabeled_moves_by_score(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "_unlabeled", "b.jpg")
+    make_crop(tmp_path, "_unlabeled", "c.jpg")
+    _scores(tmp_path, {"b.jpg": {"lit": 0.2, "unlit": 0.6, "spirit": 0.1, "not_person": 0.1}})
+    code, d = FormLabels(tmp_path).check(["b.jpg", "c.jpg"], [], [])
+    assert code == 200
+    assert _where(tmp_path, "b.jpg") == "form/unlit" and _where(tmp_path, "c.jpg") == "form/lit"
+    assert all(x["scope"] == "person" and x["from"] == "_unlabeled" for x in log_lines(tmp_path))
+
+
+def test_form_check_not_person_and_discard(tmp_path):
+    from skydango.console.labeling import FormLabels
+    from skydango.vision.attrs_data import hand_labels
+
+    for n in ("a.jpg", "b.jpg", "c.jpg"):
+        make_crop(tmp_path, "form/lit", n)
+    code, d = FormLabels(tmp_path).check(["a.jpg"], ["b.jpg"], ["c.jpg"])
+    assert code == 200 and _where(tmp_path, "b.jpg") == "form/not_person" and _where(tmp_path, "c.jpg") == "_discard"
+    lines = log_lines(tmp_path)
+    assert len(lines) == 3 and len({x["batch"] for x in lines}) == 1 and lines[0]["batch"] == d["batch"]
+    assert hand_labels(tmp_path) == {"b.jpg": "not_person", "c.jpg": "_discard"}
+
+
+def test_form_check_duplicate_is_400(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/lit", "a.jpg")
+    make_crop(tmp_path, "form/lit", "b.jpg")
+    for args in ((["a.jpg"], ["a.jpg"], []), (["a.jpg"], [], ["a.jpg"]), ([], ["a.jpg", "b.jpg"], ["b.jpg"])):
+        code, d = FormLabels(tmp_path).check(*args)
+        assert code == 400 and not d["ok"]
+    assert not (tmp_path / "_labels.jsonl").exists() and _where(tmp_path, "a.jpg") == "form/lit"
+
+
+def test_form_check_skips_moved_and_checked(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/lit", "a.jpg")
+    make_crop(tmp_path, "form/lit", "b.jpg")
+    f = FormLabels(tmp_path)
+    assert f.check(["a.jpg"], [], [])[0] == 200
+    code, d = f.check(["a.jpg", "b.jpg", "gone.jpg"], [], [])  # a 已核过、gone 不存在，b 照做
+    assert code == 200 and [i["crop"] for i in d["items"]] == ["b.jpg"]
+    assert sorted(x["crop"] for x in d["skipped"]) == ["a.jpg", "gone.jpg"] and all(x["text"] for x in d["skipped"])
+    code, d = f.check(["a.jpg"], [], [])  # 一张都没做成
+    assert code == 409 and not d["ok"]
+
+
+def test_form_check_person_on_not_person_skipped(tmp_path):
+    from skydango.console.labeling import FormLabels
+
+    make_crop(tmp_path, "form/not_person", "a.jpg")
+    make_crop(tmp_path, "_unlabeled", "b.jpg")
+    code, d = FormLabels(tmp_path).check(["a.jpg", "b.jpg"], [], [])
+    assert code == 200 and _where(tmp_path, "a.jpg") == "form/not_person"
+    assert [x["crop"] for x in d["skipped"]] == ["a.jpg"] and "不是人" in d["skipped"][0]["text"]
+
+
+def test_form_check_undo_restores_unlabeled(tmp_path):
+    from skydango.console.labeling import FormLabels
+    from skydango.vision.attrs_data import hand_labels, person_checked
+
+    make_crop(tmp_path, "form/lit", "a.jpg")
+    make_crop(tmp_path, "_unlabeled", "b.jpg")
+    make_crop(tmp_path, "form/lit", "n.jpg")
+    f = FormLabels(tmp_path)
+    code, d = f.check(["a.jpg", "b.jpg"], ["n.jpg"], [])
+    assert code == 200 and person_checked(tmp_path) == {"a.jpg", "b.jpg"}
+    code, u = f.undo()
+    assert code == 200 and u["batch"] == d["batch"] and sorted(i["crop"] for i in u["items"]) == ["a.jpg", "b.jpg", "n.jpg"]
+    assert _where(tmp_path, "b.jpg") == "_unlabeled" and _where(tmp_path, "a.jpg") == "form/lit" and _where(tmp_path, "n.jpg") == "form/lit"
+    assert person_checked(tmp_path) == set() and hand_labels(tmp_path) == {}
+    assert f.undo()[0] == 409
+
+
+def test_form_api_check_route(tmp_path, upstream, monkeypatch):  # noqa: F811
+    make_crop(tmp_path / "datasets" / "attrs", "form/lit", "a.jpg")
+    make_crop(tmp_path / "datasets" / "attrs", "form/lit", "b.jpg")
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    s = make_server(tmp_path, upstream)
+    try:
+        u = s.url
+        body = json.dumps({"person": ["a.jpg"], "not_person": ["b.jpg"], "discard": []}).encode()
+        assert request(u + "api/form/check", body, {"Content-Type": "application/json"})[0] == 403
+        st, d = request(u + "api/form/check", body, GOOD)
+        assert st == 200 and d["batch"] and len(d["items"]) == 2
+        st, d = request(u + "api/form/state")
+        assert d["person"] == ["a.jpg"]
+        bad = json.dumps({"person": ["a.jpg"], "not_person": ["a.jpg"]}).encode()
+        assert request(u + "api/form/check", bad, GOOD)[0] == 400
+        st, d = request(u + "api/form/undo", b"{}", GOOD)
+        assert st == 200 and d["batch"]
+    finally:
+        s.stop()

@@ -1096,6 +1096,7 @@ class ConsoleServer:
                     "/api/gesture/label": lambda body: console.gesture_labels().label(str(body.get("clip") or ""), str(body.get("to") or "")),
                     "/api/gesture/undo": lambda body: console.gesture_labels().undo(),
                     "/api/form/label": lambda body: console.form_labels().label(str(body.get("name") or ""), str(body.get("to") or ""), body["names"] if isinstance(body.get("names"), list) else None),
+                    "/api/form/check": lambda body: console.form_labels().check(_names(body, "person"), _names(body, "not_person"), _names(body, "discard")),
                     "/api/form/undo": lambda body: console.form_labels().undo(),
                     "/api/frames/act": lambda body: console.frames_api().act(body),
                     "/api/identity/label": lambda body: console.identity_truth().label(body),
@@ -1190,6 +1191,12 @@ class ConsoleServer:
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
+
+
+def _names(body: dict, key: str) -> list:
+    """请求体里的名字列表：只收字符串列表，别的当空。"""
+    v = body.get(key)
+    return [n for n in v if isinstance(n, str)] if isinstance(v, list) else []
 
 
 def _safe_list(fn) -> list:

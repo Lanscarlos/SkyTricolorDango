@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 
 from ..vision.attrs import FORMS
-from ..vision.attrs_data import hand_labels, live_records
+from ..vision.attrs_data import PERSON_SCOPE, hand_labels, live_records, person_checked
 from ..vision.cropgroups import groups as crop_groups
 from ..vision.gesture import recording_of
 from ..vision.gesture_label import BLIND_FILE, load_guess
@@ -29,6 +29,7 @@ FORM_DIR = "form"
 # 外形页出按钮的类别（10-04）：先祖单独标（和共享空间长得像，混进不是人难学；图鉴以后也要），不够数训练时并进不是人；
 # 共享空间 / 变身按点没点火标成 lit / unlit（训练时本来就并进 lit），筛选里照旧列出
 FORM_BUTTONS = ("not_person", "lit", "unlit", "spirit")
+SCORES_FILE = "_scores.json"  # perception crops-audit 写的外形概率（裁图名 → {类别: 概率}），网格按"是人的概率"排序
 FOCUS_FILE = "_focus.json"  # perception crops-audit 写的「重点核对」名单（JSON 字符串数组）
 CONTEXT_W = 480  # 外形页的原图缩略宽度
 _GROUP_CACHE: dict[str, tuple[tuple, list[list[str]]]] = {}  # _crops.jsonl 路径 → ((mtime, size), 分组)；文件没变就不重算
@@ -280,7 +281,25 @@ class FormLabels(_Moves):
             items.extend(self._item(n, d, rows, guesses, hand) for n in names)
         present = {i["crop"] for i in items}
         return {"ok": True, "forms": list(FORMS), "buttons": list(FORM_BUTTONS), "counts": counts, "items": items,
-                "groups": self._groups(rows, present), "focus": self._focus(present)}
+                "groups": self._groups(rows, present), "focus": self._focus(present),
+                "scores": self._scores(present), "person": sorted(person_checked(self.root) & present)}
+
+    def _scores(self, present: set[str] | None = None) -> dict[str, dict[str, float]]:
+        """`_scores.json` 里现在还存在的裁图的外形概率；文件不存在 / 坏了 / 不是对象 = {}（网格照样能用，全排最后）。"""
+        try:
+            data = json.loads((self.root / SCORES_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, dict[str, float]] = {}
+        for k, v in data.items():
+            if not isinstance(k, str) or not isinstance(v, dict) or (present is not None and k not in present):
+                continue
+            p = {c: float(x) for c, x in v.items() if isinstance(c, str) and isinstance(x, (int, float)) and not isinstance(x, bool)}
+            if p:
+                out[k] = p
+        return out
 
     def _groups(self, rows: dict[str, dict], present: set[str]) -> list[list[str]]:
         """同一个人连着几帧的裁图分组（`vision/cropgroups.py`），只留现在还在某个位置里的。按 `_crops.jsonl` 的 mtime / 大小缓存。"""
@@ -380,6 +399,53 @@ class FormLabels(_Moves):
         except OSError:
             return 500, {"ok": False, "text": "记录写不进去，没确认上"}
         return 200, {}
+
+    def check(self, person: list[str], not_person: list[str], discard: list[str]) -> tuple[int, dict]:
+        """网格整页确认（一个 batch，持锁逐张）：`person` 默认是人（记 `scope: person`，不算外形确认；还在 _unlabeled 的挪去外形头猜的人形类别，
+        没分数 = lit），`not_person` 挪进 form/not_person，`discard` 丢弃。三份名单两两有交集 = 400；不能做的跳过并报出来，一张都没做成 = 409。"""
+        lists = [[n for n in dict.fromkeys(x) if isinstance(n, str)] if isinstance(x, list) else [] for x in (person, not_person, discard)]
+        a, b, c = (set(x) for x in lists)
+        if a & b or a & c or b & c:
+            return 400, {"ok": False, "text": "同一张裁图不能同时在两份名单里"}
+        batch = uuid.uuid4().hex[:12]
+        done: list[str] = []
+        skipped: list[dict] = []
+        scores = self._scores()
+        with _LOCK:
+            checked = person_checked(self.root)
+            for name in lists[0]:
+                where = self._find(name)
+                if where is None:
+                    skipped.append({"crop": name, "text": "找不到这一张（可能被手动挪走了）"})
+                elif name in checked:
+                    skipped.append({"crop": name, "text": "已经核过是人了"})
+                elif where == "not_person":
+                    skipped.append({"crop": name, "text": "已经标成不是人"})
+                elif where == DISCARD:
+                    skipped.append({"crop": name, "text": "已经丢弃了"})
+                elif where == UNLABELED:
+                    p = scores.get(name) or {}
+                    dst = max(("lit", "unlit", "spirit"), key=lambda k: (p.get(k, 0.0), k == "lit")) if p else "lit"
+                    code, body = self._relabel(name, dst, {"scope": PERSON_SCOPE, "batch": batch})
+                    (done if code == 200 else skipped).append(name if code == 200 else {"crop": name, "text": body.get("text", "标不上")})
+                else:  # 已经在某个人形类别里：不挪，只记一行
+                    try:
+                        self._log({"t": time.time(), self._key: name, "from": where, "to": where, "scope": PERSON_SCOPE, "batch": batch})
+                    except OSError:
+                        skipped.append({"crop": name, "text": "记录写不进去，没核上"})
+                    else:
+                        done.append(name)
+            for name in lists[1]:
+                code, body = self._label_one(name, "not_person", {"batch": batch})
+                (done if code == 200 else skipped).append(name if code == 200 else {"crop": name, "text": body.get("text", "标不上")})
+            for name in lists[2]:
+                code, body = self._relabel(name, DISCARD, {"batch": batch})
+                (done if code == 200 else skipped).append(name if code == 200 else {"crop": name, "text": body.get("text", "标不上")})
+        if not done:
+            return 409, {"ok": False, "text": "这一页一张都没做成：" + (skipped[0]["text"] if skipped else "没有可做的"), "skipped": skipped}
+        rows, guesses, hand = self._rows(), self._guesses(), hand_labels(self.root)
+        items = [self._item(n, self._find(n) or DISCARD, rows, guesses, hand) for n in done]
+        return 200, {"ok": True, "batch": batch, "items": items, "skipped": skipped}
 
     def undo(self) -> tuple[int, dict]:
         with _LOCK:
